@@ -12,9 +12,14 @@ from typing import Any
 import httpx
 
 from durable_streams._errors import (
+    MissingHeadersError,
     error_from_status,
 )
-from durable_streams._parse import parse_httpx_headers, parse_response_headers
+from durable_streams._parse import (
+    parse_httpx_headers,
+    parse_response_headers,
+    validate_response_headers,
+)
 from durable_streams._response import StreamResponse
 from durable_streams._types import (
     CURSOR_QUERY_PARAM,
@@ -185,9 +190,14 @@ def _stream_internal(
                 )
                 raise error
 
+            headers_dict = parse_httpx_headers(response.headers)
+            validate_response_headers(headers_dict, request_url)
+
             break
 
         except Exception as e:
+            if isinstance(e, MissingHeadersError):
+                raise
             # If there's an on_error handler, give it a chance to recover
             if on_error is not None:
                 retry_opts = on_error(e)
@@ -277,8 +287,13 @@ def _stream_internal(
                     )
                     raise error
 
+                hdrs = parse_httpx_headers(resp.headers)
+                validate_response_headers(hdrs, next_url)
+
                 return resp
             except Exception as e:
+                if isinstance(e, MissingHeadersError):
+                    raise
                 # Apply on_error for follow-up requests too
                 if on_error is not None:
                     retry_opts = on_error(e)

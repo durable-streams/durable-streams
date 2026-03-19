@@ -143,6 +143,8 @@ interface InjectedFault {
     /** Event data (will be sent as-is) */
     data: string
   }
+  /** Strip these response headers (simulates proxy/CDN stripping headers) */
+  stripHeaders?: Array<string>
 }
 
 export class DurableStreamTestServer {
@@ -407,6 +409,28 @@ export class DurableStreamTestServer {
     return modified
   }
 
+  /**
+   * Strip response headers from stored fault config.
+   * Mutates the headers object in place.
+   */
+  private applyFaultHeaderStripping(
+    res: ServerResponse,
+    headers: Record<string, string>
+  ): void {
+    const fault = (res as ServerResponse & { _injectedFault?: InjectedFault })
+      ._injectedFault
+    if (!fault?.stripHeaders) return
+
+    for (const header of fault.stripHeaders) {
+      // Delete matching headers case-insensitively
+      for (const key of Object.keys(headers)) {
+        if (key.toLowerCase() === header.toLowerCase()) {
+          delete headers[key]
+        }
+      }
+    }
+  }
+
   // ============================================================================
   // Request handling
   // ============================================================================
@@ -476,11 +500,12 @@ export class DurableStreamTestServer {
         return
       }
 
-      // Store fault for response modification (truncation, corruption, SSE injection)
+      // Store fault for response modification (truncation, corruption, SSE injection, header stripping)
       if (
         fault.truncateBodyBytes !== undefined ||
         fault.corruptBody ||
-        fault.injectSseEvent
+        fault.injectSseEvent ||
+        fault.stripHeaders
       ) {
         ;(
           res as ServerResponse & { _injectedFault?: InjectedFault }
@@ -942,6 +967,9 @@ export class DurableStreamTestServer {
     // Apply fault body modifications (truncation, corruption) if configured
     finalData = this.applyFaultBodyModification(res, finalData)
 
+    // Apply header stripping if configured (simulates proxy/CDN stripping headers)
+    this.applyFaultHeaderStripping(res, headers)
+
     res.writeHead(200, headers)
     res.end(Buffer.from(finalData))
   }
@@ -960,6 +988,11 @@ export class DurableStreamTestServer {
     // Track this SSE connection
     this.activeSSEResponses.add(res)
 
+    const bootstrapCursor = generateResponseCursor(
+      cursor,
+      this.options.cursorOptions
+    )
+
     // Set SSE headers (explicitly including security headers for clarity)
     const sseHeaders: Record<string, string> = {
       "content-type": `text/event-stream`,
@@ -968,6 +1001,8 @@ export class DurableStreamTestServer {
       "access-control-allow-origin": `*`,
       "x-content-type-options": `nosniff`,
       "cross-origin-resource-policy": `cross-origin`,
+      [STREAM_OFFSET_HEADER]: initialOffset,
+      [STREAM_CURSOR_HEADER]: bootstrapCursor,
     }
 
     // Add encoding header when base64 encoding is used for binary streams
@@ -1546,6 +1581,8 @@ export class DurableStreamTestServer {
             eventType: string
             data: string
           }
+          // Header stripping (simulates proxy/CDN stripping headers)
+          stripHeaders?: Array<string>
         }
 
         if (!config.path) {
@@ -1561,11 +1598,12 @@ export class DurableStreamTestServer {
           config.dropConnection ||
           config.truncateBodyBytes !== undefined ||
           config.corruptBody ||
-          config.injectSseEvent !== undefined
+          config.injectSseEvent !== undefined ||
+          (config.stripHeaders !== undefined && config.stripHeaders.length > 0)
         if (!hasFaultType) {
           res.writeHead(400, { "content-type": `text/plain` })
           res.end(
-            `Must specify at least one fault type: status, delayMs, dropConnection, truncateBodyBytes, corruptBody, or injectSseEvent`
+            `Must specify at least one fault type: status, delayMs, dropConnection, truncateBodyBytes, corruptBody, injectSseEvent, or stripHeaders`
           )
           return
         }
@@ -1582,6 +1620,7 @@ export class DurableStreamTestServer {
           corruptBody: config.corruptBody,
           jitterMs: config.jitterMs,
           injectSseEvent: config.injectSseEvent,
+          stripHeaders: config.stripHeaders,
         })
 
         res.writeHead(200, { "content-type": `application/json` })

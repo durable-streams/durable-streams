@@ -1,9 +1,23 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { FetchBackoffAbortError, FetchError } from "../src/error"
+import {
+  STREAM_CLOSED_HEADER,
+  STREAM_CURSOR_HEADER,
+  STREAM_OFFSET_HEADER,
+  STREAM_UP_TO_DATE_HEADER,
+} from "../src/constants"
+import {
+  FetchBackoffAbortError,
+  FetchError,
+  MissingHeadersError,
+} from "../src/error"
 import {
   BackoffDefaults,
+  PrefetchQueue,
   createFetchWithBackoff,
+  createFetchWithChunkBuffer,
   createFetchWithConsumedBody,
+  createFetchWithResponseHeadersCheck,
+  getNextChunkUrl,
   parseRetryAfterHeader,
 } from "../src/fetch"
 import type { Mock } from "vitest"
@@ -378,5 +392,395 @@ describe(`createFetchWithConsumedBody`, () => {
     await expect(enhancedFetch(`http://example.com`)).rejects.toThrow(
       FetchError
     )
+  })
+})
+
+describe(`createFetchWithResponseHeadersCheck`, () => {
+  let mockFetch: Mock<typeof fetch>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+  })
+
+  afterEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it(`should pass through response when all required headers are present`, async () => {
+    const mockResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `1`,
+      },
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+    const result = await checkedFetch(`http://example.com?offset=0`)
+
+    expect(result).toBe(mockResponse)
+    expect(result.status).toBe(200)
+  })
+
+  it(`should throw MissingHeadersError when Stream-Next-Offset is missing`, async () => {
+    const mockResponse = new Response(`data`, {
+      status: 200,
+      headers: {},
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+
+    await expect(checkedFetch(`http://example.com?offset=0`)).rejects.toThrow(
+      MissingHeadersError
+    )
+
+    try {
+      await checkedFetch(`http://example.com?offset=0`)
+    } catch (err) {
+      expect(err).toBeInstanceOf(MissingHeadersError)
+      expect((err as MissingHeadersError).missingHeaders).toContain(
+        STREAM_OFFSET_HEADER
+      )
+    }
+  })
+
+  it(`should throw when live + missing cursor + not closed`, async () => {
+    const mockResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `1`,
+      },
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+
+    await expect(
+      checkedFetch(`http://example.com?offset=0&live=long-poll`)
+    ).rejects.toThrow(MissingHeadersError)
+
+    try {
+      await checkedFetch(`http://example.com?offset=0&live=long-poll`)
+    } catch (err) {
+      expect(err).toBeInstanceOf(MissingHeadersError)
+      expect((err as MissingHeadersError).missingHeaders).toContain(
+        STREAM_CURSOR_HEADER
+      )
+    }
+  })
+
+  it(`should NOT throw when live + missing cursor + Stream-Closed: true`, async () => {
+    const mockResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `1`,
+        [STREAM_CLOSED_HEADER]: `true`,
+      },
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+    const result = await checkedFetch(
+      `http://example.com?offset=0&live=long-poll`
+    )
+
+    expect(result).toBe(mockResponse)
+  })
+
+  it(`should NOT throw on non-2xx responses`, async () => {
+    const mockResponse = new Response(null, {
+      status: 404,
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+    const result = await checkedFetch(`http://example.com?offset=0`)
+
+    expect(result).toBe(mockResponse)
+    expect(result.status).toBe(404)
+  })
+})
+
+describe(`getNextChunkUrl`, () => {
+  it(`should return null when Stream-Closed is true`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_CLOSED_HEADER]: `true`,
+        [STREAM_OFFSET_HEADER]: `5`,
+      },
+    })
+    expect(getNextChunkUrl(requestUrl, response)).toBeNull()
+  })
+
+  it(`should return null when Stream-Up-To-Date is present`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_UP_TO_DATE_HEADER]: `true`,
+        [STREAM_OFFSET_HEADER]: `5`,
+      },
+    })
+    expect(getNextChunkUrl(requestUrl, response)).toBeNull()
+  })
+
+  it(`should return null on live requests`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0&live=long-poll`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `5`,
+      },
+    })
+    expect(getNextChunkUrl(requestUrl, response)).toBeNull()
+  })
+
+  it(`should return correct URL with updated offset and cursor`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `10`,
+        [STREAM_CURSOR_HEADER]: `abc123`,
+      },
+    })
+    const nextUrl = getNextChunkUrl(requestUrl, response)
+    expect(nextUrl).not.toBeNull()
+    expect(nextUrl!.searchParams.get(`offset`)).toBe(`10`)
+    expect(nextUrl!.searchParams.get(`cursor`)).toBe(`abc123`)
+  })
+
+  it(`should return URL without cursor when cursor header is absent`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `10`,
+      },
+    })
+    const nextUrl = getNextChunkUrl(requestUrl, response)
+    expect(nextUrl).not.toBeNull()
+    expect(nextUrl!.searchParams.get(`offset`)).toBe(`10`)
+    expect(nextUrl!.searchParams.has(`cursor`)).toBe(false)
+  })
+
+  it(`should return null when offset header is missing`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {},
+    })
+    expect(getNextChunkUrl(requestUrl, response)).toBeNull()
+  })
+})
+
+describe(`PrefetchQueue`, () => {
+  it(`should return undefined for unknown URL on consume`, () => {
+    const mockFetch = vi.fn()
+    const queue = new PrefetchQueue(mockFetch)
+    expect(queue.consume(`http://example.com?offset=5`)).toBeUndefined()
+  })
+
+  it(`should prefetch and then consume the response`, async () => {
+    const mockResponse = new Response(`data`, { status: 200 })
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(mockResponse)
+    const queue = new PrefetchQueue(mockFetch)
+
+    const url = `http://example.com?offset=5`
+    queue.prefetch(url)
+    const promise = queue.consume(url)
+    expect(promise).toBeDefined()
+    const result = await promise!
+    expect(result).toBe(mockResponse)
+  })
+
+  it(`should enforce in-order consumption — consume(url2) when url1 is head returns undefined`, () => {
+    const mockFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }))
+    const queue = new PrefetchQueue(mockFetch, 3)
+
+    const url1 = `http://example.com?offset=5`
+    const url2 = `http://example.com?offset=10`
+    queue.prefetch(url1)
+    queue.prefetch(url2)
+
+    expect(queue.consume(url2)).toBeUndefined()
+    expect(queue.consume(url1)).toBeDefined()
+    expect(queue.consume(url2)).toBeDefined()
+  })
+
+  it(`should abort all in-flight requests on clear`, () => {
+    const abortSpy = vi.fn()
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation((_url, init) => {
+      init?.signal?.addEventListener(`abort`, abortSpy)
+      return new Promise(() => {})
+    })
+    const queue = new PrefetchQueue(mockFetch, 3)
+
+    queue.prefetch(`http://example.com?offset=5`)
+    queue.prefetch(`http://example.com?offset=10`)
+    queue.clear()
+
+    expect(abortSpy).toHaveBeenCalledTimes(2)
+    expect(queue.consume(`http://example.com?offset=5`)).toBeUndefined()
+  })
+
+  it(`should respect maxChunks limit`, () => {
+    const mockFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }))
+    const queue = new PrefetchQueue(mockFetch, 2)
+
+    queue.prefetch(`http://example.com?offset=5`)
+    queue.prefetch(`http://example.com?offset=10`)
+    queue.prefetch(`http://example.com?offset=15`)
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it(`should not duplicate prefetch for same URL`, () => {
+    const mockFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }))
+    const queue = new PrefetchQueue(mockFetch, 3)
+
+    queue.prefetch(`http://example.com?offset=5`)
+    queue.prefetch(`http://example.com?offset=5`)
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe(`createFetchWithChunkBuffer`, () => {
+  it(`should pass through non-GET requests`, async () => {
+    const mockResponse = new Response(`ok`, { status: 200 })
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(mockResponse)
+    const bufferedFetch = createFetchWithChunkBuffer(mockFetch)
+
+    const result = await bufferedFetch(`http://example.com`, {
+      method: `POST`,
+    })
+    expect(result).toBe(mockResponse)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it(`should prefetch next chunk URL on successful GET`, async () => {
+    const firstResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `10`,
+        [STREAM_CURSOR_HEADER]: `cur1`,
+      },
+    })
+    const secondResponse = new Response(`more`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `20`,
+        [STREAM_UP_TO_DATE_HEADER]: `true`,
+      },
+    })
+    const mockFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(firstResponse)
+      .mockResolvedValueOnce(secondResponse)
+
+    const bufferedFetch = createFetchWithChunkBuffer(mockFetch)
+
+    // Use URL with trailing slash to match new URL() normalization
+    const result1 = await bufferedFetch(`http://example.com/?offset=0`)
+    expect(result1).toBe(firstResponse)
+
+    // The prefetch should have been triggered for offset=10
+    // getNextChunkUrl builds the next URL from new URL(requestUrl), which
+    // normalizes to include trailing slash. The prefetched URL is:
+    // http://example.com/?offset=10&cursor=cur1
+    const result2 = await bufferedFetch(
+      `http://example.com/?offset=10&cursor=cur1`
+    )
+    expect(result2).toBe(secondResponse)
+
+    // Only 2 fetch calls total (first + prefetch consumed as second)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it(`should not prefetch when stream is closed`, async () => {
+    const closedResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `10`,
+        [STREAM_CLOSED_HEADER]: `true`,
+      },
+    })
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(closedResponse)
+    const bufferedFetch = createFetchWithChunkBuffer(mockFetch)
+
+    await bufferedFetch(`http://example.com/?offset=0`)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+})
+
+// ============================================================================
+// Group 2: Prefetch bug tests (should FAIL — exposing bugs)
+// ============================================================================
+
+describe(`PrefetchQueue error handling bugs`, () => {
+  // EXPECTED TO FAIL — exposes bug #5
+  // When a prefetched request fails (network error), the consumer receives a
+  // synthetic 599 response that gets fed into header validation, causing
+  // MissingHeadersError instead of falling back to a fresh fetch.
+  it(`prefetch network error should not produce synthetic 599 response`, async () => {
+    const mockFetch = vi.fn<typeof fetch>()
+
+    const queue = new PrefetchQueue(mockFetch)
+
+    // Prefetch will fail with network error
+    mockFetch.mockRejectedValueOnce(new Error(`network error`))
+    const targetUrl = `http://example.com/?offset=10&cursor=cur1`
+    queue.prefetch(targetUrl)
+
+    // Consume the prefetched response
+    const promise = queue.consume(targetUrl)
+    expect(promise).toBeDefined()
+    const result = await promise!
+
+    // BUG: PrefetchQueue.prefetch() has `.catch(() => new Response(null, { status: 599 }))`
+    // This means a network error gets turned into a synthetic 599 response.
+    // When this response is fed into createFetchWithResponseHeadersCheck,
+    // it triggers MissingHeadersError because 599 >= 200 && < 300 is false
+    // (so actually 599 bypasses the header check), but the caller sees
+    // a non-ok response with status 599 which is unexpected.
+    //
+    // Expected: The queue should not mask errors as synthetic responses.
+    expect(result.status).not.toBe(599)
+  })
+
+  // EXPECTED TO FAIL — exposes bug #6
+  // When consume() is called with a URL that doesn't match the head of the queue,
+  // the stale prefetched responses should be cleared/aborted.
+  it(`consume with mismatched URL should clear stale prefetches`, () => {
+    const abortSpy = vi.fn()
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation((_url, init) => {
+      init?.signal?.addEventListener(`abort`, abortSpy)
+      return new Promise(() => {})
+    })
+
+    const queue = new PrefetchQueue(mockFetch, 3)
+
+    queue.prefetch(`http://example.com/?offset=5`)
+    queue.prefetch(`http://example.com/?offset=10`)
+
+    // Consume a completely different URL
+    const result = queue.consume(`http://example.com/?offset=99`)
+
+    // BUG: consume() returns undefined without clearing the queue.
+    // The in-flight prefetches for offset=5 and offset=10 remain active,
+    // wasting bandwidth and potentially returning stale data later.
+    expect(result).toBeUndefined()
+    // The stale prefetches should have been aborted
+    expect(abortSpy).toHaveBeenCalledTimes(2)
   })
 })

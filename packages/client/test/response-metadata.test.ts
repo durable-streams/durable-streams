@@ -48,6 +48,7 @@ describe(`StreamResponse metadata`, () => {
               headers: {
                 "content-type": `application/json`,
                 "Stream-Next-Offset": `1`,
+                "Stream-Cursor": `cursor_1`,
                 etag: `first-etag`,
                 "x-custom": `first-value`,
               },
@@ -60,6 +61,7 @@ describe(`StreamResponse metadata`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `2`,
+              "Stream-Cursor": `cursor_2`,
               "Stream-Up-To-Date": `true`,
               etag: `second-etag`,
               "x-custom": `second-value`,
@@ -80,7 +82,8 @@ describe(`StreamResponse metadata`, () => {
 
       // Consume to trigger next request
       const reader = res.jsonStream().getReader()
-      await reader.read() // First item
+      await reader.read() // First item (from first response)
+      await reader.read() // Second item (from second response, triggers fetchNext)
 
       // Headers should now reflect second response
       expect(res.headers.get(`etag`)).toBe(`second-etag`)
@@ -145,6 +148,7 @@ describe(`StreamResponse metadata`, () => {
               headers: {
                 "content-type": `application/json`,
                 "Stream-Next-Offset": `1`,
+                "Stream-Cursor": `cursor_1`,
               },
             })
           )
@@ -157,6 +161,7 @@ describe(`StreamResponse metadata`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `2`,
+              "Stream-Cursor": `cursor_2`,
               "Stream-Up-To-Date": `true`,
             },
           })
@@ -174,7 +179,8 @@ describe(`StreamResponse metadata`, () => {
 
       // Consume to trigger next request
       const reader = res.jsonStream().getReader()
-      await reader.read()
+      await reader.read() // First item (from first response)
+      await reader.read() // Second item (from second response, triggers fetchNext)
 
       expect(res.status).toBe(206)
       expect(res.statusText).toBe(`Partial Content`)
@@ -236,6 +242,7 @@ describe(`StreamResponse metadata`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": String(callCount),
+              "Stream-Cursor": `cursor_${callCount}`,
               ...(callCount === 2 && { "Stream-Up-To-Date": `true` }),
             },
           })
@@ -252,7 +259,8 @@ describe(`StreamResponse metadata`, () => {
       expect(res.status).toBe(200)
 
       const reader = res.jsonStream().getReader()
-      await reader.read()
+      await reader.read() // First item (from first response)
+      await reader.read() // Second item (from second response, triggers fetchNext)
 
       expect(res.ok).toBe(true)
       expect(res.status).toBe(201)
@@ -293,6 +301,7 @@ describe(`StreamResponse metadata`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": String(callCount),
+              "Stream-Cursor": `cursor_${callCount}`,
               ...(callCount === 2 && { "Stream-Up-To-Date": `true` }),
             },
           })

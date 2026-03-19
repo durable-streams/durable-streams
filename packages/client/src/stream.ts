@@ -26,7 +26,9 @@ import {
 } from "./fetch"
 import { stream as streamFn } from "./stream-api"
 import {
+  concatUint8Arrays,
   handleErrorResponse,
+  normalizeContentType,
   resolveHeaders,
   resolveParams,
   warnIfUsingHttpInBrowser,
@@ -59,24 +61,6 @@ interface QueuedMessage {
   signal?: AbortSignal
   resolve: () => void
   reject: (error: Error) => void
-}
-
-/**
- * Normalize content-type by extracting the media type (before any semicolon).
- * Handles cases like "application/json; charset=utf-8".
- */
-function normalizeContentType(contentType: string | undefined): string {
-  if (!contentType) return ``
-  return contentType.split(`;`)[0]!.trim().toLowerCase()
-}
-
-/**
- * Check if a value is a Promise or Promise-like (thenable).
- */
-function isPromiseLike(value: unknown): value is PromiseLike<unknown> {
-  return (
-    value != null && typeof (value as PromiseLike<unknown>).then === `function`
-  )
 }
 
 /**
@@ -164,12 +148,10 @@ export class DurableStream {
     this.#options = { ...opts, url: urlStr }
     this.#onError = opts.onError
 
-    // Set contentType from options if provided (for IdempotentProducer and other use cases)
     if (opts.contentType) {
       this.contentType = opts.contentType
     }
 
-    // Batching is enabled by default
     this.#batchingEnabled = opts.batching !== false
 
     if (this.#batchingEnabled) {
@@ -381,10 +363,8 @@ export class DurableStream {
       requestHeaders[`content-type`] = contentType
     }
 
-    // Always send Stream-Closed: true header for close operation
     requestHeaders[STREAM_CLOSED_HEADER] = `true`
 
-    // For JSON mode with body, wrap in array
     let body: BodyInit | undefined
     if (opts?.body !== undefined) {
       const isJson = normalizeContentType(contentType) === `application/json`
@@ -409,7 +389,6 @@ export class DurableStream {
       signal: opts?.signal ?? this.#options.signal,
     })
 
-    // Check for 409 Conflict with Stream-Closed header
     if (response.status === 409) {
       const isClosed =
         response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
@@ -459,8 +438,7 @@ export class DurableStream {
     body: Uint8Array | string | Promise<Uint8Array | string>,
     opts?: AppendOptions
   ): Promise<void> {
-    // Await promises before buffering
-    const resolvedBody = isPromiseLike(body) ? await body : body
+    const resolvedBody = await body
 
     if (this.#batchingEnabled && this.#queue) {
       return this.#appendWithBatching(resolvedBody, opts)
@@ -487,26 +465,19 @@ export class DurableStream {
       requestHeaders[STREAM_SEQ_HEADER] = opts.seq
     }
 
-    // For JSON mode, wrap body in array to match protocol (server flattens one level)
-    // Input is pre-serialized JSON string
     const isJson = normalizeContentType(contentType) === `application/json`
     let encodedBody: BodyInit
     if (isJson) {
-      // JSON mode: decode as UTF-8 string and wrap in array
       const bodyStr =
         typeof body === `string` ? body : new TextDecoder().decode(body)
       encodedBody = `[${bodyStr}]`
+    } else if (typeof body === `string`) {
+      encodedBody = body
     } else {
-      // Binary mode: preserve raw bytes
-      // Use ArrayBuffer for cross-platform BodyInit compatibility
-      if (typeof body === `string`) {
-        encodedBody = body
-      } else {
-        encodedBody = body.buffer.slice(
-          body.byteOffset,
-          body.byteOffset + body.byteLength
-        ) as ArrayBuffer
-      }
+      encodedBody = body.buffer.slice(
+        body.byteOffset,
+        body.byteOffset + body.byteLength
+      ) as ArrayBuffer
     }
 
     const response = await this.#fetchClient(fetchUrl.toString(), {
@@ -589,7 +560,6 @@ export class DurableStream {
 
     const { requestHeaders, fetchUrl } = await this.#buildRequest()
 
-    // Get content type - prefer from options, then from messages, then from stream
     const contentType =
       batch[0]?.contentType ?? this.#options.contentType ?? this.contentType
 
@@ -597,7 +567,6 @@ export class DurableStream {
       requestHeaders[`content-type`] = contentType
     }
 
-    // Get last non-undefined seq (queue preserves append order)
     let highestSeq: string | undefined
     for (let i = batch.length - 1; i >= 0; i--) {
       if (batch[i]!.seq !== undefined) {
@@ -612,7 +581,6 @@ export class DurableStream {
 
     const isJson = normalizeContentType(contentType) === `application/json`
 
-    // Batch data based on content type
     let batchedBody: BodyInit
     if (isJson) {
       // For JSON mode: always send as array (server flattens one level)
@@ -625,45 +593,20 @@ export class DurableStream {
       batchedBody = `[${jsonStrings.join(`,`)}]`
     } else {
       // For byte mode: preserve original data types
-      // - Strings are concatenated as strings (for text/* content types)
-      // - Uint8Arrays are concatenated as binary (for application/octet-stream)
-      // - Mixed types: convert all to binary to avoid data corruption
-      const hasUint8Array = batch.some((m) => m.data instanceof Uint8Array)
-      const hasString = batch.some((m) => typeof m.data === `string`)
+      const allStrings = batch.every((m) => typeof m.data === `string`)
 
-      if (hasUint8Array && !hasString) {
-        // All binary: concatenate Uint8Arrays
-        const chunks = batch.map((m) => m.data as Uint8Array)
-        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
-        const combined = new Uint8Array(totalLength)
-        let offset = 0
-        for (const chunk of chunks) {
-          combined.set(chunk, offset)
-          offset += chunk.length
-        }
-        batchedBody = combined
-      } else if (hasString && !hasUint8Array) {
-        // All strings: concatenate as string
+      if (allStrings) {
         batchedBody = batch.map((m) => m.data as string).join(``)
       } else {
-        // Mixed types: convert strings to binary and concatenate
-        // This preserves binary data integrity
+        // Binary or mixed: convert strings to bytes and concatenate
         const encoder = new TextEncoder()
         const chunks = batch.map((m) =>
           typeof m.data === `string` ? encoder.encode(m.data) : m.data
         )
-        const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
-        const combined = new Uint8Array(totalLength)
-        let offset = 0
-        for (const chunk of chunks) {
-          combined.set(chunk, offset)
-          offset += chunk.length
-        }
-        batchedBody = combined
+        batchedBody = concatUint8Arrays(chunks) as unknown as BodyInit
       }
     }
 
-    // Combine signals: stream-level signal + any per-message signals
     const signals: Array<AbortSignal> = []
     if (this.#options.signal) {
       signals.push(this.#options.signal)

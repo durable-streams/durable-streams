@@ -5,6 +5,7 @@
  */
 
 import {
+  CACHE_BUSTER_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   OFFSET_QUERY_PARAM,
   STREAM_CLOSED_HEADER,
@@ -13,16 +14,34 @@ import {
   STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
-import { DurableStreamError, FetchBackoffAbortError } from "./error"
-import { BackoffDefaults, createFetchWithBackoff } from "./fetch"
+import {
+  DurableStreamError,
+  FetchBackoffAbortError,
+  MissingHeadersError,
+} from "./error"
+import {
+  BackoffDefaults,
+  createFetchWithBackoff,
+  createFetchWithChunkBuffer,
+  createFetchWithConsumedBody,
+  createFetchWithResponseHeadersCheck,
+} from "./fetch"
 import { StreamResponseImpl } from "./response"
+import { UpToDateTracker, canonicalStreamKey } from "./up-to-date-tracker"
 import {
   handleErrorResponse,
   resolveHeaders,
   resolveParams,
   warnIfUsingHttpInBrowser,
 } from "./utils"
-import type { LiveMode, Offset, StreamOptions, StreamResponse } from "./types"
+import type {
+  HeadersRecord,
+  LiveMode,
+  Offset,
+  ParamsRecord,
+  StreamOptions,
+  StreamResponse,
+} from "./types"
 
 /**
  * Create a streaming session to read from a durable stream.
@@ -82,6 +101,11 @@ export async function stream<TJson = unknown>(
         params: currentParams,
       })
     } catch (err) {
+      // Non-retryable errors bypass onError entirely
+      if (err instanceof MissingHeadersError) {
+        throw err
+      }
+
       // If there's an onError handler, give it a chance to recover
       if (options.onError) {
         const retryOpts = await options.onError(
@@ -162,17 +186,34 @@ async function streamInternal<TJson = unknown>(
     )
   }
 
-  // Get fetch client with backoff
+  // Build fetch client chains
   const baseFetchClient =
     options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
   const backoffOptions = options.backoffOptions ?? BackoffDefaults
-  const fetchClient = createFetchWithBackoff(baseFetchClient, backoffOptions)
+  const backoffClient = createFetchWithBackoff(baseFetchClient, backoffOptions)
+
+  // Base chain for chunk fetches (no prefetch):
+  const baseChunkClient = createFetchWithConsumedBody(
+    createFetchWithResponseHeadersCheck(backoffClient)
+  )
+
+  // For subsequent chunk fetches with speculative prefetch:
+  const chunkFetchClient = createFetchWithConsumedBody(
+    createFetchWithResponseHeadersCheck(
+      createFetchWithChunkBuffer(backoffClient, options.prefetchOptions)
+    )
+  )
+
+  // For SSE connections (must NOT consume body — it's a long-lived stream):
+  const sseFetchClient = createFetchWithResponseHeadersCheck(backoffClient)
 
   // Make the first request
-  // Backoff client will throw FetchError for non-OK responses
+  // Use SSE client for SSE mode (don't consume the long-lived body),
+  // base chunk client otherwise (no prefetch on first request)
+  const firstRequestClient = live === `sse` ? sseFetchClient : baseChunkClient
   let firstResponse: Response
   try {
-    firstResponse = await fetchClient(fetchUrl.toString(), {
+    firstResponse = await firstRequestClient(fetchUrl.toString(), {
       method: `GET`,
       headers,
       signal: abortController.signal,
@@ -212,10 +253,17 @@ async function streamInternal<TJson = unknown>(
     offset: Offset,
     cursor: string | undefined,
     signal: AbortSignal,
-    resumingFromPause?: boolean
+    resumingFromPause?: boolean,
+    cacheBuster?: string,
+    overrideHeaders?: HeadersRecord,
+    overrideParams?: ParamsRecord
   ): Promise<Response> => {
     const nextUrl = new URL(url)
     nextUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
+
+    if (cacheBuster) {
+      nextUrl.searchParams.set(CACHE_BUSTER_QUERY_PARAM, cacheBuster)
+    }
 
     // For subsequent requests, set live mode unless resuming from pause
     // (resuming from pause needs immediate response for UI status)
@@ -237,9 +285,20 @@ async function streamInternal<TJson = unknown>(
       nextUrl.searchParams.set(key, value)
     }
 
-    const nextHeaders = await resolveHeaders(options.headers)
+    // Apply onError override params (resolve functions same as base params)
+    if (overrideParams) {
+      const resolvedOverrideParams = await resolveParams(overrideParams)
+      for (const [key, value] of Object.entries(resolvedOverrideParams)) {
+        nextUrl.searchParams.set(key, value)
+      }
+    }
 
-    const response = await fetchClient(nextUrl.toString(), {
+    const nextHeaders = {
+      ...(await resolveHeaders(options.headers)),
+      ...(await resolveHeaders(overrideHeaders)),
+    }
+
+    const response = await chunkFetchClient(nextUrl.toString(), {
       method: `GET`,
       headers: nextHeaders,
       signal,
@@ -275,7 +334,7 @@ async function streamInternal<TJson = unknown>(
 
           const sseHeaders = await resolveHeaders(options.headers)
 
-          const response = await fetchClient(sseUrl.toString(), {
+          const response = await sseFetchClient(sseUrl.toString(), {
             method: `GET`,
             headers: sseHeaders,
             signal,
@@ -288,6 +347,14 @@ async function streamInternal<TJson = unknown>(
           return response
         }
       : undefined
+
+  // Create up-to-date tracker if storage is provided
+  const upToDateTracker = options.upToDateStorage
+    ? new UpToDateTracker(options.upToDateStorage)
+    : undefined
+  const streamKey = options.upToDateStorage
+    ? canonicalStreamKey(fetchUrl.toString())
+    : undefined
 
   // Create and return the StreamResponse
   return new StreamResponseImpl<TJson>({
@@ -306,5 +373,9 @@ async function streamInternal<TJson = unknown>(
     startSSE,
     sseResilience: options.sseResilience,
     encoding,
+    onError: options.onError,
+    upToDateTracker,
+    streamKey,
+    fastLoopOptions: options.fastLoopOptions,
   })
 }

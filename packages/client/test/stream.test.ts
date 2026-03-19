@@ -226,6 +226,7 @@ describe(`DurableStream`, () => {
           status: 200,
           headers: {
             "Stream-Next-Offset": `1_5`,
+            "Stream-Cursor": `cursor_1`,
             "Stream-Up-To-Date": `true`,
           },
         })

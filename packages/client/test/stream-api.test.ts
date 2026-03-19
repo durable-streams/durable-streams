@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   FetchError,
+  STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
   stream,
@@ -87,6 +88,7 @@ describe(`stream() function`, () => {
           status: 200,
           headers: {
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -870,6 +872,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -884,6 +887,7 @@ describe(`DurableStream.stream() method`, () => {
         /* noop */
       })
       await expect(res.text()).rejects.toThrow(`already being consumed`)
+      res.cancel()
     })
 
     it(`should throw when calling jsonStream() after subscribeText()`, async () => {
@@ -893,6 +897,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -908,6 +913,7 @@ describe(`DurableStream.stream() method`, () => {
         /* noop */
       })
       expect(() => res.jsonStream()).toThrow(`already being consumed`)
+      res.cancel()
     })
 
     it(`should allow calling textStream() which uses bodyStream internally`, async () => {
@@ -968,6 +974,7 @@ describe(`DurableStream.stream() method`, () => {
           status: 200,
           headers: {
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
           },
         })
       )
@@ -978,6 +985,7 @@ describe(`DurableStream.stream() method`, () => {
           status: 200,
           headers: {
             [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_2`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -990,6 +998,7 @@ describe(`DurableStream.stream() method`, () => {
           status: 200,
           headers: {
             [STREAM_OFFSET_HEADER]: `3_15`,
+            [STREAM_CURSOR_HEADER]: `cursor_3`,
           },
         })
       )
@@ -1067,6 +1076,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
           },
         })
       )
@@ -1078,6 +1088,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_2`,
           },
         })
       )
@@ -1089,6 +1100,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `3_15`,
+            [STREAM_CURSOR_HEADER]: `cursor_3`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -1132,5 +1144,395 @@ describe(`DurableStream.stream() method`, () => {
       expect(text).toBe(`Hello World`)
       expect(res.upToDate).toBe(true)
     })
+  })
+
+  describe(`fast loop detection regression`, () => {
+    it(`should not trigger stale-retry for a valid at-tail response with same offset and upToDate`, async () => {
+      const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+      // First response: not up to date, returns offset 3_10
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `3_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
+          },
+        })
+      )
+
+      // Second response (live poll): at tail, same offset 3_10, upToDate
+      // This is a valid at-tail response — should NOT trigger stale retry
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `3_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_2`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `long-poll`,
+      })
+
+      const items = await res.json<{ id: number }>()
+
+      // Should fetch exactly twice (initial + one poll that returns upToDate)
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+      expect(items).toEqual([{ id: 1 }])
+      expect(res.upToDate).toBe(true)
+
+      // No stale-retry warning should have been logged
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining(`fast retry loop`)
+      )
+
+      warnSpy.mockRestore()
+    })
+  })
+})
+
+// ============================================================================
+// Group 1: Fast-loop integration tests (ported from Electric)
+// ============================================================================
+
+describe(`fast-loop integration with stream`, () => {
+  let mockFetch: Mock<typeof fetch>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+  })
+
+  it(`should detect fast-loop and enter StaleRetryState with cache_buster`, async () => {
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount <= 10) {
+        return new Response(JSON.stringify([{ id: callCount }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_stale`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `1_5`,
+          [STREAM_CURSOR_HEADER]: `cursor_final`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      fastLoopOptions: { threshold: 3, windowMs: 10000, maxCount: 10 },
+    })
+
+    // Prevent unhandled rejection from res.closed
+    res.closed.catch(() => {})
+
+    try {
+      const items = await res.json()
+      expect(items.length).toBeGreaterThan(0)
+    } catch (err) {
+      expect(err).toBeInstanceOf(FetchError)
+      expect((err as FetchError).status).toBe(502)
+    }
+
+    const urlsWithCacheBuster = mockFetch.mock.calls.filter((call) =>
+      new URL(call[0] as string).searchParams.has(`cache_buster`)
+    )
+    expect(urlsWithCacheBuster.length).toBeGreaterThan(0)
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`fast retry loop`)
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  it(`should reset fast-loop counter after onError retry`, async () => {
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount <= 1) {
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
+          },
+        })
+      }
+      if (callCount === 2) {
+        return new Response(null, {
+          status: 500,
+          statusText: `Internal Server Error`,
+        })
+      }
+      return new Response(JSON.stringify([{ id: 2 }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `2_10`,
+          [STREAM_CURSOR_HEADER]: `cursor_2`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const onError = vi.fn().mockResolvedValue({})
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      backoffOptions: {
+        initialDelay: 1,
+        maxDelay: 10,
+        multiplier: 1,
+        maxRetries: 0,
+      },
+      onError,
+    })
+
+    const items = await res.json()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(items).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it(`should not trigger fast-loop when offsets are advancing`, async () => {
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount < 10) {
+        return new Response(JSON.stringify([{ id: callCount }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `${callCount}_0`,
+            [STREAM_CURSOR_HEADER]: `cursor_${callCount}`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([{ id: callCount }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `${callCount}_0`,
+          [STREAM_CURSOR_HEADER]: `cursor_${callCount}`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      fastLoopOptions: { threshold: 3, windowMs: 10000 },
+    })
+
+    const items = await res.json()
+    expect(items.length).toBe(10)
+
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining(`fast retry loop`)
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  it(`should not trigger fast-loop for same-offset responses in LiveState`, async () => {
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) {
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `1_5`,
+          [STREAM_CURSOR_HEADER]: `cursor_${callCount}`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      fastLoopOptions: { threshold: 3, windowMs: 10000 },
+    })
+
+    const items = await res.json()
+    expect(items).toEqual([{ id: 1 }])
+
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining(`fast retry loop`)
+    )
+
+    warnSpy.mockRestore()
+  })
+})
+
+// ============================================================================
+// Group 7: Replay suppression integration test
+// ============================================================================
+
+describe(`PAUSE/WAKE error masking`, () => {
+  // This test documents a known issue: when a real server error (e.g. 500)
+  // coincides with a PAUSE_STREAM or SYSTEM_WAKE abort, the current code
+  // discards ALL errors if the abort reason matches, even if the error is
+  // a genuine server error that happened to arrive at the same time.
+  //
+  // The fix would be: in the catch block that checks for PAUSE_STREAM /
+  // SYSTEM_WAKE abort reasons, if the caught error is NOT an AbortError,
+  // emit a console.warn before returning. This ensures real errors are at
+  // least logged for debugging, even if the stream continues normally.
+  //
+  // This is skipped rather than it.fails() because the race between pause
+  // and error is timing-dependent and cannot be reliably triggered in a
+  // unit test without exposing internal abort handling.
+  it.skip(`should log non-abort errors that coincide with pause`, async () => {
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    const abortController = new AbortController()
+    let fetchCallCount = 0
+
+    const res = await stream({
+      url: `https://example.com/test-stream`,
+      signal: abortController.signal,
+      live: `long-poll`,
+      fetch: async () => {
+        fetchCallCount++
+        if (fetchCallCount === 1) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: {
+              "stream-next-offset": `1_0`,
+              "stream-cursor": `cursor-1`,
+              "content-type": `application/json`,
+            },
+          })
+        }
+        // Second request: simulate a 500 that coincides with a pause
+        throw new Error(`Server error 500`)
+      },
+      backoffOptions: {
+        initialDelay: 1,
+        maxDelay: 1,
+        multiplier: 1,
+        maxRetries: 0,
+      },
+    })
+
+    const reader = res.bodyStream().getReader()
+    await reader.read()
+
+    // In the real scenario, document.visibilitychange fires at the exact
+    // moment the 500 arrives. The catch block sees abort.reason ===
+    // PAUSE_STREAM and silently returns, discarding the 500.
+    //
+    // Expected behavior: console.warn is called with the real error details
+    // so operators can debug intermittent server failures.
+    // expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`Non-abort error`))
+
+    warnSpy.mockRestore()
+    abortController.abort()
+  })
+})
+
+describe(`replay mode suppression integration`, () => {
+  let mockFetch: Mock<typeof fetch>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+  })
+
+  it(`should suppress duplicate batch on cursor match in replay mode`, async () => {
+    const { InMemoryUpToDateStorage, UpToDateTracker } = await import(
+      `../src/up-to-date-tracker`
+    )
+    const storage = new InMemoryUpToDateStorage()
+    const tracker = new UpToDateTracker(storage)
+    const streamKey = `https://example.com/stream`
+    tracker.recordUpToDate(streamKey, `cached_cursor`)
+
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) {
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cached_cursor`,
+          },
+        })
+      }
+      if (callCount === 2) {
+        return new Response(JSON.stringify([{ id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cached_cursor`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([{ id: 3 }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `3_15`,
+          [STREAM_CURSOR_HEADER]: `cursor_new`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: false,
+      upToDateStorage: storage,
+    })
+
+    const items = await res.json()
+    expect(items).toEqual([{ id: 1 }])
   })
 })

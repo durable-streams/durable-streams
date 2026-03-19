@@ -1,67 +1,142 @@
 /**
- * Explicit state machine for StreamResponseImpl.
+ * 7-State stream response state machine.
  *
  * Every transition returns a new state — no mutation.
  *
  * Hierarchy:
- *   StreamResponseState (abstract)
- *   ├── LongPollState         shouldUseSse() → false
- *   ├── SSEState              shouldUseSse() → true
- *   └── PausedState           delegates to wrapped inner state
+ *   StreamState (abstract)
+ *   ├── ActiveState (abstract)
+ *   │   ├── FetchingState (abstract)
+ *   │   │   ├── InitialState
+ *   │   │   ├── SyncingState
+ *   │   │   └── StaleRetryState
+ *   │   ├── LiveState
+ *   │   └── ReplayingState
+ *   ├── PausedState
+ *   └── ErrorState
  */
 
-import type { SSEControlEvent } from "./sse"
-import type { LiveMode, Offset, SSEResilienceOptions } from "./types"
+import {
+  CACHE_BUSTER_QUERY_PARAM,
+  CURSOR_QUERY_PARAM,
+  LIVE_QUERY_PARAM,
+  OFFSET_QUERY_PARAM,
+} from "./constants"
+import type { LiveMode, Offset } from "./types"
 
-/**
- * Shared sync fields across all state types.
- */
-export interface SyncFields {
+// --- State Kind ---
+
+export type StreamStateKind =
+  | `initial`
+  | `syncing`
+  | `stale-retry`
+  | `live`
+  | `replaying`
+  | `paused`
+  | `error`
+
+// --- Shared Fields ---
+
+export interface SharedStateFields {
   readonly offset: Offset
   readonly cursor: string | undefined
   readonly upToDate: boolean
   readonly streamClosed: boolean
 }
 
-/**
- * Extracted metadata from an HTTP response for state transitions.
- * undefined values mean "not present in response, preserve current value".
- */
-export interface ResponseMetadataUpdate {
+// --- Input Types ---
+
+export interface ResponseMetadataInput {
   readonly offset?: string
   readonly cursor?: string
   readonly upToDate: boolean
   readonly streamClosed: boolean
 }
 
-/**
- * Result of SSEState.handleConnectionEnd().
- */
-export type SSEConnectionEndResult =
-  | {
-      readonly action: `reconnect`
-      readonly state: SSEState
-      readonly backoffAttempt: number
-    }
-  | { readonly action: `fallback`; readonly state: LongPollState }
-  | { readonly action: `healthy`; readonly state: SSEState }
+export interface MessageBatchInput {
+  readonly hasMessages: boolean
+  readonly hasUpToDateMessage: boolean
+  readonly isSse: boolean
+  readonly currentCursor?: string
+}
 
-/**
- * Abstract base class for stream response state.
- * All state transitions return new immutable state objects.
- */
-export abstract class StreamResponseState implements SyncFields {
+export interface SseCloseInput {
+  readonly connectionDuration: number
+  readonly wasAborted: boolean
+  readonly minConnectionDuration: number
+  readonly maxShortConnections: number
+}
+
+// --- Transition Types ---
+
+export type ResponseTransition =
+  | { readonly action: `accepted`; readonly state: ActiveState }
+  | { readonly action: `ignored`; readonly state: StreamState }
+
+export type MessageBatchTransition =
+  | {
+      readonly state: ActiveState
+      readonly suppressBatch: boolean
+      readonly becameUpToDate: boolean
+    }
+  | {
+      readonly state: StreamState
+      readonly suppressBatch: false
+      readonly becameUpToDate: false
+    }
+
+export type SseCloseTransition =
+  | {
+      readonly state: LiveState
+      readonly fellBackToLongPolling: boolean
+      readonly wasShortConnection: boolean
+    }
+  | { readonly state: StreamState }
+
+// --- Abstract Base: StreamState ---
+
+export abstract class StreamState implements SharedStateFields {
+  abstract readonly kind: StreamStateKind
   abstract readonly offset: Offset
   abstract readonly cursor: string | undefined
   abstract readonly upToDate: boolean
   abstract readonly streamClosed: boolean
 
-  abstract shouldUseSse(): boolean
-  abstract withResponseMetadata(
-    update: ResponseMetadataUpdate
-  ): StreamResponseState
-  abstract withSSEControl(event: SSEControlEvent): StreamResponseState
-  abstract pause(): StreamResponseState
+  abstract handleResponseMetadata(
+    input: ResponseMetadataInput
+  ): ResponseTransition
+  abstract handleMessageBatch(input: MessageBatchInput): MessageBatchTransition
+  abstract handleSseConnectionClosed(input: SseCloseInput): SseCloseTransition
+  abstract pause(): StreamState
+  abstract shouldUseSse(opts?: {
+    liveSseEnabled: boolean
+    resumingFromPause: boolean
+  }): boolean
+}
+
+// --- Abstract Base: ActiveState ---
+
+export abstract class ActiveState extends StreamState {
+  readonly offset: Offset
+  readonly cursor: string | undefined
+  readonly upToDate: boolean
+  readonly streamClosed: boolean
+
+  constructor(fields: SharedStateFields) {
+    super()
+    this.offset = fields.offset
+    this.cursor = fields.cursor
+    this.upToDate = fields.upToDate
+    this.streamClosed = fields.streamClosed
+  }
+
+  pause(): PausedState {
+    return new PausedState(this)
+  }
+
+  toErrorState(error: Error): ErrorState {
+    return new ErrorState(this, error)
+  }
 
   shouldContinueLive(stopAfterUpToDate: boolean, liveMode: LiveMode): boolean {
     if (stopAfterUpToDate && this.upToDate) return false
@@ -69,238 +144,495 @@ export abstract class StreamResponseState implements SyncFields {
     if (this.streamClosed) return false
     return true
   }
-}
-
-/**
- * State for long-poll mode. shouldUseSse() returns false.
- */
-export class LongPollState extends StreamResponseState {
-  readonly offset: Offset
-  readonly cursor: string | undefined
-  readonly upToDate: boolean
-  readonly streamClosed: boolean
-
-  constructor(fields: SyncFields) {
-    super()
-    this.offset = fields.offset
-    this.cursor = fields.cursor
-    this.upToDate = fields.upToDate
-    this.streamClosed = fields.streamClosed
-  }
 
   shouldUseSse(): boolean {
     return false
   }
 
-  withResponseMetadata(update: ResponseMetadataUpdate): LongPollState {
-    return new LongPollState({
-      offset: update.offset ?? this.offset,
-      cursor: update.cursor ?? this.cursor,
-      upToDate: update.upToDate,
-      streamClosed: this.streamClosed || update.streamClosed,
-    })
-  }
-
-  withSSEControl(event: SSEControlEvent): LongPollState {
-    const streamClosed = this.streamClosed || (event.streamClosed ?? false)
-    return new LongPollState({
-      offset: event.streamNextOffset,
-      cursor: event.streamCursor || this.cursor,
-      upToDate:
-        (event.streamClosed ?? false)
-          ? true
-          : (event.upToDate ?? this.upToDate),
-      streamClosed,
-    })
-  }
-
-  pause(): PausedState {
-    return new PausedState(this)
-  }
-}
-
-/**
- * State for SSE mode. shouldUseSse() returns true.
- * Tracks SSE connection resilience (short connection detection).
- */
-export class SSEState extends StreamResponseState {
-  readonly offset: Offset
-  readonly cursor: string | undefined
-  readonly upToDate: boolean
-  readonly streamClosed: boolean
-  readonly consecutiveShortConnections: number
-  readonly connectionStartTime: number | undefined
-
-  constructor(
-    fields: SyncFields & {
-      consecutiveShortConnections?: number
-      connectionStartTime?: number
-    }
-  ) {
-    super()
-    this.offset = fields.offset
-    this.cursor = fields.cursor
-    this.upToDate = fields.upToDate
-    this.streamClosed = fields.streamClosed
-    this.consecutiveShortConnections = fields.consecutiveShortConnections ?? 0
-    this.connectionStartTime = fields.connectionStartTime
-  }
-
-  shouldUseSse(): boolean {
+  canEnterReplayMode(): boolean {
     return true
   }
 
-  withResponseMetadata(update: ResponseMetadataUpdate): SSEState {
-    return new SSEState({
-      offset: update.offset ?? this.offset,
-      cursor: update.cursor ?? this.cursor,
-      upToDate: update.upToDate,
-      streamClosed: this.streamClosed || update.streamClosed,
-      consecutiveShortConnections: this.consecutiveShortConnections,
-      connectionStartTime: this.connectionStartTime,
-    })
+  applyUrlParams(url: URL): void {
+    url.searchParams.set(OFFSET_QUERY_PARAM, this.offset)
+    if (this.cursor !== undefined) {
+      url.searchParams.set(CURSOR_QUERY_PARAM, this.cursor)
+    }
   }
 
-  withSSEControl(event: SSEControlEvent): SSEState {
-    const streamClosed = this.streamClosed || (event.streamClosed ?? false)
-    return new SSEState({
-      offset: event.streamNextOffset,
-      cursor: event.streamCursor || this.cursor,
-      upToDate:
-        (event.streamClosed ?? false)
-          ? true
-          : (event.upToDate ?? this.upToDate),
-      streamClosed,
-      consecutiveShortConnections: this.consecutiveShortConnections,
-      connectionStartTime: this.connectionStartTime,
-    })
+  handleResponseMetadata(input: ResponseMetadataInput): ResponseTransition {
+    const shared: SharedStateFields = {
+      offset: input.offset ?? this.offset,
+      cursor: input.cursor ?? this.cursor,
+      upToDate: input.upToDate,
+      streamClosed: this.streamClosed || input.streamClosed,
+    }
+    const syncing = new SyncingState(shared)
+    return { action: `accepted`, state: syncing }
   }
 
-  startConnection(now: number): SSEState {
-    return new SSEState({
+  handleMessageBatch(_input: MessageBatchInput): MessageBatchTransition {
+    return {
+      state: this,
+      suppressBatch: false,
+      becameUpToDate: false,
+    }
+  }
+
+  handleSseConnectionClosed(_input: SseCloseInput): SseCloseTransition {
+    return { state: this }
+  }
+}
+
+// --- Abstract: FetchingState ---
+
+export abstract class FetchingState extends ActiveState {
+  shouldUseSse(): boolean {
+    return false
+  }
+
+  handleResponseMetadata(input: ResponseMetadataInput): ResponseTransition {
+    const shared: SharedStateFields = {
+      offset: input.offset ?? this.offset,
+      cursor: input.cursor ?? this.cursor,
+      upToDate: input.upToDate,
+      streamClosed: this.streamClosed || input.streamClosed,
+    }
+    const syncing = new SyncingState(shared)
+    return { action: `accepted`, state: syncing }
+  }
+}
+
+// --- InitialState ---
+
+export class InitialState extends FetchingState {
+  readonly kind = `initial` as const
+}
+
+// --- SyncingState ---
+
+export class SyncingState extends FetchingState {
+  readonly kind = `syncing` as const
+
+  handleMessageBatch(input: MessageBatchInput): MessageBatchTransition {
+    if (input.hasUpToDateMessage) {
+      const shared: SharedStateFields = {
+        offset: this.offset,
+        cursor: this.cursor,
+        upToDate: true,
+        streamClosed: this.streamClosed,
+      }
+      const live = new LiveState(shared)
+      return {
+        state: live,
+        suppressBatch: false,
+        becameUpToDate: true,
+      }
+    }
+    return {
+      state: this,
+      suppressBatch: false,
+      becameUpToDate: false,
+    }
+  }
+}
+
+// --- StaleRetryState ---
+
+export class StaleRetryState extends FetchingState {
+  readonly kind = `stale-retry` as const
+  readonly #cacheBuster: string
+
+  constructor(fields: SharedStateFields, cacheBuster: string) {
+    super(fields)
+    this.#cacheBuster = cacheBuster
+  }
+
+  get cacheBuster(): string {
+    return this.#cacheBuster
+  }
+
+  canEnterReplayMode(): boolean {
+    return false
+  }
+
+  applyUrlParams(url: URL): void {
+    super.applyUrlParams(url)
+    url.searchParams.set(CACHE_BUSTER_QUERY_PARAM, this.#cacheBuster)
+  }
+}
+
+// --- LiveState ---
+
+export class LiveState extends ActiveState {
+  readonly kind = `live` as const
+  readonly #consecutiveShortConnections: number
+  readonly #sseFallbackToLongPolling: boolean
+
+  constructor(
+    fields: SharedStateFields,
+    options?: {
+      consecutiveShortConnections?: number
+      sseFallbackToLongPolling?: boolean
+    }
+  ) {
+    super(fields)
+    this.#consecutiveShortConnections =
+      options?.consecutiveShortConnections ?? 0
+    this.#sseFallbackToLongPolling = options?.sseFallbackToLongPolling ?? false
+  }
+
+  get consecutiveShortConnections(): number {
+    return this.#consecutiveShortConnections
+  }
+
+  get sseFallbackToLongPolling(): boolean {
+    return this.#sseFallbackToLongPolling
+  }
+
+  shouldUseSse(opts?: {
+    liveSseEnabled: boolean
+    resumingFromPause: boolean
+  }): boolean {
+    if (!opts) return false
+    return (
+      opts.liveSseEnabled &&
+      !opts.resumingFromPause &&
+      !this.#sseFallbackToLongPolling
+    )
+  }
+
+  canEnterReplayMode(): boolean {
+    return true
+  }
+
+  applyUrlParams(url: URL): void {
+    super.applyUrlParams(url)
+    if (this.#sseFallbackToLongPolling) {
+      url.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
+    } else {
+      url.searchParams.set(LIVE_QUERY_PARAM, `true`)
+    }
+  }
+
+  handleResponseMetadata(input: ResponseMetadataInput): ResponseTransition {
+    const shared: SharedStateFields = {
+      offset: input.offset ?? this.offset,
+      cursor: input.cursor ?? this.cursor,
+      upToDate: input.upToDate,
+      streamClosed: this.streamClosed || input.streamClosed,
+    }
+    const live = new LiveState(shared, {
+      consecutiveShortConnections: this.#consecutiveShortConnections,
+      sseFallbackToLongPolling: this.#sseFallbackToLongPolling,
+    })
+    return { action: `accepted`, state: live }
+  }
+
+  handleMessageBatch(_input: MessageBatchInput): MessageBatchTransition {
+    const shared: SharedStateFields = {
       offset: this.offset,
       cursor: this.cursor,
       upToDate: this.upToDate,
       streamClosed: this.streamClosed,
-      consecutiveShortConnections: this.consecutiveShortConnections,
-      connectionStartTime: now,
+    }
+    const live = new LiveState(shared, {
+      consecutiveShortConnections: this.#consecutiveShortConnections,
+      sseFallbackToLongPolling: this.#sseFallbackToLongPolling,
     })
+    return {
+      state: live,
+      suppressBatch: false,
+      becameUpToDate: false,
+    }
   }
 
-  handleConnectionEnd(
-    now: number,
-    wasAborted: boolean,
-    config: Required<SSEResilienceOptions>
-  ): SSEConnectionEndResult {
-    if (this.connectionStartTime === undefined) {
-      return { action: `healthy`, state: this }
-    }
+  handleSseConnectionClosed(input: SseCloseInput): SseCloseTransition {
+    const {
+      connectionDuration,
+      wasAborted,
+      minConnectionDuration,
+      maxShortConnections,
+    } = input
 
-    const duration = now - this.connectionStartTime
+    if (connectionDuration < minConnectionDuration && !wasAborted) {
+      const newCount = this.#consecutiveShortConnections + 1
 
-    if (duration < config.minConnectionDuration && !wasAborted) {
-      // Connection was too short — likely proxy buffering or misconfiguration
-      const newCount = this.consecutiveShortConnections + 1
-
-      if (newCount >= config.maxShortConnections) {
-        // Threshold reached → permanent fallback to long-poll
-        return {
-          action: `fallback`,
-          state: new LongPollState({
+      if (newCount >= maxShortConnections) {
+        const live = new LiveState(
+          {
             offset: this.offset,
             cursor: this.cursor,
             upToDate: this.upToDate,
             streamClosed: this.streamClosed,
-          }),
+          },
+          {
+            consecutiveShortConnections: newCount,
+            sseFallbackToLongPolling: true,
+          }
+        )
+        return {
+          state: live,
+          fellBackToLongPolling: true,
+          wasShortConnection: true,
         }
       }
 
-      // Reconnect with backoff
-      return {
-        action: `reconnect`,
-        state: new SSEState({
+      const live = new LiveState(
+        {
           offset: this.offset,
           cursor: this.cursor,
           upToDate: this.upToDate,
           streamClosed: this.streamClosed,
+        },
+        {
           consecutiveShortConnections: newCount,
-          connectionStartTime: this.connectionStartTime,
-        }),
-        backoffAttempt: newCount,
+          sseFallbackToLongPolling: false,
+        }
+      )
+      return {
+        state: live,
+        fellBackToLongPolling: false,
+        wasShortConnection: true,
       }
     }
 
-    if (duration >= config.minConnectionDuration) {
-      // Healthy connection — reset counter
-      return {
-        action: `healthy`,
-        state: new SSEState({
+    if (connectionDuration >= minConnectionDuration) {
+      const live = new LiveState(
+        {
           offset: this.offset,
           cursor: this.cursor,
           upToDate: this.upToDate,
           streamClosed: this.streamClosed,
+        },
+        {
           consecutiveShortConnections: 0,
-          connectionStartTime: this.connectionStartTime,
-        }),
+          sseFallbackToLongPolling: this.#sseFallbackToLongPolling,
+        }
+      )
+      return {
+        state: live,
+        fellBackToLongPolling: false,
+        wasShortConnection: false,
       }
     }
 
-    // Aborted connection — don't change counter
-    return { action: `healthy`, state: this }
-  }
-
-  pause(): PausedState {
-    return new PausedState(this)
+    return {
+      state: this,
+      fellBackToLongPolling: false,
+      wasShortConnection: false,
+    }
   }
 }
 
-/**
- * Paused state wrapper. Delegates all sync field access to the inner state.
- * resume() returns the wrapped state unchanged (identity preserved).
- */
-export class PausedState extends StreamResponseState {
-  readonly #inner: LongPollState | SSEState
+// --- ReplayingState ---
 
-  constructor(inner: LongPollState | SSEState) {
+export class ReplayingState extends ActiveState {
+  readonly kind = `replaying` as const
+  readonly #replayCursor: string
+
+  constructor(fields: SharedStateFields, replayCursor: string) {
+    super(fields)
+    this.#replayCursor = replayCursor
+  }
+
+  get replayCursor(): string {
+    return this.#replayCursor
+  }
+
+  canEnterReplayMode(): boolean {
+    return false
+  }
+
+  handleResponseMetadata(input: ResponseMetadataInput): ResponseTransition {
+    return {
+      action: `accepted`,
+      state: new ReplayingState(
+        {
+          offset: input.offset ?? this.offset,
+          cursor: input.cursor ?? this.cursor,
+          upToDate: input.upToDate,
+          streamClosed: this.streamClosed || input.streamClosed,
+        },
+        this.#replayCursor
+      ),
+    }
+  }
+
+  handleMessageBatch(input: MessageBatchInput): MessageBatchTransition {
+    if (input.hasUpToDateMessage) {
+      const cursorMatch =
+        input.currentCursor !== undefined &&
+        input.currentCursor === this.#replayCursor
+      const suppress = cursorMatch && !input.isSse
+
+      const shared: SharedStateFields = {
+        offset: this.offset,
+        cursor: this.cursor,
+        upToDate: true,
+        streamClosed: this.streamClosed,
+      }
+      const live = new LiveState(shared)
+      return {
+        state: live,
+        suppressBatch: suppress,
+        becameUpToDate: true,
+      }
+    }
+    return {
+      state: this,
+      suppressBatch: false,
+      becameUpToDate: false,
+    }
+  }
+}
+
+// --- PausedState ---
+
+export class PausedState extends StreamState {
+  readonly kind = `paused` as const
+  readonly #previousState: ActiveState | ErrorState
+
+  constructor(previousState: ActiveState | ErrorState) {
     super()
-    this.#inner = inner
+    if (previousState instanceof PausedState) {
+      this.#previousState = previousState.#previousState
+    } else {
+      this.#previousState = previousState
+    }
+  }
+
+  get previousState(): ActiveState | ErrorState {
+    return this.#previousState
   }
 
   get offset(): Offset {
-    return this.#inner.offset
+    return this.#previousState.offset
   }
 
   get cursor(): string | undefined {
-    return this.#inner.cursor
+    return this.#previousState.cursor
   }
 
   get upToDate(): boolean {
-    return this.#inner.upToDate
+    return this.#previousState.upToDate
   }
 
   get streamClosed(): boolean {
-    return this.#inner.streamClosed
-  }
-
-  shouldUseSse(): boolean {
-    return this.#inner.shouldUseSse()
-  }
-
-  withResponseMetadata(update: ResponseMetadataUpdate): PausedState {
-    const newInner = this.#inner.withResponseMetadata(update)
-    return new PausedState(newInner)
-  }
-
-  withSSEControl(event: SSEControlEvent): PausedState {
-    const newInner = this.#inner.withSSEControl(event)
-    return new PausedState(newInner)
+    return this.#previousState.streamClosed
   }
 
   pause(): PausedState {
     return this
   }
 
-  resume(): { state: LongPollState | SSEState; justResumed: true } {
-    return { state: this.#inner, justResumed: true }
+  resume(): ActiveState | ErrorState {
+    return this.#previousState
   }
+
+  shouldUseSse(opts?: {
+    liveSseEnabled: boolean
+    resumingFromPause: boolean
+  }): boolean {
+    return this.#previousState.shouldUseSse(opts)
+  }
+
+  handleResponseMetadata(input: ResponseMetadataInput): ResponseTransition {
+    const inner = this.#previousState.handleResponseMetadata(input)
+    if (inner.action === `accepted`) {
+      return {
+        action: `accepted`,
+        state: new PausedState(inner.state) as unknown as ActiveState,
+      }
+    }
+    return { action: `ignored`, state: this }
+  }
+
+  handleMessageBatch(_input: MessageBatchInput): MessageBatchTransition {
+    return { state: this, suppressBatch: false, becameUpToDate: false }
+  }
+
+  handleSseConnectionClosed(_input: SseCloseInput): SseCloseTransition {
+    return { state: this }
+  }
+}
+
+// --- ErrorState ---
+
+export class ErrorState extends StreamState {
+  readonly kind = `error` as const
+  readonly #previousState: ActiveState | PausedState
+  readonly error: Error
+
+  constructor(previousState: ActiveState | PausedState, error: Error) {
+    super()
+    if (previousState instanceof ErrorState) {
+      this.#previousState = previousState.#previousState
+    } else {
+      this.#previousState = previousState
+    }
+    this.error = error
+  }
+
+  get previousState(): ActiveState | PausedState {
+    return this.#previousState
+  }
+
+  get offset(): Offset {
+    return this.#previousState.offset
+  }
+
+  get cursor(): string | undefined {
+    return this.#previousState.cursor
+  }
+
+  get upToDate(): boolean {
+    return this.#previousState.upToDate
+  }
+
+  get streamClosed(): boolean {
+    return this.#previousState.streamClosed
+  }
+
+  retry(): ActiveState | PausedState {
+    return this.#previousState
+  }
+
+  pause(): PausedState {
+    return new PausedState(this)
+  }
+
+  shouldUseSse(opts?: {
+    liveSseEnabled: boolean
+    resumingFromPause: boolean
+  }): boolean {
+    return this.#previousState.shouldUseSse(opts)
+  }
+
+  handleResponseMetadata(_input: ResponseMetadataInput): ResponseTransition {
+    return { action: `ignored`, state: this }
+  }
+
+  handleMessageBatch(_input: MessageBatchInput): MessageBatchTransition {
+    return { state: this, suppressBatch: false, becameUpToDate: false }
+  }
+
+  handleSseConnectionClosed(_input: SseCloseInput): SseCloseTransition {
+    return { state: this }
+  }
+}
+
+// --- Factory Functions ---
+
+export function createInitialState(opts: { offset: Offset }): InitialState {
+  return new InitialState({
+    offset: opts.offset,
+    cursor: undefined,
+    upToDate: false,
+    streamClosed: false,
+  })
+}
+
+export function createCacheBuster(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 }

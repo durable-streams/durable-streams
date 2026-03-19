@@ -3,6 +3,7 @@ package durablestreams
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -169,6 +170,12 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 	// Handle response status
 	switch resp.StatusCode {
 	case http.StatusOK:
+		// Validate required protocol headers
+		if err := it.validateResponseHeaders(resp); err != nil {
+			io.Copy(io.Discard, resp.Body)
+			return nil, err
+		}
+
 		// Read body
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -208,6 +215,11 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		}, nil
 
 	case http.StatusNoContent:
+		// Validate required protocol headers
+		if err := it.validateResponseHeaders(resp); err != nil {
+			return nil, err
+		}
+
 		// 204 - Long-poll timeout or caught up with no new data
 		nextOffset := Offset(resp.Header.Get(headerStreamOffset))
 		cursor := resp.Header.Get(headerStreamCursor)
@@ -477,6 +489,32 @@ func (it *ChunkIterator) Close() error {
 		it.sseResponse = nil
 	}
 	it.sseParser = nil
+
+	return nil
+}
+
+// validateResponseHeaders checks that required protocol headers are present
+// on a 2xx response. Returns a StreamError if any required header is missing.
+func (it *ChunkIterator) validateResponseHeaders(resp *http.Response) error {
+	var missing []string
+
+	// Stream-Next-Offset is required on all 2xx responses
+	if resp.Header.Get(headerStreamOffset) == "" {
+		missing = append(missing, headerStreamOffset)
+	}
+
+	// Stream-Cursor is required on live responses unless stream is closed
+	if it.live != LiveModeNone {
+		streamClosed := resp.Header.Get(headerStreamClosed) == "true"
+		if !streamClosed && resp.Header.Get(headerStreamCursor) == "" {
+			missing = append(missing, headerStreamCursor)
+		}
+	}
+
+	if len(missing) > 0 {
+		msg := fmt.Sprintf("response is missing required protocol header(s): %s. This usually means a proxy or CDN is stripping headers", strings.Join(missing, ", "))
+		return newStreamError("read", it.stream.url, resp.StatusCode, fmt.Errorf("%w: %s", ErrMissingHeader, msg))
+	}
 
 	return nil
 }

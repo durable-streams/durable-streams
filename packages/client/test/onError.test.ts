@@ -5,7 +5,7 @@
 
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { stream } from "../src/stream-api"
-import { FetchError } from "../src/error"
+import { FetchError, MissingHeadersError } from "../src/error"
 
 describe(`onError handler`, () => {
   let mockFetch: ReturnType<typeof vi.fn>
@@ -416,5 +416,302 @@ describe(`onError handler`, () => {
       Authorization: `Bearer new`,
       "X-Keep": `this`,
     })
+  })
+
+  it(`should apply headers returned by mid-stream onError on retry`, async () => {
+    // First request succeeds (establishes the stream)
+    // Second request fails with 401 (mid-stream error)
+    // onError returns new headers
+    // Third request succeeds with the new headers
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) {
+        // First response — stream established, not yet up-to-date
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            "Stream-Next-Offset": `1`,
+            "Stream-Cursor": `cursor1`,
+          },
+        })
+      } else if (callCount === 2) {
+        // Second request fails with 401
+        return new Response(null, {
+          status: 401,
+          statusText: `Unauthorized`,
+        })
+      } else {
+        // Third request succeeds with upToDate
+        return new Response(JSON.stringify([{ id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            "Stream-Next-Offset": `2`,
+            "Stream-Cursor": `cursor2`,
+            "Stream-Up-To-Date": `true`,
+          },
+        })
+      }
+    })
+
+    const onError = vi.fn().mockResolvedValue({
+      headers: { Authorization: `Bearer valid-token` },
+    })
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      headers: { Authorization: `Bearer expired-token` },
+      live: `long-poll`,
+      backoffOptions: { maxRetries: 0 },
+      onError,
+    })
+
+    const items = await res.json()
+
+    // onError was called for the mid-stream 401
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledWith(expect.any(FetchError))
+
+    // Three requests: initial success, 401 failure, retry success
+    expect(mockFetch).toHaveBeenCalledTimes(3)
+
+    // Third request should include the new Authorization header
+    const thirdCall = mockFetch.mock.calls[2]
+    expect(thirdCall[1].headers).toMatchObject({
+      Authorization: `Bearer valid-token`,
+    })
+
+    // Stream continued successfully after retry
+    expect(items).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it(`should apply params returned by mid-stream onError on retry`, async () => {
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) {
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            "Stream-Next-Offset": `1`,
+            "Stream-Cursor": `cursor1`,
+          },
+        })
+      } else if (callCount === 2) {
+        return new Response(null, {
+          status: 400,
+          statusText: `Bad Request`,
+        })
+      } else {
+        return new Response(JSON.stringify([{ id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            "Stream-Next-Offset": `2`,
+            "Stream-Cursor": `cursor2`,
+            "Stream-Up-To-Date": `true`,
+          },
+        })
+      }
+    })
+
+    const onError = vi.fn().mockResolvedValue({
+      params: { tenant: `correct-tenant` },
+    })
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      params: { tenant: `wrong-tenant` },
+      live: `long-poll`,
+      backoffOptions: { maxRetries: 0 },
+      onError,
+    })
+
+    const items = await res.json()
+
+    expect(onError).toHaveBeenCalledOnce()
+    expect(mockFetch).toHaveBeenCalledTimes(3)
+
+    // Third request should include the corrected param
+    const thirdUrl = new URL(mockFetch.mock.calls[2][0])
+    expect(thirdUrl.searchParams.get(`tenant`)).toBe(`correct-tenant`)
+
+    expect(items).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it(`should not retry MissingHeadersError even if onError returns {}`, async () => {
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) {
+        // First response succeeds — stream established, not yet up-to-date
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            "Stream-Next-Offset": `1`,
+            "Stream-Cursor": `cursor1`,
+          },
+        })
+      } else {
+        // Second response is missing required headers (simulates proxy stripping)
+        return new Response(JSON.stringify([{ id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+          },
+        })
+      }
+    })
+
+    const onError = vi.fn().mockResolvedValue({})
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      backoffOptions: { maxRetries: 0 },
+      onError,
+    })
+
+    // Prevent unhandled rejection from res.closed
+    res.closed.catch(() => {})
+
+    // Reading the stream should fail with MissingHeadersError
+    await expect(res.json()).rejects.toThrow(MissingHeadersError)
+
+    // onError WAS called (for notification), but return value was ignored
+    expect(onError).toHaveBeenCalledOnce()
+    expect(onError).toHaveBeenCalledWith(expect.any(MissingHeadersError))
+
+    // Only 2 requests — no retry after MissingHeadersError
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+})
+
+// ============================================================================
+// Group 3: onError handler error visibility (should FAIL — exposing bugs)
+// ============================================================================
+
+describe(`onError handler error visibility`, () => {
+  let mockFetch: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+  })
+
+  // EXPECTED TO FAIL — exposes bug #7
+  // When MissingHeadersError occurs mid-stream and the user's onError handler
+  // itself throws, the handler error should be logged, not silently swallowed.
+  // The current code has `catch { /* ignore */ }` which silently drops the error.
+  it(`should log onError handler errors for MissingHeadersError`, async () => {
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) {
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            "Stream-Next-Offset": `1`,
+            "Stream-Cursor": `cursor1`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([{ id: 2 }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+        },
+      })
+    })
+
+    const handlerError = new Error(`handler crashed!`)
+    const onError = vi.fn().mockRejectedValue(handlerError)
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      backoffOptions: {
+        initialDelay: 1,
+        maxDelay: 10,
+        multiplier: 1,
+        maxRetries: 0,
+      },
+      onError,
+    })
+
+    res.closed.catch(() => {})
+    await expect(res.json()).rejects.toThrow(MissingHeadersError)
+
+    // BUG: The handler error is silently swallowed by `catch { /* ignore */ }`
+    // Expected: console.warn should be called with the handler error
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`handler crashed!`)
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  // EXPECTED TO FAIL — exposes bug #8
+  // When onError throws during recoverable error recovery, it should be logged
+  // before falling through to fatal. Currently the code has `catch { /* ignore */ }`
+  // which silently drops the handler error.
+  it(`should log onError handler errors for recoverable errors`, async () => {
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) {
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            "Stream-Next-Offset": `1`,
+            "Stream-Cursor": `cursor1`,
+          },
+        })
+      }
+      return new Response(null, {
+        status: 500,
+        statusText: `Internal Server Error`,
+      })
+    })
+
+    const handlerError = new Error(`handler exploded!`)
+    const onError = vi.fn().mockRejectedValue(handlerError)
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      backoffOptions: {
+        initialDelay: 1,
+        maxDelay: 10,
+        multiplier: 1,
+        maxRetries: 0,
+      },
+      onError,
+    })
+
+    res.closed.catch(() => {})
+    await expect(res.json()).rejects.toThrow()
+
+    // BUG: The handler error is silently swallowed by `catch { /* ignore */ }`
+    // Expected: console.warn should be called with the handler error
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`handler exploded!`)
+    )
+
+    warnSpy.mockRestore()
   })
 })

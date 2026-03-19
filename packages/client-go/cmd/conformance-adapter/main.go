@@ -1100,6 +1100,9 @@ func mapErrorCode(err *durablestreams.StreamError) string {
 	if errors.Is(err.Err, durablestreams.ErrRateLimited) {
 		return "UNEXPECTED_STATUS"
 	}
+	if errors.Is(err.Err, durablestreams.ErrMissingHeader) {
+		return "MISSING_HEADER"
+	}
 
 	// Check for SSE/JSON parse errors in the underlying error
 	errMsg := err.Err.Error()

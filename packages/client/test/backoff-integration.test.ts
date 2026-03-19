@@ -177,8 +177,8 @@ describe(`backoff integration`, () => {
         fetch: mockFetch,
         backoffOptions: {
           maxRetries: 0,
-          initialDelay: 0,
-          maxDelay: 0,
+          initialDelay: 1,
+          maxDelay: 1,
           multiplier: 1,
         },
       })

@@ -1,0 +1,102 @@
+id: consumer-header-validation
+name: Response Header Validation
+description: Tests that clients detect and reject responses with missing required protocol headers
+category: consumer
+tags:
+  - core
+  - headers
+  - resilience
+  - error-handling
+
+tests:
+  - id: missing-offset-header-fatal
+    name: Missing Stream-Next-Offset causes fatal error
+    description: |
+      When a 2xx response is missing the required Stream-Next-Offset header,
+      the client must surface a non-retryable error. This detects proxy/CDN
+      misconfiguration that strips protocol headers.
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "test-data"
+    operations:
+      - action: inject-error
+        path: ${streamPath}
+        stripHeaders:
+          - Stream-Next-Offset
+        count: 1
+      - action: read
+        path: ${streamPath}
+        expect:
+          error: true
+    cleanup:
+      - action: clear-errors
+
+  - id: missing-cursor-on-live-fatal
+    name: Missing Stream-Cursor on live response causes error
+    description: |
+      When a live-mode response is missing Stream-Cursor (and the stream
+      is not closed), the client must surface an error. Cursor is required
+      for CDN collapsing on live requests.
+
+      We first read the stream to catch up, then append new data and inject
+      a fault on the long-poll request so that the cursor header is stripped
+      from the live response.
+    requires:
+      - long-poll
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "initial-data"
+    operations:
+      # First, read to catch up so the client knows the current offset
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "initial-data"
+          storeOffsetAs: caughtUpOffset
+      # Append more data so the next long-poll request gets a 200 with data
+      - action: server-append
+        path: ${streamPath}
+        data: "live-data"
+      # Strip the cursor header from the next GET response.
+      # The client's long-poll request will get data back but without Stream-Cursor.
+      - action: inject-error
+        path: ${streamPath}
+        stripHeaders:
+          - Stream-Cursor
+        count: 1
+      # Read with long-poll from the caught-up offset - should fail
+      # because the response is missing the required Stream-Cursor header
+      - action: read
+        path: ${streamPath}
+        offset: ${caughtUpOffset}
+        live: long-poll
+        expect:
+          error: true
+    cleanup:
+      - action: clear-errors
+
+  - id: missing-cursor-on-closed-ok
+    name: Missing Stream-Cursor on closed stream is acceptable
+    description: |
+      Servers MAY omit Stream-Cursor when Stream-Closed is true.
+      The client must not reject this response.
+    setup:
+      - action: create
+        as: streamPath
+      - action: append
+        path: ${streamPath}
+        data: "closed-data"
+      - action: close
+        path: ${streamPath}
+    operations:
+      - action: read
+        path: ${streamPath}
+        expect:
+          data: "closed-data"
+          streamClosed: true

@@ -5,7 +5,9 @@
  */
 
 import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
+import type { FastLoopDetectorOptions } from "./fast-loop-detection"
 import type { BackoffOptions } from "./fetch"
+import type { UpToDateStorage } from "./up-to-date-tracker"
 
 /**
  * Offset string - opaque to the client.
@@ -167,6 +169,24 @@ export interface StreamOptions {
    * @default true
    */
   warnOnHttp?: boolean
+
+  /**
+   * Options for the fast loop detector.
+   * Controls how quickly the client detects and handles same-offset retry loops.
+   */
+  fastLoopOptions?: FastLoopDetectorOptions
+
+  /**
+   * Options for chunk prefetching.
+   * Speculative prefetch of the next chunk URL while the current one is processed.
+   */
+  prefetchOptions?: { maxChunksToPrefetch?: number }
+
+  /**
+   * Storage backend for up-to-date cursor tracking (CDN replay dedup).
+   * When provided, enables replay mode to suppress duplicate data from CDN caches.
+   */
+  upToDateStorage?: UpToDateStorage
 }
 
 /**
@@ -885,6 +905,11 @@ export interface IdempotentProducerOptions {
    * @default 1048576 (1MB)
    */
   maxBatchBytes?: number
+
+  /**
+   * Maximum number of items before sending a batch.
+   */
+  maxBatchItems?: number
 
   /**
    * Maximum time to wait for more messages before sending batch (ms).

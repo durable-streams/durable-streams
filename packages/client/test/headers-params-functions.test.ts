@@ -338,6 +338,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `1`,
+              "Stream-Cursor": `cursor_1`,
             },
           })
         } else {
@@ -346,6 +347,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `2`,
+              "Stream-Cursor": `cursor_2`,
               "Stream-Up-To-Date": `true`,
             },
           })
@@ -407,6 +409,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `1`,
+              "Stream-Cursor": `cursor_1`,
             },
           })
         } else {
@@ -415,6 +418,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `2`,
+              "Stream-Cursor": `cursor_2`,
               "Stream-Up-To-Date": `true`,
             },
           })
@@ -484,6 +488,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `1`,
+              "Stream-Cursor": `cursor_1`,
             },
           })
         } else if (fetchCallCount === 2) {
@@ -492,6 +497,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `2`,
+              "Stream-Cursor": `cursor_2`,
             },
           })
         } else {
@@ -500,6 +506,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `3`,
+              "Stream-Cursor": `cursor_3`,
               "Stream-Up-To-Date": `true`,
             },
           })
