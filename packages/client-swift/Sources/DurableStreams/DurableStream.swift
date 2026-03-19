@@ -861,11 +861,6 @@ public actor DurableStream {
                         continuation.yield(event)
                     }
 
-                    // Update offset from response headers if available
-                    if let newOffset = metadata.offset {
-                        currentOffset = newOffset
-                    }
-
                 case 204:
                     // No new data, continue polling
                     retryAttempt = 0  // Timeout is normal, reset retry count
