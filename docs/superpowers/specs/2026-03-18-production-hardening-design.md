@@ -115,14 +115,20 @@ type ResponseTransition =
   | { action: "accepted"; state: ActiveState }
   | { action: "ignored"; state: StreamState } // ErrorState/PausedState no-ops
 
-type MessageBatchTransition = {
-  state: ActiveState
-  suppressBatch: boolean
-  becameUpToDate: boolean
-}
+type MessageBatchTransition =
+  | { state: ActiveState; suppressBatch: boolean; becameUpToDate: boolean }
+  | { state: StreamState; suppressBatch: false; becameUpToDate: false } // ErrorState/PausedState no-ops
+
+type SseCloseTransition =
+  | {
+      state: LiveState
+      fellBackToLongPolling: boolean
+      wasShortConnection: boolean
+    }
+  | { state: StreamState } // ErrorState/PausedState no-ops (returns this)
 ```
 
-Note: `stale-retry` is NOT a response-level transition. StaleRetryState is entered from the request loop when the fast-loop detector fires (see Feature 3). The `ignored` action covers ErrorState and PausedState delegation where no transition occurs.
+Note: `stale-retry` is NOT a response-level transition. StaleRetryState is entered from the request loop when the fast-loop detector fires (see Feature 3). The `ignored` / no-op branches in all three transition types ensure the compiler-enforced truth table can represent every cell, including ErrorState and PausedState rows that return `this`.
 
 ### State transitions
 
@@ -352,25 +358,29 @@ Throws `MissingHeadersError` (new error class) listing absent headers.
 
 Composition order (outermost wraps innermost). When `fetch(url)` is called, the outermost middleware runs first and delegates inward:
 
+Two separate fetch clients are required (matching Electric's approach):
+
 ```typescript
-fetchClient = createFetchWithConsumedBody(
-  // 1. outermost: eagerly read body
-  createFetchWithResponseHeadersCheck(
-    // 2. validate protocol headers
-    createFetchWithChunkBuffer(
-      // 3. speculative prefetch (feature 8)
-      createFetchWithBackoff(baseFetch, backoff) // 4. retry with exponential backoff
-    )
-  )
+const backoffClient = createFetchWithBackoff(baseFetch, backoff)
+
+// For non-SSE chunk fetches (long-poll, catch-up):
+chunkFetchClient = createFetchWithConsumedBody(
+  createFetchWithResponseHeadersCheck(createFetchWithChunkBuffer(backoffClient))
 )
+
+// For SSE connections (must NOT consume body — it's a long-lived stream):
+sseFetchClient = createFetchWithBackoff(baseFetch, backoff)
 ```
 
-This matches Electric's order. Key consequences:
+**Why two clients**: `createFetchWithConsumedBody` eagerly reads the response body into an ArrayBuffer. This is correct for long-poll/catch-up responses (prevents connection pool leaks) but would destroy SSE connections by consuming the event stream before it can be parsed.
+
+Key consequences of the chain order:
 
 - **Backoff is innermost** — prefetched requests go through backoff (get retried on network errors)
 - **Header validation is outside backoff** — `MissingHeadersError` surfaces immediately without retries
 - **Chunk buffer is outside backoff** — prefetched requests get the full retry stack
-- **Consumed body is outermost** — ensures body is always read regardless of what inner layers do
+- **Consumed body is outermost** — ensures non-SSE body is always read
+- **SSE client skips** consumed body, header validation, and chunk buffer (none apply to event streams)
 
 ## Feature 6: CDN cache busting (StaleRetryState)
 
