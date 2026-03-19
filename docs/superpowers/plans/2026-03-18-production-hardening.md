@@ -541,24 +541,188 @@ export const TRANSITION_TABLE: Record<
 
 - [ ] **Step 3: Write state-machine-dsl.ts**
 
-Scenario builder with `assertStateInvariants()` that auto-checks:
+Port from Electric's `test/support/state-machine-dsl.ts` (~450 lines). The DSL has 5 layers:
 
-- I0: kind/instanceof consistency
-- I1: isUpToDate iff LiveState in delegation chain
-- I6: StaleRetryState has cacheBuster
-- I7: ReplayingState has replayCursor
-- I8: PausedState delegation (field equality)
-- I9: ErrorState delegation (field equality)
-- I12: No same-type nesting
+**Layer 1 — Factory helpers** for creating test inputs:
+
+```typescript
+export function makeShared(
+  overrides?: Partial<SharedStateFields>
+): SharedStateFields {
+  return {
+    offset: `0_0`,
+    cursor: `cursor-1`,
+    upToDate: false,
+    streamClosed: false,
+    ...overrides,
+  }
+}
+export function makeResponseInput(
+  overrides?: Partial<ResponseMetadataInput>
+): ResponseMetadataInput {
+  return {
+    offset: `0_0`,
+    cursor: `cursor-1`,
+    upToDate: false,
+    streamClosed: false,
+    ...overrides,
+  }
+}
+export function makeMessageBatchInput(
+  overrides?: Partial<MessageBatchInput>
+): MessageBatchInput {
+  return {
+    hasMessages: true,
+    hasUpToDateMessage: true,
+    isSse: false,
+    currentCursor: `cursor-1`,
+    ...overrides,
+  }
+}
+```
+
+**Layer 2 — `applyEvent()` dispatcher**: Takes a state + EventSpec union, calls the right method, returns `{ prevState, state, transition }`. Events for durable-streams (dropping Electric's `markMustRefetch`, `withHandle`):
+
+```typescript
+export type EventSpec =
+  | { type: `response`; input: Partial<ResponseMetadataInput> }
+  | { type: `messages`; input: Partial<MessageBatchInput> }
+  | { type: `sseClose`; input: SseCloseInput }
+  | { type: `pause` }
+  | { type: `resume` }
+  | { type: `error`; error: Error }
+  | { type: `retry` }
+  | { type: `enterReplayMode`; cursor: string | null }
+```
+
+**Layer 3 — `assertStateInvariants(state)`**: Checks on EVERY state after EVERY transition:
+
+- I0: `state.kind` matches `state instanceof XxxState` (via KIND_TO_CLASS map)
+- I1: `state.isUpToDate === true` only when LiveState is in delegation chain
+- I6: StaleRetryState has `cacheBuster` defined
+- I7: ReplayingState has `replayCursor` defined
+- I8: PausedState delegates ALL field getters to `previousState` (field-by-field equality check: offset, cursor, upToDate, streamClosed, plus state-specific fields like cacheBuster, replayCursor, sseFallbackToLongPolling)
+- I8b: `PausedState.pause()` returns `this` (idempotent)
+- I9: ErrorState delegates ALL field getters + has `error instanceof Error`
+- I12: No same-type nesting (`PausedState.previousState` not PausedState, `ErrorState.previousState` not ErrorState)
+
+**Layer 4 — `assertReachableInvariants(event, prevState, nextState)`**: Checks transition-specific properties:
+
+- I3: `pause().resume()` preserves reference identity (for non-PausedState input)
+- I4: `error(e).retry()` preserves reference identity
+
+**Layer 5 — `ScenarioBuilder`**: Fluent API for chaining events with auto-invariant checking:
+
+```typescript
+export class ScenarioBuilder<K extends StateKind = `initial`> {
+  response(input?): ScenarioBuilder<StateKind> // applies event, checks invariants
+  messages(input?): ScenarioBuilder<StateKind>
+  sseClose(input): ScenarioBuilder<StateKind>
+  pause(): ScenarioBuilder<`paused`>
+  error(err): ScenarioBuilder<`error`>
+  resume(): ScenarioBuilder<StateKind> // only callable from paused
+  retry(): ScenarioBuilder<StateKind> // only callable from error
+  enterReplayMode(cursor): ScenarioBuilder<StateKind>
+
+  expectKind<T>(kind: T): ScenarioBuilder<T> // narrows type
+  expectOffset(offset): ScenarioBuilder<K>
+  expectUpToDate(expected): ScenarioBuilder<K>
+  expectAction(action): ScenarioBuilder<K> // checks last ResponseTransition.action
+  done(): { state; trace }
+}
+
+export function scenario(opts?): ScenarioBuilder<`initial`>
+```
+
+**Layer 6 — Fuzz support** (for Tier 4 tests):
+
+```typescript
+export function mulberry32(seed: number): () => number // seeded PRNG for reproducible fuzz
+export function pickRandomEvent(rng, now): EventSpec // generates random event
+export function makeAllStates(): Array<{ kind; state }> // one representative of each kind
+```
+
+**Standard scenarios catalog** — reusable named scenarios:
+
+```typescript
+export const standardScenarios = {
+  'happy-path-live': () => scenario().response({...}).expectKind(`syncing`).messages({hasUpToDateMessage: true}).expectKind(`live`),
+  'pause-resume': () => scenario().response({...}).pause().resume().expectKind(`syncing`),
+  'error-retry': () => scenario().response({...}).error(new Error(`boom`)).retry().expectKind(`syncing`),
+  'full-lifecycle': () => scenario().response({...}).messages({hasUpToDateMessage: true}).error(new Error()).retry().pause().resume(),
+}
+```
+
+Reference: Electric's `packages/typescript-client/test/support/state-machine-dsl.ts`
 
 - [ ] **Step 4: Rewrite stream-response-state.test.ts**
 
-Tiered test structure:
+Four-tier test structure:
 
-1. **Truth table tests** — iterate TRANSITION_TABLE, verify each cell
-2. **Algebraic property tests** — pause/resume round-trip (I3), error/retry round-trip (I4)
-3. **Invariant tests** — I0-I12 via DSL scenario builder
-4. **Dedicated tests** — SSE fallback, shouldUseSse, applyUrlParams
+**Tier 1 — Scenario builder tests** (~10 tests): Use `standardScenarios` + custom scenarios. Every event auto-checks all invariants via the DSL. These are the highest-value tests.
+
+```typescript
+describe(`Tier 1: Scenarios`, () => {
+  it(`happy path: initial → syncing → live`, () => {
+    standardScenarios[`happy-path-live`]()
+  })
+  it(`pause/resume round-trip preserves state`, () => {
+    standardScenarios[`pause-resume`]()
+  })
+  // ...
+})
+```
+
+**Tier 2 — Truth table tests** (~56 tests): Iterate `TRANSITION_TABLE`, verify each cell produces expected kind/action/sameReference.
+
+```typescript
+describe(`Tier 2: Truth table`, () => {
+  for (const [kind, events] of Object.entries(TRANSITION_TABLE)) {
+    describe(kind, () => {
+      for (const [event, expected] of Object.entries(events)) {
+        it(`${kind} + ${event} → ${expected.resultKind}`, () => {
+          const state = makeAllStates().find((s) => s.kind === kind)!.state
+          const result = applyEvent(state, makeEvent(event))
+          if (expected.sameReference) expect(result.state).toBe(state)
+          else if (expected.resultKind !== `same`)
+            expect(result.state.kind).toBe(expected.resultKind)
+        })
+      }
+    })
+  }
+})
+```
+
+**Tier 3 — Algebraic property tests** (~10 tests): Test invariants across all 7 states:
+
+```typescript
+describe(`Tier 3: Algebraic properties`, () => {
+  for (const { kind, state } of makeAllStates()) {
+    it(`I3: ${kind}.pause().resume() round-trip`, () => { ... })
+    it(`I4: ${kind}.toErrorState(err).retry() round-trip`, () => { ... })
+    it(`I12: ${kind} no same-type nesting`, () => { ... })
+  }
+})
+```
+
+**Tier 4 — Fuzz tests** (~2 tests): Random event sequences with seeded PRNG, invariants checked on every step:
+
+```typescript
+describe(`Tier 4: Fuzz`, () => {
+  it(`100 random events from initial state`, () => {
+    const rng = mulberry32(42)
+    let state = createInitialState({ offset: `-1` })
+    for (let i = 0; i < 100; i++) {
+      const event = pickRandomEvent(rng, Date.now())
+      const result = applyEvent(state, event)
+      assertStateInvariants(result.state)
+      state = result.state
+    }
+  })
+})
+```
+
+**Tier 5 — Dedicated tests** (as needed): SSE fallback behavior, shouldUseSse conditions, applyUrlParams per state, canEnterReplayMode constraints.
 
 - [ ] **Step 5: Run all tests**
 
