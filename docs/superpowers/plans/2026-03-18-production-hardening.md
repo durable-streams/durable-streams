@@ -541,6 +541,8 @@ export const TRANSITION_TABLE: Record<
 
 - [ ] **Step 3: Write state-machine-dsl.ts**
 
+**IMPORTANT: Before writing any code, read the full DSL reference at https://gist.github.com/KyleAMathews/72e0cb6f5f6bd36cac1332ea91893b44** — this is Electric's actual DSL implementation. Study it thoroughly to understand the patterns, invariant checking approach, and scenario builder design before adapting for durable-streams.
+
 Port from Electric's `test/support/state-machine-dsl.ts` (~450 lines). The DSL has 5 layers:
 
 **Layer 1 — Factory helpers** for creating test inputs:
