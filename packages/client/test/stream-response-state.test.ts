@@ -1,542 +1,862 @@
+/**
+ * State machine tests for the 7-state stream response state machine.
+ *
+ * Five-tier structure:
+ *   Tier 1 — Scenario builder tests (standard + custom)
+ *   Tier 2 — Truth table tests (exhaustive transition verification)
+ *   Tier 3 — Algebraic property tests
+ *   Tier 4 — Fuzz tests
+ *   Tier 5 — Dedicated tests (SSE fallback, shouldUseSse, applyUrlParams, etc.)
+ */
+
 import { describe, expect, it } from "vitest"
 import {
-  LongPollState,
-  PausedState,
-  SSEState,
+  ActiveState,
+  FetchingState,
+  InitialState,
+  LiveState,
+  NewErrorState,
+  NewPausedState,
+  StreamState,
+  createInitialState,
 } from "../src/stream-response-state"
-import type { SSEControlEvent } from "../src/sse"
-import type { SSEResilienceOptions } from "../src/types"
-import type { SyncFields } from "../src/stream-response-state"
+import { TRANSITION_TABLE } from "./support/state-transition-table"
+import {
+  ScenarioBuilder,
+  applyEvent,
+  assertStateInvariants,
+  getStateKind,
+  makeAllStates,
+  makeErrorState,
+  makeInitialState,
+  makeLiveState,
+  makeMessageBatchInput,
+  makePausedState,
+  makeReplayingState,
+  makeResponseInput,
+  makeSseCloseInput,
+  makeStaleRetryState,
+  makeSyncingState,
+  makeUpToDateBatchInput,
+  mulberry32,
+  pickRandomEvent,
+  standardScenarios,
+} from "./support/state-machine-dsl"
+import type { EventType, StateKind } from "./support/state-transition-table"
+import type { EventSpec } from "./support/state-machine-dsl"
 
-// ── Helpers ──────────────────────────────────────────────────────────────
+// ============================================================================
+// Tier 1 — Scenario builder tests
+// ============================================================================
 
-function makeSyncFields(overrides?: Partial<SyncFields>): SyncFields {
-  return {
-    offset: `0_0`,
-    cursor: undefined,
-    upToDate: false,
-    streamClosed: false,
-    ...overrides,
-  }
-}
-
-function makeSSEConfig(
-  overrides?: Partial<SSEResilienceOptions>
-): Required<SSEResilienceOptions> {
-  return {
-    minConnectionDuration: 1000,
-    maxShortConnections: 3,
-    backoffBaseDelay: 100,
-    backoffMaxDelay: 5000,
-    logWarnings: false,
-    ...overrides,
-  }
-}
-
-function makeControlEvent(
-  overrides?: Partial<Omit<SSEControlEvent, `type`>>
-): SSEControlEvent {
-  return {
-    type: `control`,
-    streamNextOffset: `1_10`,
-    ...overrides,
-  }
-}
-
-// ── LongPollState ────────────────────────────────────────────────────────
-
-describe(`LongPollState`, () => {
-  describe(`withResponseMetadata`, () => {
-    it(`updates offset/cursor/upToDate/streamClosed`, () => {
-      const state = new LongPollState(makeSyncFields())
-      const next = state.withResponseMetadata({
-        offset: `5_100`,
-        cursor: `abc`,
-        upToDate: true,
-        streamClosed: false,
+describe(`Tier 1: Scenario builder tests`, () => {
+  describe(`standard scenarios`, () => {
+    for (const { name, run } of standardScenarios) {
+      it(name, () => {
+        run()
       })
-      expect(next.offset).toBe(`5_100`)
-      expect(next.cursor).toBe(`abc`)
-      expect(next.upToDate).toBe(true)
-      expect(next.streamClosed).toBe(false)
-      expect(next).toBeInstanceOf(LongPollState)
+    }
+  })
+
+  describe(`custom scenarios`, () => {
+    it(`initial → response → messages (no utd) → messages (utd) → live`, () => {
+      new ScenarioBuilder(makeInitialState())
+        .response()
+        .expectKind(`syncing`)
+        .messages()
+        .expectKind(`syncing`)
+        .messagesUtd()
+        .expectKind(`live`)
+        .expectUpToDate(true)
     })
 
-    it(`preserves cursor when response has no cursor header`, () => {
-      const state = new LongPollState(makeSyncFields({ cursor: `existing` }))
-      const next = state.withResponseMetadata({
-        offset: `2_0`,
-        cursor: undefined,
-        upToDate: false,
-        streamClosed: false,
-      })
-      expect(next.cursor).toBe(`existing`)
+    it(`stale-retry → response → syncing → live`, () => {
+      new ScenarioBuilder(makeStaleRetryState())
+        .response()
+        .expectKind(`syncing`)
+        .messagesUtd()
+        .expectKind(`live`)
     })
 
-    it(`preserves offset when response has no offset header`, () => {
-      const state = new LongPollState(makeSyncFields({ offset: `3_50` }))
-      const next = state.withResponseMetadata({
-        offset: undefined,
-        cursor: undefined,
-        upToDate: false,
-        streamClosed: false,
-      })
-      expect(next.offset).toBe(`3_50`)
+    it(`live → error → pause → resume (error) → retry → live`, () => {
+      new ScenarioBuilder(makeLiveState())
+        .error()
+        .expectKind(`error`)
+        .pause()
+        .expectKind(`paused`)
+        .resume()
+        .expectKind(`error`)
+        .retry()
+        .expectKind(`live`)
     })
 
-    it(`streamClosed once true stays true`, () => {
-      const state = new LongPollState(makeSyncFields({ streamClosed: true }))
-      const next = state.withResponseMetadata({
-        offset: `1_0`,
-        upToDate: false,
-        streamClosed: false,
-      })
-      expect(next.streamClosed).toBe(true)
+    it(`replaying → response → syncing (abandons replay)`, () => {
+      new ScenarioBuilder(makeReplayingState()).response().expectKind(`syncing`)
     })
 
-    it(`does not mutate the original state`, () => {
-      const state = new LongPollState(makeSyncFields())
-      state.withResponseMetadata({
-        offset: `9_0`,
-        cursor: `new`,
-        upToDate: true,
-        streamClosed: true,
-      })
-      expect(state.offset).toBe(`0_0`)
+    it(`error state ignores response, messages, sseClose`, () => {
+      const builder = new ScenarioBuilder(makeErrorState())
+      const errorRef = builder.state
+      builder
+        .response()
+        .expectSameRef(errorRef)
+        .messages()
+        .expectSameRef(errorRef)
+        .sseClose()
+        .expectSameRef(errorRef)
+    })
+
+    it(`paused state ignores messages and sseClose`, () => {
+      const builder = new ScenarioBuilder(makePausedState())
+      const pausedRef = builder.state
+      builder
+        .messages()
+        .expectSameRef(pausedRef)
+        .sseClose()
+        .expectSameRef(pausedRef)
+    })
+
+    it(`paused state forwards response to inner state`, () => {
+      new ScenarioBuilder(makePausedState(makeSyncingState()))
+        .response({ offset: `5_0` })
+        .expectKind(`paused`)
+        .expectOffset(`5_0`)
+    })
+
+    it(`createInitialState factory`, () => {
+      const state = createInitialState({ offset: `-1` })
+      expect(state).toBeInstanceOf(InitialState)
+      expect(state.offset).toBe(`-1`)
       expect(state.cursor).toBeUndefined()
       expect(state.upToDate).toBe(false)
       expect(state.streamClosed).toBe(false)
-    })
-  })
-
-  describe(`withSSEControl`, () => {
-    it(`updates offset/cursor/upToDate/streamClosed`, () => {
-      const state = new LongPollState(makeSyncFields())
-      const next = state.withSSEControl(
-        makeControlEvent({
-          streamNextOffset: `3_20`,
-          streamCursor: `cur1`,
-          upToDate: true,
-        })
-      )
-      expect(next.offset).toBe(`3_20`)
-      expect(next.cursor).toBe(`cur1`)
-      expect(next.upToDate).toBe(true)
-      expect(next.streamClosed).toBe(false)
-    })
-
-    it(`streamClosed also sets upToDate`, () => {
-      const state = new LongPollState(makeSyncFields())
-      const next = state.withSSEControl(
-        makeControlEvent({ streamClosed: true })
-      )
-      expect(next.streamClosed).toBe(true)
-      expect(next.upToDate).toBe(true)
-    })
-
-    it(`preserves cursor when control event has no cursor`, () => {
-      const state = new LongPollState(makeSyncFields({ cursor: `old` }))
-      const next = state.withSSEControl(
-        makeControlEvent({ streamCursor: undefined })
-      )
-      expect(next.cursor).toBe(`old`)
-    })
-
-    it(`preserves upToDate when control event has undefined upToDate`, () => {
-      const state = new LongPollState(makeSyncFields({ upToDate: true }))
-      const next = state.withSSEControl(
-        makeControlEvent({ upToDate: undefined })
-      )
-      expect(next.upToDate).toBe(true)
-    })
-  })
-
-  describe(`shouldUseSse`, () => {
-    it(`returns false`, () => {
-      const state = new LongPollState(makeSyncFields())
-      expect(state.shouldUseSse()).toBe(false)
-    })
-  })
-
-  describe(`pause`, () => {
-    it(`returns a PausedState wrapping the LongPollState`, () => {
-      const state = new LongPollState(makeSyncFields())
-      const paused = state.pause()
-      expect(paused).toBeInstanceOf(PausedState)
-      expect(paused.offset).toBe(state.offset)
+      assertStateInvariants(state)
     })
   })
 })
 
-// ── SSEState ─────────────────────────────────────────────────────────────
+// ============================================================================
+// Tier 2 — Truth table tests
+// ============================================================================
 
-describe(`SSEState`, () => {
-  describe(`withSSEControl`, () => {
-    it(`updates offset/cursor/upToDate/streamClosed`, () => {
-      const state = new SSEState(makeSyncFields())
-      const next = state.withSSEControl(
-        makeControlEvent({
-          streamNextOffset: `4_50`,
-          streamCursor: `sse-cur`,
-          upToDate: true,
+describe(`Tier 2: Truth table exhaustive tests`, () => {
+  /**
+   * Build a state from a kind for truth table testing.
+   */
+  function stateForKind(kind: StateKind): StreamState {
+    switch (kind) {
+      case `initial`:
+        return makeInitialState()
+      case `syncing`:
+        return makeSyncingState()
+      case `stale-retry`:
+        return makeStaleRetryState()
+      case `live`:
+        return makeLiveState()
+      case `replaying`:
+        return makeReplayingState()
+      case `paused`:
+        return makePausedState(makeSyncingState())
+      case `error`:
+        return makeErrorState(makeSyncingState())
+    }
+  }
+
+  /**
+   * Build an EventSpec from an EventType.
+   */
+  function eventForType(type: EventType): EventSpec {
+    switch (type) {
+      case `response`:
+        return { type: `response`, input: makeResponseInput() }
+      case `messages`:
+        return { type: `messages`, input: makeMessageBatchInput() }
+      case `messagesUtd`:
+        return {
+          type: `messagesUtd`,
+          input: makeUpToDateBatchInput(),
+        }
+      case `sseClose`:
+        return { type: `sseClose`, input: makeSseCloseInput() }
+      case `pause`:
+        return { type: `pause` }
+      case `resume`:
+        return { type: `resume` }
+      case `error`:
+        return { type: `error`, error: new Error(`truth-table error`) }
+      case `retry`:
+        return { type: `retry` }
+      case `enterReplayMode`:
+        return { type: `enterReplayMode`, replayCursor: `tt-replay` }
+    }
+  }
+
+  const stateKinds: Array<StateKind> = [
+    `initial`,
+    `syncing`,
+    `stale-retry`,
+    `live`,
+    `replaying`,
+    `paused`,
+    `error`,
+  ]
+
+  const eventTypes: Array<EventType> = [
+    `response`,
+    `messages`,
+    `messagesUtd`,
+    `sseClose`,
+    `pause`,
+    `resume`,
+    `error`,
+    `retry`,
+    `enterReplayMode`,
+  ]
+
+  for (const stateKind of stateKinds) {
+    describe(`${stateKind}`, () => {
+      for (const eventType of eventTypes) {
+        const expected = TRANSITION_TABLE[stateKind][eventType]
+
+        it(`+ ${eventType} → ${expected.resultKind}${expected.note ? ` (${expected.note})` : ``}`, () => {
+          const state = stateForKind(stateKind)
+          const event = eventForType(eventType)
+
+          // Skip events that are not applicable
+          if (expected.notApplicable) {
+            // For N/A events, the applyEvent dispatcher returns the same state
+            // when the method doesn't exist
+            const result = applyEvent(state, event)
+            if (expected.resultKind === `same`) {
+              // The state should be unchanged
+              assertStateInvariants(result.state)
+            }
+            return
+          }
+
+          const result = applyEvent(state, event)
+          assertStateInvariants(result.state)
+
+          // Check the result kind
+          if (expected.resultKind === `same`) {
+            if (expected.sameReference) {
+              expect(result.state).toBe(state)
+            }
+          } else {
+            // For paused/error resume/retry, the result kind depends on
+            // the inner state. We used syncing as the inner state.
+            if (
+              (stateKind === `paused` && eventType === `resume`) ||
+              (stateKind === `error` && eventType === `retry`)
+            ) {
+              expect(getStateKind(result.state)).toBe(`syncing`)
+            } else {
+              expect(getStateKind(result.state)).toBe(expected.resultKind)
+            }
+          }
+
+          // Check action if specified
+          if (expected.action) {
+            expect(result.action).toBe(expected.action)
+          }
         })
+      }
+    })
+  }
+})
+
+// ============================================================================
+// Tier 3 — Algebraic property tests
+// ============================================================================
+
+describe(`Tier 3: Algebraic property tests`, () => {
+  describe(`I3: pause/resume round-trip preserves identity`, () => {
+    const allActiveStates: Array<{ name: string; state: ActiveState }> = [
+      { name: `InitialState`, state: makeInitialState() },
+      { name: `SyncingState`, state: makeSyncingState() },
+      { name: `StaleRetryState`, state: makeStaleRetryState() },
+      { name: `LiveState`, state: makeLiveState() },
+      { name: `ReplayingState`, state: makeReplayingState() },
+    ]
+
+    for (const { name, state } of allActiveStates) {
+      it(`${name}: pause().resume() === original`, () => {
+        const paused = state.pause()
+        expect(paused).toBeInstanceOf(NewPausedState)
+        const resumed = paused.resume()
+        expect(resumed).toBe(state)
+      })
+    }
+
+    it(`NewErrorState: pause().resume() === original`, () => {
+      const errorState = makeErrorState()
+      const paused = errorState.pause()
+      expect(paused).toBeInstanceOf(NewPausedState)
+      const resumed = paused.resume()
+      expect(resumed).toBe(errorState)
+    })
+  })
+
+  describe(`I4: error/retry preserves identity`, () => {
+    const allActiveStates: Array<{ name: string; state: ActiveState }> = [
+      { name: `InitialState`, state: makeInitialState() },
+      { name: `SyncingState`, state: makeSyncingState() },
+      { name: `StaleRetryState`, state: makeStaleRetryState() },
+      { name: `LiveState`, state: makeLiveState() },
+      { name: `ReplayingState`, state: makeReplayingState() },
+    ]
+
+    for (const { name, state } of allActiveStates) {
+      it(`${name}: toErrorState(e).retry() === original`, () => {
+        const err = new Error(`test`)
+        const errState = state.toErrorState(err)
+        expect(errState).toBeInstanceOf(NewErrorState)
+        expect(errState.error).toBe(err)
+        const retried = errState.retry()
+        expect(retried).toBe(state)
+      })
+    }
+
+    it(`NewPausedState: new NewErrorState(paused, e).retry() === paused`, () => {
+      const paused = makePausedState()
+      const err = new Error(`test`)
+      const errState = new NewErrorState(paused, err)
+      const retried = errState.retry()
+      expect(retried).toBe(paused)
+    })
+  })
+
+  describe(`I12: no same-type nesting`, () => {
+    it(`NewPausedState(NewPausedState(...)) flattens`, () => {
+      const inner = makeSyncingState()
+      const paused1 = new NewPausedState(inner)
+      const paused2 = new NewPausedState(paused1 as any)
+      expect(paused2.previousState).not.toBeInstanceOf(NewPausedState)
+      expect(paused2.previousState).toBe(inner)
+      assertStateInvariants(paused2)
+    })
+
+    it(`NewErrorState(NewErrorState(...)) flattens`, () => {
+      const inner = makeSyncingState()
+      const err1 = new NewErrorState(inner, new Error(`e1`))
+      const err2 = new NewErrorState(err1 as any, new Error(`e2`))
+      expect(err2.previousState).not.toBeInstanceOf(NewErrorState)
+      expect(err2.previousState).toBe(inner)
+      assertStateInvariants(err2)
+    })
+  })
+
+  describe(`I2: immutability — transitions create new objects`, () => {
+    it(`SyncingState.handleResponseMetadata creates new state`, () => {
+      const state = makeSyncingState({ offset: `0_0` })
+      const result = state.handleResponseMetadata(
+        makeResponseInput({ offset: `5_0` })
       )
-      expect(next.offset).toBe(`4_50`)
-      expect(next.cursor).toBe(`sse-cur`)
-      expect(next.upToDate).toBe(true)
-      expect(next).toBeInstanceOf(SSEState)
+      expect(result.state).not.toBe(state)
+      expect(state.offset).toBe(`0_0`) // original unchanged
     })
 
-    it(`streamClosed also sets upToDate`, () => {
-      const state = new SSEState(makeSyncFields())
-      const next = state.withSSEControl(
-        makeControlEvent({ streamClosed: true, upToDate: undefined })
+    it(`LiveState.handleMessageBatch creates new state`, () => {
+      const state = makeLiveState()
+      const result = state.handleMessageBatch(makeMessageBatchInput())
+      expect(result.state).not.toBe(state)
+    })
+
+    it(`pause on NewPausedState returns this (identity no-op)`, () => {
+      const paused = makePausedState()
+      expect(paused.pause()).toBe(paused)
+    })
+  })
+
+  describe(`hierarchy checks`, () => {
+    it(`FetchingState subtypes have shouldUseSse() → false`, () => {
+      const states: Array<FetchingState> = [
+        makeInitialState(),
+        makeSyncingState(),
+        makeStaleRetryState(),
+      ]
+      for (const s of states) {
+        expect(s.shouldUseSse()).toBe(false)
+        expect(s).toBeInstanceOf(FetchingState)
+        expect(s).toBeInstanceOf(ActiveState)
+        expect(s).toBeInstanceOf(StreamState)
+      }
+    })
+
+    it(`LiveState and ReplayingState are ActiveState but not FetchingState`, () => {
+      const live = makeLiveState()
+      const replaying = makeReplayingState()
+      expect(live).toBeInstanceOf(ActiveState)
+      expect(live).not.toBeInstanceOf(FetchingState)
+      expect(replaying).toBeInstanceOf(ActiveState)
+      expect(replaying).not.toBeInstanceOf(FetchingState)
+    })
+
+    it(`NewPausedState and NewErrorState are StreamState but not ActiveState`, () => {
+      const paused = makePausedState()
+      const error = makeErrorState()
+      expect(paused).toBeInstanceOf(StreamState)
+      expect(paused).not.toBeInstanceOf(ActiveState)
+      expect(error).toBeInstanceOf(StreamState)
+      expect(error).not.toBeInstanceOf(ActiveState)
+    })
+  })
+})
+
+// ============================================================================
+// Tier 4 — Fuzz tests
+// ============================================================================
+
+describe(`Tier 4: Fuzz tests`, () => {
+  it(`100 random events from initial state — invariants hold on every step`, () => {
+    const rng = mulberry32(42)
+    let state: StreamState = makeInitialState()
+    assertStateInvariants(state)
+
+    for (let i = 0; i < 100; i++) {
+      const event = pickRandomEvent(state, rng)
+      const result = applyEvent(state, event)
+      state = result.state
+      assertStateInvariants(state)
+    }
+  })
+
+  it(`200 random events from live state — invariants hold on every step`, () => {
+    const rng = mulberry32(12345)
+    let state: StreamState = makeLiveState()
+    assertStateInvariants(state)
+
+    for (let i = 0; i < 200; i++) {
+      const event = pickRandomEvent(state, rng)
+      const result = applyEvent(state, event)
+      state = result.state
+      assertStateInvariants(state)
+    }
+  })
+
+  it(`fuzz from every starting state with different seeds`, () => {
+    const allStates = makeAllStates()
+    for (const { kind, state: startState } of allStates) {
+      const rng = mulberry32(kind.length * 7919) // different seed per kind
+      let state: StreamState = startState
+      assertStateInvariants(state)
+
+      for (let i = 0; i < 50; i++) {
+        const event = pickRandomEvent(state, rng)
+        const result = applyEvent(state, event)
+        state = result.state
+        assertStateInvariants(state)
+      }
+    }
+  })
+})
+
+// ============================================================================
+// Tier 5 — Dedicated tests
+// ============================================================================
+
+describe(`Tier 5: Dedicated tests`, () => {
+  describe(`SSE fallback logic (LiveState.handleSseConnectionClosed)`, () => {
+    it(`healthy connection (long duration) resets counter to 0`, () => {
+      const state = makeLiveState(undefined, {
+        consecutiveShortConnections: 2,
+      })
+      const result = state.handleSseConnectionClosed(
+        makeSseCloseInput({ connectionDuration: 5000 })
       )
-      expect(next.streamClosed).toBe(true)
-      expect(next.upToDate).toBe(true)
-    })
-
-    it(`preserves SSE-specific fields across sync updates`, () => {
-      const state = new SSEState({
-        ...makeSyncFields(),
-        consecutiveShortConnections: 2,
-        connectionStartTime: 1000,
-      })
-      const next = state.withSSEControl(makeControlEvent({ upToDate: true }))
-      expect(next.consecutiveShortConnections).toBe(2)
-      expect(next.connectionStartTime).toBe(1000)
-    })
-  })
-
-  describe(`withResponseMetadata`, () => {
-    it(`preserves SSE-specific fields`, () => {
-      const state = new SSEState({
-        ...makeSyncFields(),
-        consecutiveShortConnections: 1,
-        connectionStartTime: 500,
-      })
-      const next = state.withResponseMetadata({
-        offset: `2_0`,
-        upToDate: true,
-        streamClosed: false,
-      })
-      expect(next.consecutiveShortConnections).toBe(1)
-      expect(next.connectionStartTime).toBe(500)
-      expect(next).toBeInstanceOf(SSEState)
-    })
-  })
-
-  describe(`shouldUseSse`, () => {
-    it(`returns true`, () => {
-      const state = new SSEState(makeSyncFields())
-      expect(state.shouldUseSse()).toBe(true)
-    })
-  })
-
-  describe(`startConnection`, () => {
-    it(`records timestamp`, () => {
-      const state = new SSEState(makeSyncFields())
-      const next = state.startConnection(42000)
-      expect(next.connectionStartTime).toBe(42000)
-      expect(next.offset).toBe(state.offset)
-    })
-
-    it(`preserves other fields`, () => {
-      const state = new SSEState({
-        ...makeSyncFields({ cursor: `c` }),
-        consecutiveShortConnections: 2,
-      })
-      const next = state.startConnection(1000)
-      expect(next.cursor).toBe(`c`)
-      expect(next.consecutiveShortConnections).toBe(2)
-    })
-  })
-
-  describe(`handleConnectionEnd`, () => {
-    const config = makeSSEConfig()
-
-    it(`treats missing connectionStartTime as healthy`, () => {
-      const state = new SSEState(makeSyncFields())
-      const result = state.handleConnectionEnd(5000, false, config)
-      expect(result.action).toBe(`healthy`)
-      expect(result.state).toBe(state) // identity preserved
+      const next = result.state as LiveState
+      expect(next).toBeInstanceOf(LiveState)
+      expect(next.consecutiveShortConnections).toBe(0)
+      assertStateInvariants(next)
     })
 
     it(`short connection increments counter`, () => {
-      const state = new SSEState({
-        ...makeSyncFields(),
-        connectionStartTime: 1000,
+      const state = makeLiveState(undefined, {
         consecutiveShortConnections: 0,
       })
-      // Duration = 500ms < 1000ms threshold
-      const result = state.handleConnectionEnd(1500, false, config)
-      expect(result.action).toBe(`reconnect`)
-      if (result.action === `reconnect`) {
-        expect(result.state.consecutiveShortConnections).toBe(1)
-        expect(result.backoffAttempt).toBe(1)
+      const result = state.handleSseConnectionClosed(
+        makeSseCloseInput({
+          connectionDuration: 500,
+          minConnectionDuration: 1000,
+        })
+      )
+      const resultWithTracking = result as {
+        state: LiveState
+        wasShortConnection: boolean
+        fellBackToLongPolling: boolean
       }
+      expect(resultWithTracking.state.consecutiveShortConnections).toBe(1)
+      expect(resultWithTracking.wasShortConnection).toBe(true)
+      expect(resultWithTracking.fellBackToLongPolling).toBe(false)
+      assertStateInvariants(resultWithTracking.state)
     })
 
-    it(`counter reaches threshold → transitions to LongPollState`, () => {
-      const state = new SSEState({
-        ...makeSyncFields(),
-        connectionStartTime: 1000,
-        consecutiveShortConnections: 2, // Next increment → 3 = maxShortConnections
-      })
-      const result = state.handleConnectionEnd(1500, false, config)
-      expect(result.action).toBe(`fallback`)
-      expect(result.state).toBeInstanceOf(LongPollState)
-      expect(result.state.shouldUseSse()).toBe(false)
-    })
-
-    it(`after fallback, state preserves sync fields`, () => {
-      const state = new SSEState({
-        ...makeSyncFields({ offset: `7_0`, cursor: `c`, upToDate: true }),
-        connectionStartTime: 1000,
+    it(`reaching threshold enables sseFallbackToLongPolling`, () => {
+      const state = makeLiveState(undefined, {
         consecutiveShortConnections: 2,
       })
-      const result = state.handleConnectionEnd(1500, false, config)
-      expect(result.state.offset).toBe(`7_0`)
-      expect(result.state.cursor).toBe(`c`)
+      const result = state.handleSseConnectionClosed(
+        makeSseCloseInput({
+          connectionDuration: 500,
+          minConnectionDuration: 1000,
+          maxShortConnections: 3,
+        })
+      )
+      const resultWithTracking = result as {
+        state: LiveState
+        wasShortConnection: boolean
+        fellBackToLongPolling: boolean
+      }
+      expect(resultWithTracking.fellBackToLongPolling).toBe(true)
+      expect(resultWithTracking.state.sseFallbackToLongPolling).toBe(true)
+      assertStateInvariants(resultWithTracking.state)
+    })
+
+    it(`aborted connection does not increment counter`, () => {
+      const state = makeLiveState(undefined, {
+        consecutiveShortConnections: 1,
+      })
+      const result = state.handleSseConnectionClosed(
+        makeSseCloseInput({
+          connectionDuration: 500,
+          minConnectionDuration: 1000,
+          wasAborted: true,
+        })
+      )
+      expect(result.state).toBe(state) // same reference — no change
+    })
+
+    it(`sync fields preserved across SSE fallback`, () => {
+      const state = makeLiveState(
+        { offset: `7_0`, cursor: `c`, upToDate: true },
+        { consecutiveShortConnections: 2 }
+      )
+      const result = state.handleSseConnectionClosed(
+        makeSseCloseInput({
+          connectionDuration: 500,
+          minConnectionDuration: 1000,
+          maxShortConnections: 3,
+        })
+      )
+      const next = result.state as LiveState
+      expect(next.offset).toBe(`7_0`)
+      expect(next.cursor).toBe(`c`)
+      expect(next.upToDate).toBe(true)
+    })
+  })
+
+  describe(`shouldUseSse`, () => {
+    it(`FetchingState subtypes always return false`, () => {
+      expect(makeInitialState().shouldUseSse()).toBe(false)
+      expect(makeSyncingState().shouldUseSse()).toBe(false)
+      expect(makeStaleRetryState().shouldUseSse()).toBe(false)
+    })
+
+    it(`LiveState returns false without options`, () => {
+      expect(makeLiveState().shouldUseSse()).toBe(false)
+    })
+
+    it(`LiveState returns true when liveSseEnabled and not resuming`, () => {
+      const live = makeLiveState()
+      expect(
+        live.shouldUseSse({
+          liveSseEnabled: true,
+          resumingFromPause: false,
+        })
+      ).toBe(true)
+    })
+
+    it(`LiveState returns false when resumingFromPause`, () => {
+      const live = makeLiveState()
+      expect(
+        live.shouldUseSse({
+          liveSseEnabled: true,
+          resumingFromPause: true,
+        })
+      ).toBe(false)
+    })
+
+    it(`LiveState returns false when liveSseEnabled is false`, () => {
+      const live = makeLiveState()
+      expect(
+        live.shouldUseSse({
+          liveSseEnabled: false,
+          resumingFromPause: false,
+        })
+      ).toBe(false)
+    })
+
+    it(`LiveState returns false when sseFallbackToLongPolling is true`, () => {
+      const live = makeLiveState(undefined, {
+        sseFallbackToLongPolling: true,
+      })
+      expect(
+        live.shouldUseSse({
+          liveSseEnabled: true,
+          resumingFromPause: false,
+        })
+      ).toBe(false)
+    })
+
+    it(`NewPausedState delegates shouldUseSse to inner state`, () => {
+      const live = makeLiveState()
+      const paused = new NewPausedState(live)
+      expect(
+        paused.shouldUseSse({
+          liveSseEnabled: true,
+          resumingFromPause: false,
+        })
+      ).toBe(true)
+    })
+
+    it(`NewErrorState delegates shouldUseSse to inner state`, () => {
+      const live = makeLiveState()
+      const error = new NewErrorState(live, new Error(`test`))
+      expect(
+        error.shouldUseSse({
+          liveSseEnabled: true,
+          resumingFromPause: false,
+        })
+      ).toBe(true)
+    })
+
+    it(`ReplayingState returns false`, () => {
+      expect(makeReplayingState().shouldUseSse()).toBe(false)
+    })
+  })
+
+  describe(`applyUrlParams`, () => {
+    it(`InitialState sets offset`, () => {
+      const state = makeInitialState({ offset: `-1` })
+      const url = new URL(`https://example.com/stream`)
+      state.applyUrlParams(url)
+      expect(url.searchParams.get(`offset`)).toBe(`-1`)
+      expect(url.searchParams.has(`cursor`)).toBe(false)
+    })
+
+    it(`SyncingState sets offset and cursor`, () => {
+      const state = makeSyncingState({ offset: `5_0`, cursor: `abc` })
+      const url = new URL(`https://example.com/stream`)
+      state.applyUrlParams(url)
+      expect(url.searchParams.get(`offset`)).toBe(`5_0`)
+      expect(url.searchParams.get(`cursor`)).toBe(`abc`)
+    })
+
+    it(`StaleRetryState sets offset and cache_buster`, () => {
+      const state = makeStaleRetryState({ offset: `3_0` }, `my-cache-buster`)
+      const url = new URL(`https://example.com/stream`)
+      state.applyUrlParams(url)
+      expect(url.searchParams.get(`offset`)).toBe(`3_0`)
+      expect(url.searchParams.get(`cache_buster`)).toBe(`my-cache-buster`)
+    })
+
+    it(`LiveState sets offset and live=true`, () => {
+      const state = makeLiveState({ offset: `10_0` })
+      const url = new URL(`https://example.com/stream`)
+      state.applyUrlParams(url)
+      expect(url.searchParams.get(`offset`)).toBe(`10_0`)
+      expect(url.searchParams.get(`live`)).toBe(`true`)
+    })
+
+    it(`LiveState with sseFallbackToLongPolling sets live=long-poll`, () => {
+      const state = makeLiveState(
+        { offset: `10_0` },
+        { sseFallbackToLongPolling: true }
+      )
+      const url = new URL(`https://example.com/stream`)
+      state.applyUrlParams(url)
+      expect(url.searchParams.get(`live`)).toBe(`long-poll`)
+    })
+  })
+
+  describe(`canEnterReplayMode`, () => {
+    it(`InitialState → true`, () => {
+      expect(makeInitialState().canEnterReplayMode()).toBe(true)
+    })
+
+    it(`SyncingState → true`, () => {
+      expect(makeSyncingState().canEnterReplayMode()).toBe(true)
+    })
+
+    it(`StaleRetryState → false`, () => {
+      expect(makeStaleRetryState().canEnterReplayMode()).toBe(false)
+    })
+
+    it(`LiveState → true`, () => {
+      expect(makeLiveState().canEnterReplayMode()).toBe(true)
+    })
+
+    it(`ReplayingState → false`, () => {
+      expect(makeReplayingState().canEnterReplayMode()).toBe(false)
+    })
+  })
+
+  describe(`shouldContinueLive`, () => {
+    it(`returns false when stopAfterUpToDate && upToDate`, () => {
+      const state = makeLiveState({ upToDate: true })
+      expect(state.shouldContinueLive(true, true)).toBe(false)
+    })
+
+    it(`returns false when liveMode is false`, () => {
+      const state = makeSyncingState()
+      expect(state.shouldContinueLive(false, false)).toBe(false)
+    })
+
+    it(`returns false when streamClosed`, () => {
+      const state = makeSyncingState({ streamClosed: true })
+      expect(state.shouldContinueLive(false, true)).toBe(false)
+    })
+
+    it(`returns true otherwise`, () => {
+      const state = makeSyncingState()
+      expect(state.shouldContinueLive(false, true)).toBe(true)
+    })
+
+    it(`returns true when upToDate but not stopAfterUpToDate`, () => {
+      const state = makeLiveState({ upToDate: true })
+      expect(state.shouldContinueLive(false, true)).toBe(true)
+    })
+
+    it(`returns true with live mode "long-poll"`, () => {
+      const state = makeSyncingState()
+      expect(state.shouldContinueLive(false, `long-poll`)).toBe(true)
+    })
+  })
+
+  describe(`ReplayingState message batch handling`, () => {
+    it(`transitions to LiveState on upToDate`, () => {
+      const state = makeReplayingState({ offset: `5_0` }, `rp-cursor`)
+      const result = state.handleMessageBatch(
+        makeUpToDateBatchInput({ currentCursor: `other` })
+      )
+      expect(result.state).toBeInstanceOf(LiveState)
+      expect(result.becameUpToDate).toBe(true)
       expect(result.state.upToDate).toBe(true)
     })
 
-    it(`healthy connection resets counter to 0`, () => {
-      const state = new SSEState({
-        ...makeSyncFields(),
-        connectionStartTime: 1000,
-        consecutiveShortConnections: 2,
-      })
-      // Duration = 2000ms >= 1000ms threshold
-      const result = state.handleConnectionEnd(3000, false, config)
-      expect(result.action).toBe(`healthy`)
-      if (result.action === `healthy`) {
-        expect(result.state.consecutiveShortConnections).toBe(0)
-      }
+    it(`suppresses batch when cursor matches and not SSE`, () => {
+      const state = makeReplayingState({ offset: `5_0` }, `rp-cursor`)
+      const result = state.handleMessageBatch(
+        makeUpToDateBatchInput({
+          currentCursor: `rp-cursor`,
+          isSse: false,
+        })
+      )
+      expect(result.suppressBatch).toBe(true)
+      expect(result.becameUpToDate).toBe(true)
     })
 
-    it(`aborted connection doesn't increment counter`, () => {
-      const state = new SSEState({
-        ...makeSyncFields(),
-        connectionStartTime: 1000,
-        consecutiveShortConnections: 1,
-      })
-      // Short duration but aborted
-      const result = state.handleConnectionEnd(1500, true, config)
-      expect(result.action).toBe(`healthy`)
-      expect(result.state.consecutiveShortConnections).toBe(1)
-      expect(result.state).toBe(state) // identity preserved for no-op
+    it(`does not suppress batch when cursor matches but is SSE`, () => {
+      const state = makeReplayingState({ offset: `5_0` }, `rp-cursor`)
+      const result = state.handleMessageBatch(
+        makeUpToDateBatchInput({
+          currentCursor: `rp-cursor`,
+          isSse: true,
+        })
+      )
+      expect(result.suppressBatch).toBe(false)
+      expect(result.becameUpToDate).toBe(true)
     })
 
-    it(`backoffAttempt matches new counter value`, () => {
-      const state = new SSEState({
-        ...makeSyncFields(),
-        connectionStartTime: 1000,
-        consecutiveShortConnections: 1,
-      })
-      const result = state.handleConnectionEnd(1500, false, config)
-      if (result.action === `reconnect`) {
-        expect(result.backoffAttempt).toBe(2) // was 1, now 2
-      }
+    it(`does not suppress batch when cursor does not match`, () => {
+      const state = makeReplayingState({ offset: `5_0` }, `rp-cursor`)
+      const result = state.handleMessageBatch(
+        makeUpToDateBatchInput({
+          currentCursor: `different-cursor`,
+          isSse: false,
+        })
+      )
+      expect(result.suppressBatch).toBe(false)
+    })
+
+    it(`stays in replaying when no upToDate`, () => {
+      const state = makeReplayingState()
+      const result = state.handleMessageBatch(makeMessageBatchInput())
+      expect(result.state).toBe(state)
+      expect(result.becameUpToDate).toBe(false)
     })
   })
 
-  describe(`pause`, () => {
-    it(`returns a PausedState wrapping the SSEState`, () => {
-      const state = new SSEState(makeSyncFields())
-      const paused = state.pause()
-      expect(paused).toBeInstanceOf(PausedState)
-      expect(paused.shouldUseSse()).toBe(true)
+  describe(`SyncingState message batch handling`, () => {
+    it(`transitions to LiveState on upToDate`, () => {
+      const state = makeSyncingState({ offset: `3_0` })
+      const result = state.handleMessageBatch(makeUpToDateBatchInput())
+      expect(result.state).toBeInstanceOf(LiveState)
+      expect(result.becameUpToDate).toBe(true)
+      expect(result.state.upToDate).toBe(true)
+    })
+
+    it(`stays in syncing when no upToDate`, () => {
+      const state = makeSyncingState()
+      const result = state.handleMessageBatch(makeMessageBatchInput())
+      expect(result.state).toBe(state)
+      expect(result.becameUpToDate).toBe(false)
     })
   })
-})
 
-// ── PausedState ──────────────────────────────────────────────────────────
-
-describe(`PausedState`, () => {
-  it(`delegates offset/cursor/upToDate/streamClosed to inner state`, () => {
-    const inner = new LongPollState(
-      makeSyncFields({
-        offset: `10_0`,
-        cursor: `paused-cursor`,
-        upToDate: true,
-        streamClosed: true,
-      })
-    )
-    const paused = new PausedState(inner)
-    expect(paused.offset).toBe(`10_0`)
-    expect(paused.cursor).toBe(`paused-cursor`)
-    expect(paused.upToDate).toBe(true)
-    expect(paused.streamClosed).toBe(true)
-  })
-
-  it(`resume() returns inner state with identity preserved`, () => {
-    const inner = new SSEState(makeSyncFields({ offset: `5_0` }))
-    const paused = new PausedState(inner)
-    const result = paused.resume()
-    expect(result.state).toBe(inner) // identity check
-    expect(result.justResumed).toBe(true)
-  })
-
-  it(`resume() returns justResumed: true`, () => {
-    const inner = new LongPollState(makeSyncFields())
-    const paused = new PausedState(inner)
-    expect(paused.resume().justResumed).toBe(true)
-  })
-
-  it(`shouldUseSse() delegates to inner (LongPollState)`, () => {
-    const paused = new PausedState(new LongPollState(makeSyncFields()))
-    expect(paused.shouldUseSse()).toBe(false)
-  })
-
-  it(`shouldUseSse() delegates to inner (SSEState)`, () => {
-    const paused = new PausedState(new SSEState(makeSyncFields()))
-    expect(paused.shouldUseSse()).toBe(true)
-  })
-
-  it(`pause() on already-paused state returns self`, () => {
-    const paused = new PausedState(new LongPollState(makeSyncFields()))
-    expect(paused.pause()).toBe(paused)
-  })
-
-  it(`withResponseMetadata delegates and returns new PausedState`, () => {
-    const inner = new LongPollState(makeSyncFields())
-    const paused = new PausedState(inner)
-    const next = paused.withResponseMetadata({
-      offset: `99_0`,
-      upToDate: true,
-      streamClosed: false,
+  describe(`LiveState response metadata handling`, () => {
+    it(`preserves SSE tracking fields across response`, () => {
+      const state = makeLiveState(
+        { offset: `1_0` },
+        { consecutiveShortConnections: 2, sseFallbackToLongPolling: true }
+      )
+      const result = state.handleResponseMetadata(
+        makeResponseInput({ offset: `5_0` })
+      )
+      expect(result.action).toBe(`accepted`)
+      const next = result.state as LiveState
+      expect(next.consecutiveShortConnections).toBe(2)
+      expect(next.sseFallbackToLongPolling).toBe(true)
+      expect(next.offset).toBe(`5_0`)
     })
-    expect(next).toBeInstanceOf(PausedState)
-    expect(next.offset).toBe(`99_0`)
-    expect(next.upToDate).toBe(true)
-    // Original paused unchanged
-    expect(paused.offset).toBe(`0_0`)
   })
 
-  it(`withSSEControl delegates and returns new PausedState`, () => {
-    const inner = new SSEState(makeSyncFields())
-    const paused = new PausedState(inner)
-    const next = paused.withSSEControl(
-      makeControlEvent({ streamNextOffset: `8_0`, upToDate: true })
-    )
-    expect(next).toBeInstanceOf(PausedState)
-    expect(next.offset).toBe(`8_0`)
-  })
-})
-
-// ── shouldContinueLive ───────────────────────────────────────────────────
-
-describe(`shouldContinueLive`, () => {
-  it(`returns false when stopAfterUpToDate && upToDate`, () => {
-    const state = new LongPollState(makeSyncFields({ upToDate: true }))
-    expect(state.shouldContinueLive(true, true)).toBe(false)
-  })
-
-  it(`returns false when liveMode === false`, () => {
-    const state = new LongPollState(makeSyncFields())
-    expect(state.shouldContinueLive(false, false)).toBe(false)
-  })
-
-  it(`returns false when streamClosed`, () => {
-    const state = new LongPollState(makeSyncFields({ streamClosed: true }))
-    expect(state.shouldContinueLive(false, true)).toBe(false)
-  })
-
-  it(`returns true otherwise`, () => {
-    const state = new LongPollState(makeSyncFields())
-    expect(state.shouldContinueLive(false, true)).toBe(true)
-  })
-
-  it(`returns true when upToDate but not stopAfterUpToDate`, () => {
-    const state = new LongPollState(makeSyncFields({ upToDate: true }))
-    expect(state.shouldContinueLive(false, true)).toBe(true)
-  })
-
-  it(`returns true with live mode "long-poll"`, () => {
-    const state = new LongPollState(makeSyncFields())
-    expect(state.shouldContinueLive(false, `long-poll`)).toBe(true)
-  })
-
-  it(`returns true with live mode "sse"`, () => {
-    const state = new LongPollState(makeSyncFields())
-    expect(state.shouldContinueLive(false, `sse`)).toBe(true)
-  })
-
-  it(`works on SSEState`, () => {
-    const state = new SSEState(makeSyncFields({ streamClosed: true }))
-    expect(state.shouldContinueLive(false, true)).toBe(false)
-  })
-
-  it(`works on PausedState`, () => {
-    const state = new PausedState(
-      new LongPollState(makeSyncFields({ upToDate: true }))
-    )
-    expect(state.shouldContinueLive(true, true)).toBe(false)
-  })
-})
-
-// ── State transitions ────────────────────────────────────────────────────
-
-describe(`state transitions`, () => {
-  it(`LongPollState → PausedState → resume → LongPollState`, () => {
-    const initial = new LongPollState(makeSyncFields({ offset: `1_0` }))
-    const paused = initial.pause()
-    expect(paused).toBeInstanceOf(PausedState)
-
-    const { state: resumed } = paused.resume()
-    expect(resumed).toBe(initial) // identity preserved
-    expect(resumed).toBeInstanceOf(LongPollState)
-  })
-
-  it(`SSEState → PausedState → resume → SSEState`, () => {
-    const initial = new SSEState({
-      ...makeSyncFields(),
-      consecutiveShortConnections: 2,
-      connectionStartTime: 1000,
+  describe(`response metadata field preservation`, () => {
+    it(`preserves cursor when response has no cursor`, () => {
+      const state = makeSyncingState({ cursor: `existing` })
+      const result = state.handleResponseMetadata(
+        makeResponseInput({ cursor: undefined })
+      )
+      expect(result.state.cursor).toBe(`existing`)
     })
-    const paused = initial.pause()
-    expect(paused.shouldUseSse()).toBe(true)
 
-    const { state: resumed } = paused.resume()
-    expect(resumed).toBe(initial)
-    expect(resumed).toBeInstanceOf(SSEState)
-    expect((resumed as SSEState).consecutiveShortConnections).toBe(2)
+    it(`preserves offset when response has no offset`, () => {
+      const state = makeSyncingState({ offset: `3_50` })
+      const result = state.handleResponseMetadata(
+        makeResponseInput({ offset: undefined })
+      )
+      expect(result.state.offset).toBe(`3_50`)
+    })
+
+    it(`streamClosed once true stays true`, () => {
+      const state = makeSyncingState({ streamClosed: true })
+      const result = state.handleResponseMetadata(
+        makeResponseInput({ streamClosed: false })
+      )
+      expect(result.state.streamClosed).toBe(true)
+    })
   })
 
-  it(`SSEState → handleConnectionEnd fallback → LongPollState`, () => {
-    const config = makeSSEConfig({ maxShortConnections: 1 })
-    const state = new SSEState({
-      ...makeSyncFields({ offset: `5_0` }),
-      connectionStartTime: 1000,
+  describe(`NewPausedState response delegation`, () => {
+    it(`delegates response to inner and wraps in NewPausedState`, () => {
+      const inner = makeSyncingState({ offset: `1_0` })
+      const paused = new NewPausedState(inner)
+      const result = paused.handleResponseMetadata(
+        makeResponseInput({ offset: `10_0` })
+      )
+      expect(result.action).toBe(`accepted`)
+      expect(result.state).toBeInstanceOf(NewPausedState)
+      expect(result.state.offset).toBe(`10_0`)
     })
-    const result = state.handleConnectionEnd(1100, false, config)
-    expect(result.action).toBe(`fallback`)
-    expect(result.state).toBeInstanceOf(LongPollState)
-    expect(result.state.offset).toBe(`5_0`)
-    expect(result.state.shouldUseSse()).toBe(false)
-  })
 
-  it(`SSEState → handleConnectionEnd reconnect → SSEState`, () => {
-    const config = makeSSEConfig()
-    const state = new SSEState({
-      ...makeSyncFields(),
-      connectionStartTime: 1000,
+    it(`returns ignored when inner returns ignored`, () => {
+      // ErrorState wrapping — paused wrapping an error
+      const errInner = makeErrorState()
+      const paused = new NewPausedState(errInner)
+      const result = paused.handleResponseMetadata(makeResponseInput())
+      // ErrorState.handleResponseMetadata returns ignored
+      expect(result.action).toBe(`ignored`)
+      expect(result.state).toBe(paused)
     })
-    const result = state.handleConnectionEnd(1100, false, config)
-    expect(result.action).toBe(`reconnect`)
-    expect(result.state).toBeInstanceOf(SSEState)
-    expect(result.state.shouldUseSse()).toBe(true)
-  })
-
-  it(`SSEState → handleConnectionEnd healthy → SSEState`, () => {
-    const config = makeSSEConfig()
-    const state = new SSEState({
-      ...makeSyncFields(),
-      connectionStartTime: 1000,
-    })
-    const result = state.handleConnectionEnd(3000, false, config)
-    expect(result.action).toBe(`healthy`)
-    expect(result.state).toBeInstanceOf(SSEState)
   })
 })
