@@ -907,6 +907,11 @@ export interface IdempotentProducerOptions {
   maxBatchBytes?: number
 
   /**
+   * Maximum number of items before sending a batch.
+   */
+  maxBatchItems?: number
+
+  /**
    * Maximum time to wait for more messages before sending batch (ms).
    * @default 5
    */

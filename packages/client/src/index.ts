@@ -110,6 +110,7 @@ export {
   createFetchWithResponseHeadersCheck,
   getNextChunkUrl,
   PrefetchQueue,
+  validateBackoffOptions,
 } from "./fetch"
 
 // ============================================================================

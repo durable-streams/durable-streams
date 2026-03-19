@@ -96,6 +96,27 @@ export function parseRetryAfterHeader(retryAfter: string | undefined): number {
 }
 
 /**
+ * Validate backoff options for correctness.
+ * Throws on invalid input with descriptive error messages.
+ */
+export function validateBackoffOptions(options: BackoffOptions): void {
+  if (options.maxRetries !== undefined && options.maxRetries < 0) {
+    throw new Error(`Invalid backoffOptions: maxRetries must be non-negative`)
+  }
+  if (options.initialDelay <= 0) {
+    throw new Error(`Invalid backoffOptions: initialDelayMs must be positive`)
+  }
+  if (options.maxDelay < options.initialDelay) {
+    throw new Error(
+      `Invalid backoffOptions: maxDelayMs must be >= initialDelayMs`
+    )
+  }
+  if (options.multiplier < 1.0) {
+    throw new Error(`Invalid backoffOptions: multiplier must be >= 1.0`)
+  }
+}
+
+/**
  * Creates a fetch client that retries failed requests with exponential backoff.
  *
  * @param fetchClient - The base fetch client to wrap
@@ -106,6 +127,8 @@ export function createFetchWithBackoff(
   fetchClient: typeof fetch,
   backoffOptions: BackoffOptions = BackoffDefaults
 ): typeof fetch {
+  validateBackoffOptions(backoffOptions)
+
   const {
     initialDelay,
     maxDelay,

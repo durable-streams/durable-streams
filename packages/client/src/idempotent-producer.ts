@@ -177,6 +177,11 @@ export class IdempotentProducer {
     if (maxBatchBytes <= 0) {
       throw new Error(`maxBatchBytes must be > 0`)
     }
+    if (opts?.maxBatchItems !== undefined && opts.maxBatchItems <= 0) {
+      throw new Error(
+        `Invalid IdempotentProducer options: maxBatchItems must be positive`
+      )
+    }
     if (maxInFlight <= 0) {
       throw new Error(`maxInFlight must be > 0`)
     }

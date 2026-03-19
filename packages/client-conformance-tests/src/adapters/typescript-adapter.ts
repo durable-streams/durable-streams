@@ -17,6 +17,7 @@ import {
   IdempotentProducer,
   StreamClosedError,
   stream,
+  validateBackoffOptions,
 } from "@durable-streams/client"
 import {
   ErrorCodes,
@@ -185,6 +186,8 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           streaming: true,
           dynamicHeaders: true,
           strictZeroValidation: true,
+          retryOptions: true,
+          batchItems: true,
         },
       }
     }
@@ -789,12 +792,25 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
       try {
         switch (target.target) {
           case `retry-options`: {
-            // TypeScript client doesn't have a separate RetryOptions class
-            // The retry options are validated when passed to stream() or IdempotentProducer
-            // For now, just return success since TS uses the fetch defaults
-            return {
-              type: `validate`,
-              success: true,
+            try {
+              validateBackoffOptions({
+                initialDelay: target.initialDelayMs ?? 100,
+                maxDelay: target.maxDelayMs ?? 5000,
+                multiplier: target.multiplier ?? 2.0,
+                maxRetries: target.maxRetries,
+              })
+              return {
+                type: `validate`,
+                success: true,
+              }
+            } catch (err) {
+              return {
+                type: `error`,
+                success: false,
+                commandType: `validate`,
+                errorCode: ErrorCodes.INVALID_ARGUMENT,
+                message: err instanceof Error ? err.message : String(err),
+              }
             }
           }
 
@@ -810,6 +826,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             new IdempotentProducer(ds, target.producerId ?? `test-producer`, {
               epoch: target.epoch,
               maxBatchBytes: target.maxBatchBytes,
+              maxBatchItems: target.maxBatchItems,
             })
 
             return {
