@@ -230,7 +230,12 @@ export function applyEvent(state: StreamState, event: EventSpec): ApplyResult {
         return { state: new NewErrorState(state, event.error) }
       }
       if (state instanceof NewErrorState) {
-        return { state: new NewErrorState(state, event.error) }
+        return {
+          state: new NewErrorState(
+            state as unknown as ActiveState,
+            event.error
+          ),
+        }
       }
       return { state }
     }
