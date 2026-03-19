@@ -149,6 +149,7 @@ class TestStreamBasicFunctionality:
             b"data",
             headers={
                 "Stream-Next-Offset": "1_5",
+                "Stream-Cursor": "cursor-1",
                 "Stream-Up-To-Date": "true",
             },
         )
@@ -647,6 +648,7 @@ class TestLiveModeSemantics:
             b"chunk1",
             headers={
                 "Stream-Next-Offset": "1_5",
+                "Stream-Cursor": "cursor-1",
                 # No Stream-Up-To-Date header = not up to date,
             },
         )
@@ -656,6 +658,7 @@ class TestLiveModeSemantics:
             b"chunk2",
             headers={
                 "Stream-Next-Offset": "2_10",
+                "Stream-Cursor": "cursor-2",
                 "Stream-Up-To-Date": "true",
             },
         )
@@ -888,6 +891,7 @@ class TestJsonBatches:
             headers={
                 "content-type": "application/json",
                 "Stream-Next-Offset": "1_5",
+                "Stream-Cursor": "cursor-1",
                 # No Stream-Up-To-Date header = not up to date,
             },
         )
@@ -896,6 +900,7 @@ class TestJsonBatches:
             headers={
                 "content-type": "application/json",
                 "Stream-Next-Offset": "2_10",
+                "Stream-Cursor": "cursor-2",
                 "Stream-Up-To-Date": "true",
             },
         )
