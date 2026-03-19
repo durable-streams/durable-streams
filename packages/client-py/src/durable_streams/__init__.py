@@ -25,6 +25,7 @@ from importlib.metadata import PackageNotFoundError, version
 from durable_streams._errors import (
     DurableStreamError,
     FetchError,
+    MissingHeadersError,
     RetentionGoneError,
     SeqConflictError,
     SSEBytesIterationError,
@@ -73,6 +74,7 @@ __all__ = [
     # Errors
     "DurableStreamError",
     "FetchError",
+    "MissingHeadersError",
     "RetentionGoneError",
     "SeqConflictError",
     "StreamClosedError",

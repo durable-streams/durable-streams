@@ -14,6 +14,7 @@ import pytest
 
 from durable_streams import (
     DurableStreamError,
+    MissingHeadersError,
     StreamConsumedError,
     stream,
 )
@@ -161,6 +162,41 @@ class TestStreamBasicFunctionality:
 
         called_url = get_request_url(mock_client)
         assert "live=long-poll" in called_url
+
+    def test_stream_throws_on_missing_offset_header(self):
+        """Should fail fast when a successful response omits Stream-Next-Offset."""
+        mock_response = MockResponse(
+            b"data",
+            headers={
+                "content-type": "text/plain",
+            },
+        )
+        mock_client = setup_mock_client(mock_response)
+
+        with pytest.raises(MissingHeadersError) as exc_info:
+            stream("https://example.com/stream", client=mock_client)
+
+        assert exc_info.value.missing_headers == ["Stream-Next-Offset"]
+
+    def test_stream_throws_on_missing_cursor_for_live_response(self):
+        """Should fail fast when an explicit live response omits Stream-Cursor."""
+        mock_response = MockResponse(
+            b"data",
+            headers={
+                "content-type": "text/plain",
+                "Stream-Next-Offset": "1_4",
+            },
+        )
+        mock_client = setup_mock_client(mock_response)
+
+        with pytest.raises(MissingHeadersError) as exc_info:
+            stream(
+                "https://example.com/stream",
+                client=mock_client,
+                live="long-poll",
+            )
+
+        assert exc_info.value.missing_headers == ["Stream-Cursor"]
 
 
 class TestStreamResponseConsumption:

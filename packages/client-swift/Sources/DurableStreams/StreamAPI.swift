@@ -92,6 +92,7 @@ public func stream(_ options: StreamOptions) async throws -> StreamResponse {
     let request = await httpClient.buildRequest(url: requestURL, timeout: options.timeout)
 
     let (data, metadata) = try await httpClient.performChecked(request, expectedStatus: [200, 204])
+    try validateReadResponseHeaders(metadata, url: requestURL, liveMode: options.live)
 
     // Create streaming context for continuation
     let streamingContext = StreamingContext(
@@ -379,6 +380,9 @@ public struct StreamResponse: Sendable {
                 let request = await httpClient.buildRequest(url: requestURL, timeout: ctx.timeout)
 
                 let (responseData, metadata) = try await httpClient.perform(request)
+                if metadata.status == 200 || metadata.status == 204 {
+                    try validateReadResponseHeaders(metadata, url: requestURL, liveMode: .longPoll)
+                }
 
                 switch metadata.status {
                 case 200:

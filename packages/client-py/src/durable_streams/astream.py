@@ -14,8 +14,13 @@ import httpx
 
 from durable_streams._errors import (
     error_from_status,
+    MissingHeadersError,
 )
-from durable_streams._parse import parse_httpx_headers, parse_response_headers
+from durable_streams._parse import (
+    parse_httpx_headers,
+    parse_response_headers,
+    validate_response_headers,
+)
 from durable_streams._response import AsyncStreamResponse
 from durable_streams._types import (
     CURSOR_QUERY_PARAM,
@@ -332,9 +337,14 @@ async def _astream_internal(
                 )
                 raise error
 
+            headers_dict = parse_httpx_headers(response.headers)
+            validate_response_headers(headers_dict, request_url)
+
             break
 
         except Exception as e:
+            if isinstance(e, MissingHeadersError):
+                raise
             if on_error is not None:
                 result = on_error(e)
                 # Handle both sync and async on_error
@@ -430,8 +440,13 @@ async def _astream_internal(
                     )
                     raise error
 
+                hdrs = parse_httpx_headers(resp.headers)
+                validate_response_headers(hdrs, next_url)
+
                 return resp
             except Exception as e:
+                if isinstance(e, MissingHeadersError):
+                    raise
                 # Apply on_error for follow-up requests too
                 if on_error is not None:
                     result = on_error(e)

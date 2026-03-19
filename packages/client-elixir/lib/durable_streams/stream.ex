@@ -496,30 +496,36 @@ defmodule DurableStreams.Stream do
 
     case HTTP.request(:get, url_with_query, headers, nil, timeout: timeout, max_retries: 0, streaming: streaming) do
       {:ok, status, resp_headers, body} when status in [200, 204] ->
-        content_type = HTTP.get_header(resp_headers, "content-type") || ""
+        case validate_read_headers(resp_headers, live, status, url(stream)) do
+          :ok ->
+            content_type = HTTP.get_header(resp_headers, "content-type") || ""
 
-        # Parse SSE response if content-type is text/event-stream
-        # SSE has upToDate and nextOffset in the control event
-        # Detect encoding from response header
-        sse_encoding = HTTP.get_header(resp_headers, "stream-sse-data-encoding")
+            # Parse SSE response if content-type is text/event-stream
+            # SSE has upToDate and nextOffset in the control event
+            # Detect encoding from response header
+            sse_encoding = HTTP.get_header(resp_headers, "stream-sse-data-encoding")
 
-        {data, sse_next_offset, sse_up_to_date} =
-          if String.contains?(content_type, "text/event-stream") do
-            parse_sse_response(body, sse_encoding)
-          else
-            {body, nil, nil}
-          end
+            {data, sse_next_offset, sse_up_to_date} =
+              if String.contains?(content_type, "text/event-stream") do
+                parse_sse_response(body, sse_encoding)
+              else
+                {body, nil, nil}
+              end
 
-        # Use SSE control event values if present, otherwise fall back to headers
-        next_offset = sse_next_offset || HTTP.get_header(resp_headers, "stream-next-offset") || offset
-        up_to_date = sse_up_to_date || HTTP.get_header(resp_headers, "stream-up-to-date") == "true" or status == 204
+            # Use SSE control event values if present, otherwise fall back to headers
+            next_offset = sse_next_offset || HTTP.get_header(resp_headers, "stream-next-offset") || offset
+            up_to_date = sse_up_to_date || HTTP.get_header(resp_headers, "stream-up-to-date") == "true" or status == 204
 
-        {:ok, %ReadChunk{
-          data: data,
-          next_offset: next_offset,
-          up_to_date: up_to_date,
-          status: status
-        }}
+            {:ok, %ReadChunk{
+              data: data,
+              next_offset: next_offset,
+              up_to_date: up_to_date,
+              status: status
+            }}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       {:ok, 400, _headers, body} ->
         {:error, {:bad_request, body}}
@@ -556,27 +562,33 @@ defmodule DurableStreams.Stream do
         }}
 
       {:error, {:timeout_partial, %{status: status, headers: resp_headers, partial_body: body}}} when streaming ->
-        # For SSE, partial data on timeout is expected - we received some events
-        content_type = HTTP.get_header(resp_headers, "content-type") || ""
-        sse_encoding = HTTP.get_header(resp_headers, "stream-sse-data-encoding")
+        case validate_read_headers(resp_headers, live, status, url(stream)) do
+          :ok ->
+            # For SSE, partial data on timeout is expected - we received some events
+            content_type = HTTP.get_header(resp_headers, "content-type") || ""
+            sse_encoding = HTTP.get_header(resp_headers, "stream-sse-data-encoding")
 
-        {data, sse_next_offset, sse_up_to_date} =
-          if String.contains?(content_type, "text/event-stream") do
-            parse_sse_response(body, sse_encoding)
-          else
-            {body, nil, nil}
-          end
+            {data, sse_next_offset, sse_up_to_date} =
+              if String.contains?(content_type, "text/event-stream") do
+                parse_sse_response(body, sse_encoding)
+              else
+                {body, nil, nil}
+              end
 
-        # Use SSE control event values if present, otherwise fall back to headers
-        next_offset = sse_next_offset || HTTP.get_header(resp_headers, "stream-next-offset") || offset
-        up_to_date = sse_up_to_date || HTTP.get_header(resp_headers, "stream-up-to-date") == "true" or status == 204
+            # Use SSE control event values if present, otherwise fall back to headers
+            next_offset = sse_next_offset || HTTP.get_header(resp_headers, "stream-next-offset") || offset
+            up_to_date = sse_up_to_date || HTTP.get_header(resp_headers, "stream-up-to-date") == "true" or status == 204
 
-        {:ok, %ReadChunk{
-          data: data,
-          next_offset: next_offset,
-          up_to_date: up_to_date,
-          status: status
-        }}
+            {:ok, %ReadChunk{
+              data: data,
+              next_offset: next_offset,
+              up_to_date: up_to_date,
+              status: status
+            }}
+
+          {:error, reason} ->
+            {:error, reason}
+        end
 
       {:error, reason} ->
         {:error, reason}
@@ -882,6 +894,30 @@ defmodule DurableStreams.Stream do
   defp add_accept_header(headers, :sse), do: [{"accept", "text/event-stream"} | headers]
   defp add_accept_header(headers, "sse"), do: [{"accept", "text/event-stream"} | headers]
   defp add_accept_header(headers, _), do: headers
+
+  defp validate_read_headers(resp_headers, live, status, url) do
+    next_offset = HTTP.get_header(resp_headers, "stream-next-offset")
+
+    cond do
+      is_nil(next_offset) or next_offset == "" ->
+        {:error, {:missing_headers, "Missing required Stream-Next-Offset header for #{url}"}}
+
+      status != 200 or live in [false, nil] ->
+        :ok
+
+      String.downcase(HTTP.get_header(resp_headers, "stream-closed") || "false") == "true" ->
+        :ok
+
+      true ->
+        cursor = HTTP.get_header(resp_headers, "stream-cursor")
+
+        if is_nil(cursor) or cursor == "" do
+          {:error, {:missing_headers, "Missing required Stream-Cursor header for #{url}"}}
+        else
+          :ok
+        end
+    end
+  end
 
   defp normalize_content_type(nil), do: nil
 

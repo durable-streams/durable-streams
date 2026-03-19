@@ -7,9 +7,11 @@ This module handles parsing of response headers and JSON data.
 import json
 from collections.abc import Callable
 from typing import Any, TypeVar, cast
+from urllib.parse import parse_qs, urlparse
 
-from durable_streams._errors import DurableStreamError
+from durable_streams._errors import DurableStreamError, MissingHeadersError
 from durable_streams._types import (
+    LIVE_QUERY_PARAM,
     STREAM_CLOSED_HEADER,
     STREAM_CURSOR_HEADER,
     STREAM_NEXT_OFFSET_HEADER,
@@ -77,6 +79,37 @@ def parse_response_headers(headers: dict[str, str]) -> ResponseMetadata:
         stream_closed=stream_closed,
         content_type=content_type,
     )
+
+
+def validate_response_headers(headers: dict[str, str], request_url: str) -> None:
+    """
+    Validate that required protocol headers are present on a successful response.
+
+    `Stream-Next-Offset` is always required for successful GET responses.
+    `Stream-Cursor` is required for explicit live requests unless the response
+    marks the stream as closed.
+    """
+
+    lower_headers = {k.lower(): v for k, v in headers.items()}
+    missing: list[str] = []
+
+    if STREAM_NEXT_OFFSET_HEADER.lower() not in lower_headers:
+        missing.append(STREAM_NEXT_OFFSET_HEADER)
+
+    query_params = parse_qs(urlparse(request_url).query)
+    live_param = query_params.get(LIVE_QUERY_PARAM, [None])[0]
+    stream_closed = (
+        lower_headers.get(STREAM_CLOSED_HEADER.lower(), "").lower() == "true"
+    )
+    if (
+        live_param is not None
+        and not stream_closed
+        and STREAM_CURSOR_HEADER.lower() not in lower_headers
+    ):
+        missing.append(STREAM_CURSOR_HEADER)
+
+    if missing:
+        raise MissingHeadersError(missing, request_url)
 
 
 def parse_httpx_headers(headers: Any) -> dict[str, str]:

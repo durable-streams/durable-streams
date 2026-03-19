@@ -123,6 +123,7 @@ module DurableStreams
         unless @status >= 200 && @status < 300
           raise DurableStreams.error_from_status(@status, url: @stream.url)
         end
+        DurableStreams.validate_stream_headers!(response, live: true, status: @status, url: @stream.url)
         # Detect encoding from response header (server auto-detects binary content types)
         encoding_header = response["stream-sse-data-encoding"]
         @encoding = encoding_header if encoding_header && !encoding_header.empty?

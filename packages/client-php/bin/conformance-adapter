@@ -9,7 +9,25 @@
 
 declare(strict_types=1);
 
-require_once __DIR__ . '/../vendor/autoload.php';
+$autoloadPath = __DIR__ . '/../vendor/autoload.php';
+if (file_exists($autoloadPath)) {
+    require_once $autoloadPath;
+} else {
+    spl_autoload_register(static function (string $class): void {
+        $prefix = 'DurableStreams\\';
+        if (!str_starts_with($class, $prefix)) {
+            return;
+        }
+
+        $relative = substr($class, strlen($prefix));
+        $path = __DIR__ . '/../src/' . str_replace('\\', '/', $relative) . '.php';
+        if (file_exists($path)) {
+            require_once $path;
+        }
+    });
+
+    require_once __DIR__ . '/../src/functions.php';
+}
 
 use DurableStreams\DurableStream;
 use DurableStreams\IdempotentProducer;

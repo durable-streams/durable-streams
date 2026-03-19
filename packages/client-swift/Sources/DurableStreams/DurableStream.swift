@@ -352,6 +352,7 @@ public actor DurableStream {
         )
 
         let (data, metadata) = try await httpClient.performChecked(request, expectedStatus: [200, 204])
+        try validateReadResponseHeaders(metadata, url: requestURL, liveMode: live)
 
         return StreamResponse(
             data: data,
@@ -786,6 +787,9 @@ public actor DurableStream {
 
                 // Use streaming to receive bytes as they arrive
                 let (bytes, metadata) = try await httpClient.performStreaming(request)
+                if metadata.status == 200 {
+                    try validateReadResponseHeaders(metadata, url: requestURL, liveMode: .sse)
+                }
 
                 // Detect encoding from response header
                 let encoding = metadata.sseDataEncoding
@@ -809,7 +813,8 @@ public actor DurableStream {
                                 // Empty line = end of event
                                 if var event = currentEvent.build() {
                                     // Decode base64 data for "data" events when encoding is detected from response header
-                                    if encoding == "base64" && event.effectiveEvent == "data" {
+                                    if encoding == "base64"
+                                        && (event.effectiveEvent == "data" || event.effectiveEvent == "message") {
                                         // Per Protocol Section 5.7: remove \n and \r before decoding
                                         let cleanedData = event.data
                                             .replacingOccurrences(of: "\n", with: "")
