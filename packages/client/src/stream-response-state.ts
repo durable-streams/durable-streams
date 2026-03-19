@@ -17,6 +17,7 @@
  */
 
 import {
+  CACHE_BUSTER_QUERY_PARAM,
   CURSOR_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   OFFSET_QUERY_PARAM,
@@ -257,7 +258,7 @@ export class StaleRetryState extends FetchingState {
 
   applyUrlParams(url: URL): void {
     super.applyUrlParams(url)
-    url.searchParams.set(`cache_buster`, this.#cacheBuster)
+    url.searchParams.set(CACHE_BUSTER_QUERY_PARAM, this.#cacheBuster)
   }
 }
 
