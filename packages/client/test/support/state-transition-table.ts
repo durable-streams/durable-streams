@@ -72,7 +72,7 @@ export const TRANSITION_TABLE: Record<
     resume: {
       resultKind: `same`,
       notApplicable: true,
-      note: `resume() only exists on NewPausedState`,
+      note: `resume() only exists on PausedState`,
     },
     error: {
       resultKind: `error`,
@@ -80,7 +80,7 @@ export const TRANSITION_TABLE: Record<
     retry: {
       resultKind: `same`,
       notApplicable: true,
-      note: `retry() only exists on NewErrorState`,
+      note: `retry() only exists on ErrorState`,
     },
     enterReplayMode: {
       resultKind: `replaying`,
@@ -276,7 +276,7 @@ export const TRANSITION_TABLE: Record<
     },
     error: {
       resultKind: `error`,
-      note: `NewErrorState can wrap NewPausedState`,
+      note: `ErrorState can wrap PausedState`,
     },
     retry: {
       resultKind: `same`,
@@ -312,7 +312,7 @@ export const TRANSITION_TABLE: Record<
     },
     pause: {
       resultKind: `paused`,
-      note: `NewPausedState wrapping NewErrorState`,
+      note: `PausedState wrapping ErrorState`,
     },
     resume: {
       resultKind: `same`,

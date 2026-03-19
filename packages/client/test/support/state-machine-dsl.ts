@@ -13,10 +13,10 @@
 import { expect } from "vitest"
 import {
   ActiveState,
+  ErrorState,
   InitialState,
   LiveState,
-  NewErrorState,
-  NewPausedState,
+  PausedState,
   ReplayingState,
   StaleRetryState,
   SyncingState,
@@ -134,17 +134,15 @@ export function makeReplayingState(
   return new ReplayingState(makeShared(overrides), replayCursor)
 }
 
-export function makePausedState(
-  inner?: ActiveState | NewErrorState
-): NewPausedState {
-  return new NewPausedState(inner ?? makeSyncingState())
+export function makePausedState(inner?: ActiveState | ErrorState): PausedState {
+  return new PausedState(inner ?? makeSyncingState())
 }
 
 export function makeErrorState(
-  inner?: ActiveState | NewPausedState,
+  inner?: ActiveState | PausedState,
   error?: Error
-): NewErrorState {
-  return new NewErrorState(
+): ErrorState {
+  return new ErrorState(
     inner ?? makeSyncingState(),
     error ?? new Error(`test error`)
   )
@@ -217,7 +215,7 @@ export function applyEvent(state: StreamState, event: EventSpec): ApplyResult {
       return { state: state.pause() }
     }
     case `resume`: {
-      if (state instanceof NewPausedState) {
+      if (state instanceof PausedState) {
         return { state: state.resume() }
       }
       return { state }
@@ -226,21 +224,18 @@ export function applyEvent(state: StreamState, event: EventSpec): ApplyResult {
       if (state instanceof ActiveState) {
         return { state: state.toErrorState(event.error) }
       }
-      if (state instanceof NewPausedState) {
-        return { state: new NewErrorState(state, event.error) }
+      if (state instanceof PausedState) {
+        return { state: new ErrorState(state, event.error) }
       }
-      if (state instanceof NewErrorState) {
+      if (state instanceof ErrorState) {
         return {
-          state: new NewErrorState(
-            state as unknown as ActiveState,
-            event.error
-          ),
+          state: new ErrorState(state as unknown as ActiveState, event.error),
         }
       }
       return { state }
     }
     case `retry`: {
-      if (state instanceof NewErrorState) {
+      if (state instanceof ErrorState) {
         return { state: state.retry() }
       }
       return { state }
@@ -273,8 +268,8 @@ export function getStateKind(state: StreamState): StateKind {
   if (state instanceof StaleRetryState) return `stale-retry`
   if (state instanceof LiveState) return `live`
   if (state instanceof ReplayingState) return `replaying`
-  if (state instanceof NewPausedState) return `paused`
-  if (state instanceof NewErrorState) return `error`
+  if (state instanceof PausedState) return `paused`
+  if (state instanceof ErrorState) return `error`
   throw new Error(`Unknown state type: ${state.constructor.name}`)
 }
 
@@ -311,12 +306,12 @@ export function assertStateInvariants(state: StreamState): void {
       expect((state as ReplayingState).kind).toBe(`replaying`)
       break
     case `paused`:
-      expect(state).toBeInstanceOf(NewPausedState)
-      expect((state as NewPausedState).kind).toBe(`paused`)
+      expect(state).toBeInstanceOf(PausedState)
+      expect((state as PausedState).kind).toBe(`paused`)
       break
     case `error`:
-      expect(state).toBeInstanceOf(NewErrorState)
-      expect((state as NewErrorState).kind).toBe(`error`)
+      expect(state).toBeInstanceOf(ErrorState)
+      expect((state as ErrorState).kind).toBe(`error`)
       break
   }
 
@@ -335,7 +330,7 @@ export function assertStateInvariants(state: StreamState): void {
   }
 
   // I8: PausedState delegates all fields + pause() idempotent
-  if (state instanceof NewPausedState) {
+  if (state instanceof PausedState) {
     const prev = state.previousState
     expect(state.offset).toBe(prev.offset)
     expect(state.cursor).toBe(prev.cursor)
@@ -345,7 +340,7 @@ export function assertStateInvariants(state: StreamState): void {
   }
 
   // I9: ErrorState delegates all fields + has error
-  if (state instanceof NewErrorState) {
+  if (state instanceof ErrorState) {
     const prev = state.previousState
     expect(state.offset).toBe(prev.offset)
     expect(state.cursor).toBe(prev.cursor)
@@ -355,11 +350,11 @@ export function assertStateInvariants(state: StreamState): void {
   }
 
   // I12: No same-type nesting
-  if (state instanceof NewPausedState) {
-    expect(state.previousState).not.toBeInstanceOf(NewPausedState)
+  if (state instanceof PausedState) {
+    expect(state.previousState).not.toBeInstanceOf(PausedState)
   }
-  if (state instanceof NewErrorState) {
-    expect(state.previousState).not.toBeInstanceOf(NewErrorState)
+  if (state instanceof ErrorState) {
+    expect(state.previousState).not.toBeInstanceOf(ErrorState)
   }
 
   // All states must have valid SharedStateFields
@@ -385,13 +380,13 @@ export function assertReachableInvariants(
   // which we do by snapshot comparison in the scenario builder)
 
   // I3: pause/resume round-trip preserves identity
-  if (event.type === `resume` && prev instanceof NewPausedState) {
+  if (event.type === `resume` && prev instanceof PausedState) {
     // The result of resume should be the previousState
     expect(next).toBe(prev.previousState)
   }
 
   // I4: error/retry preserves identity
-  if (event.type === `retry` && prev instanceof NewErrorState) {
+  if (event.type === `retry` && prev instanceof ErrorState) {
     // The result of retry should be the previousState
     expect(next).toBe(prev.previousState)
   }
@@ -713,15 +708,15 @@ export function pickRandomEvent(
   candidates.push({ type: `pause` })
 
   // Only paused can resume
-  if (state instanceof NewPausedState) {
+  if (state instanceof PausedState) {
     candidates.push({ type: `resume` })
   }
 
   // ActiveState and delegates can error
   if (
     state instanceof ActiveState ||
-    state instanceof NewPausedState ||
-    state instanceof NewErrorState
+    state instanceof PausedState ||
+    state instanceof ErrorState
   ) {
     candidates.push({
       type: `error`,
@@ -730,7 +725,7 @@ export function pickRandomEvent(
   }
 
   // Only error can retry
-  if (state instanceof NewErrorState) {
+  if (state instanceof ErrorState) {
     candidates.push({ type: `retry` })
   }
 

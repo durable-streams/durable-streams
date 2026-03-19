@@ -12,8 +12,8 @@ state machine implemented in `src/stream-response-state.ts`.
 | `stale-retry` | `StaleRetryState` | Fetching | Re-fetching with cache buster           |
 | `live`        | `LiveState`       | Active   | Up-to-date, streaming live updates      |
 | `replaying`   | `ReplayingState`  | Active   | Replaying cached messages               |
-| `paused`      | `NewPausedState`  | Delegate | PauseLock held, wraps previous state    |
-| `error`       | `NewErrorState`   | Delegate | Error occurred, wraps previous state    |
+| `paused`      | `PausedState`     | Delegate | PauseLock held, wraps previous state    |
+| `error`       | `ErrorState`      | Delegate | Error occurred, wraps previous state    |
 
 ### Hierarchy
 
@@ -26,8 +26,8 @@ StreamState (abstract)
 │   │   └── StaleRetryState   — cacheBuster: string
 │   ├── LiveState              — consecutiveShortConnections, sseFallbackToLongPolling
 │   └── ReplayingState         — replayCursor: string
-├── NewPausedState             — previousState: ActiveState | NewErrorState
-└── NewErrorState              — previousState: ActiveState | NewPausedState, error: Error
+├── PausedState             — previousState: ActiveState | ErrorState
+└── ErrorState              — previousState: ActiveState | PausedState, error: Error
 ```
 
 ## Events
@@ -78,8 +78,8 @@ The `kind` field always matches the runtime class:
 - `stale-retry` ↔ `StaleRetryState`
 - `live` ↔ `LiveState`
 - `replaying` ↔ `ReplayingState`
-- `paused` ↔ `NewPausedState`
-- `error` ↔ `NewErrorState`
+- `paused` ↔ `PausedState`
+- `error` ↔ `ErrorState`
 
 ### I1: upToDate iff LiveState in delegation chain
 
@@ -90,11 +90,11 @@ Exception: `streamClosed` may set `upToDate` in non-live states.
 ### I2: Immutability
 
 All transitions create new state objects. No-op transitions (`pause()` on
-`NewPausedState`, ignored events on `NewErrorState`) return `this`.
+`PausedState`, ignored events on `ErrorState`) return `this`.
 
 ### I3: Pause/resume round-trip preserves identity
 
-For any `ActiveState` or `NewErrorState` s:
+For any `ActiveState` or `ErrorState` s:
 
 ```
 s.pause().resume() === s
@@ -126,19 +126,19 @@ Every `ReplayingState` instance has a non-empty `replayCursor` string.
 
 ### I8: PausedState delegation
 
-`NewPausedState` delegates `offset`, `cursor`, `upToDate`, `streamClosed`,
+`PausedState` delegates `offset`, `cursor`, `upToDate`, `streamClosed`,
 and `shouldUseSse()` to its `previousState`. `pause()` is idempotent
 (returns `this`).
 
 ### I9: ErrorState delegation
 
-`NewErrorState` delegates `offset`, `cursor`, `upToDate`, `streamClosed`,
+`ErrorState` delegates `offset`, `cursor`, `upToDate`, `streamClosed`,
 and `shouldUseSse()` to its `previousState`. Has a non-null `error` property.
 
 ### I12: No same-type nesting
 
-- `NewPausedState` never wraps another `NewPausedState` (constructor flattens)
-- `NewErrorState` never wraps another `NewErrorState` (constructor flattens)
+- `PausedState` never wraps another `PausedState` (constructor flattens)
+- `ErrorState` never wraps another `ErrorState` (constructor flattens)
 
 ## Constraints
 
@@ -149,13 +149,13 @@ replay mode while a cache-busted re-fetch is in progress.
 
 ### C3: Error ignores response/messages/sseClose; Paused ignores messages/sseClose
 
-`NewErrorState.handleResponseMetadata()` returns `{ action: "ignored", state: this }`.
-`NewErrorState.handleMessageBatch()` returns `{ state: this, suppressBatch: false, becameUpToDate: false }`.
-`NewErrorState.handleSseConnectionClosed()` returns `{ state: this }`.
+`ErrorState.handleResponseMetadata()` returns `{ action: "ignored", state: this }`.
+`ErrorState.handleMessageBatch()` returns `{ state: this, suppressBatch: false, becameUpToDate: false }`.
+`ErrorState.handleSseConnectionClosed()` returns `{ state: this }`.
 
-`NewPausedState.handleMessageBatch()` returns `{ state: this, suppressBatch: false, becameUpToDate: false }`.
-`NewPausedState.handleSseConnectionClosed()` returns `{ state: this }`.
-`NewPausedState.handleResponseMetadata()` delegates to inner and wraps result.
+`PausedState.handleMessageBatch()` returns `{ state: this, suppressBatch: false, becameUpToDate: false }`.
+`PausedState.handleSseConnectionClosed()` returns `{ state: this }`.
+`PausedState.handleResponseMetadata()` delegates to inner and wraps result.
 
 ### C8: SSE state is private to LiveState
 

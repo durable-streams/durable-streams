@@ -12,11 +12,11 @@
 import { describe, expect, it } from "vitest"
 import {
   ActiveState,
+  ErrorState,
   FetchingState,
   InitialState,
   LiveState,
-  NewErrorState,
-  NewPausedState,
+  PausedState,
   StreamState,
   createInitialState,
 } from "../src/stream-response-state"
@@ -282,16 +282,16 @@ describe(`Tier 3: Algebraic property tests`, () => {
     for (const { name, state } of allActiveStates) {
       it(`${name}: pause().resume() === original`, () => {
         const paused = state.pause()
-        expect(paused).toBeInstanceOf(NewPausedState)
+        expect(paused).toBeInstanceOf(PausedState)
         const resumed = paused.resume()
         expect(resumed).toBe(state)
       })
     }
 
-    it(`NewErrorState: pause().resume() === original`, () => {
+    it(`ErrorState: pause().resume() === original`, () => {
       const errorState = makeErrorState()
       const paused = errorState.pause()
-      expect(paused).toBeInstanceOf(NewPausedState)
+      expect(paused).toBeInstanceOf(PausedState)
       const resumed = paused.resume()
       expect(resumed).toBe(errorState)
     })
@@ -310,37 +310,37 @@ describe(`Tier 3: Algebraic property tests`, () => {
       it(`${name}: toErrorState(e).retry() === original`, () => {
         const err = new Error(`test`)
         const errState = state.toErrorState(err)
-        expect(errState).toBeInstanceOf(NewErrorState)
+        expect(errState).toBeInstanceOf(ErrorState)
         expect(errState.error).toBe(err)
         const retried = errState.retry()
         expect(retried).toBe(state)
       })
     }
 
-    it(`NewPausedState: new NewErrorState(paused, e).retry() === paused`, () => {
+    it(`PausedState: new ErrorState(paused, e).retry() === paused`, () => {
       const paused = makePausedState()
       const err = new Error(`test`)
-      const errState = new NewErrorState(paused, err)
+      const errState = new ErrorState(paused, err)
       const retried = errState.retry()
       expect(retried).toBe(paused)
     })
   })
 
   describe(`I12: no same-type nesting`, () => {
-    it(`NewPausedState(NewPausedState(...)) flattens`, () => {
+    it(`PausedState(PausedState(...)) flattens`, () => {
       const inner = makeSyncingState()
-      const paused1 = new NewPausedState(inner)
-      const paused2 = new NewPausedState(paused1 as any)
-      expect(paused2.previousState).not.toBeInstanceOf(NewPausedState)
+      const paused1 = new PausedState(inner)
+      const paused2 = new PausedState(paused1 as any)
+      expect(paused2.previousState).not.toBeInstanceOf(PausedState)
       expect(paused2.previousState).toBe(inner)
       assertStateInvariants(paused2)
     })
 
-    it(`NewErrorState(NewErrorState(...)) flattens`, () => {
+    it(`ErrorState(ErrorState(...)) flattens`, () => {
       const inner = makeSyncingState()
-      const err1 = new NewErrorState(inner, new Error(`e1`))
-      const err2 = new NewErrorState(err1 as any, new Error(`e2`))
-      expect(err2.previousState).not.toBeInstanceOf(NewErrorState)
+      const err1 = new ErrorState(inner, new Error(`e1`))
+      const err2 = new ErrorState(err1 as any, new Error(`e2`))
+      expect(err2.previousState).not.toBeInstanceOf(ErrorState)
       expect(err2.previousState).toBe(inner)
       assertStateInvariants(err2)
     })
@@ -362,7 +362,7 @@ describe(`Tier 3: Algebraic property tests`, () => {
       expect(result.state).not.toBe(state)
     })
 
-    it(`pause on NewPausedState returns this (identity no-op)`, () => {
+    it(`pause on PausedState returns this (identity no-op)`, () => {
       const paused = makePausedState()
       expect(paused.pause()).toBe(paused)
     })
@@ -392,7 +392,7 @@ describe(`Tier 3: Algebraic property tests`, () => {
       expect(replaying).not.toBeInstanceOf(FetchingState)
     })
 
-    it(`NewPausedState and NewErrorState are StreamState but not ActiveState`, () => {
+    it(`PausedState and ErrorState are StreamState but not ActiveState`, () => {
       const paused = makePausedState()
       const error = makeErrorState()
       expect(paused).toBeInstanceOf(StreamState)
@@ -598,9 +598,9 @@ describe(`Tier 5: Dedicated tests`, () => {
       ).toBe(false)
     })
 
-    it(`NewPausedState delegates shouldUseSse to inner state`, () => {
+    it(`PausedState delegates shouldUseSse to inner state`, () => {
       const live = makeLiveState()
-      const paused = new NewPausedState(live)
+      const paused = new PausedState(live)
       expect(
         paused.shouldUseSse({
           liveSseEnabled: true,
@@ -609,9 +609,9 @@ describe(`Tier 5: Dedicated tests`, () => {
       ).toBe(true)
     })
 
-    it(`NewErrorState delegates shouldUseSse to inner state`, () => {
+    it(`ErrorState delegates shouldUseSse to inner state`, () => {
       const live = makeLiveState()
-      const error = new NewErrorState(live, new Error(`test`))
+      const error = new ErrorState(live, new Error(`test`))
       expect(
         error.shouldUseSse({
           liveSseEnabled: true,
@@ -837,22 +837,22 @@ describe(`Tier 5: Dedicated tests`, () => {
     })
   })
 
-  describe(`NewPausedState response delegation`, () => {
-    it(`delegates response to inner and wraps in NewPausedState`, () => {
+  describe(`PausedState response delegation`, () => {
+    it(`delegates response to inner and wraps in PausedState`, () => {
       const inner = makeSyncingState({ offset: `1_0` })
-      const paused = new NewPausedState(inner)
+      const paused = new PausedState(inner)
       const result = paused.handleResponseMetadata(
         makeResponseInput({ offset: `10_0` })
       )
       expect(result.action).toBe(`accepted`)
-      expect(result.state).toBeInstanceOf(NewPausedState)
+      expect(result.state).toBeInstanceOf(PausedState)
       expect(result.state.offset).toBe(`10_0`)
     })
 
     it(`returns ignored when inner returns ignored`, () => {
       // ErrorState wrapping — paused wrapping an error
       const errInner = makeErrorState()
-      const paused = new NewPausedState(errInner)
+      const paused = new PausedState(errInner)
       const result = paused.handleResponseMetadata(makeResponseInput())
       // ErrorState.handleResponseMetadata returns ignored
       expect(result.action).toBe(`ignored`)
