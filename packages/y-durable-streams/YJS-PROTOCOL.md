@@ -152,6 +152,15 @@ The document stream, snapshots, and awareness streams all share the same URL pat
 
 ## 5. HTTP Operations
 
+The following HTTP methods are supported on document and awareness URLs:
+
+| Endpoint                          | Supported methods    | All other methods      |
+| --------------------------------- | -------------------- | ---------------------- |
+| `{document-url}`                  | GET, HEAD, POST, PUT | 405 Method Not Allowed |
+| `{document-url}?awareness=<name>` | GET, HEAD, POST      | 405 Method Not Allowed |
+
+Servers **MUST** return `405 Method Not Allowed` for any HTTP method not listed above.
+
 ### 5.1. Snapshot Discovery
 
 The Yjs protocol adds a `snapshot` sentinel offset for snapshot-aware initialization.
@@ -690,6 +699,7 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | Test                          | Description                                                                       |
 | ----------------------------- | --------------------------------------------------------------------------------- |
 | `write.creates-document`      | POST to new doc creates stream implicitly                                         |
+| `write.implicit-creation`     | POST without prior PUT creates document and syncs correctly                       |
 | `write.returns-offset`        | POST returns 204 with `Stream-Next-Offset` header                                 |
 | `write.appends-to-stream`     | Sequential POSTs append with incrementing offsets                                 |
 | `write.rapid-batched-updates` | Rapid writes with batching produce valid lib0-framed data                         |
@@ -729,7 +739,17 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `compaction.configurable-threshold` | Custom threshold triggers at configured size                   |
 | `compaction.single-writer`          | Only one compaction runs per document at a time                |
 
-#### A.1.5. Error Handling
+#### A.1.5. Method Validation
+
+| Test                              | Description                         |
+| --------------------------------- | ----------------------------------- |
+| `method.doc-rejects-delete`       | DELETE on document URL returns 405  |
+| `method.doc-rejects-patch`        | PATCH on document URL returns 405   |
+| `method.awareness-rejects-delete` | DELETE on awareness URL returns 405 |
+| `method.awareness-rejects-patch`  | PATCH on awareness URL returns 405  |
+| `method.awareness-rejects-put`    | PUT on awareness URL returns 405    |
+
+#### A.1.6. Error Handling
 
 | Test                     | Description                             |
 | ------------------------ | --------------------------------------- |

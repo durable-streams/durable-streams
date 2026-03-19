@@ -650,6 +650,7 @@ export class YjsServer {
   /**
    * POST - Streaming proxy to write to .updates stream.
    * Client sends lib0-framed updates; we pass through directly.
+   * Auto-creates the stream on first write (retry on 404).
    */
   private async handleUpdateWrite(
     req: IncomingMessage,
@@ -663,7 +664,6 @@ export class YjsServer {
     const body = await this.readBody(req)
 
     const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
-    const dsUrl = new URL(dsPath, this.dsServerUrl)
 
     // Forward headers including producer headers
     const headers: Record<string, string> = {
@@ -682,28 +682,8 @@ export class YjsServer {
       if (typeof v === `string`) headers[h] = v
     }
 
-    const dsResponse = await fetch(dsUrl.toString(), {
-      method: `POST`,
-      headers,
-      body: Buffer.from(body),
-    })
-
-    // Forward response headers (skip content-encoding/length - fetch decompresses)
-    const responseHeaders: Record<string, string> = {}
-    dsResponse.headers.forEach((value, key) => {
-      if (key === `content-encoding` || key === `content-length`) return
-      responseHeaders[key] = value
-    })
-
-    res.writeHead(dsResponse.status, responseHeaders)
-
-    if (dsResponse.body) {
-      for await (const chunk of dsResponse.body) {
-        res.write(chunk)
-      }
-    }
-
-    res.end()
+    const dsResponse = await this.postWithAutoCreate(dsPath, headers, body)
+    await this.forwardResponse(res, dsResponse)
 
     // Track for compaction on success
     if (dsResponse.status >= 200 && dsResponse.status < 300) {
@@ -745,14 +725,8 @@ export class YjsServer {
     )
 
     if (method === `POST`) {
-      // Ensure awareness stream exists, then proxy raw binary
-      await this.ensureAwarenessStream(
-        route.service,
-        route.docPath,
-        awarenessName
-      )
-
-      await this.proxyToDsServer(req, res, dsPath)
+      // Proxy raw binary to awareness stream, auto-creating on first write
+      await this.proxyPostWithAutoCreate(req, res, dsPath)
     } else if (method === `GET`) {
       // Build path with query params
       const offset = url.searchParams.get(`offset`)
@@ -786,6 +760,82 @@ export class YjsServer {
         })
       )
     }
+  }
+
+  /**
+   * POST to a DS stream, auto-creating it via PUT on 404.
+   * Returns the fetch Response for the caller to handle.
+   */
+  private async postWithAutoCreate(
+    dsPath: string,
+    headers: Record<string, string>,
+    body: Uint8Array | Buffer | undefined
+  ): Promise<globalThis.Response> {
+    const targetUrl = `${this.dsServerUrl}${dsPath}`
+
+    let response = await fetch(targetUrl, {
+      method: `POST`,
+      headers,
+      body: body ? new Uint8Array(body) : undefined,
+    })
+
+    if (response.status === 404) {
+      await response.arrayBuffer()
+      await this.ensureStream(dsPath)
+      response = await fetch(targetUrl, {
+        method: `POST`,
+        headers,
+        body: body ? new Uint8Array(body) : undefined,
+      })
+    }
+
+    return response
+  }
+
+  /**
+   * Proxy a POST request to the DS server, auto-creating the stream on 404.
+   */
+  private async proxyPostWithAutoCreate(
+    req: IncomingMessage,
+    res: ServerResponse,
+    dsPath: string
+  ): Promise<void> {
+    const body = await this.readBody(req)
+
+    // Forward headers, excluding host
+    const headers: Record<string, string> = { ...this.dsServerHeaders }
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (key.toLowerCase() !== `host` && value) {
+        headers[key] = Array.isArray(value) ? value.join(`, `) : value
+      }
+    }
+
+    const response = await this.postWithAutoCreate(dsPath, headers, body)
+    await this.forwardResponse(res, response)
+  }
+
+  /**
+   * Forward a fetch Response to the client ServerResponse.
+   */
+  private async forwardResponse(
+    res: ServerResponse,
+    response: globalThis.Response
+  ): Promise<void> {
+    const responseHeaders: Record<string, string> = {}
+    response.headers.forEach((value, key) => {
+      if (key === `content-encoding` || key === `content-length`) return
+      responseHeaders[key] = value
+    })
+
+    res.writeHead(response.status, responseHeaders)
+
+    if (response.body) {
+      for await (const chunk of response.body) {
+        res.write(chunk)
+      }
+    }
+
+    res.end()
   }
 
   /**
@@ -837,17 +887,20 @@ export class YjsServer {
 
   // ---- Stream management ----
 
-  private async ensureAwarenessStream(
-    service: string,
-    docPath: string,
-    awarenessName: string
+  /**
+   * Ensure a stream exists at the given DS path by issuing an idempotent PUT.
+   * Returns silently if the stream already exists (409 Conflict).
+   */
+  private async ensureStream(
+    dsPath: string,
+    contentType: string = `application/octet-stream`
   ): Promise<void> {
-    const awarenessUrl = `${this.dsServerUrl}${YjsStreamPaths.awarenessStream(service, docPath, awarenessName)}`
+    const url = `${this.dsServerUrl}${dsPath}`
     try {
       await DurableStream.create({
-        url: awarenessUrl,
+        url,
         headers: this.dsServerHeaders,
-        contentType: `application/octet-stream`,
+        contentType,
       })
     } catch (err) {
       if (!isConflictExistsError(err)) {
