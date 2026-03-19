@@ -152,6 +152,15 @@ The document stream, snapshots, and awareness streams all share the same URL pat
 
 ## 5. HTTP Operations
 
+The following HTTP methods are supported on document and awareness URLs:
+
+| Endpoint                          | Supported methods    | All other methods      |
+| --------------------------------- | -------------------- | ---------------------- |
+| `{document-url}`                  | GET, HEAD, POST, PUT | 405 Method Not Allowed |
+| `{document-url}?awareness=<name>` | GET, HEAD, POST      | 405 Method Not Allowed |
+
+Servers **MUST** return `405 Method Not Allowed` for any HTTP method not listed above.
+
 ### 5.1. Snapshot Discovery
 
 The Yjs protocol adds a `snapshot` sentinel offset for snapshot-aware initialization.
@@ -249,20 +258,9 @@ If timeout expires with no new data, server **MUST** return `204 No Content` wit
 
 #### SSE Mode (`live=sse`)
 
-When SSE mode is requested, the server returns updates via Server-Sent Events. Since this protocol uses `application/octet-stream` for binary data, SSE payloads are base64-encoded per [PROTOCOL]:
+When SSE mode is requested, the server returns updates via Server-Sent Events. Since this protocol uses `application/octet-stream` for binary data, the base Durable Streams protocol automatically handles binary-to-text encoding for SSE transport (see [PROTOCOL] Section 5.8). Clients using a Durable Streams client library receive decoded binary transparently.
 
-```
-Content-Type: text/event-stream
-Stream-SSE-Data-Encoding: base64
-
-event: data
-data: <base64-encoded lib0-framed updates>
-
-event: control
-data: {"streamNextOffset":"4783","streamCursor":"abc"}
-```
-
-The base64 payload, after decoding, contains lib0-framed updates identical to the long-poll response body. Clients **MUST** decode the base64, then parse lib0 frames as described in Section 7.3.
+After transport decoding, the payload contains lib0-framed updates identical to the long-poll response body. Clients **MUST** parse lib0 frames as described in Section 7.3.
 
 Per [PROTOCOL], servers **SHOULD** close SSE connections approximately every 60 seconds to enable CDN collapsing. Clients **MUST** reconnect using the last received `streamNextOffset`.
 
@@ -318,24 +316,15 @@ The `offset=now` sentinel (per [PROTOCOL]) means "start from current tail positi
 
 #### Response (SSE)
 
-Server-Sent Events stream per the Durable Streams Protocol format. Since awareness streams use `application/octet-stream`, the base protocol automatically base64-encodes SSE data events and includes the `Stream-SSE-Data-Encoding: base64` header. Clients using a Durable Streams client library receive decoded binary transparently.
+Server-Sent Events stream per the Durable Streams Protocol format. Since awareness streams use `application/octet-stream`, the base Durable Streams protocol automatically handles binary-to-text encoding for SSE transport (see [PROTOCOL] Section 5.8). Clients using a Durable Streams client library receive decoded binary transparently.
 
-```
-Content-Type: text/event-stream
-Stream-SSE-Data-Encoding: base64
-
-event: data
-data: <base64-encoded awareness update>
-
-event: control
-data: {"streamNextOffset":"abc123","streamCursor":"1000"}
-```
+After transport decoding, the payload contains lib0-framed awareness updates. Clients **MUST** parse lib0 frames as described in Section 7.3.
 
 Per [PROTOCOL], servers **SHOULD** close SSE connections approximately every 60 seconds to enable CDN collapsing. Clients **MUST** reconnect using the last received `streamNextOffset`.
 
 #### Response (Long-Poll)
 
-Same as document updates (Section 5.3). Returns binary awareness data with `Content-Type: application/octet-stream`.
+Same as document updates (Section 5.3). Returns lib0-framed binary awareness data with `Content-Type: application/octet-stream`.
 
 ### 5.6. Awareness Broadcast
 
@@ -347,8 +336,10 @@ Clients write to awareness streams using the same POST operation as document upd
 POST {document-url}?awareness=default
 Content-Type: application/octet-stream
 
-<yjs awareness update binary>
+<lib0-framed awareness update>
 ```
+
+Clients **MUST** send lib0-framed awareness updates (Section 7.2). Each awareness update is framed with a length prefix using lib0's `writeVarUint8Array`, consistent with document updates.
 
 #### Response
 
@@ -392,10 +383,10 @@ This is similar to Protocol Buffers' varint encoding. For example:
 
 ### 7.2. Write Frame Format (Client → Server)
 
-Clients **MUST** frame each update before sending. The write frame format is:
+Clients **MUST** frame each update before sending. This applies to both document updates and awareness updates. The write frame format is:
 
-1. **Length prefix**: Variable-length unsigned int (lib0's `writeVarUint`) indicating the byte length of the Yjs update
-2. **Yjs update bytes**: The raw Yjs update data
+1. **Length prefix**: Variable-length unsigned int (lib0's `writeVarUint`) indicating the byte length of the update payload
+2. **Update bytes**: The raw update data (Yjs document update or awareness update)
 
 Multiple updates can be concatenated in a single request; the length prefix enables parsing.
 
@@ -410,7 +401,7 @@ const framedUpdate = encoding.toUint8Array(encoder)
 // Send framedUpdate in POST body
 ```
 
-This is critical for batching: when clients use an idempotent producer that batches multiple `append()` calls into a single HTTP request (concatenating the bytes), each update must be individually framed. Without framing, concatenated raw Yjs updates would be invalid. With framing, concatenation produces valid lib0-framed data.
+This is critical for batching: when clients use an idempotent producer that batches multiple `append()` calls into a single HTTP request (concatenating the bytes), each update must be individually framed. Without framing, concatenated raw updates would be invalid. With framing, concatenation produces valid lib0-framed data.
 
 ### 7.3. Read Frame Format (Server → Client)
 
@@ -430,21 +421,21 @@ while (decoding.hasContent(decoder)) {
 
 ### 7.4. Summary
 
-| Direction               | Frame Format             | Who Frames               |
-| ----------------------- | ------------------------ | ------------------------ |
-| Write (Client → Server) | `[length][update bytes]` | Client                   |
-| Read (Server → Client)  | `[length][update bytes]` | Stored as-is from client |
+| Direction               | Applies To                     | Frame Format             | Who Frames               |
+| ----------------------- | ------------------------------ | ------------------------ | ------------------------ |
+| Write (Client → Server) | Document and awareness updates | `[length][update bytes]` | Client                   |
+| Read (Server → Client)  | Document and awareness updates | `[length][update bytes]` | Stored as-is from client |
 
-The server acts as a pass-through for framed updates, storing exactly what clients send.
+The server acts as a pass-through for framed updates, storing exactly what clients send. Both document updates and awareness updates use the same lib0 framing format.
 
 ### 7.5. Efficiency and Transport Selection
 
-Binary framing minimizes per-update overhead. Transport selection affects latency and bandwidth:
+Binary framing minimizes per-update overhead. Transport selection affects latency and bandwidth. Binary-to-text encoding for SSE transport is handled automatically by the base Durable Streams protocol (see [PROTOCOL] Section 5.8).
 
-| Transport | Latency                   | Bandwidth            | Use Case                                  |
-| --------- | ------------------------- | -------------------- | ----------------------------------------- |
-| Long-poll | Higher (polling interval) | Lower (raw bytes)    | Bandwidth-constrained, infrequent updates |
-| SSE       | Lower (push-based)        | ~33% higher (base64) | Real-time collaboration, frequent updates |
+| Transport | Latency                   | Bandwidth                                | Use Case                                  |
+| --------- | ------------------------- | ---------------------------------------- | ----------------------------------------- |
+| Long-poll | Higher (polling interval) | Lower (raw bytes)                        | Bandwidth-constrained, infrequent updates |
+| SSE       | Lower (push-based)        | Higher (base protocol encoding overhead) | Real-time collaboration, frequent updates |
 
 Developers **MAY** choose the transport that best fits their application's constraints.
 
@@ -544,7 +535,7 @@ Client                                    Server
   │ Local Y.Doc change                      │
   │                                         │
   │ POST /docs/my-doc                       │
-  │ <yjs update binary>                     │
+  │ <lib0-framed yjs update>               │
   │────────────────────────────────────────>│
   │                                         │
   │ 204 No Content                          │
@@ -566,7 +557,7 @@ Client                                    Server
   │ (live stream - no history, live only)   │
   │                                         │
   │ POST /docs/my-doc?awareness=default     │
-  │ <awareness update>                      │
+  │ <lib0-framed awareness update>         │
   │────────────────────────────────────────>│
   │                                         │
   │ 204 No Content                          │
@@ -690,6 +681,7 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | Test                          | Description                                                                       |
 | ----------------------------- | --------------------------------------------------------------------------------- |
 | `write.creates-document`      | POST to new doc creates stream implicitly                                         |
+| `write.implicit-creation`     | POST without prior PUT creates document and syncs correctly                       |
 | `write.returns-offset`        | POST returns 204 with `Stream-Next-Offset` header                                 |
 | `write.appends-to-stream`     | Sequential POSTs append with incrementing offsets                                 |
 | `write.rapid-batched-updates` | Rapid writes with batching produce valid lib0-framed data                         |
@@ -729,7 +721,17 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `compaction.configurable-threshold` | Custom threshold triggers at configured size                   |
 | `compaction.single-writer`          | Only one compaction runs per document at a time                |
 
-#### A.1.5. Error Handling
+#### A.1.5. Method Validation
+
+| Test                              | Description                         |
+| --------------------------------- | ----------------------------------- |
+| `method.doc-rejects-delete`       | DELETE on document URL returns 405  |
+| `method.doc-rejects-patch`        | PATCH on document URL returns 405   |
+| `method.awareness-rejects-delete` | DELETE on awareness URL returns 405 |
+| `method.awareness-rejects-patch`  | PATCH on awareness URL returns 405  |
+| `method.awareness-rejects-put`    | PUT on awareness URL returns 405    |
+
+#### A.1.6. Error Handling
 
 | Test                     | Description                             |
 | ------------------------ | --------------------------------------- |

@@ -344,6 +344,37 @@ describe(`Yjs Durable Streams Protocol`, () => {
         })
         expect(provider.synced).toBe(true)
       })
+
+      it(`should create document implicitly without PUT`, async () => {
+        const docId = `implicit-create-${Date.now()}`
+        const doc = new Y.Doc()
+
+        // Skip document creation — server should auto-create on first POST
+        const provider = await createProviderWithDoc(docId, {
+          doc,
+          skipDocCreation: true,
+        })
+
+        await waitForSync(provider)
+
+        const text = doc.getText(`content`)
+        text.insert(0, `Implicitly created`)
+
+        await waitForCondition(() => provider.synced, {
+          label: `provider synced after implicit create write`,
+        })
+        expect(provider.synced).toBe(true)
+
+        // Verify a second provider can read the data
+        const doc2 = new Y.Doc()
+        const provider2 = await createProviderWithDoc(docId, {
+          doc: doc2,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider2)
+
+        await waitForDocText(doc2, `content`, `Implicitly created`)
+      })
     })
 
     describe(`updates.read-from-offset`, () => {
@@ -725,6 +756,84 @@ describe(`Yjs Durable Streams Protocol`, () => {
           name: `Alice`,
           color: `#ff0000`,
         })
+      })
+    })
+
+    describe(`presence.implicit-creation`, () => {
+      it(`should sync awareness without prior PUT`, async () => {
+        const docId = `awareness-implicit-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const awareness1 = new Awareness(doc1)
+        // Skip document creation — both doc and awareness streams auto-created
+        const provider1 = await createProviderWithDoc(docId, {
+          doc: doc1,
+          awareness: awareness1,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider1)
+
+        const doc2 = new Y.Doc()
+        const awareness2 = new Awareness(doc2)
+        const provider2 = await createProviderWithDoc(docId, {
+          doc: doc2,
+          awareness: awareness2,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider2)
+
+        await ensureAwarenessDelivery(
+          awareness1,
+          awareness2,
+          { key: `user`, value: { name: `Implicit` } },
+          (state) =>
+            (state as { user?: { name?: string } } | undefined)?.user?.name ===
+            `Implicit`,
+          `provider2 sees provider1 awareness without PUT`
+        )
+      })
+    })
+
+    describe(`presence.rapid-updates`, () => {
+      it(`should deliver multiple rapid awareness updates correctly`, async () => {
+        const docId = `awareness-rapid-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const awareness1 = new Awareness(doc1)
+        const provider1 = await createProviderWithDoc(docId, {
+          doc: doc1,
+          awareness: awareness1,
+        })
+        await waitForSync(provider1)
+
+        const doc2 = new Y.Doc()
+        const awareness2 = new Awareness(doc2)
+        const provider2 = await createProviderWithDoc(docId, {
+          doc: doc2,
+          awareness: awareness2,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider2)
+
+        // Send multiple rapid updates to exercise lib0 framing under batching
+        for (let i = 0; i < 5; i++) {
+          awareness1.setLocalStateField(`cursor`, { x: i * 10, y: i * 20 })
+        }
+
+        // The final state should arrive at provider2
+        await waitForAwarenessState(
+          awareness2,
+          awareness1.clientID,
+          (state) =>
+            (state as { cursor?: { x?: number } } | undefined)?.cursor?.x ===
+            40,
+          `provider2 sees final rapid awareness update`
+        )
+
+        const finalState = awareness2.getStates().get(awareness1.clientID) as {
+          cursor: { x: number; y: number }
+        }
+        expect(finalState.cursor).toEqual({ x: 40, y: 80 })
       })
     })
 
@@ -1461,6 +1570,35 @@ describe(`Yjs Durable Streams Protocol`, () => {
         expect(provider.connected).toBe(true)
       })
     })
+  })
+
+  describe(`Method Validation`, () => {
+    // Document URLs accept: GET, HEAD, POST, PUT
+    const unsupportedDocMethods = [`DELETE`, `PATCH`]
+    for (const method of unsupportedDocMethods) {
+      it(`should reject ${method} on document URL with 405`, async () => {
+        const docId = `method-doc-${method.toLowerCase()}-${Date.now()}`
+        const response = await fetch(`${baseUrl}/docs/${docId}`, { method })
+        expect(response.status).toBe(405)
+        const body = await response.json()
+        expect(body.error.code).toBe(`INVALID_REQUEST`)
+      })
+    }
+
+    // Awareness URLs accept: GET, HEAD, POST
+    const unsupportedAwarenessMethods = [`DELETE`, `PATCH`, `PUT`]
+    for (const method of unsupportedAwarenessMethods) {
+      it(`should reject ${method} on awareness URL with 405`, async () => {
+        const docId = `method-aw-${method.toLowerCase()}-${Date.now()}`
+        const response = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=default`,
+          { method }
+        )
+        expect(response.status).toBe(405)
+        const body = await response.json()
+        expect(body.error.code).toBe(`INVALID_REQUEST`)
+      })
+    }
   })
 
   describe(`Path Validation`, () => {
