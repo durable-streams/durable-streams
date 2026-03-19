@@ -190,7 +190,11 @@ export class StreamResponseImpl<
       const replayCursor = config.upToDateTracker.shouldEnterReplayMode(
         config.streamKey
       )
-      if (replayCursor && this.#syncState.canEnterReplayMode()) {
+      if (
+        replayCursor &&
+        this.#syncState instanceof ActiveState &&
+        this.#syncState.canEnterReplayMode()
+      ) {
         this.#syncState = new ReplayingState(
           {
             offset: this.#syncState.offset,
