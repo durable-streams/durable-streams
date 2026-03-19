@@ -1970,6 +1970,8 @@ func mapError(_ commandType: String, _ error: DurableStreamError) -> Result {
         errorCode = "PARSE_ERROR"
     case .streamClosed:
         errorCode = "STREAM_CLOSED"
+    case .internalError:
+        errorCode = "INTERNAL_ERROR"
     default:
         errorCode = "UNEXPECTED_STATUS"
     }

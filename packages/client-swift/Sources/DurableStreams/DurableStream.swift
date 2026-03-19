@@ -539,6 +539,9 @@ public actor DurableStream {
                 let request = await httpClient.buildRequest(url: requestURL, timeout: config.longPollTimeout)
 
                 let (data, metadata) = try await httpClient.perform(request)
+                if metadata.status == 200 || metadata.status == 204 {
+                    try validateReadResponseHeaders(metadata, url: requestURL, liveMode: .longPoll)
+                }
 
                 switch metadata.status {
                 case 200:
