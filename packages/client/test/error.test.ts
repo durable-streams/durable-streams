@@ -147,6 +147,21 @@ describe(`FetchError`, () => {
       expect(error.text).toBeUndefined()
     })
 
+    it(`should handle HEAD responses with null body`, async () => {
+      const mockResponse = new Response(null, {
+        status: 404,
+        headers: { "content-type": `application/json` },
+      })
+
+      const url = `https://example.com/head-request`
+      const error = await FetchError.fromResponse(mockResponse, url)
+
+      expect(error).toBeInstanceOf(FetchError)
+      expect(error.status).toBe(404)
+      expect(error.text).toBeUndefined()
+      expect(error.json).toBeUndefined()
+    })
+
     it(`should fall back to text if JSON parsing fails`, async () => {
       const mockResponse = {
         status: 400,
@@ -239,6 +254,24 @@ describe(`DurableStreamError`, () => {
       expect(error.code).toBe(`BAD_REQUEST`)
       expect(error.status).toBe(400)
       expect(error.details).toEqual({ error: `Invalid offset format` })
+    })
+
+    it(`should handle HEAD responses with null body`, async () => {
+      const mockResponse = new Response(null, {
+        status: 404,
+        statusText: `Not Found`,
+        headers: { "content-type": `application/json` },
+      })
+
+      const error = await DurableStreamError.fromResponse(
+        mockResponse,
+        `https://example.com/head-request`
+      )
+
+      expect(error).toBeInstanceOf(DurableStreamError)
+      expect(error.code).toBe(`NOT_FOUND`)
+      expect(error.status).toBe(404)
+      expect(error.details).toBeUndefined()
     })
 
     it(`should map status codes to correct error codes`, async () => {
