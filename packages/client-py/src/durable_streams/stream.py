@@ -12,8 +12,8 @@ from typing import Any
 import httpx
 
 from durable_streams._errors import (
-    error_from_status,
     MissingHeadersError,
+    error_from_status,
 )
 from durable_streams._parse import (
     parse_httpx_headers,
