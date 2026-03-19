@@ -988,6 +988,11 @@ export class DurableStreamTestServer {
     // Track this SSE connection
     this.activeSSEResponses.add(res)
 
+    const bootstrapCursor = generateResponseCursor(
+      cursor,
+      this.options.cursorOptions
+    )
+
     // Set SSE headers (explicitly including security headers for clarity)
     const sseHeaders: Record<string, string> = {
       "content-type": `text/event-stream`,
@@ -996,6 +1001,8 @@ export class DurableStreamTestServer {
       "access-control-allow-origin": `*`,
       "x-content-type-options": `nosniff`,
       "cross-origin-resource-policy": `cross-origin`,
+      [STREAM_OFFSET_HEADER]: initialOffset,
+      [STREAM_CURSOR_HEADER]: bootstrapCursor,
     }
 
     // Add encoding header when base64 encoding is used for binary streams
