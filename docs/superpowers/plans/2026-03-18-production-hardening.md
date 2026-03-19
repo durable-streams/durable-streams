@@ -662,10 +662,16 @@ git commit -m "feat(client): replace manual pause with PauseLock, wire new state
 In `response.ts`:
 
 - Add `#unsubscribeFromWakeDetection?: () => void` field
-- In `#start()` (not constructor): call `subscribeToWakeDetection({ onWake })` with:
-  - `onWake`: `this.#requestAbortController?.abort(SYSTEM_WAKE)` where `SYSTEM_WAKE` is a new constant
-- Add idempotency guard: `if (this.#unsubscribeFromWakeDetection) return` at start
-- In teardown: call `this.#unsubscribeFromWakeDetection?.()` then set to `undefined`
+- Subscribe inside the `pull()` function of `#createResponseStream()` on the first invocation (not in the constructor). The current codebase has no `#start()` method — the pull function IS the lifecycle entry point. Use an idempotency guard:
+  ```typescript
+  // At top of pull():
+  if (!this.#unsubscribeFromWakeDetection) {
+    this.#unsubscribeFromWakeDetection = subscribeToWakeDetection({
+      onWake: () => this.#requestAbortController?.abort(SYSTEM_WAKE),
+    })
+  }
+  ```
+- In `#markClosed()` and `#markError()` (teardown paths): call `this.#unsubscribeFromWakeDetection?.()` then set to `undefined`
 - In catch block: handle `SYSTEM_WAKE` abort reason same as reconnect (don't propagate error)
 
 - [ ] **Step 2: Add SYSTEM_WAKE constant**
@@ -911,7 +917,21 @@ switch (loopResult.action) {
 
 On live request or successful offset advance: `this.#fastLoopDetector.reset()`
 
-- [ ] **Step 3: Update stream-api.ts**
+- [ ] **Step 3: Add regression test — same-offset tail read must NOT enter stale-retry**
+
+This is the core protocol carveout: a valid `200 OK` with `Stream-Next-Offset` equal to the requested offset and `Stream-Up-To-Date: true` is a normal "at tail" response, not stale CDN data. Write a response-loop integration test:
+
+```typescript
+it(`does not enter stale-retry for valid at-tail 200 with same offset`, async () => {
+  // Mock server returns 200 with same offset + upToDate: true
+  // Verify state transitions to LiveState (not StaleRetryState)
+  // Verify fast-loop detector is NOT triggered (only one request, not 5 in 500ms)
+})
+```
+
+Place in the existing test file that tests the response loop (e.g., `test/stream-api.test.ts` or a new integration section in `test/stream-response-state.test.ts`).
+
+- [ ] **Step 4: Update stream-api.ts**
 
 Add `stream-api.ts` to scope — the outer retry loop should handle the unified error contract.
 
@@ -1074,15 +1094,27 @@ const sseFetchClient = createFetchWithResponseHeadersCheck(backoffClient)
 
 Pass both `chunkFetchClient` and `sseFetchClient` to `StreamResponseImpl`. Use `chunkFetchClient` for long-poll requests and `sseFetchClient` for SSE connections.
 
-- [ ] **Step 3: Run all tests**
+- [ ] **Step 3: Add SSE-bootstrap header validation regression test**
+
+The SSE client must validate protocol headers on the initial SSE response (before streaming begins). Write a test that verifies `MissingHeadersError` is thrown when the SSE bootstrap response is missing `Stream-Next-Offset`:
+
+```typescript
+it(`SSE client throws MissingHeadersError when bootstrap response lacks protocol headers`, async () => {
+  // Mock fetch returns SSE content-type response without Stream-Next-Offset header
+  // Verify MissingHeadersError is thrown (not swallowed by SSE parsing)
+  // Verify the error is non-retryable (bypasses onError)
+})
+```
+
+- [ ] **Step 4: Run all tests**
 
 Run: `pnpm vitest run --project client`
-Expected: All pass — behavior unchanged, just separated fetch paths
+Expected: All pass — behavior unchanged for normal paths, new test covers SSE header validation
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
-git add packages/client/src/stream-api.ts packages/client/src/response.ts
+git add packages/client/src/stream-api.ts packages/client/src/response.ts packages/client/test/
 git commit -m "feat(client): split fetch clients for chunk vs SSE paths"
 ```
 
@@ -1303,11 +1335,16 @@ git commit -m "feat(client): add chunk prefetching middleware"
 
 - [ ] **Step 1: Add new option types**
 
-In `types.ts`, add `UpToDateStorage` option to `StreamOptions`:
+In `types.ts`, add configurable options to `StreamOptions`:
 
 ```typescript
+// Add to StreamOptions interface:
+fastLoopOptions?: FastLoopDetectorOptions
+prefetchOptions?: { maxChunksToPrefetch?: number }
 upToDateStorage?: UpToDateStorage
 ```
+
+Add the type imports from `fast-loop-detection.ts` and `up-to-date-tracker.ts`. These make fast-loop thresholds and prefetch depth configurable rather than hardcoded.
 
 - [ ] **Step 2: Wire chunk prefetch into fetch client chain**
 
