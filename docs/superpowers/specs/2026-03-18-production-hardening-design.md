@@ -369,7 +369,9 @@ chunkFetchClient = createFetchWithConsumedBody(
 )
 
 // For SSE connections (must NOT consume body — it's a long-lived stream):
-sseFetchClient = createFetchWithBackoff(baseFetch, backoff)
+sseFetchClient = createFetchWithResponseHeadersCheck(
+  createFetchWithBackoff(baseFetch, backoff)
+)
 ```
 
 **Why two clients**: `createFetchWithConsumedBody` eagerly reads the response body into an ArrayBuffer. This is correct for long-poll/catch-up responses (prevents connection pool leaks) but would destroy SSE connections by consuming the event stream before it can be parsed.
@@ -380,7 +382,7 @@ Key consequences of the chain order:
 - **Header validation is outside backoff** — `MissingHeadersError` surfaces immediately without retries
 - **Chunk buffer is outside backoff** — prefetched requests get the full retry stack
 - **Consumed body is outermost** — ensures non-SSE body is always read
-- **SSE client skips** consumed body, header validation, and chunk buffer (none apply to event streams)
+- **SSE client skips** consumed body and chunk buffer, but **keeps header validation** — stripped headers on SSE bootstrap must still trigger `MissingHeadersError`
 
 ## Feature 6: CDN cache busting (StaleRetryState)
 
