@@ -445,14 +445,18 @@ export class ReplayingState extends ActiveState {
   }
 
   handleResponseMetadata(input: ResponseMetadataInput): ResponseTransition {
-    const shared: SharedStateFields = {
-      offset: input.offset ?? this.offset,
-      cursor: input.cursor ?? this.cursor,
-      upToDate: input.upToDate,
-      streamClosed: this.streamClosed || input.streamClosed,
+    return {
+      action: `accepted`,
+      state: new ReplayingState(
+        {
+          offset: input.offset ?? this.offset,
+          cursor: input.cursor ?? this.cursor,
+          upToDate: input.upToDate,
+          streamClosed: this.streamClosed || input.streamClosed,
+        },
+        this.#replayCursor
+      ),
     }
-    const syncing = new SyncingState(shared)
-    return { action: `accepted`, state: syncing }
   }
 
   handleMessageBatch(input: MessageBatchInput): MessageBatchTransition {

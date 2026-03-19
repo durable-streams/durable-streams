@@ -27,6 +27,7 @@ import {
   createCacheBuster,
 } from "./stream-response-state"
 import { subscribeToWakeDetection } from "./wake-detection"
+import type { FastLoopDetectorOptions } from "./fast-loop-detection"
 import type { UpToDateTracker } from "./up-to-date-tracker"
 import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
 import type { SSEEvent } from "./sse"
@@ -102,6 +103,8 @@ export interface StreamResponseConfig {
   upToDateTracker?: UpToDateTracker
   /** Canonical stream key for up-to-date tracking */
   streamKey?: string
+  /** Options for the fast loop detector */
+  fastLoopOptions?: FastLoopDetectorOptions
 }
 
 /**
@@ -239,7 +242,7 @@ export class StreamResponseImpl<
     this.#onError = config.onError
 
     // Initialize fast loop detector
-    this.#fastLoopDetector = new FastLoopDetector()
+    this.#fastLoopDetector = new FastLoopDetector(config.fastLoopOptions)
 
     // Initialize replay mode tracking
     this.#upToDateTracker = config.upToDateTracker
@@ -949,6 +952,7 @@ export class StreamResponseImpl<
             this.#updateStateFromResponse(response)
 
             // Trigger message batch transition (SyncingState -> LiveState on upToDate)
+            let suppressBatch = false
             if (this.#syncState instanceof ActiveState) {
               const batchResult = this.#syncState.handleMessageBatch({
                 hasMessages: true,
@@ -957,6 +961,7 @@ export class StreamResponseImpl<
                 currentCursor: this.#syncState.cursor,
               })
               this.#syncState = batchResult.state
+              suppressBatch = batchResult.suppressBatch
             }
 
             // Reset fast loop detector on offset advance or live request
@@ -965,6 +970,10 @@ export class StreamResponseImpl<
               this.#syncState instanceof LiveState
             ) {
               this.#fastLoopDetector.reset()
+            }
+
+            if (suppressBatch) {
+              return
             }
 
             controller.enqueue(response)

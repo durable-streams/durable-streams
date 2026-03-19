@@ -90,8 +90,10 @@ describe(`Tier 1: Scenario builder tests`, () => {
         .expectKind(`live`)
     })
 
-    it(`replaying → response → syncing (abandons replay)`, () => {
-      new ScenarioBuilder(makeReplayingState()).response().expectKind(`syncing`)
+    it(`replaying → response → replaying (stays in replay until upToDate)`, () => {
+      new ScenarioBuilder(makeReplayingState())
+        .response()
+        .expectKind(`replaying`)
     })
 
     it(`error state ignores response, messages, sseClose`, () => {

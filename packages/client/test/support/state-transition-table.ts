@@ -207,8 +207,9 @@ export const TRANSITION_TABLE: Record<
 
   replaying: {
     response: {
-      resultKind: `syncing`,
+      resultKind: `replaying`,
       action: `accepted`,
+      note: `stays replaying until upToDate triggers demotion to live`,
     },
     messages: {
       resultKind: `same`,

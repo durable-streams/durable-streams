@@ -356,5 +356,6 @@ async function streamInternal<TJson = unknown>(
     onError: options.onError,
     upToDateTracker,
     streamKey,
+    fastLoopOptions: options.fastLoopOptions,
   })
 }
