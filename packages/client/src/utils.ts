@@ -101,15 +101,26 @@ export async function resolveParams(
 }
 
 /**
- * Resolve a value that may be a function returning a promise.
+ * Normalize content-type by extracting the media type (before any semicolon).
+ * Handles cases like "application/json; charset=utf-8".
  */
-export async function resolveValue<T>(
-  value: T | (() => MaybePromise<T>)
-): Promise<T> {
-  if (typeof value === `function`) {
-    return (value as () => MaybePromise<T>)()
+export function normalizeContentType(contentType: string | undefined): string {
+  if (!contentType) return ``
+  return contentType.split(`;`)[0]!.trim().toLowerCase()
+}
+
+/**
+ * Concatenate an array of Uint8Arrays into a single Uint8Array.
+ */
+export function concatUint8Arrays(chunks: Array<Uint8Array>): Uint8Array {
+  const totalLength = chunks.reduce((sum, c) => sum + c.length, 0)
+  const combined = new Uint8Array(totalLength)
+  let offset = 0
+  for (const chunk of chunks) {
+    combined.set(chunk, offset)
+    offset += chunk.length
   }
-  return value
+  return combined
 }
 
 // Module-level Set to track origins we've already warned about (prevents log spam)

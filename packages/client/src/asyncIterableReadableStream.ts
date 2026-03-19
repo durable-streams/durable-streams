@@ -100,7 +100,7 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
             return { done: true, value: undefined as unknown as T }
           }
 
-          return { done: false, value: value }
+          return { done: false, value }
         } catch (err) {
           // On read error, release lock to avoid leaking it
           finished = true

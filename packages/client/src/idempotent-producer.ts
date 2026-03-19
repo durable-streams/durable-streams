@@ -10,7 +10,6 @@
 
 import fastq from "fastq"
 
-import { DurableStreamError, FetchError } from "./error"
 import {
   PRODUCER_EPOCH_HEADER,
   PRODUCER_EXPECTED_SEQ_HEADER,
@@ -20,6 +19,8 @@ import {
   STREAM_CLOSED_HEADER,
   STREAM_OFFSET_HEADER,
 } from "./constants"
+import { DurableStreamError, FetchError } from "./error"
+import { concatUint8Arrays, normalizeContentType } from "./utils"
 import type { queueAsPromised } from "fastq"
 import type { DurableStream } from "./stream"
 import type { CloseResult, IdempotentProducerOptions, Offset } from "./types"
@@ -65,14 +66,6 @@ export class SequenceGapError extends Error {
     this.expectedSeq = expectedSeq
     this.receivedSeq = receivedSeq
   }
-}
-
-/**
- * Normalize content-type by extracting the media type (before any semicolon).
- */
-function normalizeContentType(contentType: string | undefined): string {
-  if (!contentType) return ``
-  return contentType.split(`;`)[0]!.trim().toLowerCase()
 }
 
 /**
@@ -173,7 +166,6 @@ export class IdempotentProducer {
     producerId: string,
     opts?: IdempotentProducerOptions
   ) {
-    // Validate inputs
     const epoch = opts?.epoch ?? 0
     const maxBatchBytes = opts?.maxBatchBytes ?? 1024 * 1024 // 1MB
     const maxInFlight = opts?.maxInFlight ?? 5
@@ -431,23 +423,13 @@ export class IdempotentProducer {
       signal: this.#signal,
     })
 
-    // Handle 204 (duplicate close - idempotent success)
-    if (response.status === 204) {
-      // Only increment seq on success (retry-safe)
+    // Handle success (200) and duplicate close (204)
+    if (response.status === 200 || response.status === 204) {
       this.#nextSeq = seqForThisRequest + 1
       const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
       return { finalOffset }
     }
 
-    // Handle success
-    if (response.status === 200) {
-      // Only increment seq on success (retry-safe)
-      this.#nextSeq = seqForThisRequest + 1
-      const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
-      return { finalOffset }
-    }
-
-    // Handle errors
     if (response.status === 403) {
       // Stale epoch
       const currentEpochStr = response.headers.get(PRODUCER_EPOCH_HEADER)
@@ -468,9 +450,7 @@ export class IdempotentProducer {
       throw new StaleEpochError(currentEpoch)
     }
 
-    // Other errors
-    const error = await FetchError.fromResponse(response, this.#stream.url)
-    throw error
+    throw await FetchError.fromResponse(response, this.#stream.url)
   }
 
   /**
@@ -678,21 +658,10 @@ export class IdempotentProducer {
       const jsonStrings = batch.map((e) => new TextDecoder().decode(e.body))
       batchedBody = `[${jsonStrings.join(`,`)}]`
     } else {
-      // For byte mode: concatenate all chunks
-      const totalSize = batch.reduce((sum, e) => sum + e.body.length, 0)
-      const concatenated = new Uint8Array(totalSize)
-      let offset = 0
-      for (const entry of batch) {
-        concatenated.set(entry.body, offset)
-        offset += entry.body.length
-      }
-      batchedBody = concatenated
+      batchedBody = concatUint8Arrays(batch.map((e) => e.body))
     }
 
-    // Build URL
     const url = this.#stream.url
-
-    // Build headers
     const headers: Record<string, string> = {
       "content-type": contentType,
       [PRODUCER_ID_HEADER]: this.#producerId,
@@ -700,7 +669,6 @@ export class IdempotentProducer {
       [PRODUCER_SEQ_HEADER]: seq.toString(),
     }
 
-    // Send request
     const response = await this.#fetchClient(url, {
       method: `POST`,
       headers,
@@ -765,14 +733,10 @@ export class IdempotentProducer {
     }
 
     if (response.status === 400) {
-      // Bad request (e.g., invalid epoch/seq)
-      const error = await DurableStreamError.fromResponse(response, url)
-      throw error
+      throw await DurableStreamError.fromResponse(response, url)
     }
 
-    // Other errors - use FetchError for standard handling
-    const error = await FetchError.fromResponse(response, url)
-    throw error
+    throw await FetchError.fromResponse(response, url)
   }
 
   /**
