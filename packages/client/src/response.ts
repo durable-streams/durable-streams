@@ -16,6 +16,7 @@ import { DurableStreamError } from "./error"
 import { PauseLock } from "./pause-lock"
 import { parseSSEStream } from "./sse"
 import { LiveState, PausedState, SyncingState } from "./stream-response-state"
+import { subscribeToWakeDetection } from "./wake-detection"
 import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
 import type { SSEEvent } from "./sse"
 import type { StreamState } from "./stream-response-state"
@@ -33,6 +34,11 @@ import type {
  * Constant used as abort reason when pausing the stream due to visibility change.
  */
 const PAUSE_STREAM = `PAUSE_STREAM`
+
+/**
+ * Constant used as abort reason when the system wakes from sleep.
+ */
+const SYSTEM_WAKE = `SYSTEM_WAKE`
 
 /**
  * Internal configuration for creating a StreamResponse.
@@ -116,6 +122,7 @@ export class StreamResponseImpl<
   #pauseLock: PauseLock
   #requestAbortController?: AbortController
   #unsubscribeFromVisibilityChanges?: () => void
+  #unsubscribeFromWakeDetection?: () => void
   #pauseResolve?: () => void
 
   // --- SSE Resilience Config ---
@@ -303,11 +310,15 @@ export class StreamResponseImpl<
 
   #markClosed(): void {
     this.#unsubscribeFromVisibilityChanges?.()
+    this.#unsubscribeFromWakeDetection?.()
+    this.#unsubscribeFromWakeDetection = undefined
     this.#closedResolve()
   }
 
   #markError(err: Error): void {
     this.#unsubscribeFromVisibilityChanges?.()
+    this.#unsubscribeFromWakeDetection?.()
+    this.#unsubscribeFromWakeDetection = undefined
     this.#closedReject(err)
   }
 
@@ -648,6 +659,12 @@ export class StreamResponseImpl<
 
     return new ReadableStream<Response>({
       pull: async (controller) => {
+        if (!this.#unsubscribeFromWakeDetection) {
+          this.#unsubscribeFromWakeDetection = subscribeToWakeDetection({
+            onWake: () => this.#requestAbortController?.abort(SYSTEM_WAKE),
+          })
+        }
+
         try {
           // First, yield the held first response (for non-SSE modes)
           // For SSE mode, the first response IS the SSE stream, so we start parsing it
@@ -803,6 +820,11 @@ export class StreamResponseImpl<
             this.#requestAbortController.signal.reason === PAUSE_STREAM
           ) {
             return
+          }
+
+          if (this.#requestAbortController?.signal.reason === SYSTEM_WAKE) {
+            // System woke from sleep — restart from current offset
+            return // pull() will be called again, triggering a fresh request
           }
 
           if (this.#abortController.signal.aborted) {
