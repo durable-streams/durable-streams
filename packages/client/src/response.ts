@@ -81,7 +81,8 @@ export interface StreamResponseConfig {
     offset: Offset,
     cursor: string | undefined,
     signal: AbortSignal,
-    resumingFromPause?: boolean
+    resumingFromPause?: boolean,
+    cacheBuster?: string
   ) => Promise<Response>
   /** Function to start SSE connection and return a Response with SSE body */
   startSSE?: (
@@ -148,6 +149,9 @@ export class StreamResponseImpl<
 
   // --- Fast Loop Detection ---
   #fastLoopDetector: FastLoopDetector
+
+  // --- Duplicate URL Guard ---
+  #duplicateUrlCount = 0
 
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
@@ -680,6 +684,7 @@ export class StreamResponseImpl<
     let firstResponseYielded = false
     let sseEventIterator: AsyncGenerator<SSEEvent, void, undefined> | null =
       null
+    let lastRequestUrl: string | undefined
 
     return new ReadableStream<Response>({
       pull: async (controller) => {
@@ -855,6 +860,27 @@ export class StreamResponseImpl<
               }
             }
 
+            // Duplicate-URL guard: detect when the same request would be made repeatedly
+            let cacheBuster: string | undefined
+            const requestKey = `${this.offset}|${this.cursor ?? ``}`
+            if (!isLiveRequest && lastRequestUrl === requestKey) {
+              this.#duplicateUrlCount++
+              if (this.#duplicateUrlCount >= 5) {
+                throw new FetchError(
+                  502,
+                  undefined,
+                  undefined,
+                  {},
+                  this.url,
+                  `Same URL requested 5 times consecutively. This indicates a proxy or CDN misconfiguration.`
+                )
+              }
+              cacheBuster = createCacheBuster()
+            } else {
+              this.#duplicateUrlCount = 0
+            }
+            lastRequestUrl = requestKey
+
             // Create a new AbortController for this request (so we can abort on pause)
             this.#requestAbortController = new AbortController()
 
@@ -863,7 +889,8 @@ export class StreamResponseImpl<
               this.offset,
               this.cursor,
               this.#requestAbortController.signal,
-              resumingFromPause
+              resumingFromPause,
+              cacheBuster
             )
 
             this.#updateStateFromResponse(response)

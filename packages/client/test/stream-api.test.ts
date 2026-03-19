@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import {
   FetchError,
+  STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
   stream,
@@ -87,6 +88,7 @@ describe(`stream() function`, () => {
           status: 200,
           headers: {
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -870,6 +872,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -884,6 +887,7 @@ describe(`DurableStream.stream() method`, () => {
         /* noop */
       })
       await expect(res.text()).rejects.toThrow(`already being consumed`)
+      res.cancel()
     })
 
     it(`should throw when calling jsonStream() after subscribeText()`, async () => {
@@ -893,6 +897,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -908,6 +913,7 @@ describe(`DurableStream.stream() method`, () => {
         /* noop */
       })
       expect(() => res.jsonStream()).toThrow(`already being consumed`)
+      res.cancel()
     })
 
     it(`should allow calling textStream() which uses bodyStream internally`, async () => {
@@ -968,6 +974,7 @@ describe(`DurableStream.stream() method`, () => {
           status: 200,
           headers: {
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
           },
         })
       )
@@ -978,6 +985,7 @@ describe(`DurableStream.stream() method`, () => {
           status: 200,
           headers: {
             [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_2`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -990,6 +998,7 @@ describe(`DurableStream.stream() method`, () => {
           status: 200,
           headers: {
             [STREAM_OFFSET_HEADER]: `3_15`,
+            [STREAM_CURSOR_HEADER]: `cursor_3`,
           },
         })
       )
@@ -1067,6 +1076,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
           },
         })
       )
@@ -1078,6 +1088,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_2`,
           },
         })
       )
@@ -1089,6 +1100,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `3_15`,
+            [STREAM_CURSOR_HEADER]: `cursor_3`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -1145,6 +1157,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `3_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
           },
         })
       )
@@ -1157,6 +1170,7 @@ describe(`DurableStream.stream() method`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `3_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_2`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })

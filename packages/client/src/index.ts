@@ -94,6 +94,7 @@ export {
   MissingStreamUrlError,
   InvalidSignalError,
   StreamClosedError,
+  MissingHeadersError,
 } from "./error"
 
 // ============================================================================
@@ -105,6 +106,7 @@ export {
   BackoffDefaults,
   createFetchWithBackoff,
   createFetchWithConsumedBody,
+  createFetchWithResponseHeadersCheck,
 } from "./fetch"
 
 // ============================================================================

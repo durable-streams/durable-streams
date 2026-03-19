@@ -1,9 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { FetchBackoffAbortError, FetchError } from "../src/error"
+import {
+  STREAM_CLOSED_HEADER,
+  STREAM_CURSOR_HEADER,
+  STREAM_OFFSET_HEADER,
+} from "../src/constants"
+import {
+  FetchBackoffAbortError,
+  FetchError,
+  MissingHeadersError,
+} from "../src/error"
 import {
   BackoffDefaults,
   createFetchWithBackoff,
   createFetchWithConsumedBody,
+  createFetchWithResponseHeadersCheck,
   parseRetryAfterHeader,
 } from "../src/fetch"
 import type { Mock } from "vitest"
@@ -378,5 +388,112 @@ describe(`createFetchWithConsumedBody`, () => {
     await expect(enhancedFetch(`http://example.com`)).rejects.toThrow(
       FetchError
     )
+  })
+})
+
+describe(`createFetchWithResponseHeadersCheck`, () => {
+  let mockFetch: Mock<typeof fetch>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+  })
+
+  afterEach(() => {
+    vi.resetAllMocks()
+  })
+
+  it(`should pass through response when all required headers are present`, async () => {
+    const mockResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `1`,
+      },
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+    const result = await checkedFetch(`http://example.com?offset=0`)
+
+    expect(result).toBe(mockResponse)
+    expect(result.status).toBe(200)
+  })
+
+  it(`should throw MissingHeadersError when Stream-Next-Offset is missing`, async () => {
+    const mockResponse = new Response(`data`, {
+      status: 200,
+      headers: {},
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+
+    await expect(checkedFetch(`http://example.com?offset=0`)).rejects.toThrow(
+      MissingHeadersError
+    )
+
+    try {
+      await checkedFetch(`http://example.com?offset=0`)
+    } catch (err) {
+      expect(err).toBeInstanceOf(MissingHeadersError)
+      expect((err as MissingHeadersError).missingHeaders).toContain(
+        STREAM_OFFSET_HEADER
+      )
+    }
+  })
+
+  it(`should throw when live + missing cursor + not closed`, async () => {
+    const mockResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `1`,
+      },
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+
+    await expect(
+      checkedFetch(`http://example.com?offset=0&live=long-poll`)
+    ).rejects.toThrow(MissingHeadersError)
+
+    try {
+      await checkedFetch(`http://example.com?offset=0&live=long-poll`)
+    } catch (err) {
+      expect(err).toBeInstanceOf(MissingHeadersError)
+      expect((err as MissingHeadersError).missingHeaders).toContain(
+        STREAM_CURSOR_HEADER
+      )
+    }
+  })
+
+  it(`should NOT throw when live + missing cursor + Stream-Closed: true`, async () => {
+    const mockResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `1`,
+        [STREAM_CLOSED_HEADER]: `true`,
+      },
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+    const result = await checkedFetch(
+      `http://example.com?offset=0&live=long-poll`
+    )
+
+    expect(result).toBe(mockResponse)
+  })
+
+  it(`should NOT throw on non-2xx responses`, async () => {
+    const mockResponse = new Response(null, {
+      status: 404,
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+    const result = await checkedFetch(`http://example.com?offset=0`)
+
+    expect(result).toBe(mockResponse)
+    expect(result.status).toBe(404)
   })
 })

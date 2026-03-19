@@ -5,6 +5,7 @@
  */
 
 import {
+  CACHE_BUSTER_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   OFFSET_QUERY_PARAM,
   STREAM_CLOSED_HEADER,
@@ -14,7 +15,12 @@ import {
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
 import { DurableStreamError, FetchBackoffAbortError } from "./error"
-import { BackoffDefaults, createFetchWithBackoff } from "./fetch"
+import {
+  BackoffDefaults,
+  createFetchWithBackoff,
+  createFetchWithConsumedBody,
+  createFetchWithResponseHeadersCheck,
+} from "./fetch"
 import { StreamResponseImpl } from "./response"
 import {
   handleErrorResponse,
@@ -162,17 +168,27 @@ async function streamInternal<TJson = unknown>(
     )
   }
 
-  // Get fetch client with backoff
+  // Build fetch client chains
   const baseFetchClient =
     options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
   const backoffOptions = options.backoffOptions ?? BackoffDefaults
-  const fetchClient = createFetchWithBackoff(baseFetchClient, backoffOptions)
+  const backoffClient = createFetchWithBackoff(baseFetchClient, backoffOptions)
+
+  // For long-poll / catch-up chunk fetches:
+  const chunkFetchClient = createFetchWithConsumedBody(
+    createFetchWithResponseHeadersCheck(backoffClient)
+  )
+
+  // For SSE connections (must NOT consume body — it's a long-lived stream):
+  const sseFetchClient = createFetchWithResponseHeadersCheck(backoffClient)
 
   // Make the first request
-  // Backoff client will throw FetchError for non-OK responses
+  // Use SSE client for SSE mode (don't consume the long-lived body),
+  // chunk client otherwise (consumes body for connection pooling)
+  const firstRequestClient = live === `sse` ? sseFetchClient : chunkFetchClient
   let firstResponse: Response
   try {
-    firstResponse = await fetchClient(fetchUrl.toString(), {
+    firstResponse = await firstRequestClient(fetchUrl.toString(), {
       method: `GET`,
       headers,
       signal: abortController.signal,
@@ -212,10 +228,15 @@ async function streamInternal<TJson = unknown>(
     offset: Offset,
     cursor: string | undefined,
     signal: AbortSignal,
-    resumingFromPause?: boolean
+    resumingFromPause?: boolean,
+    cacheBuster?: string
   ): Promise<Response> => {
     const nextUrl = new URL(url)
     nextUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
+
+    if (cacheBuster) {
+      nextUrl.searchParams.set(CACHE_BUSTER_QUERY_PARAM, cacheBuster)
+    }
 
     // For subsequent requests, set live mode unless resuming from pause
     // (resuming from pause needs immediate response for UI status)
@@ -239,7 +260,7 @@ async function streamInternal<TJson = unknown>(
 
     const nextHeaders = await resolveHeaders(options.headers)
 
-    const response = await fetchClient(nextUrl.toString(), {
+    const response = await chunkFetchClient(nextUrl.toString(), {
       method: `GET`,
       headers: nextHeaders,
       signal,
@@ -275,7 +296,7 @@ async function streamInternal<TJson = unknown>(
 
           const sseHeaders = await resolveHeaders(options.headers)
 
-          const response = await fetchClient(sseUrl.toString(), {
+          const response = await sseFetchClient(sseUrl.toString(), {
             method: `GET`,
             headers: sseHeaders,
             signal,

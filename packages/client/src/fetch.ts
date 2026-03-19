@@ -3,7 +3,17 @@
  * Based on @electric-sql/client patterns.
  */
 
-import { FetchBackoffAbortError, FetchError } from "./error"
+import {
+  LIVE_QUERY_PARAM,
+  STREAM_CLOSED_HEADER,
+  STREAM_CURSOR_HEADER,
+  STREAM_OFFSET_HEADER,
+} from "./constants"
+import {
+  FetchBackoffAbortError,
+  FetchError,
+  MissingHeadersError,
+} from "./error"
 
 /**
  * HTTP status codes that should be retried.
@@ -51,10 +61,10 @@ export interface BackoffOptions {
  * Default backoff options.
  */
 export const BackoffDefaults: BackoffOptions = {
-  initialDelay: 100,
-  maxDelay: 60_000, // Cap at 60s
-  multiplier: 1.3,
-  maxRetries: Infinity, // Retry forever by default
+  initialDelay: 1_000,
+  maxDelay: 32_000,
+  multiplier: 2,
+  maxRetries: Infinity,
 }
 
 /**
@@ -228,6 +238,51 @@ export function createFetchWithConsumedBody(
             : `failed to read body`
       )
     }
+  }
+}
+
+/**
+ * Creates a fetch client that validates required protocol headers are present.
+ * Throws MissingHeadersError if a 2xx response is missing required headers.
+ * This catches proxies/CDNs that strip custom headers.
+ *
+ * @param fetchClient - The base fetch client to wrap
+ * @returns A fetch function that validates response headers
+ */
+export function createFetchWithResponseHeadersCheck(
+  fetchClient: typeof fetch
+): typeof fetch {
+  return async (...args: Parameters<typeof fetch>): Promise<Response> => {
+    const res = await fetchClient(...args)
+    if (res.status < 200 || res.status >= 300) return res
+
+    const url = args[0].toString()
+    const missing: Array<string> = []
+
+    if (!res.headers.has(STREAM_OFFSET_HEADER)) {
+      missing.push(STREAM_OFFSET_HEADER)
+    }
+
+    const requestUrl = new URL(url)
+    const liveParam = requestUrl.searchParams.get(LIVE_QUERY_PARAM)
+    const streamClosed = res.headers.get(STREAM_CLOSED_HEADER) === `true`
+    const isSSE =
+      res.headers.get(`content-type`)?.includes(`text/event-stream`) ?? false
+    // SSE responses deliver cursor via control events, not HTTP headers
+    if (
+      liveParam &&
+      !streamClosed &&
+      !isSSE &&
+      !res.headers.has(STREAM_CURSOR_HEADER)
+    ) {
+      missing.push(STREAM_CURSOR_HEADER)
+    }
+
+    if (missing.length > 0) {
+      throw new MissingHeadersError(missing, url)
+    }
+
+    return res
   }
 }
 

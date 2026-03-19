@@ -1,5 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest"
-import { STREAM_OFFSET_HEADER, STREAM_UP_TO_DATE_HEADER, stream } from "../src"
+import {
+  STREAM_CURSOR_HEADER,
+  STREAM_OFFSET_HEADER,
+  STREAM_UP_TO_DATE_HEADER,
+  stream,
+} from "../src"
 import type { Mock } from "vitest"
 
 /**
@@ -68,6 +73,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -127,6 +133,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -148,6 +155,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_2`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -217,6 +225,7 @@ describe(`visibility handling`, () => {
                 headers: {
                   "content-type": `application/json`,
                   [STREAM_OFFSET_HEADER]: `1_10`,
+                  [STREAM_CURSOR_HEADER]: `cursor_1`,
                   [STREAM_UP_TO_DATE_HEADER]: `true`,
                 },
               })
@@ -240,6 +249,7 @@ describe(`visibility handling`, () => {
                 headers: {
                   "content-type": `application/json`,
                   [STREAM_OFFSET_HEADER]: `2_10`,
+                  [STREAM_CURSOR_HEADER]: `cursor_2`,
                   [STREAM_UP_TO_DATE_HEADER]: `true`,
                 },
               })
@@ -311,6 +321,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -334,6 +345,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_2`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -394,6 +406,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -454,7 +467,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_10`,
-            // Not upToDate so stream stays open
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
           },
         })
       )
@@ -482,7 +495,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_10`,
-            // Not upToDate so stream stays open
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
           },
         })
       )
@@ -697,6 +710,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
@@ -709,6 +723,7 @@ describe(`visibility handling`, () => {
           headers: {
             "content-type": `application/json`,
             [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_2`,
             [STREAM_UP_TO_DATE_HEADER]: `true`,
           },
         })
