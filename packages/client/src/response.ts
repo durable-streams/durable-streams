@@ -34,10 +34,12 @@ import type { SSEEvent } from "./sse"
 import type { StreamState } from "./stream-response-state"
 import type {
   ByteChunk,
+  HeadersRecord,
   StreamResponse as IStreamResponse,
   JsonBatch,
   LiveMode,
   Offset,
+  ParamsRecord,
   SSEResilienceOptions,
   StreamErrorHandler,
   TextChunk,
@@ -85,7 +87,9 @@ export interface StreamResponseConfig {
     cursor: string | undefined,
     signal: AbortSignal,
     resumingFromPause?: boolean,
-    cacheBuster?: string
+    cacheBuster?: string,
+    overrideHeaders?: HeadersRecord,
+    overrideParams?: ParamsRecord
   ) => Promise<Response>
   /** Function to start SSE connection and return a Response with SSE body */
   startSSE?: (
@@ -139,6 +143,8 @@ export class StreamResponseImpl<
   #closed: Promise<void>
   #stopAfterUpToDate = false
   #consumptionMethod: string | null = null
+  #overrideHeaders?: HeadersRecord
+  #overrideParams?: ParamsRecord
 
   // --- Visibility/Pause State ---
   #pauseLock: PauseLock
@@ -946,7 +952,9 @@ export class StreamResponseImpl<
               this.cursor,
               this.#requestAbortController.signal,
               resumingFromPause,
-              cacheBuster
+              cacheBuster,
+              this.#overrideHeaders,
+              this.#overrideParams
             )
 
             this.#updateStateFromResponse(response)
@@ -1000,8 +1008,16 @@ export class StreamResponseImpl<
             return // pull() will be called again, triggering a fresh request
           }
 
-          // Non-retryable errors bypass onError entirely
+          // Non-retryable errors — notify via onError but don't retry
+          // (stripped headers are not recoverable)
           if (err instanceof MissingHeadersError) {
+            if (this.#onError) {
+              try {
+                await this.#onError(err)
+              } catch {
+                /* ignore */
+              }
+            }
             this.#markError(err)
             controller.error(err)
             return
@@ -1023,10 +1039,24 @@ export class StreamResponseImpl<
                   err instanceof Error ? err : new Error(String(err))
                 )
                 if (retryOpts !== undefined) {
+                  // Apply returned headers/params for subsequent requests
+                  if (retryOpts.headers) {
+                    this.#overrideHeaders = {
+                      ...this.#overrideHeaders,
+                      ...retryOpts.headers,
+                    }
+                  }
+                  if (retryOpts.params) {
+                    this.#overrideParams = {
+                      ...this.#overrideParams,
+                      ...retryOpts.params,
+                    }
+                  }
                   // User wants to retry — unwrap ErrorState
                   if (this.#syncState instanceof ErrorState) {
                     this.#syncState = this.#syncState.retry()
                   }
+                  this.#fastLoopDetector.reset()
                   return // pull() will be called again
                 }
               } catch {

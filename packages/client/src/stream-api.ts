@@ -34,7 +34,14 @@ import {
   resolveParams,
   warnIfUsingHttpInBrowser,
 } from "./utils"
-import type { LiveMode, Offset, StreamOptions, StreamResponse } from "./types"
+import type {
+  HeadersRecord,
+  LiveMode,
+  Offset,
+  ParamsRecord,
+  StreamOptions,
+  StreamResponse,
+} from "./types"
 
 /**
  * Create a streaming session to read from a durable stream.
@@ -247,7 +254,9 @@ async function streamInternal<TJson = unknown>(
     cursor: string | undefined,
     signal: AbortSignal,
     resumingFromPause?: boolean,
-    cacheBuster?: string
+    cacheBuster?: string,
+    overrideHeaders?: HeadersRecord,
+    overrideParams?: ParamsRecord
   ): Promise<Response> => {
     const nextUrl = new URL(url)
     nextUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
@@ -276,7 +285,18 @@ async function streamInternal<TJson = unknown>(
       nextUrl.searchParams.set(key, value)
     }
 
-    const nextHeaders = await resolveHeaders(options.headers)
+    // Apply onError override params (resolve functions same as base params)
+    if (overrideParams) {
+      const resolvedOverrideParams = await resolveParams(overrideParams)
+      for (const [key, value] of Object.entries(resolvedOverrideParams)) {
+        nextUrl.searchParams.set(key, value)
+      }
+    }
+
+    const nextHeaders = {
+      ...(await resolveHeaders(options.headers)),
+      ...(await resolveHeaders(overrideHeaders)),
+    }
 
     const response = await chunkFetchClient(nextUrl.toString(), {
       method: `GET`,
