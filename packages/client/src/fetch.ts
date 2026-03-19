@@ -4,10 +4,13 @@
  */
 
 import {
+  CURSOR_QUERY_PARAM,
   LIVE_QUERY_PARAM,
+  OFFSET_QUERY_PARAM,
   STREAM_CLOSED_HEADER,
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
+  STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
 import {
   FetchBackoffAbortError,
@@ -320,3 +323,123 @@ export function chainAborter(
 }
 
 function noop() {}
+
+/**
+ * Compute the URL for the next chunk to prefetch based on response headers.
+ * Returns null if prefetching is not appropriate (closed, up-to-date, or live).
+ */
+export function getNextChunkUrl(
+  requestUrl: URL,
+  response: Response
+): URL | null {
+  if (response.headers.get(STREAM_CLOSED_HEADER) === `true`) return null
+  if (response.headers.has(STREAM_UP_TO_DATE_HEADER)) return null
+  if (requestUrl.searchParams.has(LIVE_QUERY_PARAM)) return null
+
+  const nextOffset = response.headers.get(STREAM_OFFSET_HEADER)
+  if (!nextOffset) return null
+
+  const nextUrl = new URL(requestUrl.toString())
+  nextUrl.searchParams.set(OFFSET_QUERY_PARAM, nextOffset)
+
+  const cursor = response.headers.get(STREAM_CURSOR_HEADER)
+  if (cursor) {
+    nextUrl.searchParams.set(CURSOR_QUERY_PARAM, cursor)
+  }
+
+  return nextUrl
+}
+
+/**
+ * In-order prefetch queue for chunk responses.
+ * Maintains a bounded queue of speculative fetches and enforces FIFO consumption.
+ */
+export class PrefetchQueue {
+  readonly #maxChunks: number
+  readonly #fetchClient: typeof fetch
+  readonly #queue = new Map<
+    string,
+    { promise: Promise<Response>; abort: AbortController }
+  >()
+  #headUrl: string | null = null
+
+  constructor(fetchClient: typeof fetch, maxChunks = 2) {
+    this.#fetchClient = fetchClient
+    this.#maxChunks = maxChunks
+  }
+
+  consume(url: string): Promise<Response> | undefined {
+    if (this.#headUrl !== url) return undefined
+    const entry = this.#queue.get(url)
+    if (!entry) return undefined
+    this.#queue.delete(url)
+    this.#headUrl = null
+    for (const key of this.#queue.keys()) {
+      this.#headUrl = key
+      break
+    }
+    return entry.promise
+  }
+
+  prefetch(url: string, signal?: AbortSignal): void {
+    if (this.#queue.has(url)) return
+    if (this.#queue.size >= this.#maxChunks) return
+
+    const abort = new AbortController()
+    if (signal) {
+      signal.addEventListener(`abort`, () => abort.abort(signal.reason), {
+        once: true,
+      })
+    }
+
+    const promise = this.#fetchClient(url, {
+      method: `GET`,
+      signal: abort.signal,
+    }).catch(() => new Response(null, { status: 599 }))
+
+    this.#queue.set(url, { promise, abort })
+    if (!this.#headUrl) this.#headUrl = url
+  }
+
+  clear(): void {
+    for (const entry of this.#queue.values()) {
+      entry.abort.abort(`prefetch-cleared`)
+    }
+    this.#queue.clear()
+    this.#headUrl = null
+  }
+}
+
+/**
+ * Creates a fetch client that speculatively prefetches the next chunk URL.
+ * Only buffers GET requests. Non-GET requests pass through directly.
+ */
+export function createFetchWithChunkBuffer(
+  fetchClient: typeof fetch,
+  options?: { maxChunksToPrefetch?: number }
+): typeof fetch {
+  const queue = new PrefetchQueue(
+    fetchClient,
+    options?.maxChunksToPrefetch ?? 2
+  )
+
+  return async (...args: Parameters<typeof fetch>): Promise<Response> => {
+    const url = args[0].toString()
+    const method = (args[1]?.method ?? `GET`).toUpperCase()
+
+    if (method !== `GET`) {
+      return fetchClient(...args)
+    }
+
+    const prefetched = queue.consume(url)
+    const response = prefetched ? await prefetched : await fetchClient(...args)
+
+    const requestUrl = new URL(url)
+    const nextUrl = getNextChunkUrl(requestUrl, response)
+    if (nextUrl) {
+      queue.prefetch(nextUrl.toString(), args[1]?.signal ?? undefined)
+    }
+
+    return response
+  }
+}

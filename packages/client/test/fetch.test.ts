@@ -3,6 +3,7 @@ import {
   STREAM_CLOSED_HEADER,
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
+  STREAM_UP_TO_DATE_HEADER,
 } from "../src/constants"
 import {
   FetchBackoffAbortError,
@@ -11,9 +12,12 @@ import {
 } from "../src/error"
 import {
   BackoffDefaults,
+  PrefetchQueue,
   createFetchWithBackoff,
+  createFetchWithChunkBuffer,
   createFetchWithConsumedBody,
   createFetchWithResponseHeadersCheck,
+  getNextChunkUrl,
   parseRetryAfterHeader,
 } from "../src/fetch"
 import type { Mock } from "vitest"
@@ -495,5 +499,226 @@ describe(`createFetchWithResponseHeadersCheck`, () => {
 
     expect(result).toBe(mockResponse)
     expect(result.status).toBe(404)
+  })
+})
+
+describe(`getNextChunkUrl`, () => {
+  it(`should return null when Stream-Closed is true`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_CLOSED_HEADER]: `true`,
+        [STREAM_OFFSET_HEADER]: `5`,
+      },
+    })
+    expect(getNextChunkUrl(requestUrl, response)).toBeNull()
+  })
+
+  it(`should return null when Stream-Up-To-Date is present`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_UP_TO_DATE_HEADER]: `true`,
+        [STREAM_OFFSET_HEADER]: `5`,
+      },
+    })
+    expect(getNextChunkUrl(requestUrl, response)).toBeNull()
+  })
+
+  it(`should return null on live requests`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0&live=long-poll`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `5`,
+      },
+    })
+    expect(getNextChunkUrl(requestUrl, response)).toBeNull()
+  })
+
+  it(`should return correct URL with updated offset and cursor`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `10`,
+        [STREAM_CURSOR_HEADER]: `abc123`,
+      },
+    })
+    const nextUrl = getNextChunkUrl(requestUrl, response)
+    expect(nextUrl).not.toBeNull()
+    expect(nextUrl!.searchParams.get(`offset`)).toBe(`10`)
+    expect(nextUrl!.searchParams.get(`cursor`)).toBe(`abc123`)
+  })
+
+  it(`should return URL without cursor when cursor header is absent`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `10`,
+      },
+    })
+    const nextUrl = getNextChunkUrl(requestUrl, response)
+    expect(nextUrl).not.toBeNull()
+    expect(nextUrl!.searchParams.get(`offset`)).toBe(`10`)
+    expect(nextUrl!.searchParams.has(`cursor`)).toBe(false)
+  })
+
+  it(`should return null when offset header is missing`, () => {
+    const requestUrl = new URL(`http://example.com?offset=0`)
+    const response = new Response(null, {
+      status: 200,
+      headers: {},
+    })
+    expect(getNextChunkUrl(requestUrl, response)).toBeNull()
+  })
+})
+
+describe(`PrefetchQueue`, () => {
+  it(`should return undefined for unknown URL on consume`, () => {
+    const mockFetch = vi.fn()
+    const queue = new PrefetchQueue(mockFetch)
+    expect(queue.consume(`http://example.com?offset=5`)).toBeUndefined()
+  })
+
+  it(`should prefetch and then consume the response`, async () => {
+    const mockResponse = new Response(`data`, { status: 200 })
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(mockResponse)
+    const queue = new PrefetchQueue(mockFetch)
+
+    const url = `http://example.com?offset=5`
+    queue.prefetch(url)
+    const promise = queue.consume(url)
+    expect(promise).toBeDefined()
+    const result = await promise!
+    expect(result).toBe(mockResponse)
+  })
+
+  it(`should enforce in-order consumption — consume(url2) when url1 is head returns undefined`, () => {
+    const mockFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }))
+    const queue = new PrefetchQueue(mockFetch, 3)
+
+    const url1 = `http://example.com?offset=5`
+    const url2 = `http://example.com?offset=10`
+    queue.prefetch(url1)
+    queue.prefetch(url2)
+
+    expect(queue.consume(url2)).toBeUndefined()
+    expect(queue.consume(url1)).toBeDefined()
+    expect(queue.consume(url2)).toBeDefined()
+  })
+
+  it(`should abort all in-flight requests on clear`, () => {
+    const abortSpy = vi.fn()
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation((_url, init) => {
+      init?.signal?.addEventListener(`abort`, abortSpy)
+      return new Promise(() => {})
+    })
+    const queue = new PrefetchQueue(mockFetch, 3)
+
+    queue.prefetch(`http://example.com?offset=5`)
+    queue.prefetch(`http://example.com?offset=10`)
+    queue.clear()
+
+    expect(abortSpy).toHaveBeenCalledTimes(2)
+    expect(queue.consume(`http://example.com?offset=5`)).toBeUndefined()
+  })
+
+  it(`should respect maxChunks limit`, () => {
+    const mockFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }))
+    const queue = new PrefetchQueue(mockFetch, 2)
+
+    queue.prefetch(`http://example.com?offset=5`)
+    queue.prefetch(`http://example.com?offset=10`)
+    queue.prefetch(`http://example.com?offset=15`)
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it(`should not duplicate prefetch for same URL`, () => {
+    const mockFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 200 }))
+    const queue = new PrefetchQueue(mockFetch, 3)
+
+    queue.prefetch(`http://example.com?offset=5`)
+    queue.prefetch(`http://example.com?offset=5`)
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe(`createFetchWithChunkBuffer`, () => {
+  it(`should pass through non-GET requests`, async () => {
+    const mockResponse = new Response(`ok`, { status: 200 })
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(mockResponse)
+    const bufferedFetch = createFetchWithChunkBuffer(mockFetch)
+
+    const result = await bufferedFetch(`http://example.com`, {
+      method: `POST`,
+    })
+    expect(result).toBe(mockResponse)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it(`should prefetch next chunk URL on successful GET`, async () => {
+    const firstResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `10`,
+        [STREAM_CURSOR_HEADER]: `cur1`,
+      },
+    })
+    const secondResponse = new Response(`more`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `20`,
+        [STREAM_UP_TO_DATE_HEADER]: `true`,
+      },
+    })
+    const mockFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(firstResponse)
+      .mockResolvedValueOnce(secondResponse)
+
+    const bufferedFetch = createFetchWithChunkBuffer(mockFetch)
+
+    // Use URL with trailing slash to match new URL() normalization
+    const result1 = await bufferedFetch(`http://example.com/?offset=0`)
+    expect(result1).toBe(firstResponse)
+
+    // The prefetch should have been triggered for offset=10
+    // getNextChunkUrl builds the next URL from new URL(requestUrl), which
+    // normalizes to include trailing slash. The prefetched URL is:
+    // http://example.com/?offset=10&cursor=cur1
+    const result2 = await bufferedFetch(
+      `http://example.com/?offset=10&cursor=cur1`
+    )
+    expect(result2).toBe(secondResponse)
+
+    // Only 2 fetch calls total (first + prefetch consumed as second)
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+  })
+
+  it(`should not prefetch when stream is closed`, async () => {
+    const closedResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `10`,
+        [STREAM_CLOSED_HEADER]: `true`,
+      },
+    })
+    const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(closedResponse)
+    const bufferedFetch = createFetchWithChunkBuffer(mockFetch)
+
+    await bufferedFetch(`http://example.com/?offset=0`)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
   })
 })

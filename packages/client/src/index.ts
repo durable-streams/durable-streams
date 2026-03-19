@@ -105,9 +105,28 @@ export {
   type BackoffOptions,
   BackoffDefaults,
   createFetchWithBackoff,
+  createFetchWithChunkBuffer,
   createFetchWithConsumedBody,
   createFetchWithResponseHeadersCheck,
+  getNextChunkUrl,
+  PrefetchQueue,
 } from "./fetch"
+
+// ============================================================================
+// Pause Lock
+// ============================================================================
+
+export { PauseLock } from "./pause-lock"
+
+// ============================================================================
+// Fast Loop Detection
+// ============================================================================
+
+export {
+  FastLoopDetector,
+  type FastLoopDetectorOptions,
+  type FastLoopResult,
+} from "./fast-loop-detection"
 
 // ============================================================================
 // Up-to-date tracking (CDN replay dedup)

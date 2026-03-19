@@ -18,10 +18,12 @@ import { DurableStreamError, FetchBackoffAbortError } from "./error"
 import {
   BackoffDefaults,
   createFetchWithBackoff,
+  createFetchWithChunkBuffer,
   createFetchWithConsumedBody,
   createFetchWithResponseHeadersCheck,
 } from "./fetch"
 import { StreamResponseImpl } from "./response"
+import { UpToDateTracker, canonicalStreamKey } from "./up-to-date-tracker"
 import {
   handleErrorResponse,
   resolveHeaders,
@@ -174,9 +176,16 @@ async function streamInternal<TJson = unknown>(
   const backoffOptions = options.backoffOptions ?? BackoffDefaults
   const backoffClient = createFetchWithBackoff(baseFetchClient, backoffOptions)
 
-  // For long-poll / catch-up chunk fetches:
-  const chunkFetchClient = createFetchWithConsumedBody(
+  // Base chain for chunk fetches (no prefetch):
+  const baseChunkClient = createFetchWithConsumedBody(
     createFetchWithResponseHeadersCheck(backoffClient)
+  )
+
+  // For subsequent chunk fetches with speculative prefetch:
+  const chunkFetchClient = createFetchWithConsumedBody(
+    createFetchWithResponseHeadersCheck(
+      createFetchWithChunkBuffer(backoffClient, options.prefetchOptions)
+    )
   )
 
   // For SSE connections (must NOT consume body — it's a long-lived stream):
@@ -184,8 +193,8 @@ async function streamInternal<TJson = unknown>(
 
   // Make the first request
   // Use SSE client for SSE mode (don't consume the long-lived body),
-  // chunk client otherwise (consumes body for connection pooling)
-  const firstRequestClient = live === `sse` ? sseFetchClient : chunkFetchClient
+  // base chunk client otherwise (no prefetch on first request)
+  const firstRequestClient = live === `sse` ? sseFetchClient : baseChunkClient
   let firstResponse: Response
   try {
     firstResponse = await firstRequestClient(fetchUrl.toString(), {
@@ -310,6 +319,14 @@ async function streamInternal<TJson = unknown>(
         }
       : undefined
 
+  // Create up-to-date tracker if storage is provided
+  const upToDateTracker = options.upToDateStorage
+    ? new UpToDateTracker(options.upToDateStorage)
+    : undefined
+  const streamKey = options.upToDateStorage
+    ? canonicalStreamKey(url)
+    : undefined
+
   // Create and return the StreamResponse
   return new StreamResponseImpl<TJson>({
     url,
@@ -328,5 +345,7 @@ async function streamInternal<TJson = unknown>(
     sseResilience: options.sseResilience,
     encoding,
     onError: options.onError,
+    upToDateTracker,
+    streamKey,
   })
 }

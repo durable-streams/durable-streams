@@ -21,11 +21,13 @@ import {
   ErrorState,
   LiveState,
   PausedState,
+  ReplayingState,
   StaleRetryState,
   SyncingState,
   createCacheBuster,
 } from "./stream-response-state"
 import { subscribeToWakeDetection } from "./wake-detection"
+import type { UpToDateTracker } from "./up-to-date-tracker"
 import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
 import type { SSEEvent } from "./sse"
 import type { StreamState } from "./stream-response-state"
@@ -96,6 +98,10 @@ export interface StreamResponseConfig {
   encoding?: `base64`
   /** Error handler for mid-stream recoverable errors */
   onError?: StreamErrorHandler
+  /** Up-to-date tracker for replay mode entry */
+  upToDateTracker?: UpToDateTracker
+  /** Canonical stream key for up-to-date tracking */
+  streamKey?: string
 }
 
 /**
@@ -150,6 +156,10 @@ export class StreamResponseImpl<
   // --- Fast Loop Detection ---
   #fastLoopDetector: FastLoopDetector
 
+  // --- Replay Mode / Up-to-date Tracking ---
+  #upToDateTracker?: UpToDateTracker
+  #streamKey?: string
+
   // --- Duplicate URL Guard ---
   #duplicateUrlCount = 0
 
@@ -170,6 +180,28 @@ export class StreamResponseImpl<
       upToDate: config.initialUpToDate,
       streamClosed: config.initialStreamClosed,
     })
+
+    // Check replay mode entry (one-shot, after first response)
+    if (
+      config.upToDateTracker &&
+      config.streamKey &&
+      !this.#syncState.upToDate
+    ) {
+      const replayCursor = config.upToDateTracker.shouldEnterReplayMode(
+        config.streamKey
+      )
+      if (replayCursor && this.#syncState.canEnterReplayMode()) {
+        this.#syncState = new ReplayingState(
+          {
+            offset: this.#syncState.offset,
+            cursor: this.#syncState.cursor,
+            upToDate: this.#syncState.upToDate,
+            streamClosed: this.#syncState.streamClosed,
+          },
+          replayCursor
+        )
+      }
+    }
 
     // Initialize response metadata from first response
     this.#headers = config.firstResponse.headers
@@ -204,6 +236,10 @@ export class StreamResponseImpl<
 
     // Initialize fast loop detector
     this.#fastLoopDetector = new FastLoopDetector()
+
+    // Initialize replay mode tracking
+    this.#upToDateTracker = config.upToDateTracker
+    this.#streamKey = config.streamKey
 
     this.#closed = new Promise((resolve, reject) => {
       this.#closedResolve = resolve
@@ -388,6 +424,19 @@ export class StreamResponseImpl<
         response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`,
     })
     this.#syncState = transition.state
+
+    // Record cursor on up-to-date for replay mode dedup
+    if (
+      this.#upToDateTracker &&
+      this.#streamKey &&
+      this.#syncState.upToDate &&
+      this.#syncState.cursor
+    ) {
+      this.#upToDateTracker.recordUpToDate(
+        this.#streamKey,
+        this.#syncState.cursor
+      )
+    }
 
     // Update response metadata to reflect latest server response
     this.#headers = response.headers
