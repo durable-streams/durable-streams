@@ -213,7 +213,9 @@ defmodule DurableStreams.HTTP.Finch do
       case parse_control_data(data) do
         {:ok, control} when is_map(control) ->
           next_offset = control["streamNextOffset"] || acc.next_offset
-          up_to_date = control["upToDate"] || acc.up_to_date
+          # Per protocol: streamClosed: true implies upToDate: true
+          stream_closed = control["streamClosed"] == true
+          up_to_date = control["upToDate"] || stream_closed || acc.up_to_date
           %{acc | next_offset: next_offset, up_to_date: up_to_date}
 
         {:ok, _non_map} ->
@@ -229,18 +231,21 @@ defmodule DurableStreams.HTTP.Finch do
     # Data event - deliver to callback
     # Decode base64 if encoding was detected from response header
     decoded_data = decode_sse_data(data, acc.encoding)
-    next_offset = id || acc.next_offset
-    acc.on_event.({:event, decoded_data, next_offset, acc.up_to_date})
-    %{acc | next_offset: next_offset, events_delivered: acc.events_delivered + 1}
+    # Use the event's id field for offset if present; otherwise pass nil.
+    # The authoritative offset comes from the subsequent control event's
+    # streamNextOffset, NOT from the bootstrap HTTP response header.
+    acc.on_event.({:event, decoded_data, id, acc.up_to_date})
+    new_acc = if id, do: %{acc | next_offset: id}, else: acc
+    %{new_acc | events_delivered: acc.events_delivered + 1}
   end
 
   defp deliver_event(%{type: "message", data: data, id: id}, acc) do
     # Default SSE event type is "message" - treat as data
     # Decode base64 if encoding was detected from response header
     decoded_data = decode_sse_data(data, acc.encoding)
-    next_offset = id || acc.next_offset
-    acc.on_event.({:event, decoded_data, next_offset, acc.up_to_date})
-    %{acc | next_offset: next_offset, events_delivered: acc.events_delivered + 1}
+    acc.on_event.({:event, decoded_data, id, acc.up_to_date})
+    new_acc = if id, do: %{acc | next_offset: id}, else: acc
+    %{new_acc | events_delivered: acc.events_delivered + 1}
   end
 
   defp deliver_event(%{type: _unknown_type, data: _data, id: _id}, acc) do

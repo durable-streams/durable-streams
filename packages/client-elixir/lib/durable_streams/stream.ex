@@ -963,7 +963,7 @@ defmodule DurableStreams.Stream do
   end
 
   # Parse the control event JSON payload
-  # Format: {"streamNextOffset":"...","upToDate":true/false}
+  # Format: {"streamNextOffset":"...","upToDate":true/false,"streamClosed":true/false}
   # Using simple pattern matching since format is predictable
   defp parse_control_event(json) do
     # Extract streamNextOffset
@@ -980,6 +980,15 @@ defmodule DurableStreams.Stream do
         [_, "false"] -> false
         _ -> nil
       end
+
+    # Extract streamClosed - per protocol, streamClosed: true implies upToDate: true
+    stream_closed =
+      case Regex.run(~r/"streamClosed"\s*:\s*(true|false)/, json) do
+        [_, "true"] -> true
+        _ -> false
+      end
+
+    up_to_date = if stream_closed, do: true, else: up_to_date
 
     {next_offset, up_to_date}
   end
