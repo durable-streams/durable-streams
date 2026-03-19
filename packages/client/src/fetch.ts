@@ -179,8 +179,18 @@ export function createFetchWithBackoff(
             )
           }
 
-          // Wait for the calculated duration
-          await new Promise((resolve) => setTimeout(resolve, waitMs))
+          // Wait for the calculated duration (cancellable via abort signal)
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(resolve, waitMs)
+            options?.signal?.addEventListener(
+              `abort`,
+              () => {
+                clearTimeout(timer)
+                resolve()
+              },
+              { once: true }
+            )
+          })
 
           // Increase the delay for the next attempt (capped at maxDelay)
           delay = Math.min(delay * multiplier, maxDelay)
