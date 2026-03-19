@@ -603,7 +603,7 @@ export class DurableStream {
         const chunks = batch.map((m) =>
           typeof m.data === `string` ? encoder.encode(m.data) : m.data
         )
-        batchedBody = concatUint8Arrays(chunks)
+        batchedBody = concatUint8Arrays(chunks) as unknown as BodyInit
       }
     }
 

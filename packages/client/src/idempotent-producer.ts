@@ -658,7 +658,9 @@ export class IdempotentProducer {
       const jsonStrings = batch.map((e) => new TextDecoder().decode(e.body))
       batchedBody = `[${jsonStrings.join(`,`)}]`
     } else {
-      batchedBody = concatUint8Arrays(batch.map((e) => e.body))
+      batchedBody = concatUint8Arrays(
+        batch.map((e) => e.body)
+      ) as unknown as BodyInit
     }
 
     const url = this.#stream.url
