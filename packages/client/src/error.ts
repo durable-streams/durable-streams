@@ -39,7 +39,7 @@ export class FetchError extends Error {
     let json: object | undefined = undefined
 
     const contentType = response.headers.get(`content-type`)
-    if (!response.bodyUsed) {
+    if (!response.bodyUsed && response.body !== null) {
       if (contentType && contentType.includes(`application/json`)) {
         try {
           json = (await response.json()) as object
@@ -110,7 +110,7 @@ export class DurableStreamError extends Error {
     let details: unknown
 
     const contentType = response.headers.get(`content-type`)
-    if (!response.bodyUsed) {
+    if (!response.bodyUsed && response.body !== null) {
       if (contentType && contentType.includes(`application/json`)) {
         try {
           details = await response.json()
