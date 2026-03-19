@@ -354,6 +354,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
               initialDelay: 50,
               maxDelay: 500,
               multiplier: 1.5,
+              maxRetries: 10,
             },
           })
         } catch (err) {
