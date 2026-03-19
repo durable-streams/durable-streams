@@ -862,3 +862,46 @@ describe(`Tier 5: Dedicated tests`, () => {
     })
   })
 })
+
+// ============================================================================
+// Group 5: Type safety test — PausedState.handleResponseMetadata return type
+// ============================================================================
+
+describe(`PausedState type safety`, () => {
+  // EXPECTED TO FAIL — exposes bug #10
+  // PausedState.handleResponseMetadata delegates to inner state and wraps result.
+  // When the inner handleResponseMetadata returns { action: 'accepted', state: ActiveState },
+  // PausedState wraps it with `new PausedState(inner.state) as unknown as ActiveState`.
+  //
+  // The `as unknown as ActiveState` cast lies to the type system. The returned
+  // state is a PausedState (which is NOT an ActiveState), but the type signature
+  // says it's ActiveState. This can cause runtime errors if callers rely on
+  // ActiveState methods that PausedState doesn't have.
+  it(`PausedState.handleResponseMetadata returns PausedState, not ActiveState`, () => {
+    const inner = makeSyncingState({ offset: `1_0` })
+    const paused = new PausedState(inner)
+    const result = paused.handleResponseMetadata(
+      makeResponseInput({ offset: `10_0` })
+    )
+
+    // The transition says 'accepted' and we get a state back
+    expect(result.action).toBe(`accepted`)
+    expect(result.state.offset).toBe(`10_0`)
+
+    // Verify the returned state IS a PausedState (correct runtime behavior)
+    expect(result.state).toBeInstanceOf(PausedState)
+
+    // Verify it is NOT actually an ActiveState (exposes the type cast lie)
+    // The ResponseTransition type says `state: ActiveState` for 'accepted',
+    // but the actual value is a PausedState which extends StreamState, not ActiveState.
+    expect(result.state).not.toBeInstanceOf(ActiveState)
+
+    // The key issue: if someone calls ActiveState-specific methods on the result,
+    // it would fail at runtime despite the types saying it's fine.
+    // For example, ActiveState has toErrorState(), canEnterReplayMode(), etc.
+    // PausedState does NOT have these methods.
+    const state = result.state
+    expect(typeof (state as any).toErrorState).toBe(`undefined`)
+    expect(typeof (state as any).canEnterReplayMode).toBe(`undefined`)
+  })
+})

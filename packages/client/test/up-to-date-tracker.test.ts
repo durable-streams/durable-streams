@@ -5,6 +5,7 @@ import {
   UpToDateTracker,
   canonicalStreamKey,
 } from "../src/up-to-date-tracker"
+import { LiveState, ReplayingState } from "../src/stream-response-state"
 
 describe(`UpToDateTracker`, () => {
   beforeEach(() => {
@@ -301,5 +302,69 @@ describe(`canonicalStreamKey`, () => {
       `https://example.com/stream?offset=1&cursor=c&live=sse&cache_buster=x`
     )
     expect(key).toBe(`https://example.com/stream`)
+  })
+})
+
+// ============================================================================
+// Group 4: CDN replay infinite loop prevention (ported from Electric)
+// ============================================================================
+
+describe(`CDN replay infinite loop prevention`, () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
+  it(`should not cause infinite suppression — one-shot gate`, () => {
+    // This test verifies that after replay mode suppresses one batch,
+    // the next identical response should NOT be suppressed (one-shot gate).
+    //
+    // The ReplayingState transitions to LiveState after the first upToDate
+    // batch, regardless of whether it was suppressed. This ensures the
+    // suppression is one-shot.
+    //
+    // Bug scenario (if broken):
+    // 1. User had cursor=X in tracker from previous session
+    // 2. CDN returns cursor=X on first request (suppressed — replay mode)
+    // 3. CDN returns cursor=X again on second request
+    // 4. If still in replay mode, this would also be suppressed -> infinite loop
+    //
+    // Correct behavior:
+    // 1. First batch with matching cursor: suppressed, transitions to LiveState
+    // 2. Second batch: LiveState does not suppress anything
+
+    const state = new ReplayingState(
+      {
+        offset: `5_0`,
+        cursor: `old-cursor`,
+        upToDate: false,
+        streamClosed: false,
+      },
+      `replay-cursor-match`
+    )
+
+    // First upToDate batch with matching cursor -> suppressed, transitions to LiveState
+    const result1 = state.handleMessageBatch({
+      hasMessages: true,
+      hasUpToDateMessage: true,
+      isSse: false,
+      currentCursor: `replay-cursor-match`,
+    })
+    expect(result1.suppressBatch).toBe(true)
+    expect(result1.becameUpToDate).toBe(true)
+    expect(result1.state).toBeInstanceOf(LiveState)
+
+    // Second identical batch on the LiveState -> NOT suppressed
+    const liveState = result1.state
+    const result2 = liveState.handleMessageBatch({
+      hasMessages: true,
+      hasUpToDateMessage: false,
+      isSse: false,
+      currentCursor: `replay-cursor-match`,
+    })
+    expect(result2.suppressBatch).toBe(false)
   })
 })

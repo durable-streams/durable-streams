@@ -593,3 +593,131 @@ describe(`onError handler`, () => {
     expect(mockFetch).toHaveBeenCalledTimes(2)
   })
 })
+
+// ============================================================================
+// Group 3: onError handler error visibility (should FAIL — exposing bugs)
+// ============================================================================
+
+describe(`onError handler error visibility`, () => {
+  let mockFetch: ReturnType<typeof vi.fn>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+  })
+
+  // EXPECTED TO FAIL — exposes bug #7
+  // When MissingHeadersError occurs mid-stream and the user's onError handler
+  // itself throws, the handler error should be logged, not silently swallowed.
+  // The current code has `catch { /* ignore */ }` which silently drops the error.
+  it.fails(
+    `should log onError handler errors for MissingHeadersError`,
+    async () => {
+      const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+      let callCount = 0
+      mockFetch.mockImplementation(async () => {
+        callCount++
+        if (callCount === 1) {
+          return new Response(JSON.stringify([{ id: 1 }]), {
+            status: 200,
+            headers: {
+              "content-type": `application/json`,
+              "Stream-Next-Offset": `1`,
+              "Stream-Cursor": `cursor1`,
+            },
+          })
+        }
+        return new Response(JSON.stringify([{ id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+          },
+        })
+      })
+
+      const handlerError = new Error(`handler crashed!`)
+      const onError = vi.fn().mockRejectedValue(handlerError)
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `long-poll`,
+        backoffOptions: {
+          initialDelay: 1,
+          maxDelay: 10,
+          multiplier: 1,
+          maxRetries: 0,
+        },
+        onError,
+      })
+
+      res.closed.catch(() => {})
+      await expect(res.json()).rejects.toThrow(MissingHeadersError)
+
+      // BUG: The handler error is silently swallowed by `catch { /* ignore */ }`
+      // Expected: console.warn should be called with the handler error
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`handler crashed!`)
+      )
+
+      warnSpy.mockRestore()
+    }
+  )
+
+  // EXPECTED TO FAIL — exposes bug #8
+  // When onError throws during recoverable error recovery, it should be logged
+  // before falling through to fatal. Currently the code has `catch { /* ignore */ }`
+  // which silently drops the handler error.
+  it.fails(
+    `should log onError handler errors for recoverable errors`,
+    async () => {
+      const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+      let callCount = 0
+      mockFetch.mockImplementation(async () => {
+        callCount++
+        if (callCount === 1) {
+          return new Response(JSON.stringify([{ id: 1 }]), {
+            status: 200,
+            headers: {
+              "content-type": `application/json`,
+              "Stream-Next-Offset": `1`,
+              "Stream-Cursor": `cursor1`,
+            },
+          })
+        }
+        return new Response(null, {
+          status: 500,
+          statusText: `Internal Server Error`,
+        })
+      })
+
+      const handlerError = new Error(`handler exploded!`)
+      const onError = vi.fn().mockRejectedValue(handlerError)
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `long-poll`,
+        backoffOptions: {
+          initialDelay: 1,
+          maxDelay: 10,
+          multiplier: 1,
+          maxRetries: 0,
+        },
+        onError,
+      })
+
+      res.closed.catch(() => {})
+      await expect(res.json()).rejects.toThrow()
+
+      // BUG: The handler error is silently swallowed by `catch { /* ignore */ }`
+      // Expected: console.warn should be called with the handler error
+      expect(warnSpy).toHaveBeenCalledWith(
+        expect.stringContaining(`handler exploded!`)
+      )
+
+      warnSpy.mockRestore()
+    }
+  )
+})

@@ -76,3 +76,51 @@ describe(`FastLoopDetector`, () => {
     vi.useRealTimers()
   })
 })
+
+// ============================================================================
+// Group 6: Backoff zero-delay test (should FAIL — exposing bug)
+// ============================================================================
+
+describe(`backoff delay minimum floor`, () => {
+  // EXPECTED TO FAIL — exposes bug #11
+  // The backoff delay calculation uses `Math.floor(Math.random() * maxDelay)`.
+  // When Math.random() returns a very small value (close to 0), the delay can be 0ms,
+  // effectively turning the backoff into no delay at all.
+  //
+  // The delay should always be >= backoffBaseMs to ensure meaningful backoff.
+  it.fails(`backoff delay should have a minimum floor`, () => {
+    // Mock Math.random to return a very small value
+    const originalRandom = Math.random
+    Math.random = () => 0.0001
+
+    try {
+      const detector = new FastLoopDetector({
+        threshold: 3,
+        windowMs: 10000,
+        maxCount: 10,
+        backoffBaseMs: 100,
+        backoffMaxMs: 5000,
+      })
+
+      // Drive to first detection (clear-and-reset at consecutiveCount=1)
+      for (let i = 0; i < 3; i++) detector.check(`0_0`)
+
+      // Drive to second detection (backoff at consecutiveCount=2)
+      for (let i = 0; i < 3; i++) detector.check(`0_0`)
+      const result = detector.check(`0_0`)
+
+      expect(result.action).toBe(`backoff`)
+      if (result.action === `backoff`) {
+        // BUG: With Math.random() returning 0.0001, the delay calculation is:
+        //   maxDelay = min(5000, 100 * 2^2) = 400
+        //   delayMs = floor(0.0001 * 400) = floor(0.04) = 0
+        //
+        // A delay of 0ms defeats the purpose of backoff.
+        // Expected: delay should be at least backoffBaseMs (100ms)
+        expect(result.delayMs).toBeGreaterThanOrEqual(100)
+      }
+    } finally {
+      Math.random = originalRandom
+    }
+  })
+})

@@ -1198,3 +1198,278 @@ describe(`DurableStream.stream() method`, () => {
     })
   })
 })
+
+// ============================================================================
+// Group 1: Fast-loop integration tests (ported from Electric)
+// ============================================================================
+
+describe(`fast-loop integration with stream`, () => {
+  let mockFetch: Mock<typeof fetch>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+  })
+
+  it(`should detect fast-loop and enter StaleRetryState with cache_buster`, async () => {
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount <= 10) {
+        return new Response(JSON.stringify([{ id: callCount }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_stale`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `1_5`,
+          [STREAM_CURSOR_HEADER]: `cursor_final`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      fastLoopOptions: { threshold: 3, windowMs: 10000, maxCount: 10 },
+    })
+
+    // Prevent unhandled rejection from res.closed
+    res.closed.catch(() => {})
+
+    try {
+      const items = await res.json()
+      expect(items.length).toBeGreaterThan(0)
+    } catch (err) {
+      expect(err).toBeInstanceOf(FetchError)
+      expect((err as FetchError).status).toBe(502)
+    }
+
+    const urlsWithCacheBuster = mockFetch.mock.calls.filter((call) =>
+      new URL(call[0] as string).searchParams.has(`cache_buster`)
+    )
+    expect(urlsWithCacheBuster.length).toBeGreaterThan(0)
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.stringContaining(`fast retry loop`)
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  it(`should reset fast-loop counter after onError retry`, async () => {
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount <= 1) {
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
+          },
+        })
+      }
+      if (callCount === 2) {
+        return new Response(null, {
+          status: 500,
+          statusText: `Internal Server Error`,
+        })
+      }
+      return new Response(JSON.stringify([{ id: 2 }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `2_10`,
+          [STREAM_CURSOR_HEADER]: `cursor_2`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const onError = vi.fn().mockResolvedValue({})
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      backoffOptions: {
+        initialDelay: 1,
+        maxDelay: 10,
+        multiplier: 1,
+        maxRetries: 0,
+      },
+      onError,
+    })
+
+    const items = await res.json()
+    expect(onError).toHaveBeenCalledOnce()
+    expect(items).toEqual([{ id: 1 }, { id: 2 }])
+  })
+
+  it(`should not trigger fast-loop when offsets are advancing`, async () => {
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount < 10) {
+        return new Response(JSON.stringify([{ id: callCount }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `${callCount}_0`,
+            [STREAM_CURSOR_HEADER]: `cursor_${callCount}`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([{ id: callCount }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `${callCount}_0`,
+          [STREAM_CURSOR_HEADER]: `cursor_${callCount}`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      fastLoopOptions: { threshold: 3, windowMs: 10000 },
+    })
+
+    const items = await res.json()
+    expect(items.length).toBe(10)
+
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining(`fast retry loop`)
+    )
+
+    warnSpy.mockRestore()
+  })
+
+  it(`should not trigger fast-loop for same-offset responses in LiveState`, async () => {
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) {
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `1_5`,
+          [STREAM_CURSOR_HEADER]: `cursor_${callCount}`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: `long-poll`,
+      fastLoopOptions: { threshold: 3, windowMs: 10000 },
+    })
+
+    const items = await res.json()
+    expect(items).toEqual([{ id: 1 }])
+
+    expect(warnSpy).not.toHaveBeenCalledWith(
+      expect.stringContaining(`fast retry loop`)
+    )
+
+    warnSpy.mockRestore()
+  })
+})
+
+// ============================================================================
+// Group 7: Replay suppression integration test
+// ============================================================================
+
+describe(`replay mode suppression integration`, () => {
+  let mockFetch: Mock<typeof fetch>
+
+  beforeEach(() => {
+    mockFetch = vi.fn()
+  })
+
+  it(`should suppress duplicate batch on cursor match in replay mode`, async () => {
+    const { InMemoryUpToDateStorage, UpToDateTracker } = await import(
+      `../src/up-to-date-tracker`
+    )
+    const storage = new InMemoryUpToDateStorage()
+    const tracker = new UpToDateTracker(storage)
+    const streamKey = `https://example.com/stream`
+    tracker.recordUpToDate(streamKey, `cached_cursor`)
+
+    let callCount = 0
+    mockFetch.mockImplementation(async () => {
+      callCount++
+      if (callCount === 1) {
+        return new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_5`,
+            [STREAM_CURSOR_HEADER]: `cached_cursor`,
+          },
+        })
+      }
+      if (callCount === 2) {
+        return new Response(JSON.stringify([{ id: 2 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cached_cursor`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([{ id: 3 }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `3_15`,
+          [STREAM_CURSOR_HEADER]: `cursor_new`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    })
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: false,
+      upToDateStorage: storage,
+    })
+
+    const items = await res.json()
+    expect(items).toEqual([{ id: 1 }])
+  })
+})
