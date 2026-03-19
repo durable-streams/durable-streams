@@ -18,13 +18,13 @@ export interface UpToDateStorage {
 
 export class InMemoryUpToDateStorage implements UpToDateStorage {
   readonly #map = new Map<string, { cursor: string; timestamp: number }>()
-  get(key: string) {
+  get(key: string): { cursor: string; timestamp: number } | null {
     return this.#map.get(key) ?? null
   }
-  set(key: string, value: { cursor: string; timestamp: number }) {
+  set(key: string, value: { cursor: string; timestamp: number }): void {
     this.#map.set(key, value)
   }
-  delete(key: string) {
+  delete(key: string): void {
     this.#map.delete(key)
   }
 }
