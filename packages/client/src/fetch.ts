@@ -268,7 +268,8 @@ export function createFetchWithResponseHeadersCheck(
 
     const requestUrl = new URL(url)
     const liveParam = requestUrl.searchParams.get(LIVE_QUERY_PARAM)
-    const streamClosed = res.headers.get(STREAM_CLOSED_HEADER) === `true`
+    const streamClosed =
+      res.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
     // Cursor required for live requests unless stream is closed
     if (liveParam && !streamClosed && !res.headers.has(STREAM_CURSOR_HEADER)) {
       missing.push(STREAM_CURSOR_HEADER)
@@ -325,7 +326,8 @@ export function getNextChunkUrl(
   requestUrl: URL,
   response: Response
 ): URL | null {
-  if (response.headers.get(STREAM_CLOSED_HEADER) === `true`) return null
+  if (response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`)
+    return null
   if (response.headers.has(STREAM_UP_TO_DATE_HEADER)) return null
   if (requestUrl.searchParams.has(LIVE_QUERY_PARAM)) return null
 
