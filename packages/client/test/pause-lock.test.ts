@@ -94,4 +94,23 @@ describe(`PauseLock`, () => {
     expect(onReleased).not.toHaveBeenCalled()
     expect(lock.isPaused).toBe(true)
   })
+
+  it.fails(
+    `releaseAllMatching should not fire onReleased (Electric behavior)`,
+    () => {
+      const onReleased = vi.fn()
+      const lock = new PauseLock({ onAcquired: vi.fn(), onReleased })
+      lock.acquire(`snapshot-1`)
+      lock.acquire(`snapshot-2`)
+
+      // releaseAllMatching should silently remove holders without firing callback
+      // (Electric behavior — prevents race condition during active request loop)
+      lock.releaseAllMatching(`snapshot-`)
+
+      // onReleased should NOT have been called
+      expect(onReleased).not.toHaveBeenCalled()
+      // But isPaused should be false (holders were removed)
+      expect(lock.isPaused).toBe(false)
+    }
+  )
 })

@@ -309,6 +309,47 @@ describe(`canonicalStreamKey`, () => {
 // Group 4: CDN replay infinite loop prevention (ported from Electric)
 // ============================================================================
 
+describe(`localStorage write throttling`, () => {
+  beforeEach(() => {
+    vi.useFakeTimers()
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it.fails(`should throttle localStorage writes to once per 60s`, () => {
+    const storage: Record<string, string> = {}
+    const setItemSpy = vi.fn((key: string, value: string) => {
+      storage[key] = value
+    })
+    const getItemSpy = vi.fn((key: string) => storage[key] ?? null)
+    const removeItemSpy = vi.fn((key: string) => {
+      delete storage[key]
+    })
+
+    vi.stubGlobal(`localStorage`, {
+      setItem: setItemSpy,
+      getItem: getItemSpy,
+      removeItem: removeItemSpy,
+    })
+
+    const tracker = new UpToDateTracker(new LocalStorageUpToDateStorage())
+
+    // Rapid writes — should be throttled
+    tracker.recordUpToDate(`stream-1`, `cursor-1`)
+    tracker.recordUpToDate(`stream-1`, `cursor-2`)
+    tracker.recordUpToDate(`stream-1`, `cursor-3`)
+
+    // Should only have written once (throttled)
+    expect(setItemSpy).toHaveBeenCalledTimes(1)
+
+    // But shouldEnterReplayMode should still return the latest cursor (from in-memory)
+    expect(tracker.shouldEnterReplayMode(`stream-1`)).toBe(`cursor-3`)
+  })
+})
+
 describe(`CDN replay infinite loop prevention`, () => {
   beforeEach(() => {
     vi.useFakeTimers()

@@ -1411,6 +1411,69 @@ describe(`fast-loop integration with stream`, () => {
 // Group 7: Replay suppression integration test
 // ============================================================================
 
+describe(`PAUSE/WAKE error masking`, () => {
+  // This test documents a known issue: when a real server error (e.g. 500)
+  // coincides with a PAUSE_STREAM or SYSTEM_WAKE abort, the current code
+  // discards ALL errors if the abort reason matches, even if the error is
+  // a genuine server error that happened to arrive at the same time.
+  //
+  // The fix would be: in the catch block that checks for PAUSE_STREAM /
+  // SYSTEM_WAKE abort reasons, if the caught error is NOT an AbortError,
+  // emit a console.warn before returning. This ensures real errors are at
+  // least logged for debugging, even if the stream continues normally.
+  //
+  // This is skipped rather than it.fails() because the race between pause
+  // and error is timing-dependent and cannot be reliably triggered in a
+  // unit test without exposing internal abort handling.
+  it.skip(`should log non-abort errors that coincide with pause`, async () => {
+    const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+    const abortController = new AbortController()
+    let fetchCallCount = 0
+
+    const res = await stream({
+      url: `https://example.com/test-stream`,
+      signal: abortController.signal,
+      live: `long-poll`,
+      fetch: async () => {
+        fetchCallCount++
+        if (fetchCallCount === 1) {
+          return new Response(JSON.stringify([]), {
+            status: 200,
+            headers: {
+              "stream-next-offset": `1_0`,
+              "stream-cursor": `cursor-1`,
+              "content-type": `application/json`,
+            },
+          })
+        }
+        // Second request: simulate a 500 that coincides with a pause
+        throw new Error(`Server error 500`)
+      },
+      backoffOptions: {
+        initialDelay: 1,
+        maxDelay: 1,
+        multiplier: 1,
+        maxRetries: 0,
+      },
+    })
+
+    const reader = res.bodyStream().getReader()
+    await reader.read()
+
+    // In the real scenario, document.visibilitychange fires at the exact
+    // moment the 500 arrives. The catch block sees abort.reason ===
+    // PAUSE_STREAM and silently returns, discarding the 500.
+    //
+    // Expected behavior: console.warn is called with the real error details
+    // so operators can debug intermittent server failures.
+    // expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining(`Non-abort error`))
+
+    warnSpy.mockRestore()
+    abortController.abort()
+  })
+})
+
 describe(`replay mode suppression integration`, () => {
   let mockFetch: Mock<typeof fetch>
 
