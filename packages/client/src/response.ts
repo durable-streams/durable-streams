@@ -12,10 +12,19 @@ import {
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
-import { DurableStreamError } from "./error"
+import { DurableStreamError, FetchError } from "./error"
+import { FastLoopDetector } from "./fast-loop-detection"
 import { PauseLock } from "./pause-lock"
 import { parseSSEStream } from "./sse"
-import { LiveState, PausedState, SyncingState } from "./stream-response-state"
+import {
+  ActiveState,
+  ErrorState,
+  LiveState,
+  PausedState,
+  StaleRetryState,
+  SyncingState,
+  createCacheBuster,
+} from "./stream-response-state"
 import { subscribeToWakeDetection } from "./wake-detection"
 import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
 import type { SSEEvent } from "./sse"
@@ -27,6 +36,7 @@ import type {
   LiveMode,
   Offset,
   SSEResilienceOptions,
+  StreamErrorHandler,
   TextChunk,
 } from "./types"
 
@@ -83,6 +93,8 @@ export interface StreamResponseConfig {
   sseResilience?: SSEResilienceOptions
   /** Encoding for SSE data events */
   encoding?: `base64`
+  /** Error handler for mid-stream recoverable errors */
+  onError?: StreamErrorHandler
 }
 
 /**
@@ -131,6 +143,12 @@ export class StreamResponseImpl<
   // --- SSE Encoding State ---
   #encoding?: `base64`
 
+  // --- Error Recovery ---
+  #onError?: StreamErrorHandler
+
+  // --- Fast Loop Detection ---
+  #fastLoopDetector: FastLoopDetector
+
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
 
@@ -176,6 +194,12 @@ export class StreamResponseImpl<
 
     // Initialize SSE encoding
     this.#encoding = config.encoding
+
+    // Initialize error handler
+    this.#onError = config.onError
+
+    // Initialize fast loop detector
+    this.#fastLoopDetector = new FastLoopDetector()
 
     this.#closed = new Promise((resolve, reject) => {
       this.#closedResolve = resolve
@@ -792,9 +816,49 @@ export class StreamResponseImpl<
               return
             }
 
+            // Fast loop detection for non-live (catch-up) requests
+            const isLiveRequest = this.#syncState instanceof LiveState
+            if (!isLiveRequest) {
+              const loopResult = this.#fastLoopDetector.check(
+                this.#syncState.offset
+              )
+              switch (loopResult.action) {
+                case `ok`:
+                  break
+                case `clear-and-reset`:
+                  console.warn(
+                    `[durable-streams] Detected fast retry loop. Adding cache buster.`
+                  )
+                  this.#syncState = new StaleRetryState(
+                    {
+                      offset: this.#syncState.offset,
+                      cursor: this.#syncState.cursor,
+                      upToDate: this.#syncState.upToDate,
+                      streamClosed: this.#syncState.streamClosed,
+                    },
+                    createCacheBuster()
+                  )
+                  break
+                case `backoff`:
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, loopResult.delayMs)
+                  )
+                  break
+                case `fatal`:
+                  throw new FetchError(
+                    502,
+                    loopResult.message,
+                    undefined,
+                    {},
+                    this.url
+                  )
+              }
+            }
+
             // Create a new AbortController for this request (so we can abort on pause)
             this.#requestAbortController = new AbortController()
 
+            const prevOffset = this.offset
             const response = await this.#fetchNext(
               this.offset,
               this.cursor,
@@ -803,6 +867,15 @@ export class StreamResponseImpl<
             )
 
             this.#updateStateFromResponse(response)
+
+            // Reset fast loop detector on offset advance or live request
+            if (
+              this.offset !== prevOffset ||
+              this.#syncState instanceof LiveState
+            ) {
+              this.#fastLoopDetector.reset()
+            }
+
             controller.enqueue(response)
             // Let the next pull() decide whether to close based on upToDate
             return
@@ -831,6 +904,30 @@ export class StreamResponseImpl<
             this.#markClosed()
             controller.close()
           } else {
+            // Recoverable error — try onError handler
+            if (this.#onError) {
+              const errorObj =
+                err instanceof Error ? err : new Error(String(err))
+              if (this.#syncState instanceof ActiveState) {
+                this.#syncState = this.#syncState.toErrorState(errorObj)
+              }
+              try {
+                const retryOpts = await this.#onError(
+                  err instanceof Error ? err : new Error(String(err))
+                )
+                if (retryOpts !== undefined) {
+                  // User wants to retry — unwrap ErrorState
+                  if (this.#syncState instanceof ErrorState) {
+                    this.#syncState = this.#syncState.retry()
+                  }
+                  return // pull() will be called again
+                }
+              } catch {
+                // onError handler itself threw — fall through to fatal
+              }
+            }
+
+            // Fatal — propagate error
             this.#markError(err instanceof Error ? err : new Error(String(err)))
             controller.error(err)
           }
@@ -1468,10 +1565,10 @@ function createSSESyntheticResponseFromParts(
         0
       )
       const combined = new Uint8Array(totalLength)
-      let offset = 0
+      let byteOffset = 0
       for (const part of decodedParts) {
-        combined.set(part, offset)
-        offset += part.length
+        combined.set(part, byteOffset)
+        byteOffset += part.length
       }
       body = combined.buffer
     }

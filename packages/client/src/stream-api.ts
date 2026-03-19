@@ -306,5 +306,6 @@ async function streamInternal<TJson = unknown>(
     startSSE,
     sseResilience: options.sseResilience,
     encoding,
+    onError: options.onError,
   })
 }

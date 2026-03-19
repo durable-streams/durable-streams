@@ -1133,4 +1133,54 @@ describe(`DurableStream.stream() method`, () => {
       expect(res.upToDate).toBe(true)
     })
   })
+
+  describe(`fast loop detection regression`, () => {
+    it(`should not trigger stale-retry for a valid at-tail response with same offset and upToDate`, async () => {
+      const warnSpy = vi.spyOn(console, `warn`).mockImplementation(() => {})
+
+      // First response: not up to date, returns offset 3_10
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `3_10`,
+          },
+        })
+      )
+
+      // Second response (live poll): at tail, same offset 3_10, upToDate
+      // This is a valid at-tail response — should NOT trigger stale retry
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `3_10`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `long-poll`,
+      })
+
+      const items = await res.json<{ id: number }>()
+
+      // Should fetch exactly twice (initial + one poll that returns upToDate)
+      expect(mockFetch).toHaveBeenCalledTimes(2)
+      expect(items).toEqual([{ id: 1 }])
+      expect(res.upToDate).toBe(true)
+
+      // No stale-retry warning should have been logged
+      expect(warnSpy).not.toHaveBeenCalledWith(
+        expect.stringContaining(`fast retry loop`)
+      )
+
+      warnSpy.mockRestore()
+    })
+  })
 })
