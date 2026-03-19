@@ -794,6 +794,49 @@ describe(`Yjs Durable Streams Protocol`, () => {
       })
     })
 
+    describe(`presence.rapid-updates`, () => {
+      it(`should deliver multiple rapid awareness updates correctly`, async () => {
+        const docId = `awareness-rapid-${Date.now()}`
+
+        const doc1 = new Y.Doc()
+        const awareness1 = new Awareness(doc1)
+        const provider1 = await createProviderWithDoc(docId, {
+          doc: doc1,
+          awareness: awareness1,
+        })
+        await waitForSync(provider1)
+
+        const doc2 = new Y.Doc()
+        const awareness2 = new Awareness(doc2)
+        const provider2 = await createProviderWithDoc(docId, {
+          doc: doc2,
+          awareness: awareness2,
+          skipDocCreation: true,
+        })
+        await waitForSync(provider2)
+
+        // Send multiple rapid updates to exercise lib0 framing under batching
+        for (let i = 0; i < 5; i++) {
+          awareness1.setLocalStateField(`cursor`, { x: i * 10, y: i * 20 })
+        }
+
+        // The final state should arrive at provider2
+        await waitForAwarenessState(
+          awareness2,
+          awareness1.clientID,
+          (state) =>
+            (state as { cursor?: { x?: number } } | undefined)?.cursor?.x ===
+            40,
+          `provider2 sees final rapid awareness update`
+        )
+
+        const finalState = awareness2.getStates().get(awareness1.clientID) as {
+          cursor: { x: number; y: number }
+        }
+        expect(finalState.cursor).toEqual({ x: 40, y: 80 })
+      })
+    })
+
     describe(`presence.cleanup`, () => {
       it(`should remove awareness state after disconnect`, async () => {
         const docId = `awareness-cleanup-${Date.now()}`
