@@ -1014,8 +1014,10 @@ export class StreamResponseImpl<
             if (this.#onError) {
               try {
                 await this.#onError(err)
-              } catch {
-                /* ignore */
+              } catch (handlerErr) {
+                console.warn(
+                  `[durable-streams] onError handler threw while processing MissingHeadersError: ${handlerErr}`
+                )
               }
             }
             this.#markError(err)
@@ -1059,8 +1061,10 @@ export class StreamResponseImpl<
                   this.#fastLoopDetector.reset()
                   return // pull() will be called again
                 }
-              } catch {
-                // onError handler itself threw — fall through to fatal
+              } catch (handlerErr) {
+                console.warn(
+                  `[durable-streams] onError handler threw during error recovery: ${handlerErr}`
+                )
               }
             }
 

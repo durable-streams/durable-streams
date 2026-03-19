@@ -88,7 +88,7 @@ describe(`backoff delay minimum floor`, () => {
   // effectively turning the backoff into no delay at all.
   //
   // The delay should always be >= backoffBaseMs to ensure meaningful backoff.
-  it.fails(`backoff delay should have a minimum floor`, () => {
+  it(`backoff delay should have a minimum floor`, () => {
     // Mock Math.random to return a very small value
     const originalRandom = Math.random
     Math.random = () => 0.0001

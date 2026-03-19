@@ -63,7 +63,10 @@ export class FastLoopDetector {
       this.#backoffMaxMs,
       this.#backoffBaseMs * Math.pow(2, this.#consecutiveCount)
     )
-    const delayMs = Math.floor(Math.random() * maxDelay)
+    const delayMs = Math.max(
+      this.#backoffBaseMs,
+      Math.floor(Math.random() * maxDelay)
+    )
     return { action: `backoff`, delayMs }
   }
 

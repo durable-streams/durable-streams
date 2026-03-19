@@ -374,7 +374,14 @@ export class PrefetchQueue {
   }
 
   consume(url: string): Promise<Response> | undefined {
-    if (this.#headUrl !== url) return undefined
+    if (this.#headUrl !== url) {
+      // If the URL is in the queue but not at head, preserve ordering
+      if (!this.#queue.has(url)) {
+        // URL not in queue at all — clear stale prefetches
+        this.clear()
+      }
+      return undefined
+    }
     const entry = this.#queue.get(url)
     if (!entry) return undefined
     this.#queue.delete(url)
@@ -400,7 +407,7 @@ export class PrefetchQueue {
     const promise = this.#fetchClient(url, {
       method: `GET`,
       signal: abort.signal,
-    }).catch(() => new Response(null, { status: 599 }))
+    }).catch(() => new Response(null, { status: 502 }))
 
     this.#queue.set(url, { promise, abort })
     if (!this.#headUrl) this.#headUrl = url
@@ -437,7 +444,18 @@ export function createFetchWithChunkBuffer(
     }
 
     const prefetched = queue.consume(url)
-    const response = prefetched ? await prefetched : await fetchClient(...args)
+    let response: Response
+    if (prefetched) {
+      const prefetchedResponse = await prefetched
+      // If prefetch failed, fall back to fresh fetch
+      if (!prefetchedResponse.ok) {
+        response = await fetchClient(...args)
+      } else {
+        response = prefetchedResponse
+      }
+    } else {
+      response = await fetchClient(...args)
+    }
 
     const requestUrl = new URL(url)
     const nextUrl = getNextChunkUrl(requestUrl, response)

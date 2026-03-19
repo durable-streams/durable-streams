@@ -732,39 +732,36 @@ describe(`PrefetchQueue error handling bugs`, () => {
   // When a prefetched request fails (network error), the consumer receives a
   // synthetic 599 response that gets fed into header validation, causing
   // MissingHeadersError instead of falling back to a fresh fetch.
-  it.fails(
-    `prefetch network error should not produce synthetic 599 response`,
-    async () => {
-      const mockFetch = vi.fn<typeof fetch>()
+  it(`prefetch network error should not produce synthetic 599 response`, async () => {
+    const mockFetch = vi.fn<typeof fetch>()
 
-      const queue = new PrefetchQueue(mockFetch)
+    const queue = new PrefetchQueue(mockFetch)
 
-      // Prefetch will fail with network error
-      mockFetch.mockRejectedValueOnce(new Error(`network error`))
-      const targetUrl = `http://example.com/?offset=10&cursor=cur1`
-      queue.prefetch(targetUrl)
+    // Prefetch will fail with network error
+    mockFetch.mockRejectedValueOnce(new Error(`network error`))
+    const targetUrl = `http://example.com/?offset=10&cursor=cur1`
+    queue.prefetch(targetUrl)
 
-      // Consume the prefetched response
-      const promise = queue.consume(targetUrl)
-      expect(promise).toBeDefined()
-      const result = await promise!
+    // Consume the prefetched response
+    const promise = queue.consume(targetUrl)
+    expect(promise).toBeDefined()
+    const result = await promise!
 
-      // BUG: PrefetchQueue.prefetch() has `.catch(() => new Response(null, { status: 599 }))`
-      // This means a network error gets turned into a synthetic 599 response.
-      // When this response is fed into createFetchWithResponseHeadersCheck,
-      // it triggers MissingHeadersError because 599 >= 200 && < 300 is false
-      // (so actually 599 bypasses the header check), but the caller sees
-      // a non-ok response with status 599 which is unexpected.
-      //
-      // Expected: The queue should not mask errors as synthetic responses.
-      expect(result.status).not.toBe(599)
-    }
-  )
+    // BUG: PrefetchQueue.prefetch() has `.catch(() => new Response(null, { status: 599 }))`
+    // This means a network error gets turned into a synthetic 599 response.
+    // When this response is fed into createFetchWithResponseHeadersCheck,
+    // it triggers MissingHeadersError because 599 >= 200 && < 300 is false
+    // (so actually 599 bypasses the header check), but the caller sees
+    // a non-ok response with status 599 which is unexpected.
+    //
+    // Expected: The queue should not mask errors as synthetic responses.
+    expect(result.status).not.toBe(599)
+  })
 
   // EXPECTED TO FAIL — exposes bug #6
   // When consume() is called with a URL that doesn't match the head of the queue,
   // the stale prefetched responses should be cleared/aborted.
-  it.fails(`consume with mismatched URL should clear stale prefetches`, () => {
+  it(`consume with mismatched URL should clear stale prefetches`, () => {
     const abortSpy = vi.fn()
     const mockFetch = vi.fn<typeof fetch>().mockImplementation((_url, init) => {
       init?.signal?.addEventListener(`abort`, abortSpy)
