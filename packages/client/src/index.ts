@@ -110,6 +110,18 @@ export {
 } from "./fetch"
 
 // ============================================================================
+// Up-to-date tracking (CDN replay dedup)
+// ============================================================================
+
+export {
+  type UpToDateStorage,
+  InMemoryUpToDateStorage,
+  LocalStorageUpToDateStorage,
+  UpToDateTracker,
+  canonicalStreamKey,
+} from "./up-to-date-tracker"
+
+// ============================================================================
 // Constants (for advanced users)
 // ============================================================================
 
