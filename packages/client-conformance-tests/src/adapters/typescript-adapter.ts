@@ -350,6 +350,11 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
             live,
             headers: mergedHeaders,
             signal: abortController.signal,
+            backoffOptions: {
+              initialDelay: 50,
+              maxDelay: 500,
+              multiplier: 1.5,
+            },
           })
         } catch (err) {
           clearTimeout(timeoutId)
@@ -933,6 +938,40 @@ function errorResult(
   }
 
   if (err instanceof Error) {
+    // Check for DurableStreamError by name + code property (handles cross-module
+    // boundary cases where instanceof may fail)
+    const errCode = (err as { code?: string }).code
+    if (err.name === `DurableStreamError` && errCode) {
+      let errorCode: ErrorCode = ErrorCodes.INTERNAL_ERROR
+      let status: number | undefined
+      if (errCode === `NOT_FOUND`) {
+        errorCode = ErrorCodes.NOT_FOUND
+        status = 404
+      } else if (errCode === `CONFLICT_EXISTS`) {
+        errorCode = ErrorCodes.CONFLICT
+        status = 409
+      } else if (errCode === `CONFLICT_SEQ`) {
+        errorCode = ErrorCodes.SEQUENCE_CONFLICT
+        status = 409
+      } else if (errCode === `STREAM_CLOSED`) {
+        errorCode = ErrorCodes.STREAM_CLOSED
+        status = 409
+      } else if (errCode === `BAD_REQUEST`) {
+        errorCode = ErrorCodes.INVALID_OFFSET
+        status = 400
+      } else if (errCode === `PARSE_ERROR`) {
+        errorCode = ErrorCodes.PARSE_ERROR
+      }
+      return {
+        type: `error`,
+        success: false,
+        commandType,
+        status,
+        errorCode,
+        message: err.message,
+      }
+    }
+
     if (err.message.includes(`ECONNREFUSED`) || err.message.includes(`fetch`)) {
       return {
         type: `error`,
