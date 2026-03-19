@@ -12,7 +12,7 @@ import {
   STREAM_OFFSET_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
-import { DurableStreamError, FetchError } from "./error"
+import { DurableStreamError, FetchError, MissingHeadersError } from "./error"
 import { FastLoopDetector } from "./fast-loop-detection"
 import { PauseLock } from "./pause-lock"
 import { parseSSEStream } from "./sse"
@@ -948,6 +948,17 @@ export class StreamResponseImpl<
 
             this.#updateStateFromResponse(response)
 
+            // Trigger message batch transition (SyncingState -> LiveState on upToDate)
+            if (this.#syncState instanceof ActiveState) {
+              const batchResult = this.#syncState.handleMessageBatch({
+                hasMessages: true,
+                hasUpToDateMessage: this.#syncState.upToDate,
+                isSse: false,
+                currentCursor: this.#syncState.cursor,
+              })
+              this.#syncState = batchResult.state
+            }
+
             // Reset fast loop detector on offset advance or live request
             if (
               this.offset !== prevOffset ||
@@ -978,6 +989,13 @@ export class StreamResponseImpl<
           if (this.#requestAbortController?.signal.reason === SYSTEM_WAKE) {
             // System woke from sleep — restart from current offset
             return // pull() will be called again, triggering a fresh request
+          }
+
+          // Non-retryable errors bypass onError entirely
+          if (err instanceof MissingHeadersError) {
+            this.#markError(err)
+            controller.error(err)
+            return
           }
 
           if (this.#abortController.signal.aborted) {

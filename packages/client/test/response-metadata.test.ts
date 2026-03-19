@@ -259,7 +259,8 @@ describe(`StreamResponse metadata`, () => {
       expect(res.status).toBe(200)
 
       const reader = res.jsonStream().getReader()
-      await reader.read()
+      await reader.read() // First item (from first response)
+      await reader.read() // Second item (from second response, triggers fetchNext)
 
       expect(res.ok).toBe(true)
       expect(res.status).toBe(201)

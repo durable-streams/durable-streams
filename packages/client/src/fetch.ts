@@ -269,15 +269,8 @@ export function createFetchWithResponseHeadersCheck(
     const requestUrl = new URL(url)
     const liveParam = requestUrl.searchParams.get(LIVE_QUERY_PARAM)
     const streamClosed = res.headers.get(STREAM_CLOSED_HEADER) === `true`
-    const isSSE =
-      res.headers.get(`content-type`)?.includes(`text/event-stream`) ?? false
-    // SSE responses deliver cursor via control events, not HTTP headers
-    if (
-      liveParam &&
-      !streamClosed &&
-      !isSSE &&
-      !res.headers.has(STREAM_CURSOR_HEADER)
-    ) {
+    // Cursor required for live requests unless stream is closed
+    if (liveParam && !streamClosed && !res.headers.has(STREAM_CURSOR_HEADER)) {
       missing.push(STREAM_CURSOR_HEADER)
     }
 

@@ -14,7 +14,11 @@ import {
   STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
-import { DurableStreamError, FetchBackoffAbortError } from "./error"
+import {
+  DurableStreamError,
+  FetchBackoffAbortError,
+  MissingHeadersError,
+} from "./error"
 import {
   BackoffDefaults,
   createFetchWithBackoff,
@@ -90,6 +94,11 @@ export async function stream<TJson = unknown>(
         params: currentParams,
       })
     } catch (err) {
+      // Non-retryable errors bypass onError entirely
+      if (err instanceof MissingHeadersError) {
+        throw err
+      }
+
       // If there's an onError handler, give it a chance to recover
       if (options.onError) {
         const retryOpts = await options.onError(
@@ -324,7 +333,7 @@ async function streamInternal<TJson = unknown>(
     ? new UpToDateTracker(options.upToDateStorage)
     : undefined
   const streamKey = options.upToDateStorage
-    ? canonicalStreamKey(url)
+    ? canonicalStreamKey(fetchUrl.toString())
     : undefined
 
   // Create and return the StreamResponse

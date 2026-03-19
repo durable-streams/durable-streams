@@ -589,6 +589,7 @@ describe(`visibility handling`, () => {
         headers: {
           "content-type": `text/event-stream`,
           [STREAM_OFFSET_HEADER]: `1_10`,
+          [STREAM_CURSOR_HEADER]: `cursor_sse`,
         },
       })
     }
