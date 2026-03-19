@@ -57,6 +57,9 @@ pub enum StreamError {
     #[error("parse error: {0}")]
     ParseError(String),
 
+    #[error("protocol error: {0}")]
+    Protocol(String),
+
     #[error("empty append not allowed")]
     EmptyAppend,
 
@@ -132,6 +135,7 @@ impl StreamError {
             StreamError::Unauthorized => "UNAUTHORIZED",
             StreamError::Forbidden => "FORBIDDEN",
             StreamError::ParseError(_) => "PARSE_ERROR",
+            StreamError::Protocol(_) => "UNEXPECTED_STATUS",
             _ => "UNEXPECTED_STATUS",
         }
     }
