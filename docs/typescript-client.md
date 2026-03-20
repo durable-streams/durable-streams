@@ -15,6 +15,8 @@ It gives you:
 - `DurableStream` for create, append, read, close, and delete
 - `IdempotentProducer` for exactly-once writes with batching and retries
 
+<IntentLink intent="create" serviceType="streams" serviceVariant="json" />
+
 ## Key features
 
 - Exactly-once writes with `IdempotentProducer`
