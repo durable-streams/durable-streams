@@ -2250,6 +2250,482 @@ Amazon acknowledged a critical limitation: they don't verify that code correctly
 
 **Reference**: [How Amazon Web Services Uses Formal Methods (2015)](https://cacm.acm.org/research/how-amazon-web-services-uses-formal-methods/)
 
+### 10.12 QuickLTL: Temporal Logic for Partial Traces
+
+Standard LTL assumes you have a complete (often infinite) trace. In property-based testing, you have *partial* traces—finite prefixes of unknown complete executions. The Quickstrom project (O'Connor & Wickström, PLDI '22) developed QuickLTL to handle this fundamental mismatch.
+
+#### 10.12.1 The Partial Trace Problem
+
+When you check `□ safe` (always safe) on a 5-state trace, what does "true" mean?
+
+- The trace *was* safe for those 5 states, but we didn't explore further
+- Maybe state 6 would have violated safety
+- Standard LTL can't distinguish "definitively true" from "provisionally true"
+
+```typescript
+// Standard approach: check trace, return boolean
+function alwaysSafe(trace: State[]): boolean {
+  return trace.every(s => isSafe(s))
+}
+
+// Problem: 3-state trace passes, but was that enough?
+alwaysSafe([s1, s2, s3]) // true... but is it REALLY true?
+```
+
+QuickLTL solves this with **multi-valued logic** and **trace length annotations**.
+
+#### 10.12.2 Multi-Valued Logic: Definitive vs Presumptive
+
+QuickLTL uses four truth values:
+
+| Symbol | Name              | Meaning                                     |
+| ------ | ----------------- | ------------------------------------------- |
+| `⊥⊥`   | Definitive false  | Trace contains a violation—definitely fails |
+| `⊥`    | Presumptive false | No violation yet, but trace seems too short |
+| `⊤`    | Presumptive true  | No violation found, but might flip later    |
+| `⊤⊤`   | Definitive true   | Enough evidence to conclude success         |
+
+**What to steal**: Enriched test results that report confidence:
+
+```typescript
+type TraceVerdict =
+  | { result: "definite-pass"; reason: string }
+  | { result: "definite-fail"; violation: string; step: number }
+  | { result: "presumptive-pass"; reason: string; confidence: number }
+  | { result: "presumptive-fail"; reason: string; moreStatesNeeded: number }
+
+// Check with confidence tracking
+function checkWithConfidence<S>(
+  trace: S[],
+  property: TemporalProperty<S>,
+  minTraceLength: number
+): TraceVerdict {
+  const holds = property.check(trace)
+
+  if (!holds) {
+    return {
+      result: "definite-fail",
+      violation: property.name,
+      step: property.findViolation(trace),
+    }
+  }
+
+  if (trace.length >= minTraceLength) {
+    return {
+      result: "definite-pass",
+      reason: `Property held for ${trace.length} states (required: ${minTraceLength})`,
+    }
+  }
+
+  return {
+    result: "presumptive-pass",
+    reason: `Property held but trace may be too short`,
+    confidence: trace.length / minTraceLength,
+  }
+}
+```
+
+#### 10.12.3 Trace Length Annotations
+
+QuickLTL annotates temporal operators with minimum trace lengths:
+
+```
+□_5 safe     -- "always safe" needs ≥5 states for definitive answer
+◇_3 done     -- "eventually done" needs ≥3 states to presume failure
+```
+
+This changes how you write specifications:
+
+```typescript
+// Instead of: □ noDeadlock
+// Write: □_10 noDeadlock (10 steps is enough to detect most deadlocks)
+
+interface AnnotatedProperty<S> {
+  name: string
+  check: (trace: S[]) => boolean
+  minStates: number // Annotation: minimum trace length for confidence
+  kind: "safety" | "liveness"
+}
+
+// Safety property: only gets MORE certain with more states
+const noOverdraft: AnnotatedProperty<AccountState> = {
+  name: "no-overdraft",
+  check: (trace) => trace.every((s) => s.balance >= 0),
+  minStates: 20, // After 20 steps, we're confident
+  kind: "safety",
+}
+
+// Liveness property: needs enough states to see the "eventually"
+const eventuallySettles: AnnotatedProperty<TxnState> = {
+  name: "eventually-settles",
+  check: (trace) => trace.some((s) => s.status === "settled"),
+  minStates: 15, // Settlement should happen within 15 steps
+  kind: "liveness",
+}
+```
+
+**Key insight**: Liveness properties need *more* states to be confident, while safety violations can be definitive immediately.
+
+#### 10.12.4 Three Kinds of "Next"
+
+When checking `○ φ` (next state satisfies φ) at the end of a trace, what happens? QuickLTL defines three variants:
+
+| Operator | At end of trace | Use when                                      |
+| -------- | --------------- | --------------------------------------------- |
+| `○_s`    | Returns ⊥       | Strong: next state *must* exist and satisfy φ |
+| `○_w`    | Returns ⊤       | Weak: if no next state, vacuously true        |
+| `○_!`    | Force more      | Required: test must generate another state    |
+
+**What to steal**: Make your "leads-to" patterns explicit about edge behavior:
+
+```typescript
+// Three flavors of temporal "then"
+const temporalPatterns = {
+  // Strong: response MUST happen (fail if trace ends without it)
+  strongResponse:
+    <S>(trigger: Pred<S>, response: Pred<S>) =>
+    (trace: S[]): TraceVerdict => {
+      for (let i = 0; i < trace.length; i++) {
+        if (trigger(trace[i])) {
+          const suffix = trace.slice(i + 1)
+          if (suffix.length === 0) {
+            return { result: "definite-fail", violation: "trace ended without response", step: i }
+          }
+          if (!suffix.some(response)) {
+            return { result: "definite-fail", violation: "no response found", step: i }
+          }
+        }
+      }
+      return { result: "definite-pass", reason: "all triggers got responses" }
+    },
+
+  // Weak: response should happen, but trace ending is OK
+  weakResponse:
+    <S>(trigger: Pred<S>, response: Pred<S>) =>
+    (trace: S[]): TraceVerdict => {
+      for (let i = 0; i < trace.length; i++) {
+        if (trigger(trace[i])) {
+          const suffix = trace.slice(i + 1)
+          if (suffix.length === 0) {
+            return { result: "presumptive-pass", reason: "trace ended", confidence: 0.5 }
+          }
+          if (!suffix.some(response)) {
+            return { result: "definite-fail", violation: "no response in remaining trace", step: i }
+          }
+        }
+      }
+      return { result: "definite-pass", reason: "all triggers got responses" }
+    },
+
+  // Required: trace must continue (for testing frameworks that can extend traces)
+  requiredNext:
+    <S>(condition: Pred<S>) =>
+    (trace: S[], extend: () => S | null): TraceVerdict => {
+      const last = trace[trace.length - 1]
+      if (!condition(last)) {
+        // Need to extend the trace
+        const nextState = extend()
+        if (nextState === null) {
+          return { result: "definite-fail", violation: "cannot extend trace", step: trace.length - 1 }
+        }
+        return condition(nextState)
+          ? { result: "definite-pass", reason: "extended trace satisfies condition" }
+          : { result: "definite-fail", violation: "extended state fails condition", step: trace.length }
+      }
+      return { result: "definite-pass", reason: "condition already satisfied" }
+    },
+}
+```
+
+#### 10.12.5 Formula Progression
+
+Instead of evaluating the whole trace at once, QuickLTL uses *formula progression*—transforming the formula step by step:
+
+```
+progress(□ φ, s) = φ(s) ∧ ○_w(□ φ)    -- "φ now AND φ henceforth"
+progress(◇ φ, s) = φ(s) ∨ ○_s(◇ φ)    -- "φ now OR φ later"
+```
+
+This enables:
+1. **Early termination**: Stop as soon as property is definitively true/false
+2. **Incremental checking**: Verify properties as events stream in
+3. **Efficient memory**: Only track current formula, not whole trace
+
+```typescript
+// Formula progression for runtime checking
+type Formula<S> =
+  | { kind: "atom"; check: (s: S) => boolean }
+  | { kind: "and"; left: Formula<S>; right: Formula<S> }
+  | { kind: "or"; left: Formula<S>; right: Formula<S> }
+  | { kind: "always"; inner: Formula<S> }
+  | { kind: "eventually"; inner: Formula<S> }
+  | { kind: "done"; value: boolean } // Terminal: no more progression needed
+
+function progress<S>(formula: Formula<S>, state: S): Formula<S> {
+  switch (formula.kind) {
+    case "done":
+      return formula
+
+    case "atom":
+      return { kind: "done", value: formula.check(state) }
+
+    case "and": {
+      const left = progress(formula.left, state)
+      const right = progress(formula.right, state)
+      // Short-circuit on definitive false
+      if (left.kind === "done" && !left.value) return left
+      if (right.kind === "done" && !right.value) return right
+      if (left.kind === "done" && right.kind === "done") {
+        return { kind: "done", value: left.value && right.value }
+      }
+      return { kind: "and", left, right }
+    }
+
+    case "or": {
+      const left = progress(formula.left, state)
+      const right = progress(formula.right, state)
+      // Short-circuit on definitive true
+      if (left.kind === "done" && left.value) return left
+      if (right.kind === "done" && right.value) return right
+      if (left.kind === "done" && right.kind === "done") {
+        return { kind: "done", value: left.value || right.value }
+      }
+      return { kind: "or", left, right }
+    }
+
+    case "always": {
+      // □φ = φ ∧ ○(□φ) -- must hold now AND continue holding
+      const now = progress(formula.inner, state)
+      if (now.kind === "done" && !now.value) {
+        return now // Violated! Definitively false
+      }
+      // Still need to check rest of trace
+      return { kind: "and", left: now, right: formula }
+    }
+
+    case "eventually": {
+      // ◇φ = φ ∨ ○(◇φ) -- either holds now OR later
+      const now = progress(formula.inner, state)
+      if (now.kind === "done" && now.value) {
+        return now // Satisfied! Definitively true
+      }
+      // Still need to check rest of trace
+      return { kind: "or", left: now, right: formula }
+    }
+  }
+}
+
+// Runtime monitor using progression
+class FormulaMonitor<S> {
+  private formula: Formula<S>
+
+  constructor(initial: Formula<S>) {
+    this.formula = initial
+  }
+
+  observe(state: S): "definite-pass" | "definite-fail" | "continue" {
+    this.formula = progress(this.formula, state)
+
+    if (this.formula.kind === "done") {
+      return this.formula.value ? "definite-pass" : "definite-fail"
+    }
+    return "continue"
+  }
+}
+```
+
+#### 10.12.6 The Release Operator for Nested State Machines
+
+The Release operator `φ R ψ` means "ψ holds until and including when φ first holds (and φ must eventually hold, or ψ holds forever)."
+
+This elegantly models nested state machines:
+
+```typescript
+// "System stays in idle until entering active, then stays active until completing"
+// Nested using Release:
+//
+// idle R (eventually active ∧ (active R eventually complete))
+
+type StateMachineSpec<S> = {
+  // "Stay in state A until transitioning to nested spec B"
+  stayUntil: (
+    inState: Pred<S>,
+    transition: Pred<S>,
+    nested: StateMachineSpec<S> | null
+  ) => Formula<S>
+}
+
+// Release-based nesting
+function release<S>(
+  release: Pred<S>,   // When this becomes true, inner is released
+  holdUntil: Pred<S>  // Must hold until (and including) release
+): Formula<S> {
+  // φ R ψ = ψ ∧ (φ ∨ ○(φ R ψ))
+  // "ψ now, AND either φ now OR continue checking"
+  return {
+    kind: "release",
+    releaser: release,
+    held: holdUntil,
+  }
+}
+
+// Example: TodoMVC item editing (from Quickstrom paper)
+// "Item is active, then editing (R eventually saved), then back to active"
+const itemEditSpec: Formula<TodoState> = {
+  kind: "and",
+  left: { kind: "atom", check: (s) => s.mode === "active" },
+  right: {
+    kind: "release",
+    releaser: (s) => s.mode === "editing",
+    held: { kind: "atom", check: (s) => s.mode === "active" },
+    then: {
+      kind: "eventually",
+      inner: { kind: "atom", check: (s) => s.saved },
+    },
+  },
+}
+```
+
+#### 10.12.7 Actions vs Events: Clarifying Control
+
+Quickstrom distinguishes test-controlled *actions* from system-generated *events*:
+
+| Concept    | Controller  | Examples                            |
+| ---------- | ----------- | ----------------------------------- |
+| **Action** | Test driver | Click button, submit form, navigate |
+| **Event**  | System      | Animation complete, data loaded     |
+
+This maps to our two-tier DSL pattern but with clearer terminology:
+
+```typescript
+// Explicit action/event separation
+interface TestScenario<A, E, S> {
+  // Actions: what the test does (controllable)
+  actions: A[]
+
+  // Events: what the system produces (observable)
+  observeEvents: () => AsyncGenerator<E>
+
+  // State: computed from actions + events
+  computeState: (actions: A[], events: E[]) => S
+
+  // Properties: checked against state trace
+  properties: TemporalProperty<S>[]
+}
+
+// Clear which is which
+type Action =
+  | { kind: "action"; name: "click"; target: string }
+  | { kind: "action"; name: "type"; text: string }
+  | { kind: "action"; name: "navigate"; url: string }
+
+type Event =
+  | { kind: "event"; name: "loaded"; element: string }
+  | { kind: "event"; name: "animation-complete" }
+  | { kind: "event"; name: "error"; message: string }
+```
+
+#### 10.12.8 Shrinking Still Works
+
+Despite multi-valued logic, standard PBT shrinking applies. Key insight from the paper:
+
+- When property returns `⊥⊥` (definitive false): shrink normally
+- When presumptive: shrinking may flip the result (which is expected—shorter traces have less confidence)
+
+```typescript
+// Shrinking with multi-valued awareness
+function shrinkTrace<S>(
+  trace: S[],
+  check: (t: S[]) => TraceVerdict
+): S[] {
+  const original = check(trace)
+
+  if (original.result !== "definite-fail") {
+    return trace // Only shrink definite failures
+  }
+
+  // Try removing each element
+  for (let i = 0; i < trace.length; i++) {
+    const smaller = [...trace.slice(0, i), ...trace.slice(i + 1)]
+    const result = check(smaller)
+
+    // Only keep shrink if STILL a definite failure
+    if (result.result === "definite-fail") {
+      return shrinkTrace(smaller, check) // Recurse
+    }
+    // If it became presumptive, this element was important
+  }
+
+  return trace // Can't shrink further
+}
+```
+
+#### 10.12.9 The TodoMVC Validation
+
+Quickstrom tested 43 TodoMVC implementations and found bugs in 21 (49%). The spec was remarkably concise—just key state transitions and consistency invariants.
+
+**Lesson**: You don't need exhaustive specs. A few well-chosen temporal properties catch most bugs:
+
+```typescript
+// Minimal but effective temporal properties for a CRUD system
+const crudProperties: AnnotatedProperty<CrudState>[] = [
+  // 1. Create adds exactly one item
+  {
+    name: "create-adds-one",
+    minStates: 5,
+    kind: "safety",
+    check: (trace) => {
+      for (let i = 1; i < trace.length; i++) {
+        const prev = trace[i - 1]
+        const curr = trace[i]
+        if (curr.lastAction === "create") {
+          if (curr.items.length !== prev.items.length + 1) return false
+        }
+      }
+      return true
+    },
+  },
+
+  // 2. Delete removes exactly one item
+  {
+    name: "delete-removes-one",
+    minStates: 5,
+    kind: "safety",
+    check: (trace) => {
+      for (let i = 1; i < trace.length; i++) {
+        const prev = trace[i - 1]
+        const curr = trace[i]
+        if (curr.lastAction === "delete") {
+          if (curr.items.length !== prev.items.length - 1) return false
+        }
+      }
+      return true
+    },
+  },
+
+  // 3. Count matches actual items
+  {
+    name: "count-consistency",
+    minStates: 10,
+    kind: "safety",
+    check: (trace) => trace.every((s) => s.displayedCount === s.items.length),
+  },
+
+  // 4. Operations are eventually reflected in UI
+  {
+    name: "eventual-consistency",
+    minStates: 8,
+    kind: "liveness",
+    check: (trace) => {
+      const lastState = trace[trace.length - 1]
+      return lastState.pendingOperations === 0
+    },
+  },
+]
+```
+
+**Reference**: [Quickstrom: Property-Based Acceptance Testing (PLDI '22)](https://dl.acm.org/doi/10.1145/3519939.3523728)
+
 ---
 
 ## Part 11: Choosing Your Specification Style
@@ -3679,6 +4155,7 @@ The key insight: **Testing complex systems is itself a complex system**. Treat y
 - [Dijkstra, "Guarded Commands" (1975)](https://dl.acm.org/doi/10.1145/360933.360975)
 - [Cousot & Cousot, "Abstract Interpretation" (1977)](https://www.di.ens.fr/~cousot/publications.www/CousotCousot-POPL-77-ACM-p238--252-1977.pdf)
 - [Pnueli, "Temporal Logic of Programs" (1977)](https://amturing.acm.org/bib/pnueli_4725172.cfm)
+- [O'Connor & Wickström, "Quickstrom: Property-Based Acceptance Testing" (PLDI '22)](https://dl.acm.org/doi/10.1145/3519939.3523728)
 
 ### Verification Techniques
 
