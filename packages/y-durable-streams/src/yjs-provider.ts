@@ -149,8 +149,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private pendingAwareness: AwarenessUpdate | null = null
 
   private awarenessHeartbeat: ReturnType<typeof setInterval> | null = null
-  private awarenessRetryCount = 0
-  private readonly MAX_AWARENESS_RETRIES = 30
 
   constructor(options: YjsProviderOptions) {
     super()
@@ -247,18 +245,22 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     const ctx = this.createConnectionContext()
 
     try {
-      // Step 1: Discover snapshot and get starting offset
+      // Step 1: Create document (idempotent — succeeds if already exists)
+      await this.ensureDocument(ctx)
+      if (this.isStale(ctx)) return
+
+      // Step 2: Discover snapshot and get starting offset
       await this.discoverSnapshot(ctx)
       if (this.isStale(ctx)) return
 
-      // Step 2: Create idempotent producer for sending updates
+      // Step 3: Create idempotent producer for sending updates
       this.createUpdatesProducer(ctx)
 
-      // Step 3: Start updates stream (will load snapshot if needed)
+      // Step 4: Start updates stream (will load snapshot if needed)
       await this.startUpdatesStream(ctx, ctx.startOffset)
       if (this.isStale(ctx)) return
 
-      // Step 4: Start awareness if configured
+      // Step 5: Start awareness if configured
       if (this.awareness) {
         this.startAwareness(ctx)
       }
@@ -346,6 +348,39 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
    */
   private awarenessUrl(name: string = `default`): string {
     return `${this.docUrl()}?awareness=${encodeURIComponent(name)}`
+  }
+
+  /**
+   * Create the document on the server via PUT.
+   * Idempotent: succeeds if document already exists with matching config.
+   */
+  private async ensureDocument(ctx: ConnectionContext): Promise<void> {
+    const url = this.docUrl()
+
+    const response = await fetch(url, {
+      method: `PUT`,
+      headers: {
+        ...(this.headers as Record<string, string>),
+        "content-type": `application/octet-stream`,
+      },
+      signal: ctx.controller.signal,
+    })
+
+    // 201 Created or 200 OK (already exists) are both fine
+    if (response.status === 201 || response.status === 200) {
+      await response.arrayBuffer()
+      return
+    }
+
+    // 409 Conflict means it exists with different config — acceptable
+    if (response.status === 409) {
+      await response.arrayBuffer()
+      return
+    }
+
+    // Any other status is an error
+    const text = await response.text().catch(() => ``)
+    throw new Error(`Failed to create document: ${response.status} ${text}`)
   }
 
   // ---- Snapshot Discovery ----
@@ -594,22 +629,20 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
         }
 
         if (this.isNotFoundError(err)) {
-          // Stream doesn't exist yet (new document) - retry quickly
+          // Document stream not found — fail (document should be created via PUT)
           // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition -- markSynced mutates this
           if (initialSyncPending) {
-            if (currentOffset === `-1`) {
-              // New doc with no updates yet - mark synced and keep polling
-              markSynced()
-            } else {
-              // Expected stream doesn't exist - fail
-              rejectInitialSync(
-                err instanceof Error ? err : new Error(String(err))
-              )
-              return
-            }
+            rejectInitialSync(
+              err instanceof Error ? err : new Error(String(err))
+            )
+            return
           }
-          await new Promise((resolve) => setTimeout(resolve, 100))
-          continue
+          // After initial sync, a 404 means the stream was deleted — disconnect
+          this.emit(`error`, [
+            err instanceof Error ? err : new Error(String(err)),
+          ])
+          this.disconnect()
+          return
         }
 
         // Non-404 error during initial sync - fail
@@ -822,9 +855,6 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       // Ensure closed promise is handled to avoid unhandled rejections.
       void response.closed.catch(() => {})
 
-      // Reset retry count on successful connection
-      this.awarenessRetryCount = 0
-
       // eslint-disable-next-line @typescript-eslint/require-await
       response.subscribeBytes(async (chunk) => {
         if (signal.aborted) return
@@ -847,26 +877,9 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       if (signal.aborted || (!this.connected && !this.connecting)) return
 
       if (this.isNotFoundError(err)) {
-        // Awareness stream doesn't exist yet (created lazily on first write)
-        this.awarenessRetryCount++
-        if (this.awarenessRetryCount > this.MAX_AWARENESS_RETRIES) {
-          console.error(
-            `[YjsProvider] Awareness stream not found after ${this.MAX_AWARENESS_RETRIES} retries`
-          )
-          return // Don't disconnect - awareness is optional
-        }
-
-        // Exponential backoff with cap
-        const delay = Math.min(
-          100 * Math.pow(1.5, this.awarenessRetryCount - 1),
-          2000
-        )
-        await new Promise((r) => setTimeout(r, delay))
-
-        if (this.connected) {
-          this.subscribeAwareness(ctx)
-        }
-        return
+        // Awareness stream not found — should have been created with document via PUT
+        console.error(`[YjsProvider] Awareness stream not found`)
+        return // Don't disconnect - awareness is optional
       }
 
       console.error(`[YjsProvider] Awareness stream error:`, err)

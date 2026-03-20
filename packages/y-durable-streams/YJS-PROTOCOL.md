@@ -25,12 +25,13 @@ Copyright (c) 2026 ElectricSQL
    - 3.2. [Key Concepts](#32-key-concepts)
 4. [URL Structure](#4-url-structure)
 5. [HTTP Operations](#5-http-operations)
-   - 5.1. [Snapshot Discovery](#51-snapshot-discovery)
-   - 5.2. [Read Snapshot](#52-read-snapshot)
-   - 5.3. [Read Updates](#53-read-updates)
-   - 5.4. [Write Update](#54-write-update)
-   - 5.5. [Awareness Subscribe](#55-awareness-subscribe)
-   - 5.6. [Awareness Broadcast](#56-awareness-broadcast)
+   - 5.1. [Create Document](#51-create-document)
+   - 5.2. [Snapshot Discovery](#52-snapshot-discovery)
+   - 5.3. [Read Snapshot](#53-read-snapshot)
+   - 5.4. [Read Updates](#54-read-updates)
+   - 5.5. [Write Update](#55-write-update)
+   - 5.6. [Awareness Subscribe](#56-awareness-subscribe)
+   - 5.7. [Awareness Broadcast](#57-awareness-broadcast)
 6. [Offset Sentinels](#6-offset-sentinels)
 7. [Binary Framing](#7-binary-framing)
    - 7.1. [Variable-Length Integer Encoding](#71-variable-length-integer-encoding)
@@ -40,6 +41,10 @@ Copyright (c) 2026 ElectricSQL
    - 7.5. [Efficiency](#75-efficiency)
 8. [Compaction](#8-compaction)
 9. [Client Sync Flow](#9-client-sync-flow)
+   - 9.1. [Document Creation](#91-document-creation)
+   - 9.2. [Initial Sync](#92-initial-sync)
+   - 9.3. [Writing Updates](#93-writing-updates)
+   - 9.4. [Awareness](#94-awareness)
 10. [Error Handling](#10-error-handling)
 11. [Limits](#11-limits)
 12. [Security Considerations](#12-security-considerations)
@@ -91,10 +96,11 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 The Yjs Protocol operates on durable streams as specified in [PROTOCOL]. Each Yjs document is a single stream at a URL path, with the following Yjs-specific behaviors:
 
-1. **Document updates** are appended via POST and read via GET
-2. **Snapshots** provide compacted document state, discovered via `offset=snapshot`
-3. **Awareness** streams are accessed via the `awareness` query parameter
-4. **Compaction** happens automatically when updates exceed a size threshold
+1. **Document creation** is performed via PUT before any reads or writes
+2. **Document updates** are appended via POST and read via GET
+3. **Snapshots** provide compacted document state, discovered via `offset=snapshot`
+4. **Awareness** streams are accessed via the `awareness` query parameter
+5. **Compaction** happens automatically when updates exceed a size threshold
 
 The protocol uses `Content-Type: application/octet-stream` for all document operations. Updates are binary Yjs data, and read responses use lib0 framing (Section 7).
 
@@ -161,7 +167,38 @@ The following HTTP methods are supported on document and awareness URLs:
 
 Servers **MUST** return `405 Method Not Allowed` for any HTTP method not listed above.
 
-### 5.1. Snapshot Discovery
+### 5.1. Create Document
+
+Creates a new document. This creates both the document update stream and the default awareness stream. The server uses PUT semantics as defined in [PROTOCOL] Section 5.1.
+
+#### Request
+
+```
+PUT {document-url}
+```
+
+#### Response (new document)
+
+```
+HTTP/1.1 201 Created
+Location: {document-url}
+Stream-Next-Offset: <offset>
+```
+
+#### Response (document already exists)
+
+If the document already exists with matching configuration, the server MUST return:
+
+```
+HTTP/1.1 200 OK
+Stream-Next-Offset: <offset>
+```
+
+If the document exists with different configuration, the server MUST return `409 Conflict`.
+
+Clients MUST create documents via PUT before reading or writing. POST to a non-existent document returns `404 Not Found`.
+
+### 5.2. Snapshot Discovery
 
 The Yjs protocol adds a `snapshot` sentinel offset for snapshot-aware initialization.
 
@@ -191,7 +228,7 @@ When a snapshot exists, the server **MUST** redirect to the snapshot URL. When n
 
 Both responses **SHOULD** include `Cache-Control: private, max-age=5` to reduce load during rapid reconnects while ensuring clients receive reasonably fresh snapshot state.
 
-### 5.2. Read Snapshot
+### 5.3. Read Snapshot
 
 Snapshot URLs use the format `offset={offset}_snapshot` where `{offset}` is the position at which the snapshot was taken.
 
@@ -217,7 +254,7 @@ The `Stream-Next-Offset` header (per [PROTOCOL]) indicates where the client **MU
 
 Servers **MUST** return `404 Not Found` if the snapshot does not exist (e.g., deleted after compaction, or invalid offset).
 
-### 5.3. Read Updates
+### 5.4. Read Updates
 
 #### Request
 
@@ -230,7 +267,7 @@ GET {document-url}?offset=<offset>&live=sse
 
 | Parameter | Required | Description                                                                                                                  |
 | --------- | -------- | ---------------------------------------------------------------------------------------------------------------------------- |
-| `offset`  | No       | Cursor position. Use `snapshot` for discovery (Section 5.1), `-1` for beginning, or offset from `Stream-Next-Offset` header. |
+| `offset`  | No       | Cursor position. Use `snapshot` for discovery (Section 5.2), `-1` for beginning, or offset from `Stream-Next-Offset` header. |
 | `live`    | No       | `long-poll` for long-polling, `sse` for Server-Sent Events. Omit for catch-up reads.                                         |
 
 #### Response Headers
@@ -264,7 +301,7 @@ After transport decoding, the payload contains lib0-framed updates identical to 
 
 Per [PROTOCOL], servers **SHOULD** close SSE connections approximately every 60 seconds to enable CDN collapsing. Clients **MUST** reconnect using the last received `streamNextOffset`.
 
-### 5.4. Write Update
+### 5.5. Write Update
 
 #### Request
 
@@ -275,7 +312,7 @@ Content-Type: application/octet-stream
 <lib0-framed update>
 ```
 
-Appends a Yjs update to the document stream. Documents and streams are created implicitly on first write.
+Appends a Yjs update to the document stream. The document MUST exist (created via PUT per Section 5.1) before appending updates. If the document does not exist, the server MUST return `404 Not Found`.
 
 Clients **MUST** send lib0-framed updates (Section 7.4). Each update is framed with a length prefix using lib0's `writeVarUint8Array`. This is critical because clients may batch multiple updates into a single HTTP request; each update must be individually framed so that concatenated bytes remain valid.
 
@@ -288,7 +325,7 @@ Stream-Next-Offset: 4783
 
 The `Stream-Next-Offset` header contains the new tail offset after the append.
 
-### 5.5. Awareness Subscribe
+### 5.6. Awareness Subscribe
 
 Awareness streams support both long-poll and SSE transports, using the same `live` parameter as document streams.
 
@@ -324,9 +361,9 @@ Per [PROTOCOL], servers **SHOULD** close SSE connections approximately every 60 
 
 #### Response (Long-Poll)
 
-Same as document updates (Section 5.3). Returns lib0-framed binary awareness data with `Content-Type: application/octet-stream`.
+Same as document updates (Section 5.4). Returns lib0-framed binary awareness data with `Content-Type: application/octet-stream`.
 
-### 5.6. Awareness Broadcast
+### 5.7. Awareness Broadcast
 
 Clients write to awareness streams using the same POST operation as document updates, but with the `awareness` query parameter.
 
@@ -348,7 +385,7 @@ HTTP/1.1 204 No Content
 Stream-Next-Offset: <offset>
 ```
 
-The update is immediately broadcast to all SSE subscribers on that awareness stream. Awareness streams are created lazily on first read or write.
+The update is immediately broadcast to all SSE subscribers on that awareness stream. The awareness stream is created automatically when the document is created via PUT (Section 5.1).
 
 **Client disconnect handling:** Yjs awareness has a built-in 30-second timeout that automatically removes stale clients. The `y-durable-streams` provider also calls `removeAwarenessStates()` on `beforeunload` for immediate cleanup on graceful disconnect. No explicit "leave" API endpoint is needed.
 
@@ -475,7 +512,20 @@ If compaction fails (e.g., malformed update bytes), the error is logged and comp
 
 ## 9. Client Sync Flow
 
-### 9.1. Initial Sync
+### 9.1. Document Creation
+
+```
+Client                                    Server
+  │                                         │
+  │ PUT /docs/my-doc                        │
+  │────────────────────────────────────────>│
+  │                                         │
+  │ 201 Created                             │
+  │ (or 200 OK if already exists)           │
+  │<────────────────────────────────────────│
+```
+
+### 9.2. Initial Sync
 
 ```
 Client                                    Server
@@ -527,7 +577,7 @@ Client                                    Server
   │────────────────────────────────────────>│
 ```
 
-### 9.2. Writing Updates
+### 9.3. Writing Updates
 
 ```
 Client                                    Server
@@ -545,7 +595,7 @@ Client                                    Server
   │ (Other clients receive via live stream) │
 ```
 
-### 9.3. Awareness
+### 9.4. Awareness
 
 ```
 Client                                    Server
@@ -680,8 +730,8 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 
 | Test                          | Description                                                                       |
 | ----------------------------- | --------------------------------------------------------------------------------- |
-| `write.creates-document`      | POST to new doc creates stream implicitly                                         |
-| `write.implicit-creation`     | POST without prior PUT creates document and syncs correctly                       |
+| `write.requires-put`          | POST to non-existent document returns 404                                         |
+| `write.after-put`             | PUT then POST creates and syncs document correctly                                |
 | `write.returns-offset`        | POST returns 204 with `Stream-Next-Offset` header                                 |
 | `write.appends-to-stream`     | Sequential POSTs append with incrementing offsets                                 |
 | `write.rapid-batched-updates` | Rapid writes with batching produce valid lib0-framed data                         |
@@ -697,7 +747,7 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 
 | Test                           | Description                                                                                    |
 | ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `awareness.lazy-creation`      | Awareness stream created on first access                                                       |
+| `awareness.created-with-doc`   | Awareness stream created when document is created via PUT                                      |
 | `awareness.offset-now`         | GET with `offset=now` skips history per protocol                                               |
 | `awareness.live-long-poll`     | Awareness with `live=long-poll` returns long-poll response                                     |
 | `awareness.live-sse`           | Awareness with `live=sse` returns SSE stream (base64 encoding handled by base protocol)        |

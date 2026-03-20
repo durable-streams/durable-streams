@@ -364,6 +364,30 @@ export class YjsServer {
     route: RouteMatch,
     originalUrl: URL
   ): Promise<void> {
+    // Check if the document stream exists
+    const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
+    const headUrl = `${this.dsServerUrl}${dsPath}`
+    try {
+      const headResponse = await fetch(headUrl, {
+        method: `HEAD`,
+        headers: this.dsServerHeaders,
+      })
+      if (headResponse.status === 404) {
+        res.writeHead(404, { "content-type": `application/json` })
+        res.end(
+          JSON.stringify({
+            error: {
+              code: `DOCUMENT_NOT_FOUND`,
+              message: `Document does not exist`,
+            },
+          })
+        )
+        return
+      }
+    } catch {
+      // If HEAD fails for non-404 reasons, proceed with snapshot discovery
+    }
+
     const state = this.getOrCreateDocumentState(route.service, route.docPath)
 
     // If no snapshot in memory, try to load from index stream
@@ -636,7 +660,7 @@ export class YjsServer {
   }
 
   /**
-   * PUT - Proxy to create .updates stream.
+   * PUT - Create document: creates both .updates and .awareness.default streams.
    */
   private async handleDocumentCreate(
     req: IncomingMessage,
@@ -644,13 +668,48 @@ export class YjsServer {
     route: RouteMatch
   ): Promise<void> {
     const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
-    await this.proxyToDsServer(req, res, dsPath)
+
+    // Proxy the PUT to create the .updates stream
+    const targetUrl = `${this.dsServerUrl}${dsPath}`
+    const headers: Record<string, string> = { ...this.dsServerHeaders }
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (key.toLowerCase() !== `host` && value) {
+        headers[key] = Array.isArray(value) ? value.join(`, `) : value
+      }
+    }
+    // Default content type for Yjs streams
+    if (!headers[`content-type`]) {
+      headers[`content-type`] = `application/octet-stream`
+    }
+
+    const body = await this.readBody(req)
+
+    const dsResponse = await fetch(targetUrl, {
+      method: `PUT`,
+      headers,
+      body: body.length > 0 ? new Uint8Array(body) : undefined,
+    })
+
+    // If the document was created (201) or already exists with matching config (200),
+    // also ensure the awareness stream exists
+    if (dsResponse.status === 201 || dsResponse.status === 200) {
+      const awarenessPath = YjsStreamPaths.awarenessStream(
+        route.service,
+        route.docPath,
+        `default`
+      )
+      await this.ensureStream(awarenessPath).catch((err) => {
+        console.error(`[YjsServer] Failed to create awareness stream:`, err)
+      })
+    }
+
+    await this.forwardResponse(res, dsResponse)
   }
 
   /**
    * POST - Streaming proxy to write to .updates stream.
    * Client sends lib0-framed updates; we pass through directly.
-   * Auto-creates the stream on first write (retry on 404).
+   * Returns 404 if the document does not exist.
    */
   private async handleUpdateWrite(
     req: IncomingMessage,
@@ -664,6 +723,7 @@ export class YjsServer {
     const body = await this.readBody(req)
 
     const dsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
+    const targetUrl = `${this.dsServerUrl}${dsPath}`
 
     // Forward headers including producer headers
     const headers: Record<string, string> = {
@@ -682,7 +742,11 @@ export class YjsServer {
       if (typeof v === `string`) headers[h] = v
     }
 
-    const dsResponse = await this.postWithAutoCreate(dsPath, headers, body)
+    const dsResponse = await fetch(targetUrl, {
+      method: `POST`,
+      headers,
+      body: body.length > 0 ? new Uint8Array(body) : undefined,
+    })
     await this.forwardResponse(res, dsResponse)
 
     // Track for compaction on success
@@ -725,8 +789,8 @@ export class YjsServer {
     )
 
     if (method === `POST`) {
-      // Proxy raw binary to awareness stream, auto-creating on first write
-      await this.proxyPostWithAutoCreate(req, res, dsPath)
+      // Proxy raw binary to awareness stream (404 if doc doesn't exist)
+      await this.proxyToDsServer(req, res, dsPath)
     } else if (method === `GET`) {
       // Build path with query params
       const offset = url.searchParams.get(`offset`)
@@ -760,58 +824,6 @@ export class YjsServer {
         })
       )
     }
-  }
-
-  /**
-   * POST to a DS stream, auto-creating it via PUT on 404.
-   * Returns the fetch Response for the caller to handle.
-   */
-  private async postWithAutoCreate(
-    dsPath: string,
-    headers: Record<string, string>,
-    body: Uint8Array | Buffer | undefined
-  ): Promise<globalThis.Response> {
-    const targetUrl = `${this.dsServerUrl}${dsPath}`
-
-    let response = await fetch(targetUrl, {
-      method: `POST`,
-      headers,
-      body: body ? new Uint8Array(body) : undefined,
-    })
-
-    if (response.status === 404) {
-      await response.arrayBuffer()
-      await this.ensureStream(dsPath)
-      response = await fetch(targetUrl, {
-        method: `POST`,
-        headers,
-        body: body ? new Uint8Array(body) : undefined,
-      })
-    }
-
-    return response
-  }
-
-  /**
-   * Proxy a POST request to the DS server, auto-creating the stream on 404.
-   */
-  private async proxyPostWithAutoCreate(
-    req: IncomingMessage,
-    res: ServerResponse,
-    dsPath: string
-  ): Promise<void> {
-    const body = await this.readBody(req)
-
-    // Forward headers, excluding host
-    const headers: Record<string, string> = { ...this.dsServerHeaders }
-    for (const [key, value] of Object.entries(req.headers)) {
-      if (key.toLowerCase() !== `host` && value) {
-        headers[key] = Array.isArray(value) ? value.join(`, `) : value
-      }
-    }
-
-    const response = await this.postWithAutoCreate(dsPath, headers, body)
-    await this.forwardResponse(res, response)
   }
 
   /**

@@ -180,7 +180,11 @@ async function createDocument(baseUrl: string, docId: string): Promise<void> {
     method: `PUT`,
   })
 
-  if (response.status !== 201 && response.status !== 409) {
+  if (
+    response.status !== 201 &&
+    response.status !== 200 &&
+    response.status !== 409
+  ) {
     throw new Error(
       `Failed to create document: ${response.status} ${await response.text()}`
     )
@@ -238,6 +242,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
     describe(`snapshot.discovery-new-doc`, () => {
       it(`should redirect to offset=-1 for new document`, async () => {
         const docId = `discovery-new-${Date.now()}`
+        await createDocument(baseUrl, docId)
 
         const response = await fetch(
           `${baseUrl}/docs/${docId}?offset=snapshot`,
@@ -256,6 +261,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
     describe(`snapshot.discovery-cached`, () => {
       it(`should include Cache-Control header`, async () => {
         const docId = `discovery-cached-${Date.now()}`
+        await createDocument(baseUrl, docId)
 
         const response = await fetch(
           `${baseUrl}/docs/${docId}?offset=snapshot`,
@@ -268,6 +274,24 @@ describe(`Yjs Durable Streams Protocol`, () => {
         expect(response.status).toBe(307)
         const cacheControl = response.headers.get(`cache-control`)
         expect(cacheControl).toBe(`private, max-age=5`)
+      })
+    })
+
+    describe(`snapshot.discovery-requires-put`, () => {
+      it(`should return 404 for non-existent document`, async () => {
+        const docId = `discovery-no-put-${Date.now()}`
+
+        const response = await fetch(
+          `${baseUrl}/docs/${docId}?offset=snapshot`,
+          {
+            method: `GET`,
+            redirect: `manual`,
+          }
+        )
+
+        expect(response.status).toBe(404)
+        const body = await response.json()
+        expect(body.error.code).toBe(`DOCUMENT_NOT_FOUND`)
       })
     })
 
@@ -305,15 +329,9 @@ describe(`Yjs Durable Streams Protocol`, () => {
         doc?: Y.Doc
         awareness?: Awareness
         connect?: boolean
-        skipDocCreation?: boolean
       }
     ): Promise<YjsProvider> {
       const doc = options?.doc ?? new Y.Doc()
-
-      // Create the document on the server first (unless skipped)
-      if (!options?.skipDocCreation) {
-        await createDocument(baseUrl, docId)
-      }
 
       const provider = new YjsProvider({
         doc,
@@ -327,8 +345,8 @@ describe(`Yjs Durable Streams Protocol`, () => {
       return provider
     }
 
-    describe(`write.creates-document`, () => {
-      it(`should create document on first write`, async () => {
+    describe(`write.requires-put`, () => {
+      it(`should sync document after PUT`, async () => {
         const docId = `create-on-write-${Date.now()}`
         const doc = new Y.Doc()
         const provider = await createProviderWithDoc(docId, { doc })
@@ -345,35 +363,16 @@ describe(`Yjs Durable Streams Protocol`, () => {
         expect(provider.synced).toBe(true)
       })
 
-      it(`should create document implicitly without PUT`, async () => {
-        const docId = `implicit-create-${Date.now()}`
-        const doc = new Y.Doc()
+      it(`should return 404 on POST without prior PUT`, async () => {
+        const docId = `no-put-post-${Date.now()}`
 
-        // Skip document creation — server should auto-create on first POST
-        const provider = await createProviderWithDoc(docId, {
-          doc,
-          skipDocCreation: true,
+        const response = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `POST`,
+          headers: { "content-type": `application/octet-stream` },
+          body: new Uint8Array([1, 2, 3]),
         })
 
-        await waitForSync(provider)
-
-        const text = doc.getText(`content`)
-        text.insert(0, `Implicitly created`)
-
-        await waitForCondition(() => provider.synced, {
-          label: `provider synced after implicit create write`,
-        })
-        expect(provider.synced).toBe(true)
-
-        // Verify a second provider can read the data
-        const doc2 = new Y.Doc()
-        const provider2 = await createProviderWithDoc(docId, {
-          doc: doc2,
-          skipDocCreation: true,
-        })
-        await waitForSync(provider2)
-
-        await waitForDocText(doc2, `content`, `Implicitly created`)
+        expect(response.status).toBe(404)
       })
     })
 
@@ -397,7 +396,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -416,7 +414,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
 
         await waitForSync(provider1)
@@ -455,7 +452,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -473,7 +469,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
 
         await waitForSync(provider1)
@@ -543,7 +538,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -589,7 +583,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -629,7 +622,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -655,7 +647,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -680,16 +671,10 @@ describe(`Yjs Durable Streams Protocol`, () => {
       options?: {
         doc?: Y.Doc
         awareness?: Awareness
-        skipDocCreation?: boolean
       }
     ): Promise<YjsProvider> {
       const doc = options?.doc ?? new Y.Doc()
       const awareness = options?.awareness ?? new Awareness(doc)
-
-      // Create the document on the server first (unless skipped)
-      if (!options?.skipDocCreation) {
-        await createDocument(baseUrl, docId)
-      }
 
       const provider = new YjsProvider({
         doc,
@@ -719,7 +704,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
           awareness: awareness2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -759,17 +743,15 @@ describe(`Yjs Durable Streams Protocol`, () => {
       })
     })
 
-    describe(`presence.implicit-creation`, () => {
-      it(`should sync awareness without prior PUT`, async () => {
+    describe(`presence.created-with-doc`, () => {
+      it(`should sync awareness when document created via PUT`, async () => {
         const docId = `awareness-implicit-${Date.now()}`
 
         const doc1 = new Y.Doc()
         const awareness1 = new Awareness(doc1)
-        // Skip document creation — both doc and awareness streams auto-created
         const provider1 = await createProviderWithDoc(docId, {
           doc: doc1,
           awareness: awareness1,
-          skipDocCreation: true,
         })
         await waitForSync(provider1)
 
@@ -778,7 +760,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
           awareness: awareness2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -811,7 +792,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
           awareness: awareness2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -854,7 +834,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
           awareness: awareness2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -902,15 +881,9 @@ describe(`Yjs Durable Streams Protocol`, () => {
       docId: string,
       options?: {
         doc?: Y.Doc
-        skipDocCreation?: boolean
       }
     ): Promise<YjsProvider> {
       const doc = options?.doc ?? new Y.Doc()
-
-      // Create the document on the server first (unless skipped)
-      if (!options?.skipDocCreation) {
-        await createDocument(baseUrl, docId)
-      }
 
       const provider = new YjsProvider({
         doc,
@@ -942,7 +915,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -975,7 +947,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -993,7 +964,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
 
         await waitForSync(provider1)
@@ -1092,7 +1062,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
           const doc2 = new Y.Doc()
           const provider2 = await createProviderWithDoc(docId, {
             doc: doc2,
-            skipDocCreation: true,
           })
           await waitForSync(provider2)
 
@@ -1168,7 +1137,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
         expect(doc2.getText(`content`).toString()).toBe(`BEFORE`)
@@ -1240,7 +1208,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -1298,7 +1265,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc2 = new Y.Doc()
         const provider2 = await createProviderWithDoc(docId, {
           doc: doc2,
-          skipDocCreation: true,
         })
         await waitForSync(provider2)
 
@@ -1372,9 +1338,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         await serverA.start()
 
         const baseUrlA = `${serverA.url}/v1/yjs/${service}`
-
-        // Create the document first via PUT
-        await createDocument(baseUrlA, docId)
 
         const doc = new Y.Doc()
         const provider = new YjsProvider({
