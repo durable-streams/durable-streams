@@ -5,6 +5,7 @@ import HomeFeatureGrid from "./components/HomeFeatureGrid.vue"
 import HostedElectricCard from "./components/HostedElectricCard.vue"
 import NavSignupButton from "./components/NavSignupButton.vue"
 import ServerConformanceDiagram from "./components/ServerConformanceDiagram.vue"
+import YoutubeEmbed from "./components/YoutubeEmbed.vue"
 import Layout from "./Layout.vue"
 
 export default {
@@ -12,9 +13,10 @@ export default {
     app.component("ClientAdapterDiagram", ClientAdapterDiagram)
     app.component("HomeFeatureGrid", HomeFeatureGrid)
     app.component("HostedElectricCard", HostedElectricCard)
-    app.component("VPButton", VPButton)
     app.component("NavSignupButton", NavSignupButton)
     app.component("ServerConformanceDiagram", ServerConformanceDiagram)
+    app.component("VPButton", VPButton)
+    app.component("YoutubeEmbed", YoutubeEmbed)
   },
   extends: DefaultTheme,
   Layout,

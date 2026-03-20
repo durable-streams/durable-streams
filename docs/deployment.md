@@ -2,6 +2,7 @@
 title: Deployment
 description: >-
   How to deploy Durable Streams, including self-hosting with Caddy and running in production with Electric Cloud.
+outline: [2, 3]
 ---
 
 # Deployment

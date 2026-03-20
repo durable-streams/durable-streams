@@ -2,6 +2,7 @@
 title: Clients
 description: >-
   Durable Streams client libraries for a wide range of languages, including TypeScript, Python, Go, Elixir, .NET, Swift, PHP, Java, Rust, and Ruby.
+outline: [2, 3]
 ---
 
 # Other clients

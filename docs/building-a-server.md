@@ -2,6 +2,7 @@
 title: Building a server
 description: >-
   Use the conformance tests to one-shot a Durable Streams server. Covers protocol requirements, storage layer design and reference implementations.
+outline: [2, 3]
 ---
 
 # Building a server

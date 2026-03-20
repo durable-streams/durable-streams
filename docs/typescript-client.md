@@ -2,6 +2,7 @@
 title: TypeScript client
 description: >-
   TypeScript client for Durable Streams. Fetch-like stream() for reads and IdempotentProducer for exactly-once writes with batching and retries.
+outline: [2, 3]
 ---
 
 # TypeScript client

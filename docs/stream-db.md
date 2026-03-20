@@ -2,6 +2,7 @@
 title: StreamDB
 description: >-
   Type-safe reactive database in a durable stream. Define schemas with StandardSchema, query with TanStack DB, and use optimistic actions on top of Durable State.
+outline: [2, 3]
 ---
 
 # StreamDB
