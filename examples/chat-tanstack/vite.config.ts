@@ -8,10 +8,5 @@ export default defineConfig({
   server: {
     port: 3001,
   },
-  plugins: [
-    tsConfigPaths(),
-    tanstackStart(),
-    viteReact(),
-    tailwindcss(),
-  ],
+  plugins: [tsConfigPaths(), tanstackStart(), viteReact(), tailwindcss()],
 })
