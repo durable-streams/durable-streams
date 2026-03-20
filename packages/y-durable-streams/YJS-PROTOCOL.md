@@ -416,19 +416,6 @@ HTTP/1.1 200 OK
 
 Creating a stream that already exists is idempotent and returns `200 OK`.
 
-#### Awareness index
-
-When a non-default awareness stream is created, the server **MUST** append an entry to the awareness index stream (`.awareness/.index`). This index enables discovery of all awareness streams for operations like cascading delete. The index stream uses `application/json` content type with newline-delimited entries:
-
-```json
-{"name": "admin", "createdAt": 1711929600000}
-{"name": "cursors", "createdAt": 1711929601000}
-```
-
-The `default` awareness stream is **NOT** recorded in the index since it is always implicitly created with the document.
-
-Duplicate entries **MUST NOT** be written to the index. If the stream already exists (PUT returns `200`), the server **MUST** skip the index append.
-
 ## 6. Offset Sentinels
 
 In addition to the base protocol sentinels (`-1` for beginning, `now` for tail), this protocol defines:
@@ -801,7 +788,7 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `awareness.put-creates-stream` | PUT on `?awareness=<name>` creates a new awareness stream, POST succeeds after                  |
 | `awareness.put-idempotent`     | First PUT returns 201, subsequent PUT returns 200                                               |
 | `awareness.put-requires-doc`   | PUT on awareness for non-existent document returns 404 with `DOCUMENT_NOT_FOUND`                |
-| `awareness.put-records-index`  | Non-default PUT appends entry to `.awareness/.index` stream; duplicates are not written         |
+| `awareness.put-records-index`  | Server tracks non-default awareness streams for discovery                                       |
 | `awareness.named-separate`     | Named awareness streams (`cursors`, `presence`) are independent; writes don't cross-contaminate |
 
 #### A.1.4. Compaction

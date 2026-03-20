@@ -890,7 +890,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
             body: new Uint8Array([1, 2, 3]),
           }
         )
-        expect(postResponse.status).not.toBe(404)
+        expect(postResponse.status).toBe(204)
       })
     })
 
@@ -1035,7 +1035,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
             body: new Uint8Array([10, 20, 30]),
           }
         )
-        expect(postCursors.status).not.toBe(404)
+        expect(postCursors.status).toBe(204)
 
         // POST to presence
         const postPresence = await fetch(
@@ -1046,7 +1046,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
             body: new Uint8Array([40, 50, 60]),
           }
         )
-        expect(postPresence.status).not.toBe(404)
+        expect(postPresence.status).toBe(204)
 
         // Read cursors stream — should only have its data
         const cursorsPath = `/v1/stream/yjs/test/docs/${docId}/.awareness/cursors`
