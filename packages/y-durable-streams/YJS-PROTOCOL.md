@@ -32,6 +32,7 @@ Copyright (c) 2026 ElectricSQL
    - 5.5. [Write Update](#55-write-update)
    - 5.6. [Awareness Subscribe](#56-awareness-subscribe)
    - 5.7. [Awareness Broadcast](#57-awareness-broadcast)
+   - 5.8. [Create Awareness Stream](#58-create-awareness-stream)
 6. [Offset Sentinels](#6-offset-sentinels)
 7. [Binary Framing](#7-binary-framing)
    - 7.1. [Variable-Length Integer Encoding](#71-variable-length-integer-encoding)
@@ -163,7 +164,7 @@ The following HTTP methods are supported on document and awareness URLs:
 | Endpoint                          | Supported methods    | All other methods      |
 | --------------------------------- | -------------------- | ---------------------- |
 | `{document-url}`                  | GET, HEAD, POST, PUT | 405 Method Not Allowed |
-| `{document-url}?awareness=<name>` | GET, HEAD, POST      | 405 Method Not Allowed |
+| `{document-url}?awareness=<name>` | GET, HEAD, POST, PUT | 405 Method Not Allowed |
 
 Servers **MUST** return `405 Method Not Allowed` for any HTTP method not listed above.
 
@@ -388,6 +389,45 @@ Stream-Next-Offset: <offset>
 The update is immediately broadcast to all SSE subscribers on that awareness stream. The awareness stream is created automatically when the document is created via PUT (Section 5.1).
 
 **Client disconnect handling:** Yjs awareness has a built-in 30-second timeout that automatically removes stale clients. The `y-durable-streams` provider also calls `removeAwarenessStates()` on `beforeunload` for immediate cleanup on graceful disconnect. No explicit "leave" API endpoint is needed.
+
+### 5.8. Create Awareness Stream
+
+The `default` awareness stream is created automatically when the document is created via PUT (Section 5.1). Additional named awareness streams **MUST** be created explicitly via PUT before they can be used.
+
+#### Request
+
+```
+PUT {document-url}?awareness=<name>
+```
+
+The document **MUST** exist before creating awareness streams. If the document does not exist, the server **MUST** return `404 Not Found` with error code `DOCUMENT_NOT_FOUND`.
+
+#### Response (new stream)
+
+```
+HTTP/1.1 201 Created
+```
+
+#### Response (stream already exists)
+
+```
+HTTP/1.1 200 OK
+```
+
+Creating a stream that already exists is idempotent and returns `200 OK`.
+
+#### Awareness index
+
+When a non-default awareness stream is created, the server **MUST** append an entry to the awareness index stream (`.awareness/.index`). This index enables discovery of all awareness streams for operations like cascading delete. The index stream uses `application/json` content type with newline-delimited entries:
+
+```json
+{"name": "admin", "createdAt": 1711929600000}
+{"name": "cursors", "createdAt": 1711929601000}
+```
+
+The `default` awareness stream is **NOT** recorded in the index since it is always implicitly created with the document.
+
+Duplicate entries **MUST NOT** be written to the index. If the stream already exists (PUT returns `200`), the server **MUST** skip the index append.
 
 ## 6. Offset Sentinels
 
@@ -639,6 +679,7 @@ All errors **MUST** return JSON:
 | `DOCUMENT_NOT_FOUND` | 404         | Document stream doesn't exist                                            |
 | `OFFSET_EXPIRED`     | 410         | Offset is older than stream retention                                    |
 | `RATE_LIMITED`       | 429         | Too many requests                                                        |
+| `INTERNAL_ERROR`     | 500         | Unexpected server-side failure                                           |
 
 ## 11. Limits
 
@@ -745,18 +786,23 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 
 #### A.1.3. Awareness
 
-| Test                           | Description                                                                                    |
-| ------------------------------ | ---------------------------------------------------------------------------------------------- |
-| `awareness.created-with-doc`   | Awareness stream created when document is created via PUT                                      |
-| `awareness.offset-now`         | GET with `offset=now` skips history per protocol                                               |
-| `awareness.live-long-poll`     | Awareness with `live=long-poll` returns long-poll response                                     |
-| `awareness.live-sse`           | Awareness with `live=sse` returns SSE stream (base64 encoding handled by base protocol)        |
-| `awareness.write`              | POST to `?awareness=<name>` appends to awareness stream, returns 204 with `Stream-Next-Offset` |
-| `awareness.broadcast`          | POST awareness delivered to SSE subscribers in real-time                                       |
-| `awareness.ttl`                | Awareness stream expires after 1 hour                                                          |
-| `awareness.named-streams`      | Query param `?awareness=admin` creates separate stream from `?awareness=default`               |
-| `awareness.default-stream`     | `?awareness=default` is the default awareness stream                                           |
-| `awareness.sse-control-events` | SSE stream includes `control` events with `streamNextOffset` and `streamCursor`                |
+| Test                           | Description                                                                                     |
+| ------------------------------ | ----------------------------------------------------------------------------------------------- |
+| `awareness.created-with-doc`   | Awareness stream created when document is created via PUT                                       |
+| `awareness.offset-now`         | GET with `offset=now` skips history per protocol                                                |
+| `awareness.live-long-poll`     | Awareness with `live=long-poll` returns long-poll response                                      |
+| `awareness.live-sse`           | Awareness with `live=sse` returns SSE stream (base64 encoding handled by base protocol)         |
+| `awareness.write`              | POST to `?awareness=<name>` appends to awareness stream, returns 204 with `Stream-Next-Offset`  |
+| `awareness.broadcast`          | POST awareness delivered to SSE subscribers in real-time                                        |
+| `awareness.ttl`                | Awareness stream expires after 1 hour                                                           |
+| `awareness.named-streams`      | Query param `?awareness=admin` creates separate stream from `?awareness=default`                |
+| `awareness.default-stream`     | `?awareness=default` is the default awareness stream                                            |
+| `awareness.sse-control-events` | SSE stream includes `control` events with `streamNextOffset` and `streamCursor`                 |
+| `awareness.put-creates-stream` | PUT on `?awareness=<name>` creates a new awareness stream, POST succeeds after                  |
+| `awareness.put-idempotent`     | First PUT returns 201, subsequent PUT returns 200                                               |
+| `awareness.put-requires-doc`   | PUT on awareness for non-existent document returns 404 with `DOCUMENT_NOT_FOUND`                |
+| `awareness.put-records-index`  | Non-default PUT appends entry to `.awareness/.index` stream; duplicates are not written         |
+| `awareness.named-separate`     | Named awareness streams (`cursors`, `presence`) are independent; writes don't cross-contaminate |
 
 #### A.1.4. Compaction
 
@@ -779,7 +825,6 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `method.doc-rejects-patch`        | PATCH on document URL returns 405   |
 | `method.awareness-rejects-delete` | DELETE on awareness URL returns 405 |
 | `method.awareness-rejects-patch`  | PATCH on awareness URL returns 405  |
-| `method.awareness-rejects-put`    | PUT on awareness URL returns 405    |
 
 #### A.1.6. Error Handling
 

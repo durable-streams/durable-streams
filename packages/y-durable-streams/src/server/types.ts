@@ -75,6 +75,18 @@ export interface YjsIndexEntry {
 }
 
 /**
+ * Awareness index entry stored in the `.awareness/.index` stream.
+ * Each PUT to create a new awareness stream appends an entry here.
+ */
+export interface AwarenessIndexEntry {
+  /** The awareness stream name */
+  name: string
+
+  /** Timestamp when the stream was created */
+  createdAt: number
+}
+
+/**
  * Internal representation of a Yjs document on the server.
  */
 export interface YjsDocument {
@@ -156,6 +168,14 @@ export const YjsStreamPaths = {
   },
 
   /**
+   * Get the awareness index stream path for a document.
+   * This stream tracks which awareness streams have been created.
+   */
+  awarenessIndexStream(service: string, docPath: string): string {
+    return `/v1/stream/yjs/${service}/docs/${docPath}/.awareness/.index`
+  },
+
+  /**
    * Get the snapshot storage key for a given offset.
    */
   snapshotKey(offset: string): string {
@@ -182,6 +202,7 @@ export type YjsErrorCode =
   | `DOCUMENT_NOT_FOUND`
   | `OFFSET_EXPIRED`
   | `RATE_LIMITED`
+  | `INTERNAL_ERROR`
 
 /**
  * Error response format.

@@ -13,6 +13,7 @@ export type {
   CompactionResult,
   YjsDocument,
   YjsIndexEntry,
+  AwarenessIndexEntry,
 } from "./types"
 
 export { YjsStreamPaths, YJS_HEADERS } from "./types"
