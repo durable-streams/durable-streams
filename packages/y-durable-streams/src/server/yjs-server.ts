@@ -693,7 +693,7 @@ export class YjsServer {
         route.docPath,
         `default`
       )
-      await this.ensureStream(awarenessPath).catch((err) => {
+      await this.tryCreateStream(awarenessPath).catch((err) => {
         console.error(`[YjsServer] Failed to create awareness stream:`, err)
       })
     }
@@ -804,8 +804,12 @@ export class YjsServer {
           )
           return
         }
-      } catch {
-        // If HEAD fails for non-404 reasons, proceed with creation attempt
+      } catch (err) {
+        // If HEAD fails for non-404 reasons, log and proceed with creation attempt
+        console.error(
+          `[YjsServer] HEAD check for document existence failed:`,
+          err
+        )
       }
 
       // Create awareness stream
@@ -951,17 +955,6 @@ export class YjsServer {
   // ---- Stream management ----
 
   /**
-   * Ensure a stream exists at the given DS path by issuing an idempotent PUT.
-   * Returns silently if the stream already exists (409 Conflict).
-   */
-  private async ensureStream(
-    dsPath: string,
-    contentType: string = `application/octet-stream`
-  ): Promise<void> {
-    await this.tryCreateStream(dsPath, contentType)
-  }
-
-  /**
    * Try to create a stream at the given DS path.
    * Returns true if the stream was created, false if it already existed.
    */
@@ -1005,15 +998,24 @@ export class YjsServer {
     awarenessName: string
   ): Promise<void> {
     const indexPath = YjsStreamPaths.awarenessIndexStream(service, docPath)
-    await this.ensureStream(indexPath, `application/json`)
-
     const entry: AwarenessIndexEntry = {
       name: awarenessName,
       createdAt: Date.now(),
     }
+    await this.appendToIndexStream(indexPath, entry)
+  }
+
+  /**
+   * Append a JSON entry to an index stream, creating the stream if needed.
+   */
+  async appendToIndexStream(
+    dsPath: string,
+    entry: Record<string, unknown>
+  ): Promise<void> {
+    await this.tryCreateStream(dsPath, `application/json`)
 
     const stream = new DurableStream({
-      url: `${this.dsServerUrl}${indexPath}`,
+      url: `${this.dsServerUrl}${dsPath}`,
       headers: this.dsServerHeaders,
       contentType: `application/json`,
     })
