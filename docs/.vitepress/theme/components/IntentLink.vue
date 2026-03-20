@@ -1,23 +1,19 @@
 <script setup>
-  import { computed } from 'vue'
+import { computed } from "vue"
 
-  const props = defineProps([
-    "intent",
-    "serviceType",
-    "serviceVariant"
-  ])
+const props = defineProps(["intent", "serviceType", "serviceVariant"])
 
-  const href = computed(() => {
-    const url = new URL(`https://dashboard.electric-sql.cloud`)
-    url.searchParams.set(`intent`, props.intent)
-    url.searchParams.set(`serviceType`, props.serviceType)
+const href = computed(() => {
+  const url = new URL(`https://dashboard.electric-sql.cloud`)
+  url.searchParams.set(`intent`, props.intent)
+  url.searchParams.set(`serviceType`, props.serviceType)
 
-    if (props.serviceVariant) {
-      url.searchParams.set(`serviceVariant`, props.serviceVariant)
-    }
+  if (props.serviceVariant) {
+    url.searchParams.set(`serviceVariant`, props.serviceVariant)
+  }
 
-    return url.toString()
-  })
+  return url.toString()
+})
 </script>
 
 <template>
@@ -27,10 +23,10 @@
 </template>
 
 <style scoped>
-  .cta {
-    margin: 24px 0 0 0;
-  }
-  .cta a {
-    text-decoration: none;
-  }
+.cta {
+  margin: 24px 0 0 0;
+}
+.cta a {
+  text-decoration: none;
+}
 </style>

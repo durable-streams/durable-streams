@@ -1,7 +1,10 @@
 <template>
   <div class="hosting-cloud-card">
-    <a class="hosting-cloud-link" href="https://dashboard.electric-sql.cloud"
-        target="_blank">
+    <a
+      class="hosting-cloud-link"
+      href="https://dashboard.electric-sql.cloud"
+      target="_blank"
+    >
       <div class="hosting-cloud-surface">
         <div class="hosting-cloud-content">
           <div class="hosting-cloud-icon">
