@@ -789,6 +789,9 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `awareness.put-idempotent`     | First PUT returns 201, subsequent PUT returns 200                                               |
 | `awareness.put-requires-doc`   | PUT on awareness for non-existent document returns 404 with `DOCUMENT_NOT_FOUND`                |
 | `awareness.named-separate`     | Named awareness streams (`cursors`, `presence`) are independent; writes don't cross-contaminate |
+| `awareness.post-auto-creates`  | POST to non-existent awareness stream auto-creates it and succeeds                              |
+| `awareness.post-ttl-recovery`  | POST recovers from TTL expiry by re-creating the stream transparently                           |
+| `awareness.post-concurrent`    | Concurrent POSTs to non-existent stream both succeed                                            |
 
 #### A.1.4. Compaction
 

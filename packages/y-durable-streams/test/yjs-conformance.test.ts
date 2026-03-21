@@ -929,6 +929,89 @@ describe(`Yjs Durable Streams Protocol`, () => {
       })
     })
 
+    describe(`awareness.post-auto-creates`, () => {
+      it(`should auto-create awareness stream on POST if it does not exist`, async () => {
+        const docId = `aw-autocreate-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // POST directly without prior PUT — should auto-create and succeed
+        const postResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=ephemeral`,
+          {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([1, 2, 3]),
+          }
+        )
+        expect(postResponse.status).toBe(204)
+      })
+
+      it(`should recover from TTL expiry by re-creating stream on POST`, async () => {
+        const docId = `aw-ttl-recover-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Create awareness stream via PUT
+        const putResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `PUT` }
+        )
+        expect(putResponse.status).toBe(201)
+        await putResponse.arrayBuffer()
+
+        // POST should work
+        const post1 = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([1, 2, 3]),
+          }
+        )
+        expect(post1.status).toBe(204)
+
+        // Simulate TTL expiry by deleting the stream directly at DS level
+        const dsPath = `/v1/stream/yjs/test/docs/${docId}/.awareness/cursors`
+        const deleteResponse = await fetch(`${dsServer!.url}${dsPath}`, {
+          method: `DELETE`,
+        })
+        expect(deleteResponse.ok).toBe(true)
+
+        // POST again — should auto-create and succeed
+        const post2 = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([4, 5, 6]),
+          }
+        )
+        expect(post2.status).toBe(204)
+      })
+
+      it(`should handle concurrent POSTs to non-existent stream`, async () => {
+        const docId = `aw-concurrent-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Fire two concurrent POSTs without prior PUT
+        const [res1, res2] = await Promise.all([
+          fetch(`${baseUrl}/docs/${docId}?awareness=concurrent`, {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([1, 2, 3]),
+          }),
+          fetch(`${baseUrl}/docs/${docId}?awareness=concurrent`, {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([4, 5, 6]),
+          }),
+        ])
+
+        // Both should succeed
+        expect(res1.status).toBe(204)
+        expect(res2.status).toBe(204)
+      })
+    })
+
     describe(`awareness.named-streams-separate`, () => {
       it(`should keep named awareness streams separate`, async () => {
         const docId = `aw-multi-${Date.now()}`
