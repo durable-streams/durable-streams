@@ -788,7 +788,6 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `awareness.put-creates-stream` | PUT on `?awareness=<name>` creates a new awareness stream, POST succeeds after                  |
 | `awareness.put-idempotent`     | First PUT returns 201, subsequent PUT returns 200                                               |
 | `awareness.put-requires-doc`   | PUT on awareness for non-existent document returns 404 with `DOCUMENT_NOT_FOUND`                |
-| `awareness.put-records-index`  | Server tracks non-default awareness streams for discovery                                       |
 | `awareness.named-separate`     | Named awareness streams (`cursors`, `presence`) are independent; writes don't cross-contaminate |
 
 #### A.1.4. Compaction

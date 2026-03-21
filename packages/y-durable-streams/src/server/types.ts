@@ -75,18 +75,6 @@ export interface YjsIndexEntry {
 }
 
 /**
- * Awareness index entry stored in the `.awareness/.index` stream.
- * Each PUT to create a new awareness stream appends an entry here.
- */
-export interface AwarenessIndexEntry {
-  /** The awareness stream name */
-  name: string
-
-  /** Timestamp when the stream was created */
-  createdAt: number
-}
-
-/**
  * Internal representation of a Yjs document on the server.
  */
 export interface YjsDocument {
@@ -165,14 +153,6 @@ export const YjsStreamPaths = {
    */
   awarenessStream(service: string, docPath: string, name: string): string {
     return `/v1/stream/yjs/${service}/docs/${docPath}/.awareness/${name}`
-  },
-
-  /**
-   * Get the awareness index stream path for a document.
-   * This stream tracks which awareness streams have been created.
-   */
-  awarenessIndexStream(service: string, docPath: string): string {
-    return `/v1/stream/yjs/${service}/docs/${docPath}/.awareness/.index`
   },
 
   /**
