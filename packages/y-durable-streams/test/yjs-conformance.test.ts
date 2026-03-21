@@ -1752,8 +1752,8 @@ describe(`Yjs Durable Streams Protocol`, () => {
   })
 
   describe(`Method Validation`, () => {
-    // Document URLs accept: GET, HEAD, POST, PUT
-    const unsupportedDocMethods = [`DELETE`, `PATCH`]
+    // Document URLs accept: GET, HEAD, POST, PUT, DELETE
+    const unsupportedDocMethods = [`PATCH`]
     for (const method of unsupportedDocMethods) {
       it(`should reject ${method} on document URL with 405`, async () => {
         const docId = `method-doc-${method.toLowerCase()}-${Date.now()}`
@@ -1764,8 +1764,8 @@ describe(`Yjs Durable Streams Protocol`, () => {
       })
     }
 
-    // Awareness URLs accept: GET, HEAD, POST, PUT
-    const unsupportedAwarenessMethods = [`DELETE`, `PATCH`]
+    // Awareness URLs accept: GET, HEAD, POST, PUT, DELETE
+    const unsupportedAwarenessMethods = [`PATCH`]
     for (const method of unsupportedAwarenessMethods) {
       it(`should reject ${method} on awareness URL with 405`, async () => {
         const docId = `method-aw-${method.toLowerCase()}-${Date.now()}`
@@ -1807,6 +1807,173 @@ describe(`Yjs Durable Streams Protocol`, () => {
         )
 
         expect(response.status).toBe(400)
+      })
+    })
+  })
+
+  describe(`Document Delete`, () => {
+    describe(`delete.basic`, () => {
+      it(`should delete a document and return 204`, async () => {
+        const docId = `delete-basic-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Verify it exists
+        const headBefore = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `HEAD`,
+        })
+        expect(headBefore.status).toBe(200)
+
+        // Delete it
+        const deleteResponse = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `DELETE`,
+        })
+        expect(deleteResponse.status).toBe(204)
+
+        // Verify it's gone
+        const headAfter = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `HEAD`,
+        })
+        expect(headAfter.status).toBe(404)
+      })
+    })
+
+    describe(`delete.not-found`, () => {
+      it(`should return 404 when deleting non-existent document`, async () => {
+        const docId = `delete-nonexistent-${Date.now()}`
+
+        const response = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `DELETE`,
+        })
+        expect(response.status).toBe(404)
+      })
+    })
+
+    describe(`delete.with-data`, () => {
+      let providers: Array<YjsProvider> = []
+
+      afterEach(() => {
+        for (const provider of providers) {
+          provider.destroy()
+        }
+        providers = []
+      })
+
+      function createTestProvider(docId: string, doc?: Y.Doc): YjsProvider {
+        const d = doc ?? new Y.Doc()
+        const provider = new YjsProvider({
+          doc: d,
+          baseUrl,
+          docId,
+        })
+        providers.push(provider)
+        return provider
+      }
+
+      it(`should delete document with updates and snapshots`, async () => {
+        const docId = `delete-data-${Date.now()}`
+
+        const doc = new Y.Doc()
+        const provider = createTestProvider(docId, doc)
+        await waitForSync(provider)
+
+        const text = doc.getText(`content`)
+        // Write enough to trigger compaction
+        await appendWithSync(provider, text, `X`.repeat(200), 10)
+        await waitForSnapshot(baseUrl, docId)
+
+        provider.destroy()
+        providers = []
+
+        // Delete the document
+        const deleteResponse = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `DELETE`,
+        })
+        expect(deleteResponse.status).toBe(204)
+
+        // Verify the document is gone
+        const headResponse = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.status).toBe(404)
+
+        // Snapshot discovery should return 404
+        const snapshotResponse = await fetch(
+          `${baseUrl}/docs/${docId}?offset=snapshot`,
+          { method: `GET`, redirect: `manual` }
+        )
+        expect(snapshotResponse.status).toBe(404)
+      })
+
+      it(`should delete awareness streams along with document`, async () => {
+        const docId = `delete-awareness-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Create a custom awareness stream
+        const putResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `PUT` }
+        )
+        expect(putResponse.status).toBe(201)
+
+        // Delete the document
+        const deleteResponse = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `DELETE`,
+        })
+        expect(deleteResponse.status).toBe(204)
+
+        // Awareness stream should be gone
+        const awarenessHead = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=default`,
+          { method: `HEAD` }
+        )
+        expect(awarenessHead.status).toBe(404)
+      })
+    })
+  })
+
+  describe(`Awareness Delete`, () => {
+    describe(`delete.awareness-stream`, () => {
+      it(`should delete a single awareness stream`, async () => {
+        const docId = `delete-awareness-single-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Create a custom awareness stream
+        const putResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `PUT` }
+        )
+        expect(putResponse.status).toBe(201)
+
+        // Delete just the cursors awareness stream
+        const deleteResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `DELETE` }
+        )
+        expect(deleteResponse.status).toBe(204)
+
+        // The cursors stream should be gone
+        const headResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `HEAD` }
+        )
+        expect(headResponse.status).toBe(404)
+
+        // The document and default awareness should still exist
+        const docHead = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `HEAD`,
+        })
+        expect(docHead.status).toBe(200)
+      })
+
+      it(`should return 404 when deleting non-existent awareness stream`, async () => {
+        const docId = `delete-awareness-404-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        const response = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=nonexistent`,
+          { method: `DELETE` }
+        )
+        expect(response.status).toBe(404)
       })
     })
   })

@@ -93,6 +93,19 @@ export interface YjsIndexEntry {
 }
 
 /**
+ * Index entry for tracking awareness stream creation.
+ * Each time an awareness stream is created, an entry is appended.
+ * Used during document deletion to discover all awareness streams.
+ */
+export interface AwarenessIndexEntry {
+  /** The awareness stream name */
+  name: string
+
+  /** Timestamp when the awareness stream was created/registered */
+  createdAt: number
+}
+
+/**
  * Internal representation of a Yjs document on the server.
  */
 export interface YjsDocument {
@@ -163,6 +176,15 @@ export const YjsStreamPaths = {
     snapshotKey: string
   ): string {
     return `/v1/stream/yjs/${service}/docs/${docPath}/.snapshots/${snapshotKey}`
+  },
+
+  /**
+   * Get the awareness index stream path for a document.
+   * Tracks which awareness streams have been created for this document.
+   * Uses `.awareness-index` suffix to avoid collisions.
+   */
+  awarenessIndexStream(service: string, docPath: string): string {
+    return `/v1/stream/yjs/${service}/docs/${docPath}/.awareness-index`
   },
 
   /**

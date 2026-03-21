@@ -20,7 +20,12 @@ import {
 import { Compactor } from "./compaction"
 import { PathUtils, YJS_HEADERS, YjsStreamPaths } from "./types"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
-import type { YjsDocumentState, YjsIndexEntry, YjsServerOptions } from "./types"
+import type {
+  AwarenessIndexEntry,
+  YjsDocumentState,
+  YjsIndexEntry,
+  YjsServerOptions,
+} from "./types"
 
 const DEFAULT_COMPACTION_THRESHOLD = 1024 * 1024 // 1MB
 
@@ -252,6 +257,8 @@ export class YjsServer {
         await this.handleUpdateWrite(req, res, route)
       } else if (method === `PUT`) {
         await this.handleDocumentCreate(req, res, route)
+      } else if (method === `DELETE`) {
+        await this.handleDocumentDelete(res, route)
       } else {
         res.writeHead(405, { "content-type": `application/json` })
         res.end(
@@ -355,7 +362,8 @@ export class YjsServer {
   private async postWithAutoCreate(
     req: IncomingMessage,
     res: ServerResponse,
-    dsPath: string
+    dsPath: string,
+    onAutoCreate?: () => Promise<void>
   ): Promise<void> {
     const body = await this.readBody(req)
     const headers: Record<string, string> = {
@@ -374,6 +382,10 @@ export class YjsServer {
       // Stream doesn't exist — create it and retry
       await response.arrayBuffer()
       await this.tryCreateStream(dsPath)
+
+      if (onAutoCreate) {
+        await onAutoCreate()
+      }
 
       const retryResponse = await fetch(targetUrl, {
         method: `POST`,
@@ -820,12 +832,172 @@ export class YjsServer {
         route.docPath,
         `default`
       )
-      await this.tryCreateStream(awarenessPath).catch((err) => {
+      try {
+        const created = await this.tryCreateStream(awarenessPath)
+        if (created) {
+          await this.recordAwarenessStream(
+            route.service,
+            route.docPath,
+            `default`
+          )
+        }
+      } catch (err) {
         console.error(`[YjsServer] Failed to create awareness stream:`, err)
-      })
+      }
     }
 
     await this.forwardResponse(res, dsResponse)
+  }
+
+  // ---- Document Delete ----
+
+  /**
+   * DELETE - Delete a document and all its subobjects.
+   *
+   * Cascading deletion order:
+   * 1. Delete all known awareness streams (from awareness index)
+   * 2. Delete all known snapshots (from snapshot index)
+   * 3. Delete the awareness index stream
+   * 4. Delete the snapshot index stream
+   * 5. Delete the .updates stream (source of truth — deleted last)
+   * 6. Clean up in-memory state
+   *
+   * Awareness streams and snapshots are best-effort: failures are logged
+   * but don't prevent the document from being deleted.
+   */
+  private async handleDocumentDelete(
+    res: ServerResponse,
+    route: RouteMatch
+  ): Promise<void> {
+    const { service, docPath } = route
+
+    // Check the document exists
+    const dsPath = YjsStreamPaths.dsStream(service, docPath)
+    const headUrl = `${this.dsServerUrl}${dsPath}`
+    try {
+      const headResponse = await fetch(headUrl, {
+        method: `HEAD`,
+        headers: this.dsServerHeaders,
+      })
+      if (headResponse.status === 404) {
+        res.writeHead(404, { "content-type": `application/json` })
+        res.end(
+          JSON.stringify({
+            error: {
+              code: `DOCUMENT_NOT_FOUND`,
+              message: `Document does not exist`,
+            },
+          })
+        )
+        return
+      }
+    } catch {
+      // If HEAD fails, proceed with deletion attempt anyway
+    }
+
+    // 1. Delete awareness streams (best-effort)
+    const awarenessNames = await this.loadAwarenessStreamNames(service, docPath)
+    for (const name of awarenessNames) {
+      const awarenessPath = YjsStreamPaths.awarenessStream(
+        service,
+        docPath,
+        name
+      )
+      await this.deleteStream(awarenessPath)
+    }
+
+    // 2. Delete snapshots (best-effort, read from index)
+    const snapshotEntries = await this.loadIndexEntries(service, docPath)
+    const deletedSnapshots = new Set<string>()
+    for (const entry of snapshotEntries) {
+      if (entry.snapshotOffset && !deletedSnapshots.has(entry.snapshotOffset)) {
+        const snapshotKey = YjsStreamPaths.snapshotKey(entry.snapshotOffset)
+        const snapshotPath = YjsStreamPaths.snapshotStream(
+          service,
+          docPath,
+          snapshotKey
+        )
+        await this.deleteStream(snapshotPath)
+        deletedSnapshots.add(entry.snapshotOffset)
+      }
+      // Also clean up previousSnapshotOffset if it wasn't already deleted
+      if (
+        entry.previousSnapshotOffset &&
+        !deletedSnapshots.has(entry.previousSnapshotOffset)
+      ) {
+        const prevKey = YjsStreamPaths.snapshotKey(entry.previousSnapshotOffset)
+        const prevPath = YjsStreamPaths.snapshotStream(
+          service,
+          docPath,
+          prevKey
+        )
+        await this.deleteStream(prevPath)
+        deletedSnapshots.add(entry.previousSnapshotOffset)
+      }
+    }
+
+    // 3. Delete awareness index stream
+    await this.deleteStream(
+      YjsStreamPaths.awarenessIndexStream(service, docPath)
+    )
+
+    // 4. Delete snapshot index stream
+    await this.deleteStream(YjsStreamPaths.indexStream(service, docPath))
+
+    // 5. Delete the updates stream (source of truth — last)
+    const deleted = await this.deleteStream(dsPath)
+
+    // 6. Clean up in-memory state
+    const stateKey = this.stateKey(service, docPath)
+    this.documentStates.delete(stateKey)
+
+    if (deleted) {
+      res.writeHead(204)
+      res.end()
+    } else {
+      res.writeHead(404, { "content-type": `application/json` })
+      res.end(
+        JSON.stringify({
+          error: {
+            code: `DOCUMENT_NOT_FOUND`,
+            message: `Document does not exist`,
+          },
+        })
+      )
+    }
+  }
+
+  // ---- Awareness Delete ----
+
+  /**
+   * DELETE - Delete a single awareness stream.
+   */
+  private async handleAwarenessDelete(
+    res: ServerResponse,
+    route: RouteMatch,
+    awarenessName: string
+  ): Promise<void> {
+    const dsPath = YjsStreamPaths.awarenessStream(
+      route.service,
+      route.docPath,
+      awarenessName
+    )
+    const deleted = await this.deleteStream(dsPath)
+
+    if (deleted) {
+      res.writeHead(204)
+      res.end()
+    } else {
+      res.writeHead(404, { "content-type": `application/json` })
+      res.end(
+        JSON.stringify({
+          error: {
+            code: `DOCUMENT_NOT_FOUND`,
+            message: `Awareness stream does not exist`,
+          },
+        })
+      )
+    }
   }
 
   /**
@@ -942,6 +1114,13 @@ export class YjsServer {
       // Create awareness stream
       try {
         const created = await this.tryCreateStream(dsPath)
+        if (created) {
+          await this.recordAwarenessStream(
+            route.service,
+            route.docPath,
+            awarenessName
+          )
+        }
 
         res.writeHead(created ? 201 : 200, {
           "content-type": `application/json`,
@@ -964,7 +1143,9 @@ export class YjsServer {
     } else if (method === `POST`) {
       // Proxy raw binary to awareness stream.
       // Auto-create on 404 since awareness streams have TTL and may expire.
-      await this.postWithAutoCreate(req, res, dsPath)
+      await this.postWithAutoCreate(req, res, dsPath, () =>
+        this.recordAwarenessStream(route.service, route.docPath, awarenessName)
+      )
     } else if (method === `GET`) {
       // Build path with query params
       const offset = url.searchParams.get(`offset`)
@@ -990,6 +1171,8 @@ export class YjsServer {
       }
     } else if (method === `HEAD`) {
       await this.proxyToDsServer(req, res, dsPath)
+    } else if (method === `DELETE`) {
+      await this.handleAwarenessDelete(res, route, awarenessName)
     } else {
       res.writeHead(405, { "content-type": `application/json` })
       res.end(
@@ -1108,6 +1291,26 @@ export class YjsServer {
   }
 
   /**
+   * Delete a stream at the given DS path.
+   * Returns true if deleted, false if not found. Other errors are logged.
+   */
+  private async deleteStream(dsPath: string): Promise<boolean> {
+    try {
+      await DurableStream.delete({
+        url: `${this.dsServerUrl}${dsPath}`,
+        headers: this.dsServerHeaders,
+      })
+      return true
+    } catch (err) {
+      if (isNotFoundError(err)) {
+        return false
+      }
+      console.error(`[YjsServer] Error deleting stream ${dsPath}:`, err)
+      return false
+    }
+  }
+
+  /**
    * Append a JSON entry to an index stream, creating the stream if needed.
    */
   async appendToIndexStream(
@@ -1125,6 +1328,90 @@ export class YjsServer {
     await stream.append(JSON.stringify(entry) + `\n`, {
       contentType: `application/json`,
     })
+  }
+
+  /**
+   * Record an awareness stream name in the awareness index.
+   * Best-effort: failures are logged but don't block the operation.
+   */
+  private async recordAwarenessStream(
+    service: string,
+    docPath: string,
+    name: string
+  ): Promise<void> {
+    try {
+      const indexPath = YjsStreamPaths.awarenessIndexStream(service, docPath)
+      const entry: AwarenessIndexEntry = { name, createdAt: Date.now() }
+      await this.appendToIndexStream(indexPath, entry)
+    } catch (err) {
+      console.error(
+        `[YjsServer] Failed to record awareness stream ${name} for ${service}/${docPath}:`,
+        err
+      )
+    }
+  }
+
+  /**
+   * Load all unique awareness stream names from the awareness index.
+   */
+  async loadAwarenessStreamNames(
+    service: string,
+    docPath: string
+  ): Promise<Array<string>> {
+    const indexUrl = `${this.dsServerUrl}${YjsStreamPaths.awarenessIndexStream(service, docPath)}`
+
+    try {
+      const stream = new DurableStream({
+        url: indexUrl,
+        headers: this.dsServerHeaders,
+        contentType: `application/json`,
+      })
+
+      const response = await stream.stream({ offset: `-1` })
+      const body = await response.text()
+
+      if (!body || body.trim().length === 0) {
+        return []
+      }
+
+      const names = new Set<string>()
+
+      // Try JSON array format first
+      try {
+        const parsed = JSON.parse(body) as unknown
+        if (Array.isArray(parsed)) {
+          for (const entry of parsed as Array<AwarenessIndexEntry | null>) {
+            if (entry?.name) names.add(entry.name)
+          }
+          return [...names]
+        }
+      } catch {
+        // Fall through to newline-delimited
+      }
+
+      // Newline-delimited fallback
+      for (const line of body.trim().split(`\n`)) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const entry = JSON.parse(trimmed) as AwarenessIndexEntry
+          if (entry.name) names.add(entry.name)
+        } catch {
+          // Skip malformed lines
+        }
+      }
+
+      return [...names]
+    } catch (err) {
+      if (isNotFoundError(err)) {
+        return []
+      }
+      console.error(
+        `[YjsServer] Error loading awareness index for ${service}/${docPath}:`,
+        err
+      )
+      return []
+    }
   }
 
   private getOrCreateDocumentState(
