@@ -41,6 +41,17 @@ export interface CompactorServer {
     dsPath: string,
     entry: Record<string, unknown>
   ) => Promise<void>
+  /** Load the latest complete index entry for a document */
+  loadLatestIndexEntry: (
+    service: string,
+    docPath: string
+  ) => Promise<YjsIndexEntry | null>
+  /** Probe whether a snapshot exists at the given offset */
+  probeSnapshot: (
+    service: string,
+    docPath: string,
+    snapshotOffset: string
+  ) => Promise<boolean>
 }
 
 /**
@@ -83,6 +94,16 @@ export class Compactor {
 
   /**
    * Perform the actual compaction.
+   *
+   * Uses a write-ahead index pattern for crash resilience:
+   * 1. Clean up previous cycle's old snapshot (deferred deletion)
+   * 2. Write "pending" index entry (intent to create snapshot)
+   * 3. Write snapshot data
+   * 4. Write "complete" index entry (confirms snapshot is stored)
+   * 5. Update in-memory state
+   *
+   * On recovery, only "complete" entries are trusted. "pending" entries
+   * trigger a probe to check if the snapshot was actually written.
    */
   private async performCompaction(
     service: string,
@@ -95,6 +116,11 @@ export class Compactor {
 
     const dsServerUrl = this.server.getDsServerUrl()
     const dsHeaders = this.server.getDsServerHeaders()
+
+    // Step 0: Clean up previous cycle's old snapshot (deferred deletion).
+    // Read the latest index entry to find any previousSnapshotOffset that
+    // needs cleanup from the last compaction cycle.
+    await this.cleanupDeferredSnapshot(service, docPath)
 
     // Create a Y.Doc and load current state
     const doc = new Y.Doc()
@@ -168,7 +194,15 @@ export class Compactor {
       // Encode the current state as a snapshot
       const newSnapshot = Y.encodeStateAsUpdate(doc)
 
-      // Create new snapshot storage with offset-based key
+      const oldSnapshotOffset = state.snapshotOffset
+
+      // Step 1: Write "pending" index entry (write-ahead)
+      await this.writeIndexEntry(service, docPath, currentEndOffset, {
+        status: `pending`,
+        previousSnapshotOffset: oldSnapshotOffset,
+      })
+
+      // Step 2: Create new snapshot storage with offset-based key
       const snapshotKey = YjsStreamPaths.snapshotKey(currentEndOffset)
       const newSnapshotUrl = `${dsServerUrl}${YjsStreamPaths.snapshotStream(service, docPath, snapshotKey)}`
 
@@ -181,28 +215,22 @@ export class Compactor {
         contentType: `application/octet-stream`,
       })
 
-      const oldSnapshotOffset = state.snapshotOffset
+      // Step 3: Write "complete" index entry (confirms snapshot is stored)
+      await this.writeIndexEntry(service, docPath, currentEndOffset, {
+        status: `complete`,
+        previousSnapshotOffset: oldSnapshotOffset,
+      })
 
-      // Write to internal index stream to persist the snapshot offset
-      await this.writeIndexEntry(service, docPath, currentEndOffset)
-
-      // Update in-memory snapshot offset
+      // Step 4: Update in-memory snapshot offset
       this.server.updateSnapshotOffset(service, docPath, currentEndOffset)
 
       // Reset counters
       this.server.resetUpdateCounters(service, docPath)
 
-      // Delete old snapshot if any
-      if (oldSnapshotOffset) {
-        this.deleteOldSnapshot(service, docPath, oldSnapshotOffset).catch(
-          (err) => {
-            console.error(
-              `[Compactor] Error deleting old snapshot for ${service}/${docPath}:`,
-              err
-            )
-          }
-        )
-      }
+      // Note: Old snapshot deletion is deferred to the next compaction cycle.
+      // This ensures at least one valid snapshot always exists, even if the
+      // process crashes after writing the new snapshot but before the next
+      // index entry is written.
 
       const result: CompactionResult = {
         snapshotOffset: currentEndOffset,
@@ -229,14 +257,50 @@ export class Compactor {
   private async writeIndexEntry(
     service: string,
     docPath: string,
-    snapshotOffset: string
+    snapshotOffset: string,
+    options: {
+      status: `pending` | `complete`
+      previousSnapshotOffset?: string | null
+    }
   ): Promise<void> {
     const indexPath = YjsStreamPaths.indexStream(service, docPath)
     const indexEntry: YjsIndexEntry = {
       snapshotOffset,
       createdAt: Date.now(),
+      status: options.status,
+      previousSnapshotOffset: options.previousSnapshotOffset,
     }
     await this.server.appendToIndexStream(indexPath, indexEntry)
+  }
+
+  /**
+   * Clean up a snapshot that was deferred for deletion in the previous
+   * compaction cycle. Reads the latest index entry and deletes the
+   * previousSnapshotOffset if one exists.
+   */
+  private async cleanupDeferredSnapshot(
+    service: string,
+    docPath: string
+  ): Promise<void> {
+    try {
+      const latestEntry = await this.server.loadLatestIndexEntry(
+        service,
+        docPath
+      )
+      if (latestEntry?.previousSnapshotOffset) {
+        await this.deleteOldSnapshot(
+          service,
+          docPath,
+          latestEntry.previousSnapshotOffset
+        )
+      }
+    } catch (err) {
+      // Cleanup is best-effort — don't block compaction
+      console.error(
+        `[Compactor] Error cleaning up deferred snapshot for ${service}/${docPath}:`,
+        err
+      )
+    }
   }
 
   /**

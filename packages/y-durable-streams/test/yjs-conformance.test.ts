@@ -1396,11 +1396,17 @@ describe(`Yjs Durable Streams Protocol`, () => {
         // consume the body
         await checkResponse.arrayBuffer()
 
-        // Trigger another compaction so the first snapshot gets deleted
+        // Trigger a second compaction — old snapshot deletion is deferred
         await appendWithSync(provider1, text, `Y`.repeat(200), 10)
-        const secondSnapshotKey = await waitForSnapshot(baseUrl, docId)
+        await waitForSnapshot(baseUrl, docId)
 
-        // Wait for old snapshot to be deleted (async cleanup)
+        // Trigger a third compaction — this cleans up the first snapshot
+        // (deferred deletion: old snapshot is deleted at the start of the
+        // next compaction cycle)
+        await appendWithSync(provider1, text, `Z`.repeat(200), 10)
+        const thirdSnapshotKey = await waitForSnapshot(baseUrl, docId)
+
+        // Wait for old snapshot to be deleted (cleaned up by third compaction)
         await waitForCondition(
           async () => {
             const r = await fetch(
@@ -1422,7 +1428,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
         await waitForSync(provider2)
 
         expect(doc2.getText(`content`).toString()).toBe(text.toString())
-        expect(secondSnapshotKey).not.toBe(firstSnapshotKey)
+        expect(thirdSnapshotKey).not.toBe(firstSnapshotKey)
       })
     })
 

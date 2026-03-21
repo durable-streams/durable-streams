@@ -64,7 +64,10 @@ export interface CompactionResult {
 
 /**
  * Index entry stored in the internal index stream.
- * Each compaction appends a new entry with the current snapshot offset.
+ * Each compaction writes two entries: a "pending" entry before the snapshot
+ * is written, and a "complete" entry after the snapshot is confirmed stored.
+ * This provides crash resilience — on recovery, only "complete" entries are
+ * trusted. "pending" entries trigger snapshot validation before use.
  */
 export interface YjsIndexEntry {
   /** The snapshot offset (used to construct the snapshot key) */
@@ -72,6 +75,21 @@ export interface YjsIndexEntry {
 
   /** Timestamp when the snapshot was created */
   createdAt: number
+
+  /**
+   * Status of the compaction.
+   * - "pending": snapshot write is in progress
+   * - "complete": snapshot is confirmed stored
+   * Entries without a status are treated as "complete" for backward compatibility.
+   */
+  status?: `pending` | `complete`
+
+  /**
+   * The previous snapshot offset that should be cleaned up.
+   * Deletion is deferred to the next compaction cycle to ensure
+   * at least one valid snapshot always exists.
+   */
+  previousSnapshotOffset?: string | null
 }
 
 /**

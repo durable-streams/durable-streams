@@ -457,11 +457,81 @@ export class YjsServer {
   /**
    * Load the latest snapshot offset from the internal index stream.
    * Returns null if no index exists or it's empty.
+   *
+   * Only trusts entries with status "complete" (or no status for backward
+   * compatibility). If the latest entry is "pending", probes the snapshot
+   * to check if it was actually written — if so, treats it as complete.
    */
   private async loadSnapshotOffsetFromIndex(
     service: string,
     docPath: string
   ): Promise<string | null> {
+    const entries = await this.loadIndexEntries(service, docPath)
+    if (entries.length === 0) {
+      return null
+    }
+
+    // Scan backward for the latest usable entry
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const entry = entries[i]!
+
+      // "complete" or legacy entries (no status) are trusted directly
+      if (!entry.status || entry.status === `complete`) {
+        return entry.snapshotOffset
+      }
+
+      // "pending" entries need snapshot validation
+      const exists = await this.probeSnapshot(
+        service,
+        docPath,
+        entry.snapshotOffset
+      )
+      if (exists) {
+        // Snapshot was written despite pending status (crash between
+        // snapshot write and complete index write). Promote it.
+        console.log(
+          `[YjsServer] Recovered pending snapshot for ${service}/${docPath} ` +
+            `at offset ${entry.snapshotOffset}`
+        )
+        return entry.snapshotOffset
+      }
+      // Snapshot wasn't written — skip this entry and try older ones
+    }
+
+    return null
+  }
+
+  /**
+   * Load the latest complete index entry (full entry, not just offset).
+   * Used by the Compactor to find deferred snapshot deletions.
+   */
+  async loadLatestIndexEntry(
+    service: string,
+    docPath: string
+  ): Promise<YjsIndexEntry | null> {
+    const entries = await this.loadIndexEntries(service, docPath)
+    if (entries.length === 0) {
+      return null
+    }
+
+    // Scan backward for the latest complete entry
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const entry = entries[i]!
+      if (!entry.status || entry.status === `complete`) {
+        return entry
+      }
+    }
+
+    return null
+  }
+
+  /**
+   * Parse all index entries from the index stream.
+   */
+  private async loadIndexEntries(
+    service: string,
+    docPath: string
+  ): Promise<Array<YjsIndexEntry>> {
     const indexUrl = `${this.dsServerUrl}${YjsStreamPaths.indexStream(service, docPath)}`
 
     try {
@@ -475,54 +545,77 @@ export class YjsServer {
       const body = await response.text()
 
       if (!body || body.trim().length === 0) {
-        return null
+        return []
       }
 
       // Prefer JSON array format (DS JSON streams return arrays)
       try {
         const parsed = JSON.parse(body) as unknown
         if (Array.isArray(parsed)) {
-          const last = parsed[parsed.length - 1] as YjsIndexEntry | undefined
-          if (last?.snapshotOffset) {
-            return last.snapshotOffset
-          }
+          return (parsed as Array<YjsIndexEntry>).filter(
+            (e: YjsIndexEntry | null | undefined) => e && e.snapshotOffset
+          )
         } else if (
           parsed &&
           typeof parsed === `object` &&
           `snapshotOffset` in parsed
         ) {
-          return (parsed as YjsIndexEntry).snapshotOffset
+          return [parsed as YjsIndexEntry]
         }
       } catch {
         // Fall through to newline-delimited parsing
       }
 
       // Fallback: parse newline-delimited entries
+      const entries: Array<YjsIndexEntry> = []
       const lines = body.trim().split(`\n`)
-      for (let i = lines.length - 1; i >= 0; i -= 1) {
-        const line = lines[i]?.trim()
-        if (!line) continue
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
         try {
-          const entry = JSON.parse(line) as YjsIndexEntry
+          const entry = JSON.parse(trimmed) as YjsIndexEntry
           if (entry.snapshotOffset) {
-            return entry.snapshotOffset
+            entries.push(entry)
           }
         } catch {
-          // Keep scanning
+          // Skip malformed lines
         }
       }
 
-      return null
+      return entries
     } catch (err) {
       if (isNotFoundError(err)) {
         // No index stream yet - that's fine
-        return null
+        return []
       }
       console.error(
         `[YjsServer] Error loading index for ${service}/${docPath}:`,
         err
       )
-      return null
+      return []
+    }
+  }
+
+  /**
+   * Probe whether a snapshot exists at the given offset.
+   * Uses a HEAD request to avoid downloading the full snapshot.
+   */
+  async probeSnapshot(
+    service: string,
+    docPath: string,
+    snapshotOffset: string
+  ): Promise<boolean> {
+    const snapshotKey = YjsStreamPaths.snapshotKey(snapshotOffset)
+    const snapshotUrl = `${this.dsServerUrl}${YjsStreamPaths.snapshotStream(service, docPath, snapshotKey)}`
+
+    try {
+      const response = await fetch(snapshotUrl, {
+        method: `HEAD`,
+        headers: this.dsServerHeaders,
+      })
+      return response.status !== 404
+    } catch {
+      return false
     }
   }
 
