@@ -867,6 +867,216 @@ describe(`Yjs Durable Streams Protocol`, () => {
     })
   })
 
+  describe(`Awareness Stream Management`, () => {
+    describe(`awareness.put-creates-stream`, () => {
+      it(`should create awareness stream via PUT and POST to it`, async () => {
+        const docId = `aw-put-create-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // PUT to create a custom awareness stream
+        const putResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `PUT` }
+        )
+        expect(putResponse.status).toBe(201)
+        await putResponse.arrayBuffer()
+
+        // POST to the new awareness stream should succeed
+        const postResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([1, 2, 3]),
+          }
+        )
+        expect(postResponse.status).toBe(204)
+      })
+    })
+
+    describe(`awareness.put-idempotent`, () => {
+      it(`should return 201 on first PUT and 200 on subsequent PUT`, async () => {
+        const docId = `aw-put-idempotent-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        const firstPut = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=presence`,
+          { method: `PUT` }
+        )
+        expect(firstPut.status).toBe(201)
+        await firstPut.arrayBuffer()
+
+        const secondPut = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=presence`,
+          { method: `PUT` }
+        )
+        expect(secondPut.status).toBe(200)
+        await secondPut.arrayBuffer()
+      })
+    })
+
+    describe(`awareness.put-requires-document`, () => {
+      it(`should return 404 when PUTting awareness for non-existent document`, async () => {
+        const docId = `aw-put-no-doc-${Date.now()}`
+
+        const response = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=default`,
+          { method: `PUT` }
+        )
+        expect(response.status).toBe(404)
+        const body = await response.json()
+        expect(body.error.code).toBe(`DOCUMENT_NOT_FOUND`)
+      })
+    })
+
+    describe(`awareness.post-auto-creates`, () => {
+      it(`should auto-create awareness stream on POST if it does not exist`, async () => {
+        const docId = `aw-autocreate-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // POST directly without prior PUT — should auto-create and succeed
+        const postResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=ephemeral`,
+          {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([1, 2, 3]),
+          }
+        )
+        expect(postResponse.status).toBe(204)
+      })
+
+      it(`should recover from TTL expiry by re-creating stream on POST`, async () => {
+        const docId = `aw-ttl-recover-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Create awareness stream via PUT
+        const putResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `PUT` }
+        )
+        expect(putResponse.status).toBe(201)
+        await putResponse.arrayBuffer()
+
+        // POST should work
+        const post1 = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([1, 2, 3]),
+          }
+        )
+        expect(post1.status).toBe(204)
+
+        // Simulate TTL expiry by deleting the stream directly at DS level
+        const dsPath = `/v1/stream/yjs/test/docs/${docId}/.awareness/cursors`
+        const deleteResponse = await fetch(`${dsServer!.url}${dsPath}`, {
+          method: `DELETE`,
+        })
+        expect(deleteResponse.ok).toBe(true)
+
+        // POST again — should auto-create and succeed
+        const post2 = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([4, 5, 6]),
+          }
+        )
+        expect(post2.status).toBe(204)
+      })
+
+      it(`should handle concurrent POSTs to non-existent stream`, async () => {
+        const docId = `aw-concurrent-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Fire two concurrent POSTs without prior PUT
+        const [res1, res2] = await Promise.all([
+          fetch(`${baseUrl}/docs/${docId}?awareness=concurrent`, {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([1, 2, 3]),
+          }),
+          fetch(`${baseUrl}/docs/${docId}?awareness=concurrent`, {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([4, 5, 6]),
+          }),
+        ])
+
+        // Both should succeed
+        expect(res1.status).toBe(204)
+        expect(res2.status).toBe(204)
+      })
+    })
+
+    describe(`awareness.named-streams-separate`, () => {
+      it(`should keep named awareness streams separate`, async () => {
+        const docId = `aw-multi-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Create two custom awareness streams
+        const put1 = await fetch(`${baseUrl}/docs/${docId}?awareness=cursors`, {
+          method: `PUT`,
+        })
+        expect(put1.status).toBe(201)
+        await put1.arrayBuffer()
+
+        const put2 = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=presence`,
+          { method: `PUT` }
+        )
+        expect(put2.status).toBe(201)
+        await put2.arrayBuffer()
+
+        // POST to cursors
+        const postCursors = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([10, 20, 30]),
+          }
+        )
+        expect(postCursors.status).toBe(204)
+
+        // POST to presence
+        const postPresence = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=presence`,
+          {
+            method: `POST`,
+            headers: { "content-type": `application/octet-stream` },
+            body: new Uint8Array([40, 50, 60]),
+          }
+        )
+        expect(postPresence.status).toBe(204)
+
+        // Read cursors stream — should only have its data
+        const cursorsPath = `/v1/stream/yjs/test/docs/${docId}/.awareness/cursors`
+        const cursorsResponse = await fetch(
+          `${dsServer!.url}${cursorsPath}?offset=-1`
+        )
+        expect(cursorsResponse.status).toBe(200)
+        const cursorsData = new Uint8Array(await cursorsResponse.arrayBuffer())
+
+        // Read presence stream — should only have its data
+        const presencePath = `/v1/stream/yjs/test/docs/${docId}/.awareness/presence`
+        const presenceResponse = await fetch(
+          `${dsServer!.url}${presencePath}?offset=-1`
+        )
+        expect(presenceResponse.status).toBe(200)
+        const presenceData = new Uint8Array(
+          await presenceResponse.arrayBuffer()
+        )
+
+        // Verify they contain different data
+        expect(cursorsData).not.toEqual(presenceData)
+      })
+    })
+  })
+
   describe(`Compaction`, () => {
     let providers: Array<YjsProvider> = []
 
@@ -1548,8 +1758,8 @@ describe(`Yjs Durable Streams Protocol`, () => {
       })
     }
 
-    // Awareness URLs accept: GET, HEAD, POST
-    const unsupportedAwarenessMethods = [`DELETE`, `PATCH`, `PUT`]
+    // Awareness URLs accept: GET, HEAD, POST, PUT
+    const unsupportedAwarenessMethods = [`DELETE`, `PATCH`]
     for (const method of unsupportedAwarenessMethods) {
       it(`should reject ${method} on awareness URL with 405`, async () => {
         const docId = `method-aw-${method.toLowerCase()}-${Date.now()}`

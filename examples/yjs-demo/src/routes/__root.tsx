@@ -16,7 +16,7 @@ import type { RoomMetadata } from "../utils/schemas"
 import "../styles.css"
 
 function RoomItem({ room }: { room: RoomMetadata }) {
-  const { registryDB, dsEndpoint } = useRegistryContext()
+  const { registryDB, dsEndpoint, dsHeaders } = useRegistryContext()
   const navigate = useNavigate()
   const [isDeleting, setIsDeleting] = useState(false)
 
@@ -31,6 +31,7 @@ function RoomItem({ room }: { room: RoomMetadata }) {
       // Delete the room stream
       const stream = new DurableStream({
         url: `${dsEndpoint}/v1/stream/rooms/${room.roomId}`,
+        headers: dsHeaders,
         contentType: `application/octet-stream`,
       })
       await stream.delete()
@@ -92,7 +93,7 @@ function RoomList() {
 }
 
 function CreateRoomForm() {
-  const { registryDB, serverEndpoint } = useRegistryContext()
+  const { registryDB, serverEndpoint, yjsHeaders } = useRegistryContext()
   const navigate = useNavigate()
   const [name, setName] = useState(``)
   const [isCreating, setIsCreating] = useState(false)
@@ -111,7 +112,7 @@ function CreateRoomForm() {
       // Create the Yjs document stream via PUT to the Yjs API
       const createResponse = await fetch(
         `${serverEndpoint}/v1/yjs/rooms/docs/${roomId}`,
-        { method: `PUT` }
+        { method: `PUT`, headers: yjsHeaders }
       )
       if (!createResponse.ok && createResponse.status !== 409) {
         throw new Error(`Failed to create document: ${createResponse.status}`)

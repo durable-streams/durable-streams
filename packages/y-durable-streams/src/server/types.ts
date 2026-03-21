@@ -182,6 +182,7 @@ export type YjsErrorCode =
   | `DOCUMENT_NOT_FOUND`
   | `OFFSET_EXPIRED`
   | `RATE_LIMITED`
+  | `INTERNAL_ERROR`
 
 /**
  * Error response format.

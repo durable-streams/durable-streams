@@ -98,7 +98,7 @@ export function YjsRoomProvider({
   roomId,
   children,
 }: YjsRoomProviderProps): ReactNode {
-  const { serverEndpoint } = useServerEndpoint()
+  const { serverEndpoint, yjsHeaders } = useServerEndpoint()
   const [userInfo] = useState(() => generateUserInfo())
   const [username, setUsernameState] = useState(() => userInfo.name)
 
@@ -166,6 +166,7 @@ export function YjsRoomProvider({
       baseUrl,
       docId: roomId,
       awareness,
+      headers: yjsHeaders,
       connect: false, // We'll connect manually after setting up listeners
     })
 
@@ -207,7 +208,7 @@ export function YjsRoomProvider({
       provider.destroy()
       providerRef.current = null
     }
-  }, [roomId, doc, awareness, serverEndpoint, userInfo])
+  }, [roomId, doc, awareness, serverEndpoint, yjsHeaders, userInfo])
 
   const value: YjsRoomContextValue = {
     doc,

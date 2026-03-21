@@ -25,16 +25,6 @@ import type { YjsDocumentState, YjsIndexEntry, YjsServerOptions } from "./types"
 const DEFAULT_COMPACTION_THRESHOLD = 1024 * 1024 // 1MB
 
 /**
- * Check if an error is a 409 Conflict (already exists) error.
- */
-function isConflictExistsError(err: unknown): boolean {
-  return (
-    (err instanceof DurableStreamError && err.code === `CONFLICT_EXISTS`) ||
-    (err instanceof FetchError && err.status === 409)
-  )
-}
-
-/**
  * Check if an error is a 404 Not Found error.
  */
 function isNotFoundError(err: unknown): boolean {
@@ -354,6 +344,45 @@ export class YjsServer {
           })
         )
       }
+    }
+  }
+
+  /**
+   * POST with auto-create on 404: try POST, if stream doesn't exist
+   * create it via PUT and retry. Handles awareness streams that may
+   * have expired due to TTL.
+   */
+  private async postWithAutoCreate(
+    req: IncomingMessage,
+    res: ServerResponse,
+    dsPath: string
+  ): Promise<void> {
+    const body = await this.readBody(req)
+    const headers: Record<string, string> = {
+      ...this.dsServerHeaders,
+      "content-type": req.headers[`content-type`] ?? `application/octet-stream`,
+    }
+
+    const targetUrl = `${this.dsServerUrl}${dsPath}`
+    const response = await fetch(targetUrl, {
+      method: `POST`,
+      headers,
+      body: body.length > 0 ? new Uint8Array(body) : undefined,
+    })
+
+    if (response.status === 404) {
+      // Stream doesn't exist — create it and retry
+      await response.arrayBuffer()
+      await this.tryCreateStream(dsPath)
+
+      const retryResponse = await fetch(targetUrl, {
+        method: `POST`,
+        headers,
+        body: body.length > 0 ? new Uint8Array(body) : undefined,
+      })
+      await this.forwardResponse(res, retryResponse)
+    } else {
+      await this.forwardResponse(res, response)
     }
   }
 
@@ -698,7 +727,7 @@ export class YjsServer {
         route.docPath,
         `default`
       )
-      await this.ensureStream(awarenessPath).catch((err) => {
+      await this.tryCreateStream(awarenessPath).catch((err) => {
         console.error(`[YjsServer] Failed to create awareness stream:`, err)
       })
     }
@@ -788,9 +817,61 @@ export class YjsServer {
       awarenessName
     )
 
-    if (method === `POST`) {
-      // Proxy raw binary to awareness stream (404 if doc doesn't exist)
-      await this.proxyToDsServer(req, res, dsPath)
+    if (method === `PUT`) {
+      // Check that the parent document exists before creating awareness stream
+      const docDsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
+      const headUrl = `${this.dsServerUrl}${docDsPath}`
+      try {
+        const headResponse = await fetch(headUrl, {
+          method: `HEAD`,
+          headers: this.dsServerHeaders,
+        })
+        if (headResponse.status === 404) {
+          res.writeHead(404, { "content-type": `application/json` })
+          res.end(
+            JSON.stringify({
+              error: {
+                code: `DOCUMENT_NOT_FOUND`,
+                message: `Document does not exist`,
+              },
+            })
+          )
+          return
+        }
+      } catch (err) {
+        // If HEAD fails for non-404 reasons, log and proceed with creation attempt
+        console.error(
+          `[YjsServer] HEAD check for document existence failed:`,
+          err
+        )
+      }
+
+      // Create awareness stream
+      try {
+        const created = await this.tryCreateStream(dsPath)
+
+        res.writeHead(created ? 201 : 200, {
+          "content-type": `application/json`,
+        })
+        res.end()
+      } catch (err) {
+        console.error(`[YjsServer] Failed to create awareness stream:`, err)
+        if (!res.headersSent) {
+          res.writeHead(500, { "content-type": `application/json` })
+          res.end(
+            JSON.stringify({
+              error: {
+                code: `INTERNAL_ERROR`,
+                message: `Failed to create awareness stream`,
+              },
+            })
+          )
+        }
+      }
+    } else if (method === `POST`) {
+      // Proxy raw binary to awareness stream.
+      // Auto-create on 404 since awareness streams have TTL and may expire.
+      await this.postWithAutoCreate(req, res, dsPath)
     } else if (method === `GET`) {
       // Build path with query params
       const offset = url.searchParams.get(`offset`)
@@ -900,25 +981,57 @@ export class YjsServer {
   // ---- Stream management ----
 
   /**
-   * Ensure a stream exists at the given DS path by issuing an idempotent PUT.
-   * Returns silently if the stream already exists (409 Conflict).
+   * Try to create a stream at the given DS path.
+   * Returns true if the stream was created, false if it already existed.
    */
-  private async ensureStream(
+  private async tryCreateStream(
     dsPath: string,
     contentType: string = `application/octet-stream`
-  ): Promise<void> {
+  ): Promise<boolean> {
     const url = `${this.dsServerUrl}${dsPath}`
-    try {
-      await DurableStream.create({
-        url,
-        headers: this.dsServerHeaders,
-        contentType,
-      })
-    } catch (err) {
-      if (!isConflictExistsError(err)) {
-        throw err
-      }
+    const response = await fetch(url, {
+      method: `PUT`,
+      headers: {
+        ...this.dsServerHeaders,
+        "content-type": contentType,
+      },
+    })
+
+    if (response.status === 201) {
+      await response.arrayBuffer()
+      return true
     }
+
+    if (response.status === 200 || response.status === 409) {
+      await response.arrayBuffer()
+      return false
+    }
+
+    // Unexpected status — consume body and throw
+    const text = await response.text().catch(() => ``)
+    throw new Error(
+      `Failed to create stream ${dsPath}: ${response.status} ${text}`
+    )
+  }
+
+  /**
+   * Append a JSON entry to an index stream, creating the stream if needed.
+   */
+  async appendToIndexStream(
+    dsPath: string,
+    entry: Record<string, unknown>
+  ): Promise<void> {
+    await this.tryCreateStream(dsPath, `application/json`)
+
+    const stream = new DurableStream({
+      url: `${this.dsServerUrl}${dsPath}`,
+      headers: this.dsServerHeaders,
+      contentType: `application/json`,
+    })
+
+    await stream.append(JSON.stringify(entry) + `\n`, {
+      contentType: `application/json`,
+    })
   }
 
   private getOrCreateDocumentState(
