@@ -39,7 +39,7 @@ afterEach(async () => {
 // ============================================================================
 
 describe(`Path Encoding`, () => {
-  test(`should not misdetect hash suffix with base64url underscore`, () => {
+  test(`should not misdetect hash suffix with base64url underscore`, async () => {
     // Create a path that when base64url encoded ends with underscore + 16 chars
     // But those 16 chars are NOT a hex hash
     // Base64url uses [A-Za-z0-9_-], so we can construct a tricky case
@@ -48,17 +48,17 @@ describe(`Path Encoding`, () => {
     // where X are base64url chars (not necessarily hex)
     const trickyPath = `/stream/` + `a`.repeat(120) + `_test_value_data`
 
-    const encoded = encodeStreamPath(trickyPath)
+    const encoded = await encodeStreamPath(trickyPath)
     const decoded = decodeStreamPath(encoded)
 
     expect(decoded).toBe(trickyPath)
   })
 
-  test(`should use hash for very long paths`, () => {
+  test(`should use hash for very long paths`, async () => {
     // Create a very long path that will get hashed
     const longPath = `/stream/` + `x`.repeat(250)
 
-    const encoded = encodeStreamPath(longPath)
+    const encoded = await encodeStreamPath(longPath)
 
     // Should contain ~ separator for hash (not underscore)
     expect(encoded).toContain(`~`)

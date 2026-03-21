@@ -2,115 +2,36 @@
  * In-memory stream storage.
  */
 
+import {
+  formatJsonResponse,
+  isExpired,
+  normalizeContentType,
+  processJsonAppend,
+} from "../protocol"
+
+import { advanceOffset, initialOffset } from "../offsets"
+
+import {
+  ContentTypeMismatchError,
+  SequenceConflictError,
+  StreamConflictError,
+  StreamNotFoundError,
+} from "../errors"
 import type {
+  AppendOptions,
+  AppendResult,
   PendingLongPoll,
   ProducerValidationResult,
   Stream,
   StreamMessage,
-} from "./types"
+} from "../types"
 
 /**
  * TTL for in-memory producer state cleanup (7 days).
  */
 const PRODUCER_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000
 
-/**
- * Normalize content-type by extracting the media type (before any semicolon).
- * Handles cases like "application/json; charset=utf-8".
- */
-export function normalizeContentType(contentType: string | undefined): string {
-  if (!contentType) return ``
-  return contentType.split(`;`)[0]!.trim().toLowerCase()
-}
-
-/**
- * Process JSON data for append in JSON mode.
- * - Validates JSON
- * - Extracts array elements if data is an array
- * - Always appends trailing comma for easy concatenation
- * @param isInitialCreate - If true, empty arrays are allowed (creates empty stream)
- * @throws Error if JSON is invalid or array is empty (for non-create operations)
- */
-export function processJsonAppend(
-  data: Uint8Array,
-  isInitialCreate = false
-): Uint8Array {
-  const text = new TextDecoder().decode(data)
-
-  // Validate JSON
-  let parsed: unknown
-  try {
-    parsed = JSON.parse(text)
-  } catch {
-    throw new Error(`Invalid JSON`)
-  }
-
-  // If it's an array, extract elements and join with commas
-  let result: string
-  if (Array.isArray(parsed)) {
-    if (parsed.length === 0) {
-      // Empty arrays are valid for PUT (creates empty stream)
-      // but invalid for POST (no-op append, likely a bug)
-      if (isInitialCreate) {
-        return new Uint8Array(0) // Return empty data for empty stream
-      }
-      throw new Error(`Empty arrays are not allowed`)
-    }
-    const elements = parsed.map((item) => JSON.stringify(item))
-    result = elements.join(`,`) + `,`
-  } else {
-    // Single value - re-serialize to normalize whitespace (single-line JSON)
-    result = JSON.stringify(parsed) + `,`
-  }
-
-  return new TextEncoder().encode(result)
-}
-
-/**
- * Format JSON mode response by wrapping in array brackets.
- * Strips trailing comma before wrapping.
- */
-export function formatJsonResponse(data: Uint8Array): Uint8Array {
-  if (data.length === 0) {
-    return new TextEncoder().encode(`[]`)
-  }
-
-  let text = new TextDecoder().decode(data)
-  // Strip trailing comma if present
-  text = text.trimEnd()
-  if (text.endsWith(`,`)) {
-    text = text.slice(0, -1)
-  }
-
-  const wrapped = `[${text}]`
-  return new TextEncoder().encode(wrapped)
-}
-
-/**
- * In-memory store for durable streams.
- */
-/**
- * Options for append operations.
- */
-export interface AppendOptions {
-  seq?: string
-  contentType?: string
-  producerId?: string
-  producerEpoch?: number
-  producerSeq?: number
-  close?: boolean // Close stream after append
-}
-
-/**
- * Result of an append operation.
- */
-export interface AppendResult {
-  message: StreamMessage | null
-  producerResult?: ProducerValidationResult
-  streamClosed?: boolean // Stream is now closed
-}
-
-export class StreamStore {
+export class MemoryStore {
   private streams = new Map<string, Stream>()
   private pendingLongPolls: Array<PendingLongPoll> = []
   /**
@@ -118,32 +39,6 @@ export class StreamStore {
    * Key: "{streamPath}:{producerId}"
    */
   private producerLocks = new Map<string, Promise<unknown>>()
-
-  /**
-   * Check if a stream is expired based on TTL or Expires-At.
-   */
-  private isExpired(stream: Stream): boolean {
-    const now = Date.now()
-
-    // Check absolute expiry time
-    if (stream.expiresAt) {
-      const expiryTime = new Date(stream.expiresAt).getTime()
-      // Treat invalid dates (NaN) as expired (fail closed)
-      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
-        return true
-      }
-    }
-
-    // Check TTL (relative to creation time)
-    if (stream.ttlSeconds !== undefined) {
-      const expiryTime = stream.createdAt + stream.ttlSeconds * 1000
-      if (now >= expiryTime) {
-        return true
-      }
-    }
-
-    return false
-  }
 
   /**
    * Get a stream, deleting it if expired.
@@ -154,8 +49,7 @@ export class StreamStore {
     if (!stream) {
       return undefined
     }
-    if (this.isExpired(stream)) {
-      // Delete expired stream
+    if (isExpired(stream)) {
       this.delete(path)
       return undefined
     }
@@ -164,7 +58,7 @@ export class StreamStore {
 
   /**
    * Create a new stream.
-   * @throws Error if stream already exists with different config
+   * @throws StreamConflictError if stream already exists with different config
    * @returns existing stream if config matches (idempotent)
    */
   create(
@@ -196,7 +90,7 @@ export class StreamStore {
         return existing
       } else {
         // Config mismatch - conflict
-        throw new Error(
+        throw new StreamConflictError(
           `Stream already exists with different configuration: ${path}`
         )
       }
@@ -206,7 +100,7 @@ export class StreamStore {
       path,
       contentType: options.contentType,
       messages: [],
-      currentOffset: `0000000000000000_0000000000000000`,
+      currentOffset: initialOffset(),
       ttlSeconds: options.ttlSeconds,
       expiresAt: options.expiresAt,
       createdAt: Date.now(),
@@ -389,9 +283,9 @@ export class StreamStore {
 
   /**
    * Append data to a stream.
-   * @throws Error if stream doesn't exist or is expired
-   * @throws Error if seq is lower than lastSeq
-   * @throws Error if JSON mode and array is empty
+   * @throws StreamNotFoundError if stream doesn't exist or is expired
+   * @throws SequenceConflictError if seq is lower than lastSeq
+   * @throws ContentTypeMismatchError if content types don't match
    */
   append(
     path: string,
@@ -400,7 +294,7 @@ export class StreamStore {
   ): StreamMessage | AppendResult {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
-      throw new Error(`Stream not found: ${path}`)
+      throw new StreamNotFoundError(path)
     }
 
     // Check if stream is closed
@@ -436,8 +330,9 @@ export class StreamStore {
       const providedType = normalizeContentType(options.contentType)
       const streamType = normalizeContentType(stream.contentType)
       if (providedType !== streamType) {
-        throw new Error(
-          `Content-type mismatch: expected ${stream.contentType}, got ${options.contentType}`
+        throw new ContentTypeMismatchError(
+          stream.contentType,
+          options.contentType
         )
       }
     }
@@ -472,8 +367,9 @@ export class StreamStore {
     // This happens AFTER producer validation so retries can be deduplicated
     if (options.seq !== undefined) {
       if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
-        throw new Error(
-          `Sequence conflict: ${options.seq} <= ${stream.lastSeq}`
+        throw new SequenceConflictError(
+          String(stream.lastSeq),
+          String(options.seq)
         )
       }
     }
@@ -686,7 +582,7 @@ export class StreamStore {
 
   /**
    * Read messages from a stream starting at the given offset.
-   * @throws Error if stream doesn't exist or is expired
+   * @throws StreamNotFoundError if stream doesn't exist or is expired
    */
   read(
     path: string,
@@ -694,7 +590,7 @@ export class StreamStore {
   ): { messages: Array<StreamMessage>; upToDate: boolean } {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
-      throw new Error(`Stream not found: ${path}`)
+      throw new StreamNotFoundError(path)
     }
 
     // No offset or -1 means start from beginning
@@ -724,12 +620,12 @@ export class StreamStore {
   /**
    * Format messages for response.
    * For JSON mode, wraps concatenated data in array brackets.
-   * @throws Error if stream doesn't exist or is expired
+   * @throws StreamNotFoundError if stream doesn't exist or is expired
    */
   formatResponse(path: string, messages: Array<StreamMessage>): Uint8Array {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
-      throw new Error(`Stream not found: ${path}`)
+      throw new StreamNotFoundError(path)
     }
 
     // Concatenate all message data
@@ -751,7 +647,7 @@ export class StreamStore {
 
   /**
    * Wait for new messages (long-poll).
-   * @throws Error if stream doesn't exist or is expired
+   * @throws StreamNotFoundError if stream doesn't exist or is expired
    */
   async waitForMessages(
     path: string,
@@ -764,7 +660,7 @@ export class StreamStore {
   }> {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
-      throw new Error(`Stream not found: ${path}`)
+      throw new StreamNotFoundError(path)
     }
 
     // Check if there are already new messages
@@ -868,14 +764,8 @@ export class StreamStore {
       }
     }
 
-    // Parse current offset
-    const parts = stream.currentOffset.split(`_`).map(Number)
-    const readSeq = parts[0]!
-    const byteOffset = parts[1]!
-
-    // Calculate new offset with zero-padding for lexicographic sorting
-    const newByteOffset = byteOffset + processedData.length
-    const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
+    // Calculate new offset
+    const newOffset = advanceOffset(stream.currentOffset, processedData.length)
 
     const message: StreamMessage = {
       data: processedData,
@@ -939,3 +829,5 @@ export class StreamStore {
     }
   }
 }
+
+export { MemoryStore as StreamStore }

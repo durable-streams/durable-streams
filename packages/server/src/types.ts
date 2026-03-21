@@ -244,3 +244,82 @@ export interface PendingLongPoll {
    */
   timeoutId: ReturnType<typeof setTimeout>
 }
+
+export type MaybePromise<T> = T | Promise<T>
+
+export interface AppendOptions {
+  seq?: string
+  contentType?: string
+  producerId?: string
+  producerEpoch?: number
+  producerSeq?: number
+  close?: boolean
+}
+
+export interface AppendResult {
+  message: StreamMessage | null
+  producerResult?: ProducerValidationResult
+  streamClosed?: boolean
+}
+
+export interface DurableStreamStore {
+  has: (path: string) => MaybePromise<boolean>
+  create: (
+    path: string,
+    options: {
+      contentType?: string
+      ttlSeconds?: number
+      expiresAt?: string
+      initialData?: Uint8Array
+      closed?: boolean
+    }
+  ) => MaybePromise<Stream>
+  get: (path: string) => MaybePromise<Stream | undefined>
+  read: (
+    path: string,
+    offset?: string
+  ) => MaybePromise<{ messages: Array<StreamMessage>; upToDate: boolean }>
+  formatResponse: (
+    path: string,
+    messages: Array<StreamMessage>
+  ) => MaybePromise<Uint8Array>
+  waitForMessages: (
+    path: string,
+    offset: string,
+    timeoutMs: number
+  ) => Promise<{
+    messages: Array<StreamMessage>
+    timedOut: boolean
+    streamClosed?: boolean
+  }>
+  append: (
+    path: string,
+    data: Uint8Array,
+    options?: AppendOptions
+  ) => MaybePromise<StreamMessage | AppendResult>
+  appendWithProducer: (
+    path: string,
+    data: Uint8Array,
+    options: AppendOptions
+  ) => Promise<AppendResult>
+  closeStream: (
+    path: string
+  ) => MaybePromise<{ finalOffset: string; alreadyClosed: boolean } | null>
+  closeStreamWithProducer: (
+    path: string,
+    options: {
+      producerId: string
+      producerEpoch: number
+      producerSeq: number
+    }
+  ) => Promise<{
+    finalOffset: string
+    alreadyClosed: boolean
+    producerResult?: ProducerValidationResult
+  } | null>
+  delete: (path: string) => MaybePromise<boolean>
+  clear: () => MaybePromise<void>
+  cancelAllWaits: () => MaybePromise<void>
+  getCurrentOffset: (path: string) => MaybePromise<string | undefined>
+  list: () => MaybePromise<Array<string>>
+}
