@@ -20,12 +20,7 @@ import {
 import { Compactor } from "./compaction"
 import { PathUtils, YJS_HEADERS, YjsStreamPaths } from "./types"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
-import type {
-  AwarenessIndexEntry,
-  YjsDocumentState,
-  YjsIndexEntry,
-  YjsServerOptions,
-} from "./types"
+import type { YjsDocumentState, YjsIndexEntry, YjsServerOptions } from "./types"
 
 const DEFAULT_COMPACTION_THRESHOLD = 1024 * 1024 // 1MB
 
@@ -349,6 +344,45 @@ export class YjsServer {
           })
         )
       }
+    }
+  }
+
+  /**
+   * POST with auto-create on 404: try POST, if stream doesn't exist
+   * create it via PUT and retry. Handles awareness streams that may
+   * have expired due to TTL.
+   */
+  private async postWithAutoCreate(
+    req: IncomingMessage,
+    res: ServerResponse,
+    dsPath: string
+  ): Promise<void> {
+    const body = await this.readBody(req)
+    const headers: Record<string, string> = {
+      ...this.dsServerHeaders,
+      "content-type": req.headers[`content-type`] ?? `application/octet-stream`,
+    }
+
+    const targetUrl = `${this.dsServerUrl}${dsPath}`
+    const response = await fetch(targetUrl, {
+      method: `POST`,
+      headers,
+      body: body.length > 0 ? new Uint8Array(body) : undefined,
+    })
+
+    if (response.status === 404) {
+      // Stream doesn't exist — create it and retry
+      await response.arrayBuffer()
+      await this.tryCreateStream(dsPath)
+
+      const retryResponse = await fetch(targetUrl, {
+        method: `POST`,
+        headers,
+        body: body.length > 0 ? new Uint8Array(body) : undefined,
+      })
+      await this.forwardResponse(res, retryResponse)
+    } else {
+      await this.forwardResponse(res, response)
     }
   }
 
@@ -816,15 +850,6 @@ export class YjsServer {
       try {
         const created = await this.tryCreateStream(dsPath)
 
-        // Only record in index on first creation to avoid duplicates
-        if (created && awarenessName !== `default`) {
-          await this.appendToAwarenessIndex(
-            route.service,
-            route.docPath,
-            awarenessName
-          )
-        }
-
         res.writeHead(created ? 201 : 200, {
           "content-type": `application/json`,
         })
@@ -844,8 +869,9 @@ export class YjsServer {
         }
       }
     } else if (method === `POST`) {
-      // Proxy raw binary to awareness stream (404 if stream doesn't exist)
-      await this.proxyToDsServer(req, res, dsPath)
+      // Proxy raw binary to awareness stream.
+      // Auto-create on 404 since awareness streams have TTL and may expire.
+      await this.postWithAutoCreate(req, res, dsPath)
     } else if (method === `GET`) {
       // Build path with query params
       const offset = url.searchParams.get(`offset`)
@@ -986,23 +1012,6 @@ export class YjsServer {
     throw new Error(
       `Failed to create stream ${dsPath}: ${response.status} ${text}`
     )
-  }
-
-  /**
-   * Append an awareness stream name to the awareness index.
-   * Creates the index stream if it doesn't exist.
-   */
-  private async appendToAwarenessIndex(
-    service: string,
-    docPath: string,
-    awarenessName: string
-  ): Promise<void> {
-    const indexPath = YjsStreamPaths.awarenessIndexStream(service, docPath)
-    const entry: AwarenessIndexEntry = {
-      name: awarenessName,
-      createdAt: Date.now(),
-    }
-    await this.appendToIndexStream(indexPath, entry)
   }
 
   /**

@@ -10,10 +10,11 @@ import type { ReactNode } from "react"
 // StreamDB Factory with Actions
 // ============================================================================
 
-function createRegistryDB(url: string) {
+function createRegistryDB(url: string, headers: Record<string, string>) {
   return createStreamDB({
     streamOptions: {
       url,
+      headers,
       contentType: `application/json`,
     },
     state: registryStateSchema,
@@ -64,6 +65,8 @@ interface RegistryContextValue {
   registryDB: Awaited<ReturnType<typeof createRegistryDB>>
   serverEndpoint: string
   dsEndpoint: string
+  yjsHeaders: Record<string, string>
+  dsHeaders: Record<string, string>
 }
 
 const RegistryContext = createContext<RegistryContextValue | null>(null)
@@ -87,7 +90,8 @@ interface RegistryState {
 }
 
 export function RegistryProvider({ children }: { children: ReactNode }) {
-  const { serverEndpoint, dsEndpoint } = useServerEndpoint()
+  const { serverEndpoint, dsEndpoint, yjsHeaders, dsHeaders } =
+    useServerEndpoint()
   const [state, setState] = useState<RegistryState>({
     registryDB: null,
     error: null,
@@ -108,6 +112,7 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
         // Create registry stream
         const registryStream = new DurableStream({
           url: registryUrl,
+          headers: dsHeaders,
           contentType: `application/json`,
         })
 
@@ -122,12 +127,13 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
           console.log(`[Registry] Creating registry stream...`)
           await DurableStream.create({
             url: registryUrl,
+            headers: dsHeaders,
             contentType: `application/json`,
           })
         }
 
         // Create StreamDB with actions
-        registryDB = await createRegistryDB(registryUrl)
+        registryDB = await createRegistryDB(registryUrl, dsHeaders)
 
         // Preload the DB
         await registryDB.preload()
@@ -152,7 +158,7 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
         registryDB.close()
       }
     }
-  }, [dsEndpoint])
+  }, [dsEndpoint, dsHeaders])
 
   // Show loading state
   if (state.isLoading) {
@@ -189,7 +195,13 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
   // Provide context when ready
   return (
     <RegistryContext.Provider
-      value={{ registryDB: state.registryDB, serverEndpoint, dsEndpoint }}
+      value={{
+        registryDB: state.registryDB,
+        serverEndpoint,
+        dsEndpoint,
+        yjsHeaders,
+        dsHeaders,
+      }}
     >
       {children}
     </RegistryContext.Provider>
