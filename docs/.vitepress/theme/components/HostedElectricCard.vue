@@ -1,6 +1,10 @@
 <template>
   <div class="hosting-cloud-card">
-    <a class="hosting-cloud-link" href="https://electric-sql.com/cloud">
+    <a
+      class="hosting-cloud-link"
+      href="https://dashboard.electric-sql.cloud"
+      target="_blank"
+    >
       <div class="hosting-cloud-surface">
         <div class="hosting-cloud-content">
           <div class="hosting-cloud-icon">
@@ -8,10 +12,10 @@
           </div>
           <div class="hosting-cloud-text">
             <h3>Electric Cloud</h3>
-            <p>Scalable, turnkey hosting of Durable Streams.</p>
+            <p>Scalable, turnkey hosting of Durable&nbsp;Streams.</p>
           </div>
           <div class="hosting-cloud-actions">
-            <span class="hosting-cloud-button">Learn more</span>
+            <span class="hosting-cloud-button">Sign up now ↗</span>
           </div>
         </div>
       </div>

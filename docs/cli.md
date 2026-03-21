@@ -9,6 +9,8 @@ outline: [2, 3]
 
 The Durable Streams CLI is a command-line tool for creating, writing to, reading from, and managing streams. It connects to any Durable Streams server over HTTP.
 
+<IntentLink intent="create" serviceType="streams" />
+
 ## Installation
 
 Install globally from npm:

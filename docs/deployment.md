@@ -7,7 +7,7 @@ outline: [2, 3]
 
 # Deployment
 
-[Self-host with Caddy](#self-hosted-with-caddy) or run in production using [Electric Cloud](https://electric-sql.com/cloud).
+[Self-host with Caddy](#self-hosted-with-caddy) or run in production using [Electric&nbsp;Cloud](https://dashboard.electric-sql.cloud).
 
 <HostedElectricCard />
 
@@ -296,7 +296,7 @@ The practical impact is low. The likely failure mode is a false `409` (sequence 
 ## Which server should I use?
 
 - **Just getting started or developing locally?** Use the Node server in `@durable-streams/server`.
-- **Deploying to production?** Use the Caddy plugin for self-hosted deployments, or [Electric Cloud](https://electric-sql.com/cloud) for managed hosting.
+- **Deploying to production?** Use the Caddy plugin for self-hosted deployments, or [Electric Cloud](https://dashboard.electric-sql.cloud) for managed hosting.
 - **Building your own server?** See [Building a server](building-a-server.md) for protocol implementation guidance.
 
 ## CDN integration
