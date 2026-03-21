@@ -1,5 +1,18 @@
 # @durable-streams/y-durable-streams
 
+## 0.2.3
+
+### Patch Changes
+
+- Use consistent lib0 framing for awareness updates, matching document updates. Awareness data is now length-prefixed with lib0's `writeVarUint8Array` on send and decoded with `readVarUint8Array` on receive. ([#290](https://github.com/durable-streams/durable-streams/pull/290))
+
+- Require explicit PUT for document creation, matching the base Durable Streams protocol. Documents and awareness streams are created together on PUT. POST to a non-existent document now returns 404 instead of auto-creating. The YjsProvider issues an idempotent PUT on connect, fixing a bug where read-only clients would poll 404s indefinitely on non-existent documents. ([#295](https://github.com/durable-streams/durable-streams/pull/295))
+
+- Add Yjs document sync over Durable Streams with automatic server-side compaction and presence support. Includes YjsProvider (client) and YjsServer (protocol layer) that handle index, updates, snapshots, and awareness streams transparently. Initial sync fetches snapshot and updates in parallel for faster load times. ([#202](https://github.com/durable-streams/durable-streams/pull/202))
+
+- Updated dependencies [[`5f50195`](https://github.com/durable-streams/durable-streams/commit/5f501950e7f9e3ffcd3c077b4ba90ce405d9f066)]:
+  - @durable-streams/client@0.2.3
+
 ## 0.2.2
 
 ### Patch Changes
