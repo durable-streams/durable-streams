@@ -21,7 +21,10 @@
     "prepare": "husky",
     "changeset": "changeset",
     "changeset:version": "changeset version && pnpm install --no-frozen-lockfile",
-    "changeset:publish": "pnpm build && changeset publish"
+    "changeset:publish": "pnpm build && changeset publish",
+    "docs:dev": "pnpm --filter @durable-streams/docs dev",
+    "docs:build": "pnpm --filter @durable-streams/docs build",
+    "docs:preview": "pnpm --filter @durable-streams/docs preview"
   },
   "devDependencies": {
     "@changesets/cli": "^2.29.8",

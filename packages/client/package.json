@@ -1,7 +1,7 @@
 {
   "name": "@durable-streams/client",
   "description": "TypeScript client for the Durable Streams protocol",
-  "version": "0.2.1",
+  "version": "0.2.2",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
   "repository": {
@@ -36,9 +36,15 @@
     "./package.json": "./package.json"
   },
   "sideEffects": false,
+  "bin": {
+    "intent": "./bin/intent.js"
+  },
   "files": [
     "dist",
-    "src"
+    "src",
+    "skills",
+    "bin",
+    "!skills/_artifacts"
   ],
   "dependencies": {
     "@microsoft/fetch-event-source": "^2.0.1",
@@ -46,6 +52,7 @@
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
+    "@tanstack/intent": "latest",
     "fast-check": "^4.4.0",
     "tsdown": "^0.9.0"
   },

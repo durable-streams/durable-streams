@@ -11,6 +11,7 @@ export default [
       `**/build/**`,
       `**/.output/**`,
       `**/coverage/**`,
+      `docs/.vitepress/**`,
       `eslint.config.js`,
       `vitest.config.ts`,
       `**/vite.config.ts`,
@@ -19,6 +20,7 @@ export default [
       `packages/caddy-plugin/**`,
       `packages/client-py/**`,
       `scripts/**`,
+      `**/bin/**`,
     ],
   },
   {
