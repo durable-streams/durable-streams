@@ -66,7 +66,7 @@ export interface CompactionResult {
  * Index entry stored in the internal index stream.
  * Each compaction appends a new entry with the current snapshot offset.
  */
-export interface YjsIndexEntry {
+export interface YjsIndexEntry extends Record<string, unknown> {
   /** The snapshot offset (used to construct the snapshot key) */
   snapshotOffset: string
 
