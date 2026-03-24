@@ -397,6 +397,12 @@ export class YjsServer {
           )
           return
         }
+
+        if (!headResponse.ok) {
+          throw new Error(
+            `Document existence check failed: ${headResponse.status}`
+          )
+        }
       }
 
       await this.tryCreateStream(dsPath)
@@ -972,7 +978,7 @@ export class YjsServer {
       // Fallback: parse newline-delimited entries
       const lines = body.trim().split(`\n`)
       for (const line of lines) {
-        const trimmed = line?.trim()
+        const trimmed = line.trim()
         if (!trimmed) continue
         try {
           const entry = JSON.parse(trimmed) as { snapshotOffset?: string }
@@ -985,7 +991,13 @@ export class YjsServer {
       }
 
       return offsets
-    } catch {
+    } catch (err) {
+      if (!isNotFoundError(err)) {
+        console.error(
+          `[YjsServer] Error loading snapshot offsets for ${service}/${docPath}:`,
+          err
+        )
+      }
       return []
     }
   }
@@ -1108,8 +1120,15 @@ export class YjsServer {
         return
       }
 
+      if (!response.ok) {
+        const text = await response.text().catch(() => ``)
+        throw new Error(
+          `Failed to delete awareness stream: ${response.status} ${text}`
+        )
+      }
+
       await response.arrayBuffer()
-      res.writeHead(response.status)
+      res.writeHead(204)
       res.end()
     } else {
       res.writeHead(405, { "content-type": `application/json` })

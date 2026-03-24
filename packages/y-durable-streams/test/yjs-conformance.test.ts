@@ -1175,6 +1175,8 @@ describe(`Yjs Durable Streams Protocol`, () => {
           { method: `DELETE` }
         )
         expect(response.status).toBe(404)
+        const body = await response.json()
+        expect(body.error.code).toBe(`STREAM_NOT_FOUND`)
       })
     })
 
@@ -1216,6 +1218,72 @@ describe(`Yjs Durable Streams Protocol`, () => {
           }
         )
         expect(postRes.status).toBe(404)
+        const body = await postRes.json()
+        expect(body.error.code).toBe(`DOCUMENT_NOT_FOUND`)
+      })
+    })
+
+    describe(`delete.doc-then-head-returns-404`, () => {
+      it(`should return 404 on HEAD after document deletion`, async () => {
+        const docId = `del-doc-head-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        await fetch(`${baseUrl}/docs/${docId}`, { method: `DELETE` })
+
+        const headRes = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `HEAD`,
+        })
+        expect(headRes.status).toBe(404)
+      })
+    })
+
+    describe(`delete.doc-double-delete-returns-404`, () => {
+      it(`should return 404 on second DELETE`, async () => {
+        const docId = `del-doc-double-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        const first = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `DELETE`,
+        })
+        expect(first.status).toBe(204)
+
+        const second = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `DELETE`,
+        })
+        expect(second.status).toBe(404)
+        const body = await second.json()
+        expect(body.error.code).toBe(`DOCUMENT_NOT_FOUND`)
+      })
+    })
+
+    describe(`delete.doc-then-snapshot-discovery-returns-404`, () => {
+      it(`should return 404 on snapshot discovery after deletion`, async () => {
+        const docId = `del-doc-snap-disc-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        await fetch(`${baseUrl}/docs/${docId}`, { method: `DELETE` })
+
+        const res = await fetch(`${baseUrl}/docs/${docId}?offset=snapshot`, {
+          redirect: `manual`,
+        })
+        expect(res.status).toBe(404)
+      })
+    })
+
+    describe(`delete.awareness-put-after-doc-delete-returns-404`, () => {
+      it(`should return 404 when creating awareness on deleted document`, async () => {
+        const docId = `del-aw-put-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        await fetch(`${baseUrl}/docs/${docId}`, { method: `DELETE` })
+
+        const putRes = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `PUT` }
+        )
+        expect(putRes.status).toBe(404)
+        const body = await putRes.json()
+        expect(body.error.code).toBe(`DOCUMENT_NOT_FOUND`)
       })
     })
 
