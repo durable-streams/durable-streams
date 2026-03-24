@@ -1,5 +1,11 @@
 # @durable-streams/client
 
+## 0.2.3
+
+### Patch Changes
+
+- Fix FetchError.fromResponse() and DurableStreamError.fromResponse() failing on HEAD responses with null body, which caused infinite retries in the backoff wrapper ([#294](https://github.com/durable-streams/durable-streams/pull/294))
+
 ## 0.2.2
 
 ### Patch Changes
