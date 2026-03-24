@@ -33,6 +33,8 @@ Copyright (c) 2026 ElectricSQL
    - 5.6. [Awareness Subscribe](#56-awareness-subscribe)
    - 5.7. [Awareness Broadcast](#57-awareness-broadcast)
    - 5.8. [Create Awareness Stream](#58-create-awareness-stream)
+   - 5.9. [Delete document](#59-delete-document)
+   - 5.10. [Delete awareness stream](#510-delete-awareness-stream)
 6. [Offset Sentinels](#6-offset-sentinels)
 7. [Binary Framing](#7-binary-framing)
    - 7.1. [Variable-Length Integer Encoding](#71-variable-length-integer-encoding)
@@ -161,10 +163,10 @@ The document stream, snapshots, and awareness streams all share the same URL pat
 
 The following HTTP methods are supported on document and awareness URLs:
 
-| Endpoint                          | Supported methods    | All other methods      |
-| --------------------------------- | -------------------- | ---------------------- |
-| `{document-url}`                  | GET, HEAD, POST, PUT | 405 Method Not Allowed |
-| `{document-url}?awareness=<name>` | GET, HEAD, POST, PUT | 405 Method Not Allowed |
+| Endpoint                          | Supported methods            | All other methods      |
+| --------------------------------- | ---------------------------- | ---------------------- |
+| `{document-url}`                  | GET, HEAD, POST, PUT, DELETE | 405 Method Not Allowed |
+| `{document-url}?awareness=<name>` | GET, HEAD, POST, PUT, DELETE | 405 Method Not Allowed |
 
 Servers **MUST** return `405 Method Not Allowed` for any HTTP method not listed above.
 
@@ -390,6 +392,8 @@ The update is immediately broadcast to all SSE subscribers on that awareness str
 
 **Client disconnect handling:** Yjs awareness has a built-in 30-second timeout that automatically removes stale clients. The `y-durable-streams` provider also calls `removeAwarenessStates()` on `beforeunload` for immediate cleanup on graceful disconnect. No explicit "leave" API endpoint is needed.
 
+When the server auto-creates an awareness stream on POST (e.g., after TTL expiry), the server MUST verify that the parent document exists. If the document does not exist, the server MUST return `404 Not Found` with error code `DOCUMENT_NOT_FOUND`.
+
 ### 5.8. Create Awareness Stream
 
 The `default` awareness stream is created automatically when the document is created via PUT (Section 5.1). Additional named awareness streams **MUST** be created explicitly via PUT before they can be used.
@@ -415,6 +419,62 @@ HTTP/1.1 200 OK
 ```
 
 Creating a stream that already exists is idempotent and returns `200 OK`.
+
+### 5.9. Delete document
+
+Deletes a document and its associated state.
+
+#### Request
+
+```
+DELETE {document-url}
+```
+
+#### Response
+
+```
+HTTP/1.1 204 No Content
+```
+
+#### Response (document does not exist)
+
+```
+HTTP/1.1 404 Not Found
+```
+
+The server MUST return error code `DOCUMENT_NOT_FOUND`.
+
+#### Behavior
+
+The server MUST delete the document update stream. The server SHOULD delete all associated snapshot and awareness streams visible at the time the operation is issued. Servers MAY implement background cleanup of orphaned streams.
+
+After deletion, all operations on the document and its awareness URLs MUST return `404 Not Found`, except PUT on the document URL which creates a new document (Section 5.1).
+
+### 5.10. Delete awareness stream
+
+Deletes a named awareness stream. The parent document is unaffected.
+
+#### Request
+
+```
+DELETE {document-url}?awareness=<name>
+```
+
+#### Response
+
+```
+HTTP/1.1 204 No Content
+```
+
+#### Response (stream does not exist)
+
+```
+HTTP/1.1 404 Not Found
+```
+
+#### Behavior
+
+The server MUST delete the specified awareness stream.
 
 ## 6. Offset Sentinels
 
@@ -808,12 +868,10 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 
 #### A.1.5. Method Validation
 
-| Test                              | Description                         |
-| --------------------------------- | ----------------------------------- |
-| `method.doc-rejects-delete`       | DELETE on document URL returns 405  |
-| `method.doc-rejects-patch`        | PATCH on document URL returns 405   |
-| `method.awareness-rejects-delete` | DELETE on awareness URL returns 405 |
-| `method.awareness-rejects-patch`  | PATCH on awareness URL returns 405  |
+| Test                             | Description                        |
+| -------------------------------- | ---------------------------------- |
+| `method.doc-rejects-patch`       | PATCH on document URL returns 405  |
+| `method.awareness-rejects-patch` | PATCH on awareness URL returns 405 |
 
 #### A.1.6. Error Handling
 
@@ -823,6 +881,22 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `error.unauthorized`     | Missing/invalid credentials returns 401 |
 | `error.snapshot-deleted` | Accessing deleted snapshot returns 404  |
 | `error.offset-expired`   | Expired offset returns 410              |
+
+#### A.1.7. Document deletion
+
+| Test                                      | Description                                                          |
+| ----------------------------------------- | -------------------------------------------------------------------- |
+| `delete.doc-returns-204`                  | DELETE on existing document returns 204                              |
+| `delete.doc-returns-404`                  | DELETE on non-existent document returns 404 DOCUMENT_NOT_FOUND       |
+| `delete.doc-then-get-returns-404`         | GET after DELETE returns 404                                         |
+| `delete.doc-then-post-returns-404`        | POST after DELETE returns 404                                        |
+| `delete.doc-then-put-creates-fresh`       | PUT after DELETE creates new document (201)                          |
+| `delete.doc-cascades-awareness`           | DELETE document removes associated awareness streams                 |
+| `delete.doc-cascades-snapshots`           | DELETE document removes associated snapshots                         |
+| `delete.awareness-returns-204`            | DELETE on existing awareness stream returns 204                      |
+| `delete.awareness-returns-404`            | DELETE on non-existent awareness stream returns 404                  |
+| `delete.awareness-preserves-document`     | DELETE awareness does not affect parent document                     |
+| `delete.awareness-post-requires-document` | POST to awareness on deleted document returns 404 DOCUMENT_NOT_FOUND |
 
 ### A.2. Running Conformance Tests
 
