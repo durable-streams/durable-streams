@@ -1,5 +1,11 @@
 # @durable-streams/tanstack-ai-transport
 
+## 0.0.2
+
+### Patch Changes
+
+- fix: wrong client version in published package.json ([#299](https://github.com/durable-streams/durable-streams/pull/299))
+
 ## 0.0.1
 
 ### Patch Changes
