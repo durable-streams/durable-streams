@@ -1,5 +1,11 @@
 # @durable-streams/aisdk-transport
 
+## 0.0.2
+
+### Patch Changes
+
+- fix: include aisdk-transport in version bump changeset ([#302](https://github.com/durable-streams/durable-streams/pull/302))
+
 ## 0.0.1
 
 ### Patch Changes
