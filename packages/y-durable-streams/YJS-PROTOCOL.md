@@ -392,11 +392,11 @@ The update is immediately broadcast to all SSE subscribers on that awareness str
 
 **Client disconnect handling:** Yjs awareness has a built-in 30-second timeout that automatically removes stale clients. The `y-durable-streams` provider also calls `removeAwarenessStates()` on `beforeunload` for immediate cleanup on graceful disconnect. No explicit "leave" API endpoint is needed.
 
-**Awareness stream auto-creation:** If the awareness stream does not exist when a POST is received (e.g., after TTL expiry), the server SHOULD auto-create it via PUT (Section 5.8) and retry the POST transparently. Since creating an awareness stream requires the parent document to exist, this auto-creation fails if the document has been deleted — the server MUST return `404 Not Found` with error code `DOCUMENT_NOT_FOUND`. Auto-creation does not recreate a deleted document.
+If the awareness stream does not exist when a POST is received (e.g., after TTL expiry), the server SHOULD auto-create it via PUT (Section 5.8) and retry the POST transparently. Auto-creation requires the parent document to exist and does not recreate a deleted document.
 
 ### 5.8. Create Awareness Stream
 
-The `default` awareness stream is created automatically when the document is created via PUT (Section 5.1). Additional named awareness streams **MUST** be created explicitly via PUT before they can be used.
+The `default` awareness stream is created automatically when the document is created via PUT (Section 5.1). Additional named awareness streams **MUST** be created explicitly via PUT before they can be used. Awareness streams are also auto-created by the server on POST when they do not exist (Section 5.7).
 
 #### Request
 
