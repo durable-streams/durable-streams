@@ -1218,6 +1218,105 @@ describe(`Yjs Durable Streams Protocol`, () => {
         expect(postRes.status).toBe(404)
       })
     })
+
+    describe(`delete.doc-cascades-awareness`, () => {
+      it(`should delete awareness streams when document is deleted`, async () => {
+        const docId = `del-cascade-aw-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Verify default awareness stream exists
+        const headBefore = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=default`,
+          { method: `HEAD` }
+        )
+        expect(headBefore.status).toBe(200)
+
+        // Delete document
+        const deleteRes = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `DELETE`,
+        })
+        expect(deleteRes.status).toBe(204)
+
+        // Awareness operations should return 404
+        const headAfter = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=default`,
+          { method: `HEAD` }
+        )
+        expect(headAfter.status).toBe(404)
+      })
+    })
+
+    describe(`delete.doc-cascades-snapshots`, () => {
+      let providers: Array<YjsProvider> = []
+
+      afterEach(() => {
+        for (const provider of providers) {
+          provider.destroy()
+        }
+        providers = []
+      })
+
+      async function createProviderWithDoc(
+        docId: string
+      ): Promise<YjsProvider> {
+        const doc = new Y.Doc()
+        const provider = new YjsProvider({
+          doc,
+          baseUrl,
+          docId,
+        })
+        providers.push(provider)
+        return provider
+      }
+
+      it(`should delete snapshot streams when document is deleted`, async () => {
+        const docId = `del-cascade-snap-${Date.now()}`
+        const provider = await createProviderWithDoc(docId)
+        await waitForSync(provider)
+
+        // Write enough data to trigger compaction (threshold is 1500 bytes)
+        const text = provider.doc.getText(`test`)
+        for (let i = 0; i < 10; i++) {
+          text.insert(0, `x`.repeat(200))
+        }
+        await provider.flush()
+
+        // Wait for snapshot to be created
+        await waitForSnapshot(baseUrl, docId)
+
+        // Get snapshot offset from discovery
+        const discoveryRes = await fetch(
+          `${baseUrl}/docs/${docId}?offset=snapshot`,
+          { redirect: `manual` }
+        )
+        expect(discoveryRes.status).toBe(307)
+        const location = discoveryRes.headers.get(`location`)!
+        expect(location).toContain(`_snapshot`)
+
+        // Build full snapshot URL (location may be relative)
+        const snapshotUrl = location.startsWith(`http`)
+          ? location
+          : `${baseUrl}/docs/${docId}?offset=${new URL(location, `http://localhost`).searchParams.get(`offset`)}`
+
+        // Verify snapshot exists
+        const snapshotRes = await fetch(snapshotUrl)
+        expect(snapshotRes.status).toBe(200)
+        await snapshotRes.arrayBuffer()
+
+        provider.destroy()
+        providers = providers.filter((p) => p !== provider)
+
+        // Delete document
+        const deleteRes = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `DELETE`,
+        })
+        expect(deleteRes.status).toBe(204)
+
+        // Snapshot should be gone — document no longer exists so all offsets return 404
+        const snapshotAfter = await fetch(snapshotUrl)
+        expect(snapshotAfter.status).toBe(404)
+      })
+    })
   })
 
   describe(`Compaction`, () => {
