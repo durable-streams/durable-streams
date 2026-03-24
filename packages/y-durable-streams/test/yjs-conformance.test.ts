@@ -1314,6 +1314,53 @@ describe(`Yjs Durable Streams Protocol`, () => {
       })
     })
 
+    describe(`delete.doc-cascades-named-awareness`, () => {
+      it(`should delete named awareness streams when document is deleted`, async () => {
+        const docId = `del-cascade-named-aw-${Date.now()}`
+        await createDocument(baseUrl, docId)
+
+        // Create named awareness streams
+        const put1 = await fetch(`${baseUrl}/docs/${docId}?awareness=cursors`, {
+          method: `PUT`,
+        })
+        expect(put1.status).toBe(201)
+        await put1.arrayBuffer()
+
+        const put2 = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=presence`,
+          { method: `PUT` }
+        )
+        expect(put2.status).toBe(201)
+        await put2.arrayBuffer()
+
+        // Verify they exist
+        const head1 = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `HEAD` }
+        )
+        expect(head1.status).toBe(200)
+
+        // Delete document
+        const deleteRes = await fetch(`${baseUrl}/docs/${docId}`, {
+          method: `DELETE`,
+        })
+        expect(deleteRes.status).toBe(204)
+
+        // Named awareness streams should be gone
+        const headAfter1 = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=cursors`,
+          { method: `HEAD` }
+        )
+        expect(headAfter1.status).toBe(404)
+
+        const headAfter2 = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=presence`,
+          { method: `HEAD` }
+        )
+        expect(headAfter2.status).toBe(404)
+      })
+    })
+
     describe(`delete.doc-cascades-snapshots`, () => {
       let providers: Array<YjsProvider> = []
 

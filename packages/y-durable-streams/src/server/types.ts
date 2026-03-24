@@ -156,6 +156,15 @@ export const YjsStreamPaths = {
   },
 
   /**
+   * Get the awareness index stream path for a document.
+   * This append-only stream tracks which named awareness streams have been created,
+   * enabling discovery during cascade delete.
+   */
+  awarenessIndexStream(service: string, docPath: string): string {
+    return `/v1/stream/yjs/${service}/docs/${docPath}/.awareness/.index`
+  },
+
+  /**
    * Get the snapshot storage key for a given offset.
    */
   snapshotKey(offset: string): string {

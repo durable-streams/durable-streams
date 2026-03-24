@@ -932,6 +932,27 @@ export class YjsServer {
       `default`
     )
     await deleteStream(defaultAwarenessPath)
+
+    // Delete named awareness streams discovered via awareness index
+    const awarenessNames = await this.loadAwarenessNamesFromIndex(
+      service,
+      docPath
+    )
+    for (const name of awarenessNames) {
+      const awarenessPath = YjsStreamPaths.awarenessStream(
+        service,
+        docPath,
+        name
+      )
+      await deleteStream(awarenessPath)
+    }
+
+    // Delete awareness index stream
+    const awarenessIndexPath = YjsStreamPaths.awarenessIndexStream(
+      service,
+      docPath
+    )
+    await deleteStream(awarenessIndexPath)
   }
 
   /**
@@ -1002,6 +1023,74 @@ export class YjsServer {
     }
   }
 
+  /**
+   * Load all named awareness stream names from the awareness index stream.
+   * Returns empty array if index doesn't exist.
+   */
+  private async loadAwarenessNamesFromIndex(
+    service: string,
+    docPath: string
+  ): Promise<Array<string>> {
+    const indexUrl = `${this.dsServerUrl}${YjsStreamPaths.awarenessIndexStream(service, docPath)}`
+
+    try {
+      const stream = new DurableStream({
+        url: indexUrl,
+        headers: this.dsServerHeaders,
+        contentType: `application/json`,
+      })
+
+      const response = await stream.stream({ offset: `-1` })
+      const body = await response.text()
+
+      if (!body || body.trim().length === 0) {
+        return []
+      }
+
+      const names = new Set<string>()
+
+      // Prefer JSON array format (DS JSON streams return arrays)
+      try {
+        const parsed = JSON.parse(body) as unknown
+        if (Array.isArray(parsed)) {
+          for (const entry of parsed) {
+            if (entry?.name) {
+              names.add(entry.name)
+            }
+          }
+          return [...names]
+        }
+      } catch {
+        // Fall through to newline-delimited parsing
+      }
+
+      // Fallback: parse newline-delimited entries
+      const lines = body.trim().split(`\n`)
+      for (const line of lines) {
+        const trimmed = line.trim()
+        if (!trimmed) continue
+        try {
+          const entry = JSON.parse(trimmed) as { name?: string }
+          if (entry.name) {
+            names.add(entry.name)
+          }
+        } catch {
+          // Skip malformed entries
+        }
+      }
+
+      return [...names]
+    } catch (err) {
+      if (!isNotFoundError(err)) {
+        console.error(
+          `[YjsServer] Error loading awareness index for ${service}/${docPath}:`,
+          err
+        )
+      }
+      return []
+    }
+  }
+
   // ---- Awareness ----
 
   private async handleAwareness(
@@ -1050,6 +1139,23 @@ export class YjsServer {
       // Create awareness stream
       try {
         const created = await this.tryCreateStream(dsPath)
+
+        // Record non-default awareness streams in the awareness index for discovery
+        if (created && awarenessName !== `default`) {
+          const indexPath = YjsStreamPaths.awarenessIndexStream(
+            route.service,
+            route.docPath
+          )
+          await this.appendToIndexStream(indexPath, {
+            name: awarenessName,
+            createdAt: Date.now(),
+          }).catch((err) => {
+            console.error(
+              `[YjsServer] Failed to append to awareness index:`,
+              err
+            )
+          })
+        }
 
         res.writeHead(created ? 201 : 200, {
           "content-type": `application/json`,
