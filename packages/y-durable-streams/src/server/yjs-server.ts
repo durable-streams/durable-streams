@@ -252,6 +252,8 @@ export class YjsServer {
         await this.handleUpdateWrite(req, res, route)
       } else if (method === `PUT`) {
         await this.handleDocumentCreate(req, res, route)
+      } else if (method === `DELETE`) {
+        await this.handleDocumentDelete(res, route)
       } else {
         res.writeHead(405, { "content-type": `application/json` })
         res.end(
@@ -355,7 +357,8 @@ export class YjsServer {
   private async postWithAutoCreate(
     req: IncomingMessage,
     res: ServerResponse,
-    dsPath: string
+    dsPath: string,
+    docDsPath?: string
   ): Promise<void> {
     const body = await this.readBody(req)
     const headers: Record<string, string> = {
@@ -371,8 +374,31 @@ export class YjsServer {
     })
 
     if (response.status === 404) {
-      // Stream doesn't exist — create it and retry
+      // Stream doesn't exist — check parent document before re-creating
       await response.arrayBuffer()
+
+      // If a document path was provided, verify the document exists
+      if (docDsPath) {
+        const headUrl = `${this.dsServerUrl}${docDsPath}`
+        const headResponse = await fetch(headUrl, {
+          method: `HEAD`,
+          headers: this.dsServerHeaders,
+        })
+
+        if (headResponse.status === 404) {
+          res.writeHead(404, { "content-type": `application/json` })
+          res.end(
+            JSON.stringify({
+              error: {
+                code: `DOCUMENT_NOT_FOUND`,
+                message: `Document does not exist`,
+              },
+            })
+          )
+          return
+        }
+      }
+
       await this.tryCreateStream(dsPath)
 
       const retryResponse = await fetch(targetUrl, {
@@ -801,6 +827,169 @@ export class YjsServer {
     }
   }
 
+  /**
+   * DELETE - Delete document and cascade to associated streams.
+   */
+  private async handleDocumentDelete(
+    res: ServerResponse,
+    route: RouteMatch
+  ): Promise<void> {
+    const { service, docPath } = route
+    const dsPath = YjsStreamPaths.dsStream(service, docPath)
+    const dsUrl = `${this.dsServerUrl}${dsPath}`
+
+    // Delete the document update stream (MUST)
+    const response = await fetch(dsUrl, {
+      method: `DELETE`,
+      headers: this.dsServerHeaders,
+    })
+
+    if (response.status === 404) {
+      await response.arrayBuffer()
+      res.writeHead(404, { "content-type": `application/json` })
+      res.end(
+        JSON.stringify({
+          error: {
+            code: `DOCUMENT_NOT_FOUND`,
+            message: `Document does not exist`,
+          },
+        })
+      )
+      return
+    }
+
+    if (!response.ok) {
+      const text = await response.text().catch(() => ``)
+      throw new Error(
+        `Failed to delete document stream: ${response.status} ${text}`
+      )
+    }
+
+    await response.arrayBuffer()
+
+    // Clean up in-memory state
+    const stateKey = this.stateKey(service, docPath)
+    this.documentStates.delete(stateKey)
+
+    // Best-effort cascade: delete associated streams (SHOULD)
+    // Awaited so streams are deleted before responding, but errors don't fail the request
+    await this.cascadeDeleteStreams(service, docPath).catch((err) => {
+      console.error(`[YjsServer] Cascade delete failed for ${docPath}:`, err)
+    })
+
+    res.writeHead(204)
+    res.end()
+  }
+
+  /**
+   * Best-effort cascade delete of snapshot and awareness streams.
+   * Errors are logged but do not propagate.
+   */
+  private async cascadeDeleteStreams(
+    service: string,
+    docPath: string
+  ): Promise<void> {
+    const deleteStream = async (dsPath: string): Promise<void> => {
+      try {
+        await DurableStream.delete({
+          url: `${this.dsServerUrl}${dsPath}`,
+          headers: this.dsServerHeaders,
+        })
+      } catch {
+        // Best-effort: ignore failures (stream may not exist)
+      }
+    }
+
+    // Delete snapshots discovered via index
+    const snapshotOffsets = await this.loadSnapshotOffsetsFromIndex(
+      service,
+      docPath
+    )
+    for (const offset of snapshotOffsets) {
+      const snapshotKey = YjsStreamPaths.snapshotKey(offset)
+      const snapshotPath = YjsStreamPaths.snapshotStream(
+        service,
+        docPath,
+        snapshotKey
+      )
+      await deleteStream(snapshotPath)
+    }
+
+    // Delete index stream
+    const indexPath = YjsStreamPaths.indexStream(service, docPath)
+    await deleteStream(indexPath)
+
+    // Delete default awareness stream
+    const defaultAwarenessPath = YjsStreamPaths.awarenessStream(
+      service,
+      docPath,
+      `default`
+    )
+    await deleteStream(defaultAwarenessPath)
+  }
+
+  /**
+   * Load all snapshot offsets from the index stream.
+   * Returns empty array if index doesn't exist.
+   */
+  private async loadSnapshotOffsetsFromIndex(
+    service: string,
+    docPath: string
+  ): Promise<Array<string>> {
+    const indexUrl = `${this.dsServerUrl}${YjsStreamPaths.indexStream(service, docPath)}`
+
+    try {
+      const stream = new DurableStream({
+        url: indexUrl,
+        headers: this.dsServerHeaders,
+        contentType: `application/json`,
+      })
+
+      const response = await stream.stream({ offset: `-1` })
+      const body = await response.text()
+
+      if (!body || body.trim().length === 0) {
+        return []
+      }
+
+      const offsets: Array<string> = []
+
+      // Prefer JSON array format (DS JSON streams return arrays)
+      try {
+        const parsed = JSON.parse(body) as unknown
+        if (Array.isArray(parsed)) {
+          for (const entry of parsed) {
+            if (entry?.snapshotOffset) {
+              offsets.push(entry.snapshotOffset)
+            }
+          }
+          return offsets
+        }
+      } catch {
+        // Fall through to newline-delimited parsing
+      }
+
+      // Fallback: parse newline-delimited entries
+      const lines = body.trim().split(`\n`)
+      for (const line of lines) {
+        const trimmed = line?.trim()
+        if (!trimmed) continue
+        try {
+          const entry = JSON.parse(trimmed) as { snapshotOffset?: string }
+          if (entry.snapshotOffset) {
+            offsets.push(entry.snapshotOffset)
+          }
+        } catch {
+          // Skip malformed entries
+        }
+      }
+
+      return offsets
+    } catch {
+      return []
+    }
+  }
+
   // ---- Awareness ----
 
   private async handleAwareness(
@@ -871,7 +1060,8 @@ export class YjsServer {
     } else if (method === `POST`) {
       // Proxy raw binary to awareness stream.
       // Auto-create on 404 since awareness streams have TTL and may expire.
-      await this.postWithAutoCreate(req, res, dsPath)
+      const docDsPath = YjsStreamPaths.dsStream(route.service, route.docPath)
+      await this.postWithAutoCreate(req, res, dsPath, docDsPath)
     } else if (method === `GET`) {
       // Build path with query params
       const offset = url.searchParams.get(`offset`)
@@ -897,6 +1087,30 @@ export class YjsServer {
       }
     } else if (method === `HEAD`) {
       await this.proxyToDsServer(req, res, dsPath)
+    } else if (method === `DELETE`) {
+      // Delete awareness stream by proxying DELETE to DS server
+      const response = await fetch(`${this.dsServerUrl}${dsPath}`, {
+        method: `DELETE`,
+        headers: this.dsServerHeaders,
+      })
+
+      if (response.status === 404) {
+        await response.arrayBuffer()
+        res.writeHead(404, { "content-type": `application/json` })
+        res.end(
+          JSON.stringify({
+            error: {
+              code: `STREAM_NOT_FOUND`,
+              message: `Awareness stream not found`,
+            },
+          })
+        )
+        return
+      }
+
+      await response.arrayBuffer()
+      res.writeHead(response.status)
+      res.end()
     } else {
       res.writeHead(405, { "content-type": `application/json` })
       res.end(

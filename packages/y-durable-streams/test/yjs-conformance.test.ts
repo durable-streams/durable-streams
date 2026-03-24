@@ -1889,8 +1889,8 @@ describe(`Yjs Durable Streams Protocol`, () => {
   })
 
   describe(`Method Validation`, () => {
-    // Document URLs accept: GET, HEAD, POST, PUT
-    const unsupportedDocMethods = [`DELETE`, `PATCH`]
+    // Document URLs accept: GET, HEAD, POST, PUT, DELETE
+    const unsupportedDocMethods = [`PATCH`]
     for (const method of unsupportedDocMethods) {
       it(`should reject ${method} on document URL with 405`, async () => {
         const docId = `method-doc-${method.toLowerCase()}-${Date.now()}`
@@ -1901,8 +1901,8 @@ describe(`Yjs Durable Streams Protocol`, () => {
       })
     }
 
-    // Awareness URLs accept: GET, HEAD, POST, PUT
-    const unsupportedAwarenessMethods = [`DELETE`, `PATCH`]
+    // Awareness URLs accept: GET, HEAD, POST, PUT, DELETE
+    const unsupportedAwarenessMethods = [`PATCH`]
     for (const method of unsupportedAwarenessMethods) {
       it(`should reject ${method} on awareness URL with 405`, async () => {
         const docId = `method-aw-${method.toLowerCase()}-${Date.now()}`
