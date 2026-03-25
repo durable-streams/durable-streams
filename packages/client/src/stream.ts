@@ -910,6 +910,14 @@ export class DurableStream {
   // ============================================================================
 
   /**
+   * Resolve the stream's configured headers.
+   * Used by IdempotentProducer to merge auth headers into its requests.
+   */
+  async resolveHeaders(): Promise<Record<string, string>> {
+    return resolveHeaders(this.#options.headers)
+  }
+
+  /**
    * Build request headers and URL.
    */
   async #buildRequest(): Promise<{

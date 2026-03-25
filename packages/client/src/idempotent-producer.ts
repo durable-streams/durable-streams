@@ -415,8 +415,10 @@ export class IdempotentProducer {
     // We only increment #nextSeq after a successful response
     const seqForThisRequest = this.#nextSeq
 
-    // Build headers with producer info and Stream-Closed
+    // Build headers - merge stream auth headers with producer headers
+    const streamHeaders = await this.#stream.resolveHeaders()
     const headers: Record<string, string> = {
+      ...streamHeaders,
       "content-type": contentType,
       [PRODUCER_ID_HEADER]: this.#producerId,
       [PRODUCER_EPOCH_HEADER]: this.#epoch.toString(),
@@ -692,8 +694,10 @@ export class IdempotentProducer {
     // Build URL
     const url = this.#stream.url
 
-    // Build headers
+    // Build headers - merge stream auth headers with producer headers
+    const streamHeaders = await this.#stream.resolveHeaders()
     const headers: Record<string, string> = {
+      ...streamHeaders,
       "content-type": contentType,
       [PRODUCER_ID_HEADER]: this.#producerId,
       [PRODUCER_EPOCH_HEADER]: epoch.toString(),
