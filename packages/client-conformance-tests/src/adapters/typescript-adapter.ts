@@ -194,14 +194,9 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         const url = `${serverUrl}${command.path}`
         const contentType = command.contentType ?? `application/octet-stream`
 
-        // Check if stream already exists by trying to connect first
-        let alreadyExists = false
-        try {
-          await DurableStream.head({ url })
-          alreadyExists = true
-        } catch {
-          // Stream doesn't exist, which is expected for new creates
-        }
+        // Check if stream already exists by trying HEAD first
+        const existsCheck = await DurableStream.head({ url })
+        const alreadyExists = existsCheck.exists
 
         const ds = await DurableStream.create({
           url,
@@ -222,7 +217,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           type: `create`,
           success: true,
           status: alreadyExists ? 200 : 201, // 201 for new, 200 for idempotent
-          offset: head.offset,
+          offset: head.exists ? head.offset : undefined,
         }
       } catch (err) {
         return errorResult(`create`, err)
@@ -238,6 +233,17 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
         })
 
         const head = await ds.head()
+
+        if (!head.exists) {
+          return {
+            type: `error`,
+            success: false,
+            commandType: `connect`,
+            status: 404,
+            errorCode: ErrorCodes.NOT_FOUND,
+            message: `Stream not found: ${command.path}`,
+          }
+        }
 
         // Cache the content-type for this stream
         if (head.contentType) {
@@ -294,7 +300,7 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           type: `append`,
           success: true,
           status: 200,
-          offset: head.offset,
+          offset: head.exists ? head.offset : undefined,
           headersSent:
             Object.keys(headersSent).length > 0 ? headersSent : undefined,
           paramsSent:
@@ -536,6 +542,17 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           url,
           headers: command.headers,
         })
+
+        if (!result.exists) {
+          return {
+            type: `error`,
+            success: false,
+            commandType: `head`,
+            status: 404,
+            errorCode: ErrorCodes.NOT_FOUND,
+            message: `Stream not found: ${command.path}`,
+          }
+        }
 
         // Cache content-type
         if (result.contentType) {

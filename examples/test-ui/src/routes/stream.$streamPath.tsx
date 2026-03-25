@@ -24,6 +24,9 @@ export const Route = createFileRoute(`/stream/$streamPath`)({
         url: `${SERVER_URL}/v1/stream/${params.streamPath}`,
       })
       const metadata = await streamMetadata.head()
+      if (!metadata.exists) {
+        throw redirect({ to: `/` })
+      }
       const stream = new DurableStream({
         url: `${SERVER_URL}/v1/stream/${params.streamPath}`,
         contentType: metadata.contentType || undefined,

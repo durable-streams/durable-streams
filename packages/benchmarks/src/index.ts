@@ -147,7 +147,8 @@ export function runBenchmarks(options: BenchmarkOptions): void {
         })
 
         const message = new Uint8Array(100).fill(42)
-        let offset = (await stream.head()).offset
+        const headResult = await stream.head()
+        let offset = headResult.exists ? headResult.offset : undefined
 
         // Measure baseline ping for this test
         const pingStart = performance.now()
