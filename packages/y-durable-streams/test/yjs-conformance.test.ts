@@ -218,7 +218,6 @@ describe(`Yjs Durable Streams Protocol`, () => {
         port: 0,
         dsServerUrl: dsServer.url,
         compactionThreshold: 1500, // Threshold for testing (~7 updates)
-        minUpdatesBeforeCompaction: 5, // Min count for testing
       })
       await yjsServer.start()
 

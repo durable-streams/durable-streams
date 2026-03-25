@@ -906,64 +906,50 @@ export class YjsServer {
       }
     }
 
-    // Delete snapshots discovered via index
-    const snapshotOffsets = await this.loadSnapshotOffsetsFromIndex(
-      service,
-      docPath
-    )
+    // Load indices in parallel
+    const [snapshotOffsets, awarenessNames] = await Promise.all([
+      this.loadIndexEntries(
+        YjsStreamPaths.indexStream(service, docPath),
+        (entry) => entry.snapshotOffset as string | undefined
+      ),
+      this.loadIndexEntries(
+        YjsStreamPaths.awarenessIndexStream(service, docPath),
+        (entry) => entry.name as string | undefined
+      ),
+    ])
+
+    // Build list of all paths to delete
+    const pathsToDelete: Array<string> = []
+
     for (const offset of snapshotOffsets) {
       const snapshotKey = YjsStreamPaths.snapshotKey(offset)
-      const snapshotPath = YjsStreamPaths.snapshotStream(
-        service,
-        docPath,
-        snapshotKey
+      pathsToDelete.push(
+        YjsStreamPaths.snapshotStream(service, docPath, snapshotKey)
       )
-      await deleteStream(snapshotPath)
     }
+    pathsToDelete.push(YjsStreamPaths.indexStream(service, docPath))
 
-    // Delete index stream
-    const indexPath = YjsStreamPaths.indexStream(service, docPath)
-    await deleteStream(indexPath)
-
-    // Delete default awareness stream
-    const defaultAwarenessPath = YjsStreamPaths.awarenessStream(
-      service,
-      docPath,
-      `default`
-    )
-    await deleteStream(defaultAwarenessPath)
-
-    // Delete named awareness streams discovered via awareness index
-    const awarenessNames = await this.loadAwarenessNamesFromIndex(
-      service,
-      docPath
+    pathsToDelete.push(
+      YjsStreamPaths.awarenessStream(service, docPath, `default`)
     )
     for (const name of awarenessNames) {
-      const awarenessPath = YjsStreamPaths.awarenessStream(
-        service,
-        docPath,
-        name
-      )
-      await deleteStream(awarenessPath)
+      pathsToDelete.push(YjsStreamPaths.awarenessStream(service, docPath, name))
     }
+    pathsToDelete.push(YjsStreamPaths.awarenessIndexStream(service, docPath))
 
-    // Delete awareness index stream
-    const awarenessIndexPath = YjsStreamPaths.awarenessIndexStream(
-      service,
-      docPath
-    )
-    await deleteStream(awarenessIndexPath)
+    // Delete all streams in parallel (best-effort)
+    await Promise.allSettled(pathsToDelete.map(deleteStream))
   }
 
   /**
-   * Load all snapshot offsets from the index stream.
-   * Returns empty array if index doesn't exist.
+   * Load entries from an index stream, extracting a value from each entry.
+   * Returns deduplicated values. Returns empty array if index doesn't exist.
    */
-  private async loadSnapshotOffsetsFromIndex(
-    service: string,
-    docPath: string
+  private async loadIndexEntries(
+    dsPath: string,
+    extractValue: (entry: Record<string, unknown>) => string | undefined
   ): Promise<Array<string>> {
-    const indexUrl = `${this.dsServerUrl}${YjsStreamPaths.indexStream(service, docPath)}`
+    const indexUrl = `${this.dsServerUrl}${dsPath}`
 
     try {
       const stream = new DurableStream({
@@ -979,18 +965,17 @@ export class YjsServer {
         return []
       }
 
-      const offsets: Array<string> = []
+      const values = new Set<string>()
 
       // Prefer JSON array format (DS JSON streams return arrays)
       try {
         const parsed = JSON.parse(body) as unknown
         if (Array.isArray(parsed)) {
           for (const entry of parsed) {
-            if (entry?.snapshotOffset) {
-              offsets.push(entry.snapshotOffset)
-            }
+            const val = extractValue(entry)
+            if (val) values.add(val)
           }
-          return offsets
+          return [...values]
         }
       } catch {
         // Fall through to newline-delimited parsing
@@ -1002,90 +987,18 @@ export class YjsServer {
         const trimmed = line.trim()
         if (!trimmed) continue
         try {
-          const entry = JSON.parse(trimmed) as { snapshotOffset?: string }
-          if (entry.snapshotOffset) {
-            offsets.push(entry.snapshotOffset)
-          }
+          const entry = JSON.parse(trimmed) as Record<string, unknown>
+          const val = extractValue(entry)
+          if (val) values.add(val)
         } catch {
           // Skip malformed entries
         }
       }
 
-      return offsets
+      return [...values]
     } catch (err) {
       if (!isNotFoundError(err)) {
-        console.error(
-          `[YjsServer] Error loading snapshot offsets for ${service}/${docPath}:`,
-          err
-        )
-      }
-      return []
-    }
-  }
-
-  /**
-   * Load all named awareness stream names from the awareness index stream.
-   * Returns empty array if index doesn't exist.
-   */
-  private async loadAwarenessNamesFromIndex(
-    service: string,
-    docPath: string
-  ): Promise<Array<string>> {
-    const indexUrl = `${this.dsServerUrl}${YjsStreamPaths.awarenessIndexStream(service, docPath)}`
-
-    try {
-      const stream = new DurableStream({
-        url: indexUrl,
-        headers: this.dsServerHeaders,
-        contentType: `application/json`,
-      })
-
-      const response = await stream.stream({ offset: `-1` })
-      const body = await response.text()
-
-      if (!body || body.trim().length === 0) {
-        return []
-      }
-
-      const names = new Set<string>()
-
-      // Prefer JSON array format (DS JSON streams return arrays)
-      try {
-        const parsed = JSON.parse(body) as unknown
-        if (Array.isArray(parsed)) {
-          for (const entry of parsed) {
-            if (entry?.name) {
-              names.add(entry.name)
-            }
-          }
-          return [...names]
-        }
-      } catch {
-        // Fall through to newline-delimited parsing
-      }
-
-      // Fallback: parse newline-delimited entries
-      const lines = body.trim().split(`\n`)
-      for (const line of lines) {
-        const trimmed = line.trim()
-        if (!trimmed) continue
-        try {
-          const entry = JSON.parse(trimmed) as { name?: string }
-          if (entry.name) {
-            names.add(entry.name)
-          }
-        } catch {
-          // Skip malformed entries
-        }
-      }
-
-      return [...names]
-    } catch (err) {
-      if (!isNotFoundError(err)) {
-        console.error(
-          `[YjsServer] Error loading awareness index for ${service}/${docPath}:`,
-          err
-        )
+        console.error(`[YjsServer] Error loading index ${dsPath}:`, err)
       }
       return []
     }

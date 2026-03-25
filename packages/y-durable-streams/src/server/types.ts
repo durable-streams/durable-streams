@@ -191,6 +191,7 @@ export type YjsErrorCode =
   | `DOCUMENT_NOT_FOUND`
   | `OFFSET_EXPIRED`
   | `RATE_LIMITED`
+  | `STREAM_NOT_FOUND`
   | `INTERNAL_ERROR`
 
 /**

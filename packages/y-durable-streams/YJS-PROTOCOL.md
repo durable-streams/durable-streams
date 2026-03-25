@@ -726,6 +726,7 @@ All errors **MUST** return JSON:
 | `DOCUMENT_NOT_FOUND` | 404         | Document stream doesn't exist                                            |
 | `OFFSET_EXPIRED`     | 410         | Offset is older than stream retention                                    |
 | `RATE_LIMITED`       | 429         | Too many requests                                                        |
+| `STREAM_NOT_FOUND`   | 404         | Awareness stream doesn't exist                                           |
 | `INTERNAL_ERROR`     | 500         | Unexpected server-side failure                                           |
 
 ## 11. Limits
