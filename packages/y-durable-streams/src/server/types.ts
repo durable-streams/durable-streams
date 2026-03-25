@@ -66,7 +66,7 @@ export interface CompactionResult {
  * Index entry stored in the internal index stream.
  * Each compaction appends a new entry with the current snapshot offset.
  */
-export interface YjsIndexEntry {
+export interface YjsIndexEntry extends Record<string, unknown> {
   /** The snapshot offset (used to construct the snapshot key) */
   snapshotOffset: string
 
@@ -156,6 +156,15 @@ export const YjsStreamPaths = {
   },
 
   /**
+   * Get the awareness index stream path for a document.
+   * This append-only stream tracks which named awareness streams have been created,
+   * enabling discovery during cascade delete.
+   */
+  awarenessIndexStream(service: string, docPath: string): string {
+    return `/v1/stream/yjs/${service}/docs/${docPath}/.awareness/.index`
+  },
+
+  /**
    * Get the snapshot storage key for a given offset.
    */
   snapshotKey(offset: string): string {
@@ -182,6 +191,8 @@ export type YjsErrorCode =
   | `DOCUMENT_NOT_FOUND`
   | `OFFSET_EXPIRED`
   | `RATE_LIMITED`
+  | `STREAM_NOT_FOUND`
+  | `INTERNAL_ERROR`
 
 /**
  * Error response format.

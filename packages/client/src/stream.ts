@@ -146,6 +146,7 @@ export class DurableStream {
 
   #options: DurableStreamOptions
   readonly #fetchClient: typeof fetch
+  readonly #baseFetchClient: typeof fetch
   #onError?: StreamErrorHandler
 
   // Batching infrastructure
@@ -176,7 +177,7 @@ export class DurableStream {
       this.#queue = fastq.promise(this.#batchWorker.bind(this), 1)
     }
 
-    const baseFetchClient =
+    this.#baseFetchClient =
       opts.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
 
     const backOffOpts = {
@@ -184,7 +185,7 @@ export class DurableStream {
     }
 
     const fetchWithBackoffClient = createFetchWithBackoff(
-      baseFetchClient,
+      this.#baseFetchClient,
       backOffOpts
     )
 
@@ -258,13 +259,19 @@ export class DurableStream {
   async head(opts?: { signal?: AbortSignal }): Promise<HeadResult> {
     const { requestHeaders, fetchUrl } = await this.#buildRequest()
 
-    const response = await this.#fetchClient(fetchUrl.toString(), {
+    // Use the base fetch client directly (no backoff/consumedBody wrappers).
+    // HEAD responses have no body; the backoff wrapper's FetchError.fromResponse()
+    // calls response.text() which hangs in Chrome on bodyless HEAD responses.
+    const response = await this.#baseFetchClient(fetchUrl.toString(), {
       method: `HEAD`,
       headers: requestHeaders,
       signal: opts?.signal ?? this.#options.signal,
     })
 
     if (!response.ok) {
+      if (response.status === 404) {
+        return { exists: false }
+      }
       await handleErrorResponse(response, this.url)
     }
 
@@ -901,6 +908,15 @@ export class DurableStream {
   // ============================================================================
   // Private methods
   // ============================================================================
+
+  /**
+   * Resolve the stream's configured headers.
+   * Used by IdempotentProducer to merge auth headers into its requests.
+   * @internal
+   */
+  async resolveHeaders(): Promise<Record<string, string>> {
+    return resolveHeaders(this.#options.headers)
+  }
 
   /**
    * Build request headers and URL.

@@ -495,9 +495,9 @@ export interface ReadOptions {
 }
 
 /**
- * Result from a HEAD request on a stream.
+ * Result from a HEAD request when the stream exists.
  */
-export interface HeadResult {
+export interface HeadResultExists {
   /**
    * Whether the stream exists.
    */
@@ -530,6 +530,18 @@ export interface HeadResult {
    */
   streamClosed: boolean
 }
+
+/**
+ * Result from a HEAD request when the stream does not exist.
+ */
+export interface HeadResultNotFound {
+  exists: false
+}
+
+/**
+ * Result from a HEAD request on a stream.
+ */
+export type HeadResult = HeadResultExists | HeadResultNotFound
 
 /**
  * Metadata extracted from a stream response.

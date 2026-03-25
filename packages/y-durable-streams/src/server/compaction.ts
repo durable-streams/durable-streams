@@ -36,6 +36,11 @@ export interface CompactorServer {
     docPath: string,
     offset: string
   ) => void
+  /** Append a JSON entry to an index stream, creating the stream if needed */
+  appendToIndexStream: (
+    dsPath: string,
+    entry: Record<string, unknown>
+  ) => Promise<void>
 }
 
 /**
@@ -45,16 +50,6 @@ function isNotFoundError(err: unknown): boolean {
   return (
     (err instanceof DurableStreamError && err.code === `NOT_FOUND`) ||
     (err instanceof FetchError && err.status === 404)
-  )
-}
-
-/**
- * Check if an error is a 409 Conflict (already exists) error.
- */
-function isConflictExistsError(err: unknown): boolean {
-  return (
-    (err instanceof DurableStreamError && err.code === `CONFLICT_EXISTS`) ||
-    (err instanceof FetchError && err.status === 409)
   )
 }
 
@@ -236,39 +231,12 @@ export class Compactor {
     docPath: string,
     snapshotOffset: string
   ): Promise<void> {
-    const dsServerUrl = this.server.getDsServerUrl()
-    const dsHeaders = this.server.getDsServerHeaders()
-    const indexUrl = `${dsServerUrl}${YjsStreamPaths.indexStream(service, docPath)}`
-
-    // Create index stream if it doesn't exist
-    try {
-      await DurableStream.create({
-        url: indexUrl,
-        headers: dsHeaders,
-        contentType: `application/json`,
-      })
-    } catch (err) {
-      if (!isConflictExistsError(err)) {
-        throw err
-      }
-      // Stream already exists - that's fine
-    }
-
-    // Append the new index entry
+    const indexPath = YjsStreamPaths.indexStream(service, docPath)
     const indexEntry: YjsIndexEntry = {
       snapshotOffset,
       createdAt: Date.now(),
     }
-
-    const stream = new DurableStream({
-      url: indexUrl,
-      headers: dsHeaders,
-      contentType: `application/json`,
-    })
-
-    await stream.append(JSON.stringify(indexEntry) + `\n`, {
-      contentType: `application/json`,
-    })
+    await this.server.appendToIndexStream(indexPath, indexEntry)
   }
 
   /**

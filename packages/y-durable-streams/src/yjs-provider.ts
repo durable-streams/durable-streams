@@ -95,6 +95,12 @@ export interface YjsProviderOptions {
   headers?: HeadersRecord
 
   /**
+   * Live mode for streaming updates.
+   * @default "sse"
+   */
+  liveMode?: `sse` | `long-poll`
+
+  /**
    * Whether to automatically connect on construction.
    * @default true
    */
@@ -134,6 +140,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private readonly baseUrl: string
   private readonly docId: string
   private readonly headers: HeadersRecord
+  private readonly liveMode: `sse` | `long-poll`
 
   // ---- State Machine ----
   private _state: ConnectionState = `disconnected`
@@ -157,6 +164,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     this.baseUrl = options.baseUrl.replace(/\/$/, ``)
     this.docId = options.docId
     this.headers = options.headers ?? {}
+    this.liveMode = options.liveMode ?? `sse`
 
     this.doc.on(`update`, this.handleDocumentUpdate)
 
@@ -596,7 +604,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       try {
         const response = await stream.stream({
           offset: currentOffset,
-          live: `sse`,
+          live: this.liveMode,
           signal: ctx.controller.signal,
         })
 

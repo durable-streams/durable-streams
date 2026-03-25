@@ -73,7 +73,7 @@ async function main() {
   const publicUrl = `https://localhost:${CADDY_PORT}`
   console.log(`✓ Caddy HTTPS proxy running at ${publicUrl}`)
 
-  console.log(`\n📝 Yjs demo server is ready!`)
+  console.log(`\nYjs demo server is ready!`)
   console.log(`\nAll requests go through: ${publicUrl} (HTTP/2)`)
   console.log(`  DS streams:  ${publicUrl}/v1/stream/*`)
   console.log(`  Yjs docs:    ${publicUrl}/v1/yjs/*`)
