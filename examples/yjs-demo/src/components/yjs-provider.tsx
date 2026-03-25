@@ -159,7 +159,7 @@ export function YjsRoomProvider({
   useEffect(() => {
     // The server endpoint should point to a Yjs server
     // e.g., http://localhost:4438/v1/yjs/rooms
-    const baseUrl = `${serverEndpoint}/v1/yjs/rooms`
+    const baseUrl = `${serverEndpoint}/rooms`
 
     const provider = new YjsProvider({
       doc,

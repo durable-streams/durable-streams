@@ -106,9 +106,8 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
       setState({ registryDB: null, error: null, isLoading: true })
 
       try {
-        const registryUrl = `${dsEndpoint}/v1/stream/__yjs_rooms`
+        const registryUrl = `${dsEndpoint}/__yjs_rooms`
 
-        console.log(`[Registry] Connecting to registry stream...`, registryUrl)
         // Create registry stream
         const registryStream = new DurableStream({
           url: registryUrl,
@@ -117,14 +116,11 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
         })
 
         // Check if registry exists, create it if it doesn't
-        console.log(`[Registry] Checking if registry stream exists...`)
-        const exists = await registryStream.head().catch(() => null)
-        console.log(`[Registry] Registry stream exists:`, exists)
+        const headResult = await registryStream.head()
 
         if (cancelled) return
 
-        if (!exists) {
-          console.log(`[Registry] Creating registry stream...`)
+        if (!headResult.exists) {
           await DurableStream.create({
             url: registryUrl,
             headers: dsHeaders,

@@ -1,4 +1,4 @@
-import { createContext, useContext } from "react"
+import { createContext, useContext, useMemo } from "react"
 import type { ReactNode } from "react"
 
 // ============================================================================
@@ -45,10 +45,12 @@ function getServerEndpoint(): string {
     return import.meta.env.VITE_SERVER_URL
   }
 
-  // Same origin — Caddy proxies everything
-  return typeof window !== `undefined`
-    ? window.location.origin
-    : `https://localhost:4443`
+  // Same origin — Caddy proxies everything, add /v1/yjs prefix
+  const origin =
+    typeof window !== `undefined`
+      ? window.location.origin
+      : `https://localhost:4443`
+  return `${origin}/v1/yjs`
 }
 
 function getDsEndpoint(): string {
@@ -56,10 +58,12 @@ function getDsEndpoint(): string {
     return import.meta.env.VITE_DS_URL
   }
 
-  // Same origin — Caddy proxies everything
-  return typeof window !== `undefined`
-    ? window.location.origin
-    : `https://localhost:4443`
+  // Same origin — Caddy proxies everything, add /v1/stream prefix
+  const origin =
+    typeof window !== `undefined`
+      ? window.location.origin
+      : `https://localhost:4443`
+  return `${origin}/v1/stream`
 }
 
 function getYjsHeaders(): Record<string, string> {
@@ -81,15 +85,18 @@ function getDsHeaders(): Record<string, string> {
 export function ServerEndpointProvider({ children }: { children: ReactNode }) {
   const serverEndpoint = getServerEndpoint()
   const dsEndpoint = getDsEndpoint()
-  const yjsHeaders = getYjsHeaders()
-  const dsHeaders = getDsHeaders()
+  const yjsHeaders = useMemo(() => getYjsHeaders(), [])
+  const dsHeaders = useMemo(() => getDsHeaders(), [])
 
-  const value: ServerEndpointContextValue = {
-    serverEndpoint,
-    dsEndpoint,
-    yjsHeaders,
-    dsHeaders,
-  }
+  const value = useMemo<ServerEndpointContextValue>(
+    () => ({
+      serverEndpoint,
+      dsEndpoint,
+      yjsHeaders,
+      dsHeaders,
+    }),
+    [serverEndpoint, dsEndpoint, yjsHeaders, dsHeaders]
+  )
 
   return (
     <ServerEndpointContext.Provider value={value}>
