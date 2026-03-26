@@ -5,13 +5,14 @@ import { useRegistryContext } from "./registry-context"
 import type { RoomMetadata } from "../utils/schemas"
 
 const PALETTE = {
-  bg: `#0B0E17`,
-  card: `#0E1225`,
-  border: `#1A1F38`,
-  text: `#8892B0`,
-  accent: `#00E5FF`,
-  food: `#FF3D71`,
-  dim: `#444`,
+  bg: `#1b1b1f`,
+  card: `#161618`,
+  border: `#2e2e32`,
+  text: `rgba(235,235,245,0.68)`,
+  accent: `#d0bcff`,
+  purple: `#998fe7`,
+  warn: `#FF8C3B`,
+  dim: `rgba(235,235,245,0.38)`,
 }
 
 const BOARD_SIZES = [
@@ -93,15 +94,16 @@ export function Lobby({
   return (
     <div style={styles.container}>
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        .lobby-btn:active { opacity: 0.7; }
       `}</style>
 
-      <div style={styles.title}>SNAKE</div>
-      <div style={styles.subtitle}>Multiplayer with Durable Streams</div>
+      <div style={styles.title}>DURABLE SNAKE</div>
+      <div style={styles.subtitle}>MULTIPLAYER</div>
 
       {/* Player Name */}
       <div style={styles.card}>
-        <div style={styles.cardTitle}>Your Name</div>
+        <div style={styles.cardTitle}>NAME</div>
         <input
           style={styles.input}
           value={playerName}
@@ -113,9 +115,9 @@ export function Lobby({
 
       {/* Create Room */}
       <div style={styles.card}>
-        <div style={styles.cardTitle}>Create Room</div>
+        <div style={styles.cardTitle}>NEW ROOM</div>
 
-        <label style={styles.label}>Room Name (optional)</label>
+        <label style={styles.label}>ROOM NAME</label>
         <input
           style={styles.input}
           value={roomName}
@@ -124,11 +126,12 @@ export function Lobby({
           onKeyDown={(e) => e.key === `Enter` && createRoom()}
         />
 
-        <label style={styles.label}>Board Size</label>
+        <label style={styles.label}>BOARD</label>
         <div style={styles.sizeRow}>
           {BOARD_SIZES.map((s, i) => (
             <button
               key={s.label}
+              className="lobby-btn"
               style={{
                 ...styles.sizeBtn,
                 ...(i === sizeIdx ? styles.sizeBtnActive : {}),
@@ -140,11 +143,12 @@ export function Lobby({
           ))}
         </div>
 
-        <label style={styles.label}>Speed</label>
+        <label style={styles.label}>SPEED</label>
         <div style={styles.sizeRow}>
           {SPEED_OPTIONS.map((s, i) => (
             <button
               key={s.label}
+              className="lobby-btn"
               style={{
                 ...styles.sizeBtn,
                 ...(i === speedIdx ? styles.sizeBtnActive : {}),
@@ -157,6 +161,7 @@ export function Lobby({
         </div>
 
         <button
+          className="lobby-btn"
           style={{ ...styles.createBtn, opacity: isCreating ? 0.6 : 1 }}
           onClick={createRoom}
           disabled={isCreating}
@@ -166,85 +171,69 @@ export function Lobby({
       </div>
 
       {/* Active Rooms */}
-      <div style={styles.card}>
-        <div style={styles.cardTitle}>Active Rooms</div>
-        {sortedRooms.length === 0 ? (
-          <div
-            style={{
-              fontSize: 10,
-              color: PALETTE.dim,
-              textAlign: `center`,
-              padding: `12px 0`,
-            }}
-          >
-            No active rooms. Create one to get started.
+      {sortedRooms.length > 0 && (
+        <div style={styles.card}>
+          <div style={styles.cardTitle}>ROOMS</div>
+          <div style={{ display: `flex`, flexDirection: `column`, gap: 6 }}>
+            {sortedRooms.slice(roomPage * 5, roomPage * 5 + 5).map((room) => (
+              <RoomItem
+                key={room.roomId}
+                room={room}
+                onJoin={() => onJoinRoom(room.roomId)}
+              />
+            ))}
           </div>
-        ) : (
-          <>
-            <div style={{ display: `flex`, flexDirection: `column`, gap: 6 }}>
-              {sortedRooms.slice(roomPage * 5, roomPage * 5 + 5).map((room) => (
-                <RoomItem
-                  key={room.roomId}
-                  room={room}
-                  onJoin={() => onJoinRoom(room.roomId)}
-                />
-              ))}
-            </div>
-            {sortedRooms.length > 5 && (
-              <div
+          {sortedRooms.length > 5 && (
+            <div
+              style={{
+                display: `flex`,
+                justifyContent: `center`,
+                gap: 8,
+                marginTop: 10,
+              }}
+            >
+              <button
+                className="lobby-btn"
                 style={{
-                  display: `flex`,
-                  justifyContent: `center`,
-                  gap: 8,
-                  marginTop: 10,
+                  ...styles.sizeBtn,
+                  width: 28,
+                  padding: `4px 0`,
+                  opacity: roomPage === 0 ? 0.3 : 1,
+                }}
+                disabled={roomPage === 0}
+                onClick={() => setRoomPage((p) => p - 1)}
+              >
+                &lt;
+              </button>
+              <span
+                style={{
+                  fontSize: 7,
+                  color: PALETTE.dim,
+                  lineHeight: `24px`,
                 }}
               >
-                <button
-                  style={{
-                    ...styles.sizeBtn,
-                    width: 28,
-                    padding: `4px 0`,
-                    opacity: roomPage === 0 ? 0.3 : 1,
-                  }}
-                  disabled={roomPage === 0}
-                  onClick={() => setRoomPage((p) => p - 1)}
-                >
-                  ←
-                </button>
-                <span
-                  style={{
-                    fontSize: 9,
-                    color: PALETTE.dim,
-                    lineHeight: `24px`,
-                  }}
-                >
-                  {roomPage + 1}/{Math.ceil(sortedRooms.length / 5)}
-                </span>
-                <button
-                  style={{
-                    ...styles.sizeBtn,
-                    width: 28,
-                    padding: `4px 0`,
-                    opacity:
-                      roomPage >= Math.ceil(sortedRooms.length / 5) - 1
-                        ? 0.3
-                        : 1,
-                  }}
-                  disabled={roomPage >= Math.ceil(sortedRooms.length / 5) - 1}
-                  onClick={() => setRoomPage((p) => p + 1)}
-                >
-                  →
-                </button>
-              </div>
-            )}
-          </>
-        )}
-      </div>
+                {roomPage + 1}/{Math.ceil(sortedRooms.length / 5)}
+              </span>
+              <button
+                className="lobby-btn"
+                style={{
+                  ...styles.sizeBtn,
+                  width: 28,
+                  padding: `4px 0`,
+                  opacity:
+                    roomPage >= Math.ceil(sortedRooms.length / 5) - 1 ? 0.3 : 1,
+                }}
+                disabled={roomPage >= Math.ceil(sortedRooms.length / 5) - 1}
+                onClick={() => setRoomPage((p) => p + 1)}
+              >
+                &gt;
+              </button>
+            </div>
+          )}
+        </div>
+      )}
 
-      <div style={styles.hint}>
-        Share the page URL with friends to play together. Rooms are
-        automatically deleted when all players leave.
-      </div>
+      <div style={styles.hint}>Share the URL to play together.</div>
     </div>
   )
 }
@@ -261,7 +250,7 @@ function RoomItem({
   const mins = Math.floor(remaining / 60000)
   const secs = Math.floor((remaining % 60000) / 1000)
   const timeLeft = `${mins}:${secs.toString().padStart(2, `0`)}`
-  const isLow = remaining < 120_000 // less than 2 min
+  const isLow = remaining < 120_000
 
   return (
     <div
@@ -271,7 +260,6 @@ function RoomItem({
         justifyContent: `space-between`,
         background: PALETTE.bg,
         border: `1px solid ${PALETTE.border}`,
-        borderRadius: 4,
         padding: `8px 12px`,
         cursor: `pointer`,
       }}
@@ -279,39 +267,34 @@ function RoomItem({
     >
       <div style={{ display: `flex`, flexDirection: `column`, gap: 2 }}>
         <div style={{ display: `flex`, alignItems: `center`, gap: 6 }}>
-          <span style={{ fontSize: 12, color: PALETTE.text, fontWeight: 600 }}>
-            {room.name}
-          </span>
-          <span
-            style={{
-              fontSize: 9,
-              color: count > 0 ? PALETTE.accent : PALETTE.dim,
-              fontWeight: 700,
-              background: count > 0 ? `#0A2A3A` : `transparent`,
-              padding: `1px 6px`,
-              borderRadius: 8,
-            }}
-          >
-            {count} player{count !== 1 ? `s` : ``}
-          </span>
+          <span style={{ fontSize: 8, color: PALETTE.text }}>{room.name}</span>
+          {count > 0 && (
+            <span
+              style={{
+                fontSize: 7,
+                color: PALETTE.accent,
+              }}
+            >
+              {count}P
+            </span>
+          )}
         </div>
-        <span style={{ fontSize: 9, color: PALETTE.dim }}>
+        <span style={{ fontSize: 7, color: PALETTE.dim }}>
           {room.boardSize} ·{` `}
-          <span style={{ color: isLow ? PALETTE.food : PALETTE.dim }}>
-            {timeLeft} left
+          <span style={{ color: isLow ? PALETTE.warn : PALETTE.dim }}>
+            {timeLeft}
           </span>
         </span>
       </div>
       <button
+        className="lobby-btn"
         style={{
           background: PALETTE.accent,
           color: `#000`,
           border: `none`,
           fontFamily: `inherit`,
-          fontSize: 10,
-          fontWeight: 700,
-          padding: `4px 14px`,
-          borderRadius: 4,
+          fontSize: 7,
+          padding: `4px 12px`,
           cursor: `pointer`,
           letterSpacing: 1,
         }}
@@ -332,41 +315,40 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: `column`,
     alignItems: `center`,
     justifyContent: `center`,
-    minHeight: `100vh`,
-    fontFamily: `'JetBrains Mono', 'SF Mono', monospace`,
+    minHeight: `100dvh`,
+    fontFamily: `'Press Start 2P', monospace`,
     background: PALETTE.bg,
     color: PALETTE.text,
-    padding: 24,
+    padding: 20,
   },
   title: {
-    fontSize: 32,
-    fontWeight: 800,
-    letterSpacing: 8,
+    fontSize: 16,
+    letterSpacing: 4,
     color: PALETTE.accent,
     marginBottom: 4,
   },
   subtitle: {
-    fontSize: 11,
+    fontSize: 7,
     color: PALETTE.dim,
+    letterSpacing: 4,
     marginBottom: 32,
   },
   card: {
     background: PALETTE.card,
     border: `1px solid ${PALETTE.border}`,
-    borderRadius: 8,
-    padding: 20,
-    width: 380,
-    marginBottom: 16,
-  },
-  cardTitle: {
-    fontSize: 12,
-    fontWeight: 700,
-    color: PALETTE.accent,
-    letterSpacing: 2,
+    padding: 16,
+    width: `100%`,
+    maxWidth: 340,
     marginBottom: 12,
   },
+  cardTitle: {
+    fontSize: 7,
+    color: PALETTE.accent,
+    letterSpacing: 2,
+    marginBottom: 10,
+  },
   label: {
-    fontSize: 9,
+    fontSize: 6,
     color: PALETTE.dim,
     display: `block`,
     marginBottom: 4,
@@ -376,55 +358,52 @@ const styles: Record<string, React.CSSProperties> = {
     width: `100%`,
     background: PALETTE.bg,
     border: `1px solid ${PALETTE.border}`,
-    borderRadius: 4,
-    padding: `8px 12px`,
+    padding: `8px 10px`,
     color: PALETTE.text,
     fontFamily: `inherit`,
-    fontSize: 12,
-    marginBottom: 12,
+    fontSize: 8,
+    marginBottom: 10,
     outline: `none`,
+    boxSizing: `border-box`,
   },
   sizeRow: {
     display: `flex`,
-    gap: 6,
-    marginBottom: 16,
+    gap: 4,
+    marginBottom: 12,
   },
   sizeBtn: {
     flex: 1,
     padding: `6px 4px`,
-    fontSize: 9,
+    fontSize: 6,
     fontFamily: `inherit`,
     background: PALETTE.bg,
     color: PALETTE.dim,
     border: `1px solid ${PALETTE.border}`,
-    borderRadius: 4,
     cursor: `pointer`,
   },
   sizeBtnActive: {
-    background: `#0A2A3A`,
+    background: `rgba(208,188,255,0.1)`,
     color: PALETTE.accent,
     borderColor: PALETTE.accent,
   },
   createBtn: {
     width: `100%`,
     padding: `10px 0`,
-    fontSize: 12,
-    fontWeight: 700,
+    fontSize: 8,
     fontFamily: `inherit`,
     background: PALETTE.accent,
     color: `#000`,
     border: `none`,
-    borderRadius: 4,
     cursor: `pointer`,
     letterSpacing: 2,
     marginTop: 4,
   },
   hint: {
-    fontSize: 9,
-    color: `#333`,
+    fontSize: 6,
+    color: PALETTE.dim,
     textAlign: `center`,
-    maxWidth: 360,
-    lineHeight: 1.6,
+    maxWidth: 340,
+    lineHeight: 1.8,
     marginTop: 8,
   },
 }

@@ -17,18 +17,18 @@ const MAX_OBSTACLES = 20
 const POINTS_FOOD = 10
 
 const PALETTE = {
-  bg: `#0B0E17`,
-  grid: `#0F1322`,
-  gridLine: `#151A2E`,
-  snake: `#00E5FF`,
-  snakeHead: `#00FFF7`,
-  snakeGlow: `rgba(0,229,255,0.25)`,
-  food: `#FF3D71`,
-  foodGlow: `rgba(255,61,113,0.3)`,
-  obsWarn: `#FFD93D`,
-  obsSolid: `#FF6B35`,
-  text: `#8892B0`,
-  accent: `#00E5FF`,
+  bg: `#1b1b1f`,
+  grid: `#202127`,
+  gridLine: `#2e2e32`,
+  snake: `#75fbfd`,
+  snakeHead: `#75fbfd`,
+  food: `#00d2a0`,
+  obsWarn: `#f6f95c`,
+  obsSolid: `#d0bcff`,
+  text: `rgba(235,235,245,0.68)`,
+  accent: `#d0bcff`,
+  purple: `#998fe7`,
+  dim: `rgba(235,235,245,0.38)`,
 }
 
 // ============================================================================
@@ -78,7 +78,6 @@ function parseRoomConfig(roomId: string): {
   rows: number
   baseTick: number
 } {
-  // Format: name__COLSxROWS or name__COLSxROWS_SPEEDms
   const match = roomId.match(/__(\d+)x(\d+)(?:_(\d+)ms)?$/)
   if (match) {
     return {
@@ -215,20 +214,13 @@ interface SnakeGameProps {
 }
 
 export function SnakeGame({ onLeave }: SnakeGameProps) {
-  const {
-    doc,
-    awareness,
-    roomId,
-    playerId,
-    playerName,
-    playerColor,
-    expiresAt,
-  } = useGameRoom()
+  const { doc, awareness, roomId, playerId, playerName, playerColor } =
+    useGameRoom()
   const { scoresDB, submitScoreIfHigher } = useRoomScores()
   const { cols, rows, baseTick } = parseRoomConfig(roomId)
 
   const [localSnake, setLocalSnake] = useState<Array<Point>>([])
-  const [localDir, setLocalDir] = useState({ dx: 1, dy: 0 })
+  const [, setLocalDir] = useState({ dx: 1, dy: 0 })
   const [localScore, setLocalScore] = useState(0)
   const [sharedState, setSharedState] = useState<SharedGameState>({
     food: { x: Math.floor(cols / 2), y: 3 },
@@ -243,18 +235,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
   const [awarenessStates, setAwarenessStates] = useState<Map<number, any>>(
     new Map()
   )
-  const [copied, setCopied] = useState(false)
-
-  // Countdown timer — tick every second
-  const [timeLeft, setTimeLeft] = useState(() =>
-    Math.max(0, expiresAt - Date.now())
-  )
-  useEffect(() => {
-    const interval = setInterval(() => {
-      setTimeLeft(Math.max(0, expiresAt - Date.now()))
-    }, 1000)
-    return () => clearInterval(interval)
-  }, [expiresAt])
 
   // High scores from StreamDB
   const { data: highScores = [] } = useLiveQuery(
@@ -268,7 +248,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       { playerName: string; score: number; live: boolean }
     >()
 
-    // Start with persisted scores
     for (const entry of highScores) {
       byName.set(entry.playerName, {
         playerName: entry.playerName,
@@ -277,7 +256,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       })
     }
 
-    // Overlay live scores if they're higher
     const livePlayers: Array<{ name: string; score: number }> = [
       { name: playerName, score: localScore },
     ]
@@ -330,7 +308,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       speed: baseTick,
     }
 
-    // Write initial state to Yjs
     writeMyPlayer(doc, playerId, {
       snake,
       dir: { dx: 1, dy: 0 },
@@ -340,7 +317,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       alive: true,
     })
 
-    // Initialize shared game state if we're the first player
     const gameMap = doc.getMap(`game`)
     if (!gameMap.has(`food`)) {
       writeSharedGame(doc, {
@@ -362,7 +338,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       setSharedState(readSharedGame(doc, cols, rows))
     }
     gameMap.observe(handler)
-    // Initial read
     handler()
     return () => gameMap.unobserve(handler)
   }, [doc, cols, rows])
@@ -378,7 +353,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     return () => playersMap.unobserve(handler)
   }, [doc, playerId])
 
-  // Observe awareness for player presence — clean up Yjs players when awareness expires
+  // Observe awareness for player presence
   useEffect(() => {
     const handler = () => {
       const states = new Map<number, any>()
@@ -392,7 +367,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       })
       setAwarenessStates(states)
 
-      // Remove Yjs player entries for players whose awareness has timed out
       const playersMap = doc.getMap(`players`)
       playersMap.forEach((_, key) => {
         if (key !== playerId && !activePlayerIds.has(key)) {
@@ -417,10 +391,9 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     return () => window.removeEventListener(`keydown`, handleKey)
   }, [])
 
-  // Respawn helper — resets snake and submits high score
+  // Respawn helper
   const respawn = useCallback(
     (finalScore: number) => {
-      // Submit high score asynchronously
       if (finalScore > 0) {
         submitScoreIfHigher(playerName, finalScore)
       }
@@ -450,7 +423,12 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     [doc, playerId, playerName, playerColor, initSnake, submitScoreIfHigher]
   )
 
-  // Game loop — uses recursive setTimeout so speed changes take effect each tick
+  // Touch direction handler
+  const handleDirection = useCallback((dx: number, dy: number) => {
+    dirQueue.current.push({ dx, dy })
+  }, [])
+
+  // Game loop
   useEffect(() => {
     let timeoutId: ReturnType<typeof setTimeout>
     let cancelled = false
@@ -465,7 +443,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       let score = ref.score
       let obstacleTimer = ref.obstacleTimer - 1
 
-      // Process direction queue
       while (dirQueue.current.length > 0) {
         const newDir = dirQueue.current.shift()!
         if (newDir.dx !== -dir.dx || newDir.dy !== -dir.dy) {
@@ -476,38 +453,31 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         }
       }
 
-      // Move head
       const head = snake[0]
       let nx = head.x + dir.dx
       let ny = head.y + dir.dy
 
-      // Wrap around walls instead of dying
       if (nx < 0) nx = cols - 1
       else if (nx >= cols) nx = 0
       if (ny < 0) ny = rows - 1
       else if (ny >= rows) ny = 0
 
-      // Check self-collision (exclude tail — it moves away this tick)
       const selfHit = snake
         .slice(0, -1)
         .some((seg) => seg.x === nx && seg.y === ny)
 
-      // Read shared state
       const sharedGame = readSharedGame(doc, cols, rows)
       let currentObstacles = sharedGame.obstacles.map((o) => ({ ...o }))
 
-      // Check obstacle hit (solid only, age >= 3)
       const obsHit = currentObstacles.some(
         (o) => o.x === nx && o.y === ny && o.age >= 3
       )
 
-      // Check other snake hits
       const others = readPlayers(doc, playerId)
       const otherHit = Array.from(others.values()).some(
         (p) => p.alive && p.snake.some((seg) => seg.x === nx && seg.y === ny)
       )
 
-      // Lethal collisions — respawn immediately
       if (selfHit || obsHit || otherHit) {
         respawn(score)
         if (!isCancelled()) timeoutId = setTimeout(tick, baseTick)
@@ -516,7 +486,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
 
       snake.unshift({ x: nx, y: ny })
 
-      // Eat food
       let foodChanged = false
       let newFood = sharedGame.food
       if (nx === sharedGame.food.x && ny === sharedGame.food.y) {
@@ -533,7 +502,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         snake.pop()
       }
 
-      // Obstacle manager: age, spawn, and remove old — all in one write
       const allPlayerIds = [playerId]
       others.forEach((_, id) => allPlayerIds.push(id))
       allPlayerIds.sort()
@@ -542,16 +510,13 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       let obstaclesChanged = false
 
       if (isObstacleManager) {
-        // Age all obstacles
         currentObstacles = currentObstacles.map((o) => ({
           ...o,
           age: o.age + 1,
         }))
-        // Remove expired
         currentObstacles = currentObstacles.filter((o) => o.age < 200)
         obstaclesChanged = true
 
-        // Spawn new obstacle
         if (obstacleTimer <= 0 && currentObstacles.length < MAX_OBSTACLES) {
           obstacleTimer = Math.max(
             10,
@@ -576,7 +541,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         }
       }
 
-      // Single batched write for all shared state changes
       if (obstaclesChanged || foodChanged) {
         const update: Partial<SharedGameState> = {}
         if (obstaclesChanged) update.obstacles = currentObstacles
@@ -584,7 +548,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         writeSharedGame(doc, update)
       }
 
-      // Speed up slightly
       const newSpeed = Math.max(60, baseTick - Math.floor(score / 20))
 
       Object.assign(ref, { snake, dir, score, obstacleTimer, speed: newSpeed })
@@ -592,7 +555,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       setLocalDir({ ...dir })
       setLocalScore(score)
 
-      // Write player state to Yjs
       writeMyPlayer(doc, playerId, {
         snake,
         dir,
@@ -602,7 +564,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         alive: true,
       })
 
-      // Schedule next tick with current speed
       if (!isCancelled()) timeoutId = setTimeout(tick, ref.speed)
     }
 
@@ -621,24 +582,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
   const W = cols * CELL
   const H = rows * CELL
 
-  // Build scoreboard from all players
-  const allScores: Array<{
-    name: string
-    score: number
-    color: string
-    isMe: boolean
-  }> = [{ name: playerName, score: localScore, color: playerColor, isMe: true }]
-  otherPlayers.forEach((p) => {
-    allScores.push({
-      name: p.name,
-      score: p.score,
-      color: p.color,
-      isMe: false,
-    })
-  })
-  allScores.sort((a, b) => b.score - a.score)
-
-  // Count connected players from awareness
+  const topScore = mergedHighScores.length > 0 ? mergedHighScores[0] : null
   const connectedCount = awarenessStates.size + 1
 
   return (
@@ -647,19 +591,23 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         display: `flex`,
         flexDirection: `column`,
         alignItems: `center`,
-        fontFamily: `'JetBrains Mono', 'SF Mono', monospace`,
+        fontFamily: `'Press Start 2P', monospace`,
         background: PALETTE.bg,
         color: PALETTE.text,
-        minHeight: `100vh`,
-        padding: `12px`,
+        minHeight: `100dvh`,
+        maxHeight: `100dvh`,
+        padding: `8px`,
         boxSizing: `border-box`,
+        overflow: `hidden`,
+        touchAction: `none`,
       }}
     >
       <style>{`
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700;800&display=swap');
-        @keyframes warnPulse { 0%,100% { opacity:0.3 } 50% { opacity:0.9 } }
-        @keyframes spawn { from { transform:scale(0);opacity:0 } to { transform:scale(1);opacity:1 } }
-        @keyframes fadeOut { 0%,50% { opacity:0.8 } 100% { opacity:0.1 } }
+        @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
+        @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.2 } }
+        .live-dot { animation: blink 1.5s ease-in-out infinite; }
+        .dpad-btn { transition: none; -webkit-tap-highlight-color: transparent; }
+        .dpad-btn:active { background: rgba(208,188,255,0.1) !important; color: ${PALETTE.accent} !important; }
       `}</style>
 
       {/* Header */}
@@ -667,518 +615,494 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         style={{
           display: `flex`,
           alignItems: `center`,
-          gap: 12,
-          marginBottom: 2,
+          justifyContent: `space-between`,
+          width: `100%`,
+          maxWidth: W,
+          marginBottom: 8,
         }}
       >
         <button
           onClick={onLeave}
           style={{
             background: `none`,
-            border: `1px solid #1A1F38`,
-            color: PALETTE.text,
+            border: `none`,
+            color: PALETTE.accent,
             fontFamily: `inherit`,
             fontSize: 9,
-            padding: `4px 10px`,
-            borderRadius: 4,
+            padding: `4px 0`,
             cursor: `pointer`,
+            opacity: 0.6,
           }}
         >
-          ← LOBBY
+          EXIT
         </button>
         <div
           style={{
-            fontSize: 15,
-            fontWeight: 800,
+            fontSize: 12,
             letterSpacing: 4,
             color: PALETTE.accent,
           }}
         >
-          SNAKE
+          DURABLE SNAKE
         </div>
-        <div
-          style={{ fontSize: 9, color: `#444`, cursor: `pointer` }}
-          title="Click to copy room link"
-          onClick={() => {
-            navigator.clipboard.writeText(window.location.href).catch(() => {})
-            setCopied(true)
-            setTimeout(() => setCopied(false), 1500)
-          }}
-        >
-          Room: {roomId.replace(/__\d+x\d+(?:_\d+ms)?$/, ``)}
-          {` `}
-          {copied ? `✓ copied` : `📋`}
-        </div>
-        <div style={{ fontSize: 9, color: `#555` }}>
-          {connectedCount} player{connectedCount !== 1 ? `s` : ``}
-        </div>
-        <div
-          style={{
-            fontSize: 9,
-            fontWeight: 700,
-            color: timeLeft < 120_000 ? `#FF3D71` : `#555`,
-          }}
-        >
-          {Math.floor(timeLeft / 60000)}:
-          {Math.floor((timeLeft % 60000) / 1000)
-            .toString()
-            .padStart(2, `0`)}
-        </div>
+        <div style={{ fontSize: 8, color: PALETTE.dim }}>{connectedCount}P</div>
       </div>
 
-      <div style={{ fontSize: 8, color: `#333`, marginBottom: 8 }}>
-        {cols}x{rows} board · Walls wrap · Obstacles & snakes = instant respawn
-        · Food = +{POINTS_FOOD}pts
-      </div>
-
-      {/* Scoreboard */}
+      {/* Score bar */}
       <div
         style={{
           display: `flex`,
-          gap: 16,
-          marginBottom: 6,
-          fontSize: 10,
-          fontWeight: 600,
-          background: `#0E1225`,
-          padding: `6px 16px`,
-          borderRadius: 8,
-          border: `1px solid #1A1F38`,
-          flexWrap: `wrap`,
+          justifyContent: `space-between`,
+          alignItems: `baseline`,
+          width: `100%`,
+          maxWidth: W,
+          marginBottom: 8,
         }}
       >
-        {allScores.map((p, i) => (
-          <span
-            key={i}
-            style={{ display: `flex`, alignItems: `center`, gap: 4 }}
-          >
-            <span
-              style={{
-                width: 8,
-                height: 8,
-                borderRadius: `50%`,
-                background: p.color,
-                display: `inline-block`,
-              }}
-            />
-            <span
-              style={{ color: p.isMe ? `#fff` : PALETTE.text, fontSize: 10 }}
-            >
-              {p.name}
-            </span>
-            <span style={{ color: p.color, fontSize: 12, fontWeight: 800 }}>
-              {p.score}
-            </span>
-            {i === 0 && allScores.length > 1 && (
-              <span style={{ fontSize: 8, color: `#FFD93D` }}>★</span>
-            )}
-          </span>
-        ))}
-      </div>
-
-      {/* Game board + High Scores side by side */}
-      <div style={{ display: `flex`, gap: 12, alignItems: `flex-start` }}>
-        {/* Game board */}
-        <div style={{ position: `relative` }}>
-          <svg
-            width={W}
-            height={H}
-            viewBox={`0 0 ${W} ${H}`}
-            style={{
-              background: PALETTE.grid,
-              borderRadius: 6,
-              border: `2px solid ${PALETTE.gridLine}`,
-            }}
-          >
-            {/* Grid */}
-            {Array.from({ length: cols }, (_, i) => (
-              <line
-                key={`v${i}`}
-                x1={i * CELL}
-                y1={0}
-                x2={i * CELL}
-                y2={H}
-                stroke={PALETTE.gridLine}
-                strokeWidth={0.5}
-              />
-            ))}
-            {Array.from({ length: rows }, (_, i) => (
-              <line
-                key={`h${i}`}
-                x1={0}
-                y1={i * CELL}
-                x2={W}
-                y2={i * CELL}
-                stroke={PALETTE.gridLine}
-                strokeWidth={0.5}
-              />
-            ))}
-
-            {/* Food */}
-            <circle
-              cx={sharedState.food.x * CELL + CELL / 2}
-              cy={sharedState.food.y * CELL + CELL / 2}
-              r={CELL * 1.2}
-              fill={PALETTE.foodGlow}
-              opacity={0.4}
-            />
-            <circle
-              cx={sharedState.food.x * CELL + CELL / 2}
-              cy={sharedState.food.y * CELL + CELL / 2}
-              r={CELL / 2 - 2}
-              fill={PALETTE.food}
-            />
-            <circle
-              cx={sharedState.food.x * CELL + CELL / 2 - 2}
-              cy={sharedState.food.y * CELL + CELL / 2 - 2}
-              r={2}
-              fill="rgba(255,255,255,0.4)"
-            />
-
-            {/* Obstacles */}
-            {sharedState.obstacles.map((o, i) => {
-              const isWarning = o.age < 3
-              const isFading = o.age >= 180 // starts fading 20 ticks before expiry (200)
-              const cx = o.x * CELL + CELL / 2
-              const cy = o.y * CELL + CELL / 2
-              if (isWarning) {
-                return (
-                  <g key={`obs-${i}`}>
-                    <rect
-                      x={o.x * CELL + 2}
-                      y={o.y * CELL + 2}
-                      width={CELL - 4}
-                      height={CELL - 4}
-                      fill="none"
-                      stroke={PALETTE.obsWarn}
-                      strokeWidth={2}
-                      rx={3}
-                      strokeDasharray="4 2"
-                      style={{
-                        animation: `warnPulse 0.4s ease-in-out infinite`,
-                      }}
-                    />
-                    <text
-                      x={cx}
-                      y={cy + 4}
-                      textAnchor="middle"
-                      fontSize={12}
-                      fill={PALETTE.obsWarn}
-                      fontWeight={800}
-                      style={{
-                        animation: `warnPulse 0.4s ease-in-out infinite`,
-                      }}
-                    >
-                      !
-                    </text>
-                  </g>
-                )
-              }
-              if (isFading) {
-                return (
-                  <g key={`obs-${i}`}>
-                    <rect
-                      x={o.x * CELL + 2}
-                      y={o.y * CELL + 2}
-                      width={CELL - 4}
-                      height={CELL - 4}
-                      fill="none"
-                      stroke={PALETTE.obsSolid}
-                      strokeWidth={2}
-                      rx={3}
-                      strokeDasharray="4 2"
-                      style={{
-                        animation: `warnPulse 0.4s ease-in-out infinite`,
-                      }}
-                    />
-                    <line
-                      x1={o.x * CELL + 6}
-                      y1={o.y * CELL + 6}
-                      x2={o.x * CELL + CELL - 6}
-                      y2={o.y * CELL + CELL - 6}
-                      stroke={PALETTE.obsSolid}
-                      strokeWidth={1.5}
-                      strokeLinecap="round"
-                      opacity={0.4}
-                      style={{
-                        animation: `warnPulse 0.4s ease-in-out infinite`,
-                      }}
-                    />
-                    <line
-                      x1={o.x * CELL + CELL - 6}
-                      y1={o.y * CELL + 6}
-                      x2={o.x * CELL + 6}
-                      y2={o.y * CELL + CELL - 6}
-                      stroke={PALETTE.obsSolid}
-                      strokeWidth={1.5}
-                      strokeLinecap="round"
-                      opacity={0.4}
-                      style={{
-                        animation: `warnPulse 0.4s ease-in-out infinite`,
-                      }}
-                    />
-                  </g>
-                )
-              }
-              return (
-                <g key={`obs-${i}`}>
-                  <rect
-                    x={o.x * CELL + 1}
-                    y={o.y * CELL + 1}
-                    width={CELL - 2}
-                    height={CELL - 2}
-                    fill={PALETTE.obsSolid}
-                    rx={3}
-                    opacity={0.9}
-                  />
-                  <line
-                    x1={o.x * CELL + 6}
-                    y1={o.y * CELL + 6}
-                    x2={o.x * CELL + CELL - 6}
-                    y2={o.y * CELL + CELL - 6}
-                    stroke="rgba(0,0,0,0.3)"
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                  />
-                  <line
-                    x1={o.x * CELL + CELL - 6}
-                    y1={o.y * CELL + 6}
-                    x2={o.x * CELL + 6}
-                    y2={o.y * CELL + CELL - 6}
-                    stroke="rgba(0,0,0,0.3)"
-                    strokeWidth={2}
-                    strokeLinecap="round"
-                  />
-                </g>
-              )
-            })}
-
-            {/* Other players' snakes */}
-            {Array.from(otherPlayers.entries()).map(([id, p]) => (
-              <g key={`player-${id}`}>
-                {p.snake.map((seg, i) => {
-                  const isHead = i === 0
-                  const progress = i / Math.max(p.snake.length, 1)
-                  const alpha = 1 - progress * 0.6
-                  const size = isHead ? CELL - 2 : CELL - 3 - progress * 3
-                  const offset = (CELL - size) / 2
-                  return (
-                    <g key={`${id}-seg-${i}`}>
-                      <rect
-                        x={seg.x * CELL + offset}
-                        y={seg.y * CELL + offset}
-                        width={size}
-                        height={size}
-                        rx={isHead ? 5 : 3}
-                        fill={p.color}
-                        opacity={alpha * 0.7}
-                      />
-                      {isHead && (
-                        <text
-                          x={seg.x * CELL + CELL / 2}
-                          y={seg.y * CELL - 3}
-                          textAnchor="middle"
-                          fontSize={7}
-                          fill={p.color}
-                          opacity={0.8}
-                        >
-                          {p.name}
-                        </text>
-                      )}
-                    </g>
-                  )
-                })}
-              </g>
-            ))}
-
-            {/* Local snake glow */}
-            {localSnake.length > 0 && (
-              <circle
-                cx={localSnake[0].x * CELL + CELL / 2}
-                cy={localSnake[0].y * CELL + CELL / 2}
-                r={CELL * 1.5}
-                fill={PALETTE.snakeGlow}
-              />
-            )}
-
-            {/* Local snake */}
-            {localSnake.map((seg, i) => {
-              const isHead = i === 0
-              const isTail = i === localSnake.length - 1
-              const progress = i / Math.max(localSnake.length, 1)
-              const alpha = 1 - progress * 0.6
-              const size = isHead ? CELL - 2 : CELL - 3 - progress * 3
-              const offset = (CELL - size) / 2
-              return (
-                <g key={`seg-${i}`}>
-                  <rect
-                    x={seg.x * CELL + offset}
-                    y={seg.y * CELL + offset}
-                    width={size}
-                    height={size}
-                    rx={isHead ? 5 : isTail ? 6 : 3}
-                    fill={playerColor}
-                    opacity={alpha}
-                  />
-                  {isHead && (
-                    <>
-                      {/* Eyes */}
-                      {(() => {
-                        const cx = seg.x * CELL + CELL / 2
-                        const cy = seg.y * CELL + CELL / 2
-                        const ex1 = cx + localDir.dy * 4 + localDir.dx * 3
-                        const ey1 = cy - localDir.dx * 4 + localDir.dy * 3
-                        const ex2 = cx - localDir.dy * 4 + localDir.dx * 3
-                        const ey2 = cy + localDir.dx * 4 + localDir.dy * 3
-                        return (
-                          <>
-                            <circle cx={ex1} cy={ey1} r={2.5} fill="#FFF" />
-                            <circle cx={ex2} cy={ey2} r={2.5} fill="#FFF" />
-                            <circle
-                              cx={ex1 + localDir.dx * 0.8}
-                              cy={ey1 + localDir.dy * 0.8}
-                              r={1.3}
-                              fill="#111"
-                            />
-                            <circle
-                              cx={ex2 + localDir.dx * 0.8}
-                              cy={ey2 + localDir.dy * 0.8}
-                              r={1.3}
-                              fill="#111"
-                            />
-                          </>
-                        )
-                      })()}
-                      {/* Name label */}
-                      <text
-                        x={seg.x * CELL + CELL / 2}
-                        y={seg.y * CELL - 3}
-                        textAnchor="middle"
-                        fontSize={7}
-                        fill={playerColor}
-                        fontWeight={700}
-                      >
-                        {playerName} (you)
-                      </text>
-                    </>
-                  )}
-                </g>
-              )
-            })}
-
-            {/* Danger zone */}
-            {localSnake.length > 0 && (
-              <circle
-                cx={localSnake[0].x * CELL + CELL / 2}
-                cy={localSnake[0].y * CELL + CELL / 2}
-                r={OBS_MAX_DIST * CELL}
-                fill="none"
-                stroke="rgba(255,107,53,0.06)"
-                strokeWidth={1}
-                strokeDasharray="4 6"
-              />
-            )}
-          </svg>
-        </div>
-
-        {/* High Scores panel */}
-        <div
-          style={{
-            background: `#0E1225`,
-            border: `1px solid #1A1F38`,
-            borderRadius: 8,
-            padding: `10px 14px`,
-            width: 160,
-            flexShrink: 0,
-          }}
-        >
-          <div
-            style={{
-              fontSize: 10,
-              fontWeight: 700,
-              color: PALETTE.accent,
-              letterSpacing: 2,
-              marginBottom: 8,
-            }}
-          >
-            HIGH SCORES
+        <div>
+          <div style={{ fontSize: 7, color: PALETTE.dim, marginBottom: 4 }}>
+            {playerName}
           </div>
-          {mergedHighScores.length === 0 ? (
-            <div style={{ fontSize: 9, color: `#333` }}>No scores yet</div>
-          ) : (
-            mergedHighScores.map((entry, i) => (
-              <div
-                key={entry.playerName}
-                style={{
-                  display: `flex`,
-                  justifyContent: `space-between`,
-                  alignItems: `center`,
-                  fontSize: 10,
-                  padding: `3px 0`,
-                  color:
-                    entry.playerName === playerName ? `#fff` : PALETTE.text,
-                }}
+          <div style={{ display: `flex`, alignItems: `baseline`, gap: 6 }}>
+            <span style={{ fontSize: 16, color: PALETTE.accent }}>
+              {localScore}
+            </span>
+            <span style={{ fontSize: 8, color: PALETTE.dim }}>SCORE</span>
+          </div>
+        </div>
+        {otherPlayers.size > 0 && (
+          <div style={{ display: `flex`, gap: 10, fontSize: 8 }}>
+            {Array.from(otherPlayers.values()).map((p, i) => (
+              <span
+                key={i}
+                style={{ display: `flex`, alignItems: `center`, gap: 4 }}
               >
-                <span style={{ display: `flex`, gap: 4, alignItems: `center` }}>
-                  <span
-                    style={{
-                      color: `#555`,
-                      fontSize: 8,
-                      width: 14,
-                      textAlign: `right`,
-                    }}
-                  >
-                    {i + 1}.
-                  </span>
-                  <span
-                    style={{
-                      maxWidth: 80,
-                      overflow: `hidden`,
-                      textOverflow: `ellipsis`,
-                      whiteSpace: `nowrap`,
-                    }}
-                  >
-                    {entry.playerName}
-                  </span>
-                  {entry.live && (
-                    <span
-                      style={{
-                        fontSize: 6,
-                        color: PALETTE.food,
-                        fontWeight: 700,
-                      }}
-                    >
-                      LIVE
-                    </span>
-                  )}
-                </span>
                 <span
                   style={{
-                    fontWeight: 800,
-                    color: entry.live ? PALETTE.food : PALETTE.accent,
+                    width: 6,
+                    height: 6,
+                    borderRadius: `50%`,
+                    background: p.color,
+                    display: `inline-block`,
                   }}
-                >
-                  {entry.score}
-                </span>
-              </div>
-            ))
-          )}
-        </div>
+                />
+                <span style={{ color: PALETTE.dim }}>{p.name}</span>
+                <span style={{ color: PALETTE.accent }}>{p.score}</span>
+              </span>
+            ))}
+          </div>
+        )}
+        {topScore && (
+          <div style={{ textAlign: `right` }}>
+            <div
+              style={{
+                display: `flex`,
+                alignItems: `center`,
+                justifyContent: `flex-end`,
+                gap: 4,
+                marginBottom: 4,
+              }}
+            >
+              <span style={{ fontSize: 7, color: PALETTE.dim }}>
+                {topScore.playerName}
+              </span>
+              {topScore.live && (
+                <span
+                  className="live-dot"
+                  style={{
+                    width: 5,
+                    height: 5,
+                    borderRadius: `50%`,
+                    background: PALETTE.accent,
+                    display: `inline-block`,
+                  }}
+                />
+              )}
+            </div>
+            <div
+              style={{
+                display: `flex`,
+                alignItems: `baseline`,
+                justifyContent: `flex-end`,
+                gap: 6,
+              }}
+            >
+              <span style={{ fontSize: 8, color: PALETTE.dim }}>
+                HIGH SCORE
+              </span>
+              <span style={{ fontSize: 14, color: PALETTE.accent }}>
+                {topScore.score}
+              </span>
+            </div>
+          </div>
+        )}
       </div>
 
-      <div
+      {/* Game board */}
+      <svg
+        viewBox={`0 0 ${W} ${H}`}
         style={{
-          fontSize: 8,
-          color: `#333`,
-          marginTop: 8,
-          textAlign: `center`,
-          maxWidth: 500,
-          lineHeight: 1.6,
+          width: `100%`,
+          maxWidth: W,
+          height: `auto`,
+          background: PALETTE.grid,
+          border: `1px solid ${PALETTE.gridLine}`,
+          flex: `1 1 auto`,
+          minHeight: 0,
+          maxHeight: `calc(100dvh - 200px)`,
+          objectFit: `contain`,
         }}
       >
-        Arrow keys or WASD to move. Walls wrap around. Obstacles and other
-        snakes cause instant respawn. Eat food to grow and score points. Best
-        scores are saved per room.
+        {/* Grid */}
+        {Array.from({ length: cols }, (_, i) => (
+          <line
+            key={`v${i}`}
+            x1={i * CELL}
+            y1={0}
+            x2={i * CELL}
+            y2={H}
+            stroke={PALETTE.gridLine}
+            strokeWidth={0.5}
+          />
+        ))}
+        {Array.from({ length: rows }, (_, i) => (
+          <line
+            key={`h${i}`}
+            x1={0}
+            y1={i * CELL}
+            x2={W}
+            y2={i * CELL}
+            stroke={PALETTE.gridLine}
+            strokeWidth={0.5}
+          />
+        ))}
+
+        {/* Food */}
+        <rect
+          x={sharedState.food.x * CELL + 1}
+          y={sharedState.food.y * CELL + 1}
+          width={CELL - 2}
+          height={CELL - 2}
+          fill={PALETTE.food}
+          stroke={PALETTE.food}
+          strokeWidth={1.5}
+        />
+
+        {/* Obstacles */}
+        {(() => {
+          const obsSet = new Set(
+            sharedState.obstacles
+              .filter((o) => o.age >= 3)
+              .map((o) => `${o.x},${o.y}`)
+          )
+          return sharedState.obstacles.map((o, i) => {
+            const isAppearing = o.age < 3
+            const isFading = o.age >= 180
+            const opacity = isAppearing
+              ? o.age / 3
+              : isFading
+                ? 1 - (o.age - 180) / 20
+                : 1
+            const x = o.x * CELL
+            const y = o.y * CELL
+            const color = PALETTE.obsSolid
+            // Appearing obstacles render as standalone rects
+            if (isAppearing) {
+              return (
+                <rect
+                  key={`obs-${i}`}
+                  x={x + 1}
+                  y={y + 1}
+                  width={CELL - 2}
+                  height={CELL - 2}
+                  fill="none"
+                  stroke={color}
+                  strokeWidth={1.5}
+                  opacity={opacity}
+                />
+              )
+            }
+            // Solid/fading obstacles merge like snakes
+            return (
+              <g key={`obs-${i}`} opacity={opacity}>
+                {!obsSet.has(`${o.x},${o.y - 1}`) && (
+                  <line
+                    x1={x}
+                    y1={y}
+                    x2={x + CELL}
+                    y2={y}
+                    stroke={color}
+                    strokeWidth={1.5}
+                  />
+                )}
+                {!obsSet.has(`${o.x},${o.y + 1}`) && (
+                  <line
+                    x1={x}
+                    y1={y + CELL}
+                    x2={x + CELL}
+                    y2={y + CELL}
+                    stroke={color}
+                    strokeWidth={1.5}
+                  />
+                )}
+                {!obsSet.has(`${o.x - 1},${o.y}`) && (
+                  <line
+                    x1={x}
+                    y1={y}
+                    x2={x}
+                    y2={y + CELL}
+                    stroke={color}
+                    strokeWidth={1.5}
+                  />
+                )}
+                {!obsSet.has(`${o.x + 1},${o.y}`) && (
+                  <line
+                    x1={x + CELL}
+                    y1={y}
+                    x2={x + CELL}
+                    y2={y + CELL}
+                    stroke={color}
+                    strokeWidth={1.5}
+                  />
+                )}
+              </g>
+            )
+          })
+        })()}
+
+        {/* Other players' snakes */}
+        {Array.from(otherPlayers.entries()).map(([id, p]) => {
+          const set = new Set(p.snake.map((s) => `${s.x},${s.y}`))
+          return (
+            <g key={`player-${id}`} opacity={0.4}>
+              {p.snake.map((seg, i) => {
+                const x = seg.x * CELL
+                const y = seg.y * CELL
+                return (
+                  <g key={`${id}-seg-${i}`}>
+                    {!set.has(`${seg.x},${seg.y - 1}`) && (
+                      <line
+                        x1={x}
+                        y1={y}
+                        x2={x + CELL}
+                        y2={y}
+                        stroke={p.color}
+                        strokeWidth={1}
+                      />
+                    )}
+                    {!set.has(`${seg.x},${seg.y + 1}`) && (
+                      <line
+                        x1={x}
+                        y1={y + CELL}
+                        x2={x + CELL}
+                        y2={y + CELL}
+                        stroke={p.color}
+                        strokeWidth={1}
+                      />
+                    )}
+                    {!set.has(`${seg.x - 1},${seg.y}`) && (
+                      <line
+                        x1={x}
+                        y1={y}
+                        x2={x}
+                        y2={y + CELL}
+                        stroke={p.color}
+                        strokeWidth={1}
+                      />
+                    )}
+                    {!set.has(`${seg.x + 1},${seg.y}`) && (
+                      <line
+                        x1={x}
+                        y1={y}
+                        x2={x + CELL}
+                        y2={y + CELL}
+                        stroke={p.color}
+                        strokeWidth={1}
+                      />
+                    )}
+                  </g>
+                )
+              })}
+              {p.snake.length > 0 && (
+                <text
+                  x={p.snake[0].x * CELL + CELL / 2}
+                  y={p.snake[0].y * CELL - 5}
+                  textAnchor="middle"
+                  fontSize={7}
+                  fill={p.color}
+                  opacity={0.7}
+                  fontFamily="'Press Start 2P', monospace"
+                >
+                  {p.name}
+                </text>
+              )}
+            </g>
+          )
+        })}
+
+        {/* Local snake */}
+        {(() => {
+          const set = new Set(localSnake.map((s) => `${s.x},${s.y}`))
+          return localSnake.map((seg, i) => {
+            const x = seg.x * CELL
+            const y = seg.y * CELL
+            const sw = 1.5
+            return (
+              <g key={`seg-${i}`}>
+                {!set.has(`${seg.x},${seg.y - 1}`) && (
+                  <line
+                    x1={x}
+                    y1={y}
+                    x2={x + CELL}
+                    y2={y}
+                    stroke={playerColor}
+                    strokeWidth={sw}
+                  />
+                )}
+                {!set.has(`${seg.x},${seg.y + 1}`) && (
+                  <line
+                    x1={x}
+                    y1={y + CELL}
+                    x2={x + CELL}
+                    y2={y + CELL}
+                    stroke={playerColor}
+                    strokeWidth={sw}
+                  />
+                )}
+                {!set.has(`${seg.x - 1},${seg.y}`) && (
+                  <line
+                    x1={x}
+                    y1={y}
+                    x2={x}
+                    y2={y + CELL}
+                    stroke={playerColor}
+                    strokeWidth={sw}
+                  />
+                )}
+                {!set.has(`${seg.x + 1},${seg.y}`) && (
+                  <line
+                    x1={x + CELL}
+                    y1={y}
+                    x2={x + CELL}
+                    y2={y + CELL}
+                    stroke={playerColor}
+                    strokeWidth={sw}
+                  />
+                )}
+              </g>
+            )
+          })
+        })()}
+      </svg>
+
+      {/* Circular D-pad */}
+      <div
+        style={{
+          position: `relative`,
+          width: 140,
+          height: 140,
+          marginTop: 8,
+          flexShrink: 0,
+          userSelect: `none`,
+          WebkitUserSelect: `none`,
+        }}
+      >
+        {/* Outer ring */}
+        <div
+          style={{
+            position: `absolute`,
+            inset: 0,
+            borderRadius: `50%`,
+            border: `1px solid rgba(208,188,255,0.15)`,
+          }}
+        />
+        {/* Up */}
+        <button
+          className="dpad-btn"
+          style={{
+            ...dpadCircleBtn,
+            top: 6,
+            left: `50%`,
+            transform: `translateX(-50%)`,
+          }}
+          onTouchStart={(e) => {
+            e.preventDefault()
+            handleDirection(0, -1)
+          }}
+          onMouseDown={() => handleDirection(0, -1)}
+        >
+          &#9650;
+        </button>
+        {/* Down */}
+        <button
+          className="dpad-btn"
+          style={{
+            ...dpadCircleBtn,
+            bottom: 6,
+            left: `50%`,
+            transform: `translateX(-50%)`,
+          }}
+          onTouchStart={(e) => {
+            e.preventDefault()
+            handleDirection(0, 1)
+          }}
+          onMouseDown={() => handleDirection(0, 1)}
+        >
+          &#9660;
+        </button>
+        {/* Left */}
+        <button
+          className="dpad-btn"
+          style={{
+            ...dpadCircleBtn,
+            left: 6,
+            top: `50%`,
+            transform: `translateY(-50%)`,
+          }}
+          onTouchStart={(e) => {
+            e.preventDefault()
+            handleDirection(-1, 0)
+          }}
+          onMouseDown={() => handleDirection(-1, 0)}
+        >
+          &#9664;
+        </button>
+        {/* Right */}
+        <button
+          className="dpad-btn"
+          style={{
+            ...dpadCircleBtn,
+            right: 6,
+            top: `50%`,
+            transform: `translateY(-50%)`,
+          }}
+          onTouchStart={(e) => {
+            e.preventDefault()
+            handleDirection(1, 0)
+          }}
+          onMouseDown={() => handleDirection(1, 0)}
+        >
+          &#9654;
+        </button>
       </div>
     </div>
   )
+}
+
+const dpadCircleBtn: React.CSSProperties = {
+  position: `absolute`,
+  width: 44,
+  height: 44,
+  borderRadius: `50%`,
+  background: `transparent`,
+  border: `1px solid rgba(208,188,255,0.2)`,
+  color: `rgba(208,188,255,0.35)`,
+  fontSize: 14,
+  fontFamily: `inherit`,
+  cursor: `pointer`,
+  display: `flex`,
+  alignItems: `center`,
+  justifyContent: `center`,
+  touchAction: `manipulation`,
+  padding: 0,
 }
