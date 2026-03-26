@@ -52,17 +52,34 @@ function gitMayFail(
 }
 
 function claude(prompt: string, cwd: string): string {
-  return execSync(
-    `claude -p ${JSON.stringify(prompt)} --model haiku --max-turns 0`,
-    { cwd, encoding: `utf-8`, stdio: [`pipe`, `pipe`, `pipe`] }
-  ).trim()
+  // Pipe prompt via stdin to avoid shell escaping issues with backticks,
+  // quotes, and other special characters in conversation content.
+  return execSync(`claude -p --model haiku --max-turns 0`, {
+    cwd,
+    encoding: `utf-8`,
+    input: prompt,
+    stdio: [`pipe`, `pipe`, `pipe`],
+  }).trim()
 }
 
 function claudeAgent(prompt: string, cwd: string): void {
-  execSync(
-    `claude -p ${JSON.stringify(prompt)} --dangerously-skip-permissions`,
-    { cwd, encoding: `utf-8`, stdio: `inherit` }
-  )
+  // Write prompt to a temp file to avoid shell escaping issues.
+  // Can't use stdin pipe here because stdio is 'inherit' for interactive output.
+  const tmpFile = path.join(os.tmpdir(), `ds-cc-merge-prompt-${Date.now()}.txt`)
+  fs.writeFileSync(tmpFile, prompt)
+  try {
+    execSync(`cat ${tmpFile} | claude -p --dangerously-skip-permissions`, {
+      cwd,
+      encoding: `utf-8`,
+      stdio: `inherit`,
+    })
+  } finally {
+    try {
+      fs.unlinkSync(tmpFile)
+    } catch {
+      // best effort
+    }
+  }
 }
 
 /**
