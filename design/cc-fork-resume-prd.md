@@ -87,16 +87,14 @@ The command:
 2. **Auto-detects** whether the current directory is inside the matching git repo:
    - **If inside the repo**: fetches the export branch and creates a git worktree on a new clone branch (isolated from the user's current work)
    - **If not in the repo** (or not in a git repo at all): does a fresh `git clone` of the repo and checks out the clone branch
-3. Reads the JSONL session stream and writes it as-is to `~/.claude/projects/{encoded-original-cwd}/{original-session-id}.jsonl` (no rewriting)
-4. Uses `claude -r <original-session-id> --fork-session` from the clone directory to let CC create a properly forked session with a new ID and the correct cwd
-5. Cleans up the temporary original JSONL file
+3. Reads the JSONL session stream from the compaction checkpoint
+4. Rewrites path-sensitive fields (`cwd`, `sessionId`, `gitBranch`) to match the local environment
+5. Writes the rewritten JSONL to `~/.claude/projects/{encoded-clone-cwd}/{new-session-id}.jsonl`
 6. Prints the command to resume the session
-
-**Why `--fork-session`:** CC's own forking logic handles all the internal details — new session ID, cwd update, git branch, etc. This avoids relying on CC's internal JSONL structure and is resilient to format changes.
 
 ### Resuming the cloned session
 
-With `--resume`, the clone command starts CC automatically after forking:
+With `--resume`, the clone command starts CC automatically after setup:
 
 ```
 $ ds-cc clone --resume https://ds.example.com/cc/47515c25-...

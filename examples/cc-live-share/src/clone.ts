@@ -1,9 +1,5 @@
 /**
- * ds-cc clone: import a forked CC session from DS + set up code + rewrite JSONL.
- *
- * Uses manual JSONL rewriting (cwd, sessionId, gitBranch) because CC's --fork-session
- * only works with sessions CC itself created on the local machine. For cross-machine
- * cloning, we need to write the JSONL directly.
+ * ds-cc clone: import a forked CC session from DS + set up worktree + rewrite JSONL.
  */
 
 import * as fs from "node:fs"
@@ -73,9 +69,9 @@ export async function clone(options: CloneOptions): Promise<void> {
 
   // === Generate new session ID ===
   const newSessionId = crypto.randomUUID()
+  const newBranchName = `cc-session/${newSessionId}`
   const shortId = newSessionId.slice(0, 8)
-  const clonePath = path.resolve(`session-${shortId}`)
-  const newBranchName = `cc-session/clone-${shortId}`
+  const worktreePath = path.resolve(`session-${shortId}`)
 
   // === Fetch code ===
   console.log(`\nFetching code...`)
@@ -86,13 +82,27 @@ export async function clone(options: CloneOptions): Promise<void> {
 
   try {
     if (inMatchingRepo) {
+      // We're inside the right repo — use a worktree for isolation
       console.log(`  Detected matching repo, creating worktree...`)
-      importBranchWorktree(repoCwd, metadata.branch, newBranchName, clonePath)
-      console.log(`  Created worktree at ${clonePath}`)
+      importBranchWorktree(
+        repoCwd,
+        metadata.branch,
+        newBranchName,
+        worktreePath
+      )
+      console.log(
+        `  Created worktree at ${worktreePath} on branch ${newBranchName}`
+      )
     } else {
+      // Not in the right repo — do a fresh clone
       console.log(`  Cloning ${metadata.repo}...`)
-      cloneAndCheckout(metadata.repo, metadata.branch, newBranchName, clonePath)
-      console.log(`  Cloned to ${clonePath}`)
+      cloneAndCheckout(
+        metadata.repo,
+        metadata.branch,
+        newBranchName,
+        worktreePath
+      )
+      console.log(`  Cloned to ${worktreePath} on branch ${newBranchName}`)
     }
   } catch (err) {
     console.error(
@@ -124,14 +134,16 @@ export async function clone(options: CloneOptions): Promise<void> {
     process.exit(1)
   }
 
-  // Convert to JSONL lines and rewrite path-sensitive fields
+  // Convert back to individual JSONL lines
   const jsonlLines = entries.map((entry) => JSON.stringify(entry))
+
+  // Rewrite path-sensitive fields
   const rewrittenLines = rewriteJsonlLines(
     jsonlLines,
     metadata.sessionId,
     newSessionId,
     metadata.originalCwd,
-    clonePath,
+    worktreePath,
     newBranchName
   )
 
@@ -140,7 +152,7 @@ export async function clone(options: CloneOptions): Promise<void> {
     os.homedir(),
     `.claude`,
     `projects`,
-    encodeCwd(clonePath)
+    encodeCwd(worktreePath)
   )
   fs.mkdirSync(claudeProjectDir, { recursive: true })
 
@@ -153,14 +165,14 @@ export async function clone(options: CloneOptions): Promise<void> {
   fs.writeFileSync(jsonlPath, jsonlContent)
 
   console.log(`  New session ID: ${newSessionId}`)
-  console.log(`  Wrote ${rewrittenLines.length} entries to ${jsonlPath}`)
+  console.log(`  Wrote ${rewrittenLines.length} JSONL entries to ${jsonlPath}`)
 
   // === Resume or print instructions ===
   if (options.resume) {
     console.log(`\nStarting Claude Code...`)
     try {
       execSync(`claude --continue`, {
-        cwd: clonePath,
+        cwd: worktreePath,
         stdio: `inherit`,
       })
     } catch {
@@ -168,6 +180,6 @@ export async function clone(options: CloneOptions): Promise<void> {
     }
   } else {
     console.log(`\nReady! Start the session with:`)
-    console.log(`  cd ${clonePath} && claude --continue`)
+    console.log(`  cd ${worktreePath} && claude --continue`)
   }
 }
