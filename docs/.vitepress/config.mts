@@ -79,7 +79,6 @@ export default defineConfig({
           { text: "Durable State", link: "/durable-state" },
           { text: "StreamDB", link: "/stream-db" },
           { text: "StreamFS", link: "/stream-fs" },
-          { text: "Yjs", link: "/yjs" },
         ],
       },
       {
@@ -87,6 +86,7 @@ export default defineConfig({
         items: [
           { text: "TanStack AI", link: "/tanstack-ai" },
           { text: "Vercel AI SDK", link: "/vercel-ai-sdk" },
+          { text: "Yjs", link: "/yjs" },
           {
             text: "AnyCable",
             link: "https://docs.anycable.io/anycable-go/durable_streams",
