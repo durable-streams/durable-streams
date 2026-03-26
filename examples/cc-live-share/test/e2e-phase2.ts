@@ -216,7 +216,7 @@ async function main() {
     const cloneRepoDir = path.join(cloneDir, `repo`)
     console.log(`  Created clone at ${cloneRepoDir}`)
 
-    const { importBranch } = await import(`../src/git.js`)
+    const { importBranchWorktree } = await import(`../src/git.js`)
     const { rewriteJsonlLines } = await import(`../src/rewrite.js`)
     const crypto = await import(`node:crypto`)
 
@@ -237,7 +237,12 @@ async function main() {
     )
 
     // Fetch and create worktree
-    importBranch(cloneRepoDir, metadata.branch, newBranchName, worktreePath)
+    importBranchWorktree(
+      cloneRepoDir,
+      metadata.branch,
+      newBranchName,
+      worktreePath
+    )
     console.log(
       `  Created worktree at ${worktreePath} on branch ${newBranchName}`
     )

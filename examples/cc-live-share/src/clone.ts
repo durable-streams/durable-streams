@@ -7,7 +7,12 @@ import * as path from "node:path"
 import * as os from "node:os"
 import * as crypto from "node:crypto"
 import { execSync } from "node:child_process"
-import { importBranch, isGitRepo } from "./git.js"
+import {
+  cloneAndCheckout,
+  hasMatchingRemote,
+  importBranchWorktree,
+  isGitRepo,
+} from "./git.js"
 import { rewriteJsonlLines } from "./rewrite.js"
 import { sanitizeJsonLine } from "./sanitize.js"
 
@@ -68,31 +73,44 @@ export async function clone(options: CloneOptions): Promise<void> {
   const shortId = newSessionId.slice(0, 8)
   const worktreePath = path.resolve(`session-${shortId}`)
 
-  // === Fetch code and create worktree ===
+  // === Fetch code ===
   console.log(`\nFetching code...`)
 
   const repoCwd = process.cwd()
-  if (!isGitRepo(repoCwd)) {
-    console.error(
-      `Current directory is not a git repository.\n` +
-        `Run this command from within the repository: ${metadata.repo}`
-    )
-    process.exit(1)
-  }
+  const inMatchingRepo =
+    isGitRepo(repoCwd) && hasMatchingRemote(repoCwd, metadata.repo)
 
   try {
-    importBranch(repoCwd, metadata.branch, newBranchName, worktreePath)
+    if (inMatchingRepo) {
+      // We're inside the right repo — use a worktree for isolation
+      console.log(`  Detected matching repo, creating worktree...`)
+      importBranchWorktree(
+        repoCwd,
+        metadata.branch,
+        newBranchName,
+        worktreePath
+      )
+      console.log(
+        `  Created worktree at ${worktreePath} on branch ${newBranchName}`
+      )
+    } else {
+      // Not in the right repo — do a fresh clone
+      console.log(`  Cloning ${metadata.repo}...`)
+      cloneAndCheckout(
+        metadata.repo,
+        metadata.branch,
+        newBranchName,
+        worktreePath
+      )
+      console.log(`  Cloned to ${worktreePath} on branch ${newBranchName}`)
+    }
   } catch (err) {
     console.error(
-      `Failed to create worktree. Make sure you have access to the repo.`
+      `Failed to fetch code. Make sure you have access to the repo.`
     )
     console.error(err)
     process.exit(1)
   }
-
-  console.log(
-    `  Created worktree at ${worktreePath} on branch ${newBranchName}`
-  )
 
   // === Read and rewrite JSONL ===
   console.log(`\nRestoring CC session...`)

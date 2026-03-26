@@ -114,9 +114,8 @@ export function exportBranch(
 
 /**
  * Import a branch by fetching it and creating a worktree with a new branch.
- * Returns the absolute path to the worktree.
  */
-export function importBranch(
+export function importBranchWorktree(
   cwd: string,
   remoteBranch: string,
   newBranchName: string,
@@ -131,4 +130,32 @@ export function importBranch(
     `worktree add ${worktreePath} -b ${newBranchName} ${remote}/${remoteBranch}`,
     cwd
   )
+}
+
+/**
+ * Clone a repo and check out a branch under a new name.
+ * Used when the user is not already inside the target repo.
+ * Returns the path to the cloned directory.
+ */
+export function cloneAndCheckout(
+  repoUrl: string,
+  remoteBranch: string,
+  newBranchName: string,
+  targetPath: string
+): void {
+  // Clone the repo (fetches all branches)
+  gitOrThrow(`clone ${repoUrl} ${targetPath}`)
+
+  // Checkout the export branch, then create the clone branch from it
+  gitOrThrow(`checkout ${remoteBranch}`, targetPath)
+  gitOrThrow(`checkout -b ${newBranchName}`, targetPath)
+}
+
+/**
+ * Check if the current repo has a remote that matches the given URL.
+ */
+export function hasMatchingRemote(cwd: string, repoUrl: string): boolean {
+  const result = git(`remote -v`, cwd)
+  if (!result.success) return false
+  return result.stdout.includes(repoUrl)
 }
