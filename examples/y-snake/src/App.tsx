@@ -1,0 +1,109 @@
+import { useEffect, useState } from "react"
+import {
+  ServerEndpointProvider,
+  useServerEndpoint,
+} from "./components/server-endpoint-context"
+import { RegistryProvider } from "./components/registry-context"
+import { Lobby } from "./components/Lobby"
+import { GameRoom } from "./components/GameRoom"
+
+const ADJECTIVES = [
+  `Swift`,
+  `Bold`,
+  `Sly`,
+  `Keen`,
+  `Cool`,
+  `Neon`,
+  `Rad`,
+  `Zen`,
+]
+const ANIMALS = [
+  `Cobra`,
+  `Viper`,
+  `Mamba`,
+  `Python`,
+  `Adder`,
+  `Asp`,
+  `Boa`,
+  `Racer`,
+]
+
+function randomName(): string {
+  const adj = ADJECTIVES[Math.floor(Math.random() * ADJECTIVES.length)]
+  const animal = ANIMALS[Math.floor(Math.random() * ANIMALS.length)]
+  return `${adj} ${animal}`
+}
+
+function getOrCreateName(): string {
+  const stored = localStorage.getItem(`snake-player-name`)
+  if (stored) return stored
+  const name = randomName()
+  localStorage.setItem(`snake-player-name`, name)
+  return name
+}
+
+// Simple hash-based routing: #room/<roomId>
+function useHashRoute(): { roomId: string | null } {
+  const [roomId, setRoomId] = useState<string | null>(() => {
+    const hash = window.location.hash
+    const match = hash.match(/^#room\/(.+)$/)
+    return match ? decodeURIComponent(match[1]) : null
+  })
+
+  useEffect(() => {
+    const onHashChange = () => {
+      const hash = window.location.hash
+      const match = hash.match(/^#room\/(.+)$/)
+      setRoomId(match ? decodeURIComponent(match[1]) : null)
+    }
+    window.addEventListener(`hashchange`, onHashChange)
+    return () => window.removeEventListener(`hashchange`, onHashChange)
+  }, [])
+
+  return { roomId }
+}
+
+function AppInner() {
+  const { roomId } = useHashRoute()
+  const { yjsEndpoint, yjsHeaders } = useServerEndpoint()
+  const [playerName, setPlayerName] = useState(getOrCreateName)
+
+  const handleNameChange = (name: string) => {
+    setPlayerName(name)
+    localStorage.setItem(`snake-player-name`, name)
+  }
+
+  if (roomId) {
+    return (
+      <GameRoom
+        roomId={roomId}
+        yjsBaseUrl={yjsEndpoint}
+        yjsHeaders={yjsHeaders}
+        playerName={playerName}
+        onLeave={() => {
+          window.location.hash = ``
+        }}
+      />
+    )
+  }
+
+  return (
+    <Lobby
+      playerName={playerName}
+      onPlayerNameChange={handleNameChange}
+      onJoinRoom={(id) => {
+        window.location.hash = `room/${encodeURIComponent(id)}`
+      }}
+    />
+  )
+}
+
+export function App() {
+  return (
+    <ServerEndpointProvider>
+      <RegistryProvider>
+        <AppInner />
+      </RegistryProvider>
+    </ServerEndpointProvider>
+  )
+}
