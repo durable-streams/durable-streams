@@ -168,11 +168,15 @@ export async function clone(options: CloneOptions): Promise<void> {
     console.log(`  Forking session via Claude Code...`)
 
     try {
-      execSync(`claude -c --fork-session -p "ok" --model haiku --max-turns 0`, {
-        cwd: clonePath,
-        encoding: `utf-8`,
-        stdio: [`pipe`, `pipe`, `pipe`],
-      })
+      const forkPrompt = `This session has been cloned to a new working directory: ${clonePath}. File paths in the conversation history may refer to the original location. Treat all paths as relative to the current working directory. Acknowledge briefly.`
+      execSync(
+        `claude -c --fork-session -p ${JSON.stringify(forkPrompt)} --max-turns 0`,
+        {
+          cwd: clonePath,
+          encoding: `utf-8`,
+          stdio: [`pipe`, `pipe`, `pipe`],
+        }
+      )
       console.log(`  Session forked successfully`)
     } catch (err) {
       const error = err as { stderr?: string }
