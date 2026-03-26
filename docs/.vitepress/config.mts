@@ -79,6 +79,7 @@ export default defineConfig({
           { text: "Durable State", link: "/durable-state" },
           { text: "StreamDB", link: "/stream-db" },
           { text: "StreamFS", link: "/stream-fs" },
+          { text: "Yjs", link: "/yjs" },
         ],
       },
       {
