@@ -76,5 +76,6 @@ Including, working with structured data and integrating into AI SDKs:
 
 - [JSON mode](/json-mode) -- stream structured data using JSON messages
 - [StreamDB](/stream-db) -- type-safe, reactive database in a stream
+- [Yjs](/yjs) -- sync Yjs CRDTs for collaborative editing
 - [TanStack AI](/tanstack-ai) -- durable session support for TanStack AI apps
 - [Vercel AI SDK](/vercel-ai-sdk) -- durable Transport adapter for AI SDK apps
