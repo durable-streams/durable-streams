@@ -21,7 +21,7 @@ const { src } = defineProps({
 .snake-demo {
   position: relative;
   width: 100%;
-  height: 700px;
+  height: 90vh;
   margin: 24px 0;
   border-radius: 8px;
   overflow: hidden;
