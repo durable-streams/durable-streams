@@ -73,7 +73,7 @@ const events = await DurableStream.create({
   contentType: "application/json",
 })
 
-await events.append({ type: "user.created", id: "123" })
+await events.append(JSON.stringify({ type: "user.created", id: "123" }))
 
 const res = await stream<{ type: string; id: string }>({
   url: "http://localhost:4437/v1/stream/events",
