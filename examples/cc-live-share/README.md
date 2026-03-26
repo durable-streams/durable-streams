@@ -74,6 +74,8 @@ Exports the current CC session:
 
 The working directory is completely untouched — uses git plumbing to create the branch without switching or stashing.
 
+Each fork gets a unique branch name (`cc-session/{session-id}/{epoch}`) so you can fork the same session multiple times at different points in time.
+
 Options:
 
 - `--session <id>` — specify a session ID (skips auto-detect)
@@ -86,21 +88,22 @@ Options:
 npx tsx src/cli.ts clone <fork-url>
 ```
 
-Imports a forked session from a DS stream:
+Imports a forked session from a DS stream and sets up a local working environment.
 
-1. Reads the fork metadata (repo URL, branch, original cwd)
-2. Fetches the code (auto-detects the best method, see below)
-3. Rewrites the JSONL for the local environment (cwd, session ID, git branch)
-4. Writes the JSONL to `~/.claude/projects/` so CC can find it
-
-**Auto-detection:** the clone command detects whether you're already inside the matching git repo:
+**Code setup** — the clone command auto-detects whether you're already inside the matching git repo:
 
 - **Inside the repo:** creates a git worktree (isolated from your current work)
 - **Not in the repo:** does a fresh `git clone`
 
+**Session setup** — two modes for creating the local CC session:
+
+- **Default mode:** uses `claude -c --fork-session` to let CC create the session internally. This is slower (~3s, makes an API call with Haiku) but resilient to future CC format changes. Requires `claude` CLI to be installed.
+- **Fast mode (`--fast`):** manually rewrites the JSONL fields (`cwd`, `sessionId`, `gitBranch`) and writes the session directly. Instant, but coupled to CC's internal JSONL structure. Use this if CC's `--fork-session` is unavailable, or for speed when you know the JSONL format hasn't changed.
+
 Options:
 
 - `--resume` — automatically start CC after cloning (`claude --continue`)
+- `--fast` — use manual JSONL rewriting instead of `claude --fork-session`
 
 After cloning, start the session:
 
@@ -150,16 +153,22 @@ Clone from inside the repo (worktree mode):
 
 ```bash
 cd /path/to/your/repo
-npx tsx examples/cc-live-share/src/cli.ts clone http://127.0.0.1:4437/cc/<session-id>
+npx tsx examples/cc-live-share/src/cli.ts clone <fork-url>
 # Creates ./session-<short-id> as a worktree
 ```
 
 Clone from anywhere (fresh clone mode):
 
 ```bash
-mkdir /tmp/test-clone && cd /tmp/test-clone
-npx tsx /path/to/examples/cc-live-share/src/cli.ts clone http://127.0.0.1:4437/cc/<session-id>
+cd /tmp
+npx tsx /path/to/examples/cc-live-share/src/cli.ts clone <fork-url>
 # Clones the repo into ./session-<short-id>
+```
+
+Clone with fast mode:
+
+```bash
+npx tsx /path/to/examples/cc-live-share/src/cli.ts clone --fast <fork-url>
 ```
 
 Then resume the session:
@@ -169,12 +178,18 @@ cd ./session-<short-id>
 claude --continue
 ```
 
+Or clone and resume in one step:
+
+```bash
+npx tsx /path/to/examples/cc-live-share/src/cli.ts clone --resume <fork-url>
+```
+
 Cleanup:
 
 ```bash
 cd /path/to/your/repo
 git remote remove test-local
-rm -rf /tmp/ds-test-remote.git /tmp/test-clone
+rm -rf /tmp/ds-test-remote.git
 ```
 
 ## Running the automated tests
@@ -184,7 +199,7 @@ rm -rf /tmp/ds-test-remote.git /tmp/test-clone
 cd examples/cc-live-share
 npx tsx test/e2e.ts
 
-# Phase 2 e2e test (creates temporary git repos)
+# Phase 2 e2e test (creates temporary git repos, tests git + DS mechanics)
 npx tsx test/e2e-phase2.ts
 
 # Checkpoint unit tests
