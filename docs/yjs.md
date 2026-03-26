@@ -5,6 +5,9 @@ description: >-
 outline: [2, 3]
 ---
 
+<img src="/img/icons/yjs.svg" style="height: 54px !important" />
+<br />
+
 # Yjs
 
 Sync [Yjs](https://yjs.dev/) CRDT documents over Durable Streams using plain HTTP — no WebSocket infrastructure needed.
