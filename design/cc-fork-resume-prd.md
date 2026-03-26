@@ -87,23 +87,24 @@ The command:
 2. **Auto-detects** whether the current directory is inside the matching git repo:
    - **If inside the repo**: fetches the export branch and creates a git worktree on a new clone branch (isolated from the user's current work)
    - **If not in the repo** (or not in a git repo at all): does a fresh `git clone` of the repo and checks out the clone branch
-3. Reads the JSONL session stream from the compaction checkpoint
-4. Rewrites path-sensitive fields (`cwd`, `sessionId`, `gitBranch`) to match the local environment
-5. Writes the JSONL to the CC projects directory for the clone's cwd
+3. Reads the JSONL session stream and writes it as-is to `~/.claude/projects/{encoded-original-cwd}/{original-session-id}.jsonl` (no rewriting)
+4. Uses `claude -r <original-session-id> --fork-session` from the clone directory to let CC create a properly forked session with a new ID and the correct cwd
+5. Cleans up the temporary original JSONL file
 6. Prints the command to resume the session
+
+**Why `--fork-session`:** CC's own forking logic handles all the internal details — new session ID, cwd update, git branch, etc. This avoids relying on CC's internal JSONL structure and is resilient to format changes.
 
 ### Resuming the cloned session
 
-With `--resume`, the clone command starts CC automatically after setup:
+With `--resume`, the clone command starts CC automatically after forking:
 
 ```
 $ ds-cc clone --resume https://ds.example.com/cc/47515c25-...
 ...
 Restoring CC session...
+Forking session via CC...
 Starting Claude Code...
 ```
-
-This runs `claude --continue` in the worktree directory. Since the worktree has exactly one session, `--continue` auto-selects it — no session ID needed.
 
 Without `--resume`, the user starts CC manually. This is useful when they want to pass additional CC flags:
 
@@ -212,40 +213,24 @@ If the repo has no `origin` remote, or has multiple remotes, the user can specif
 ds-cc fork --remote upstream --server https://ds.example.com
 ```
 
-### JSONL rewriting on import
+### Session forking via CC's `--fork-session`
 
-CC's JSONL entries contain path-sensitive fields that need updating for the clone's local environment:
-
-| Field       | Original value                    | Rewritten to                                 |
-| ----------- | --------------------------------- | -------------------------------------------- |
-| `cwd`       | `/Users/alice/projects/myproject` | `/Users/bob/code/myproject/session-47515c25` |
-| `sessionId` | `47515c25-...`                    | `a1b2c3d4-...` (new UUID)                    |
-| `gitBranch` | `main`                            | `cc-session/a1b2c3d4-...`                    |
-
-The rewriting is a simple string replacement on each JSONL line before writing to disk. The fields appear as JSON string values, so replacing them is safe as long as we match the exact original values.
-
-Fields NOT rewritten:
-
-- `message.content` — conversation text, should not be modified
-- `uuid` / `parentUuid` — the message DAG structure is preserved
-- `timestamp` — historical timestamps are preserved
-- `version` — CC version from the original session
-
-### JSONL file placement
-
-CC expects session JSONL at:
+Instead of manually rewriting JSONL fields (cwd, sessionId, gitBranch), the clone command delegates to CC's built-in `--fork-session` flag:
 
 ```
-~/.claude/projects/{encoded-cwd}/{session-id}.jsonl
+claude -r <original-session-id> --fork-session -p "Session forked for independent work."
 ```
 
-For a worktree at `/Users/bob/code/myproject/session-47515c25`:
+This:
 
-```
-~/.claude/projects/-Users-bob-code-myproject-session-47515c25/a1b2c3d4-....jsonl
-```
+- Creates a new session with a new ID
+- Inherits the full context from the original session
+- Automatically picks up the current working directory as the new cwd
+- Handles any internal format details CC needs
 
-The clone command creates this directory and writes the rewritten JSONL there.
+The original JSONL is written temporarily to `~/.claude/projects/{encoded-original-cwd}/{original-session-id}.jsonl` so that `claude -r` can find it. After forking, this temporary file is cleaned up.
+
+**Why this approach:** CC's JSONL format is an internal implementation detail. Manual rewriting of fields (cwd, sessionId, gitBranch) is fragile — if CC changes its format, our rewriting breaks. Using `--fork-session` lets CC handle its own internals.
 
 ---
 
@@ -275,15 +260,13 @@ The `ds-cc share` and `ds-cc follow` commands from Phase 1 continue to work inde
 | 1   | **`ds-cc fork` command**    | Exports CC session to DS + pushes git branch with working state |
 | 2   | **`ds-cc clone` command**   | Imports session from DS + sets up worktree + rewrites JSONL     |
 | 3   | **Metadata stream support** | Separate `/meta` stream for fork metadata                       |
-| 4   | **JSONL rewriter**          | Rewrites cwd, sessionId, gitBranch in JSONL entries             |
-| 5   | **Git operations module**   | Stash/branch/push for export, fetch/worktree for import         |
+| 4   | **Git operations module**   | Plumbing-based export, fetch/worktree/clone for import          |
 
 ### Ordering
 
-1. **Git operations** (deliverable 5) — core mechanics, testable independently
-2. **JSONL rewriter** (deliverable 4) — pure function, easy to unit test
-3. **Fork command** (deliverables 1, 3) — combines DS write + git export
-4. **Clone command** (deliverable 2) — combines DS read + git import + JSONL rewrite
+1. **Git operations** (deliverable 4) — core mechanics, testable independently
+2. **Fork command** (deliverables 1, 3) — combines DS write + git export
+3. **Clone command** (deliverable 2) — combines DS read + git import + CC `--fork-session`
 
 ---
 
