@@ -137,7 +137,7 @@ The merged session C is created by forking the original session and extending it
 **Getting compacted contexts:** for each session (A and B), query the session using `--fork-session`:
 
 ```bash
-claude -r <session-id> --fork-session -p "Give me a detailed summary of everything in this session — all key context, decisions, changes made, and current state. This will be used to create a merged session."
+claude -r <session-id> --fork-session -p "Give me a detailed summary of everything you did since the fork point (branch cc-session/{original-id}). Include all key decisions, changes made, problems encountered, and current state. Only cover work done after the fork — the shared context before the fork is already preserved."
 ```
 
 **Creating the merged session:**
