@@ -53,7 +53,7 @@ const items = [
   {
     title: "y-durable-streams",
     details: "Yjs provider for collaborative editing",
-    href: "/yjs",
+    href: "/y-durable-streams",
     icon: "collab",
   },
 ]
