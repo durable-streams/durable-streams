@@ -6,19 +6,16 @@ A real-time collaborative text editor using y-durable-streams and CodeMirror. Op
 
 ### Prerequisites
 
-- [Go](https://go.dev/) (to build the Caddy server)
 - [pnpm](https://pnpm.io/)
-
-### 1. Build the Caddy server (one-time)
-
-From the repo root:
+- `durable-streams-server` — install with the quick-install script, or see the [deployment guide](https://durablestreams.com/deployment) for other options:
 
 ```bash
-cd packages/caddy-plugin
-go build -o durable-streams-server ./cmd/caddy
+curl -sSL https://raw.githubusercontent.com/durable-streams/durable-streams/main/packages/caddy-plugin/install.sh | sh
 ```
 
-### 2. Start the servers
+The demo runs through Caddy (the `durable-streams-server` binary) to enable HTTP/2 on localhost, which is needed for multiplexing SSE streams efficiently.
+
+### 1. Start the servers
 
 ```bash
 cd examples/yjs-demo
@@ -28,7 +25,7 @@ pnpm dev:server
 
 This starts Caddy (HTTPS on `https://localhost:4443`) and the y-durable-streams server (internal, port 4438). All traffic routes through Caddy.
 
-### 3. Start the frontend
+### 2. Start the frontend
 
 In a second terminal:
 
@@ -37,7 +34,7 @@ cd examples/yjs-demo
 pnpm dev
 ```
 
-### 4. Open the demo
+### 3. Open the demo
 
 Go to `http://localhost:5173`. Your browser will warn about Caddy's self-signed certificate — visit `https://localhost:4443` first to accept it, then reload the demo.
 
@@ -85,4 +82,4 @@ On the client side:
 
 **"Error connecting to room"** — Check that both servers are running (`pnpm dev:server`) and you've accepted the certificate.
 
-**Caddy fails to start** — Make sure you've built the binary (`cd packages/caddy-plugin && go build -o durable-streams-server ./cmd/caddy`) and port 4443 is free.
+**Caddy fails to start** — Make sure `durable-streams-server` is installed (see [prerequisites](#prerequisites)) and port 4443 is free.

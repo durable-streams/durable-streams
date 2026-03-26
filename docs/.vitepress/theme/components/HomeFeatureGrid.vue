@@ -51,8 +51,8 @@ const items = [
     icon: "folder",
   },
   {
-    title: "Yjs",
-    details: "Sync Yjs CRDTs over durable streams",
+    title: "y-durable-streams",
+    details: "Yjs provider for collaborative editing",
     href: "/yjs",
     icon: "collab",
   },
