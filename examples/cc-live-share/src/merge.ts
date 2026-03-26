@@ -167,20 +167,31 @@ export function merge(options: MergeOptions): void {
     process.exit(1)
   }
 
-  // Check that both branches exist in session A's repo
+  // Fetch latest from origin so we have both branches
+  console.log(`  Fetching latest from origin...`)
+  gitMayFail(`fetch origin`, repoCwd)
+
+  // If session B's branch still isn't found, try creating it from the remote ref
   const hasBranchB = gitMayFail(
     `rev-parse --verify ${sessionB.gitBranch}`,
     repoCwd
   )
   if (!hasBranchB.ok) {
-    console.error(`Branch '${sessionB.gitBranch}' not found in ${repoCwd}.`)
-    console.error(
-      `Session B's changes may not have been pushed. Try:\n` +
-        `  cd ${sessionB.cwd} && git push origin ${sessionB.gitBranch}\n` +
-        `Then fetch it:\n` +
-        `  cd ${repoCwd} && git fetch origin ${sessionB.gitBranch}`
+    // Try creating from remote tracking branch
+    const fromRemote = gitMayFail(
+      `branch ${sessionB.gitBranch} origin/${sessionB.gitBranch}`,
+      repoCwd
     )
-    process.exit(1)
+    if (!fromRemote.ok) {
+      console.error(
+        `Branch '${sessionB.gitBranch}' not found locally or on origin.`
+      )
+      console.error(
+        `Session B's changes may not have been pushed. Try:\n` +
+          `  cd ${sessionB.cwd} && git push origin ${sessionB.gitBranch}`
+      )
+      process.exit(1)
+    }
   }
 
   // === Verify common ancestor ===
