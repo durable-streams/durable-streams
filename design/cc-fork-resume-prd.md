@@ -213,24 +213,25 @@ If the repo has no `origin` remote, or has multiple remotes, the user can specif
 ds-cc fork --remote upstream --server https://ds.example.com
 ```
 
-### Session forking via CC's `--fork-session`
+### JSONL rewriting on import
 
-Instead of manually rewriting JSONL fields (cwd, sessionId, gitBranch), the clone command delegates to CC's built-in `--fork-session` flag:
+CC's JSONL entries contain path-sensitive fields that need updating for the clone's local environment:
+
+| Field       | Original value                    | Rewritten to                                 |
+| ----------- | --------------------------------- | -------------------------------------------- |
+| `cwd`       | `/Users/alice/projects/myproject` | `/Users/bob/code/myproject/session-47515c25` |
+| `sessionId` | `47515c25-...`                    | `a1b2c3d4-...` (new UUID)                    |
+| `gitBranch` | `main`                            | `cc-session/clone-a1b2c3d4`                  |
+
+The rewriting is a simple string replacement on each JSONL line before writing to disk.
+
+The rewritten JSONL is placed at:
 
 ```
-claude -r <original-session-id> --fork-session -p "Session forked for independent work."
+~/.claude/projects/{encoded-clone-cwd}/{new-session-id}.jsonl
 ```
 
-This:
-
-- Creates a new session with a new ID
-- Inherits the full context from the original session
-- Automatically picks up the current working directory as the new cwd
-- Handles any internal format details CC needs
-
-The original JSONL is written temporarily to `~/.claude/projects/{encoded-original-cwd}/{original-session-id}.jsonl` so that `claude -r` can find it. After forking, this temporary file is cleaned up.
-
-**Why this approach:** CC's JSONL format is an internal implementation detail. Manual rewriting of fields (cwd, sessionId, gitBranch) is fragile — if CC changes its format, our rewriting breaks. Using `--fork-session` lets CC handle its own internals.
+**Why manual rewriting (not `--fork-session`):** CC's `--fork-session` flag only works with sessions CC itself created on the local machine. For cross-machine cloning, the session doesn't exist in CC's index, so we must write the JSONL directly. `--fork-session` is used in Phase 3 for querying existing local sessions.
 
 ---
 
@@ -260,13 +261,15 @@ The `ds-cc share` and `ds-cc follow` commands from Phase 1 continue to work inde
 | 1   | **`ds-cc fork` command**    | Exports CC session to DS + pushes git branch with working state |
 | 2   | **`ds-cc clone` command**   | Imports session from DS + sets up worktree + rewrites JSONL     |
 | 3   | **Metadata stream support** | Separate `/meta` stream for fork metadata                       |
-| 4   | **Git operations module**   | Plumbing-based export, fetch/worktree/clone for import          |
+| 4   | **JSONL rewriter**          | Rewrites cwd, sessionId, gitBranch in JSONL entries             |
+| 5   | **Git operations module**   | Plumbing-based export, fetch/worktree/clone for import          |
 
 ### Ordering
 
-1. **Git operations** (deliverable 4) — core mechanics, testable independently
-2. **Fork command** (deliverables 1, 3) — combines DS write + git export
-3. **Clone command** (deliverable 2) — combines DS read + git import + CC `--fork-session`
+1. **Git operations** (deliverable 5) — core mechanics, testable independently
+2. **JSONL rewriter** (deliverable 4) — pure function, easy to unit test
+3. **Fork command** (deliverables 1, 3) — combines DS write + git export
+4. **Clone command** (deliverable 2) — combines DS read + git import + JSONL rewrite
 
 ---
 

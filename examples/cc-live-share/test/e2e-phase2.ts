@@ -3,15 +3,12 @@
 /**
  * End-to-end test for Phase 2: fork and clone.
  * Creates a temporary git repo with a local remote to test without real remote access.
- *
- * Tests the git mechanics (export branch, fetch, worktree) and DS stream operations.
- * The `claude --fork-session` step requires a real CC session and must be tested manually
- * (see README.md for instructions).
  */
 
 import * as fs from "node:fs"
 import * as path from "node:path"
 import * as os from "node:os"
+import * as crypto from "node:crypto"
 import { execSync } from "node:child_process"
 import { DurableStreamTestServer } from "@durable-streams/server"
 
@@ -145,6 +142,8 @@ async function main() {
   const baseUrl = server.url
   console.log(`  Server at ${baseUrl}`)
 
+  const cleanupDirs: Array<string> = [claudeProjectDir]
+
   try {
     // === Test fork (DS + git) ===
     console.log(`\n=== Testing fork ===`)
@@ -221,8 +220,8 @@ async function main() {
       `  Working dir has new-file.ts: ${fs.existsSync(path.join(workRepo, `src/new-file.ts`))}`
     )
 
-    // === Test clone (git mechanics) ===
-    console.log(`\n=== Testing clone (git mechanics) ===`)
+    // === Test clone (git + JSONL rewriting) ===
+    console.log(`\n=== Testing clone ===`)
 
     // Simulate another user cloning the repo
     fs.mkdirSync(cloneDir)
@@ -231,6 +230,7 @@ async function main() {
     console.log(`  Created clone at ${cloneRepoDir}`)
 
     const { importBranchWorktree } = await import(`../src/git.js`)
+    const { rewriteJsonlLines } = await import(`../src/rewrite.js`)
 
     // Read metadata from DS
     const metaRes = await fetch(`${metaStreamUrl}?offset=-1`)
@@ -241,13 +241,14 @@ async function main() {
     )
 
     // Create worktree from export branch
-    const shortId = Math.random().toString(36).slice(2, 10)
-    const worktreeBranch = `cc-session/clone-${shortId}`
+    const newSessionId = crypto.randomUUID()
+    const shortId = newSessionId.slice(0, 8)
+    const cloneBranch = `cc-session/clone-${shortId}`
     const worktreePath = path.join(cloneDir, `session-${shortId}`)
     importBranchWorktree(
       cloneRepoDir,
       metadata.branch,
-      worktreeBranch,
+      cloneBranch,
       worktreePath
     )
     console.log(`  Created worktree at ${worktreePath}`)
@@ -267,15 +268,59 @@ async function main() {
       `  Worktree has forked index.ts: ${wtIndex.includes(`forked session`)}`
     )
 
-    // Read session JSONL from DS
+    // Read session JSONL from DS and rewrite
     const sessionRes = await fetch(`${sessionStreamUrl}?offset=-1`)
     const sessionBody = await sessionRes.text()
     const entries = JSON.parse(sessionBody)
+    const sessionJsonlLines = entries.map((e: unknown) => JSON.stringify(e))
     console.log(`  Read ${entries.length} entries from session stream`)
 
-    // The original JSONL is already at claudeProjectDir (created during setup).
-    // In the real clone flow, it gets written temporarily for `claude -r` to find.
-    console.log(`  Original JSONL available for claude -r`)
+    const rewrittenLines = rewriteJsonlLines(
+      sessionJsonlLines,
+      metadata.sessionId,
+      newSessionId,
+      metadata.originalCwd,
+      worktreePath,
+      cloneBranch
+    )
+
+    // Verify rewriting
+    const firstEntry = JSON.parse(rewrittenLines[0])
+    console.log(
+      `  Rewritten sessionId: ${firstEntry.sessionId === newSessionId}`
+    )
+    console.log(`  Rewritten cwd: ${firstEntry.cwd === worktreePath}`)
+    console.log(
+      `  Rewritten gitBranch: ${firstEntry.gitBranch === cloneBranch}`
+    )
+
+    // Write JSONL to CC directory
+    const cloneClaudeDir = path.join(
+      os.homedir(),
+      `.claude`,
+      `projects`,
+      encodeCwd(worktreePath)
+    )
+    cleanupDirs.push(cloneClaudeDir)
+    fs.mkdirSync(cloneClaudeDir, { recursive: true })
+    const cloneJsonlPath = path.join(cloneClaudeDir, `${newSessionId}.jsonl`)
+    fs.writeFileSync(cloneJsonlPath, rewrittenLines.join(`\n`) + `\n`)
+    console.log(`  Wrote JSONL to ${cloneJsonlPath}`)
+
+    // Verify all entries have correct sessionId
+    const cloneContent = fs.readFileSync(cloneJsonlPath, `utf-8`)
+    const cloneLines = cloneContent.trim().split(`\n`)
+    console.log(`  Clone JSONL has ${cloneLines.length} entries`)
+    for (const line of cloneLines) {
+      const entry = JSON.parse(line)
+      if (entry.sessionId !== newSessionId) {
+        console.error(
+          `  ERROR: entry still has old sessionId: ${entry.sessionId}`
+        )
+        process.exit(1)
+      }
+    }
+    console.log(`  All entries have correct sessionId`)
 
     // Verify checkpoint resolution
     const checkpointRes = await fetch(`${sessionStreamUrl}?offset=compact`, {
@@ -285,15 +330,17 @@ async function main() {
       `  Checkpoint resolution: ${checkpointRes.status} → ${checkpointRes.headers.get(`location`)}`
     )
 
-    console.log(`\n=== All automated tests passed! ===`)
-    console.log(
-      `\nNote: The 'claude --fork-session' step requires a real CC session.`
-    )
-    console.log(`See README.md for manual testing instructions.`)
+    console.log(`\n=== All Phase 2 tests passed! ===`)
   } finally {
     await server.stop()
     fs.rmSync(tmpBase, { recursive: true, force: true })
-    fs.rmSync(claudeProjectDir, { recursive: true, force: true })
+    for (const dir of cleanupDirs) {
+      try {
+        fs.rmSync(dir, { recursive: true, force: true })
+      } catch {
+        // Best effort
+      }
+    }
   }
 }
 

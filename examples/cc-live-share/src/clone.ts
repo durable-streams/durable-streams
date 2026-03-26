@@ -1,10 +1,15 @@
 /**
- * ds-cc clone: import a forked CC session from DS + set up code + fork session via CC.
+ * ds-cc clone: import a forked CC session from DS + set up code + rewrite JSONL.
+ *
+ * Uses manual JSONL rewriting (cwd, sessionId, gitBranch) because CC's --fork-session
+ * only works with sessions CC itself created on the local machine. For cross-machine
+ * cloning, we need to write the JSONL directly.
  */
 
 import * as fs from "node:fs"
 import * as path from "node:path"
 import * as os from "node:os"
+import * as crypto from "node:crypto"
 import { execSync } from "node:child_process"
 import {
   cloneAndCheckout,
@@ -12,6 +17,7 @@ import {
   importBranchWorktree,
   isGitRepo,
 } from "./git.js"
+import { rewriteJsonlLines } from "./rewrite.js"
 import { sanitizeJsonLine } from "./sanitize.js"
 
 interface CloneOptions {
@@ -65,6 +71,12 @@ export async function clone(options: CloneOptions): Promise<void> {
   console.log(`  Branch: ${metadata.branch}`)
   console.log(`  Original cwd: ${metadata.originalCwd}`)
 
+  // === Generate new session ID ===
+  const newSessionId = crypto.randomUUID()
+  const shortId = newSessionId.slice(0, 8)
+  const clonePath = path.resolve(`session-${shortId}`)
+  const newBranchName = `cc-session/clone-${shortId}`
+
   // === Fetch code ===
   console.log(`\nFetching code...`)
 
@@ -72,21 +84,14 @@ export async function clone(options: CloneOptions): Promise<void> {
   const inMatchingRepo =
     isGitRepo(repoCwd) && hasMatchingRemote(repoCwd, metadata.repo)
 
-  // For worktree mode we need a new branch name; for fresh clone we reuse the export branch
-  const shortId = Math.random().toString(36).slice(2, 10)
-  const clonePath = path.resolve(`session-${shortId}`)
-
   try {
     if (inMatchingRepo) {
       console.log(`  Detected matching repo, creating worktree...`)
-      // Worktree needs a unique branch name
-      const worktreeBranch = `cc-session/clone-${shortId}`
-      importBranchWorktree(repoCwd, metadata.branch, worktreeBranch, clonePath)
+      importBranchWorktree(repoCwd, metadata.branch, newBranchName, clonePath)
       console.log(`  Created worktree at ${clonePath}`)
     } else {
       console.log(`  Cloning ${metadata.repo}...`)
-      const cloneBranch = `cc-session/clone-${shortId}`
-      cloneAndCheckout(metadata.repo, metadata.branch, cloneBranch, clonePath)
+      cloneAndCheckout(metadata.repo, metadata.branch, newBranchName, clonePath)
       console.log(`  Cloned to ${clonePath}`)
     }
   } catch (err) {
@@ -97,7 +102,7 @@ export async function clone(options: CloneOptions): Promise<void> {
     process.exit(1)
   }
 
-  // === Restore original session JSONL temporarily ===
+  // === Read and rewrite JSONL ===
   console.log(`\nRestoring CC session...`)
 
   const sessionStreamUrl = `${forkUrl}/session`
@@ -119,69 +124,36 @@ export async function clone(options: CloneOptions): Promise<void> {
     process.exit(1)
   }
 
-  // Write the original JSONL as-is (no rewriting) under the original cwd
-  // so that `claude -r <session-id>` can find it
-  const originalEncodedCwd = encodeCwd(metadata.originalCwd)
-  const originalProjectDir = path.join(
+  // Convert to JSONL lines and rewrite path-sensitive fields
+  const jsonlLines = entries.map((entry) => JSON.stringify(entry))
+  const rewrittenLines = rewriteJsonlLines(
+    jsonlLines,
+    metadata.sessionId,
+    newSessionId,
+    metadata.originalCwd,
+    clonePath,
+    newBranchName
+  )
+
+  // Write JSONL to CC's expected location
+  const claudeProjectDir = path.join(
     os.homedir(),
     `.claude`,
     `projects`,
-    originalEncodedCwd
+    encodeCwd(clonePath)
   )
-  fs.mkdirSync(originalProjectDir, { recursive: true })
+  fs.mkdirSync(claudeProjectDir, { recursive: true })
 
-  const originalJsonlPath = path.join(
-    originalProjectDir,
-    `${metadata.sessionId}.jsonl`
-  )
+  const jsonlPath = path.join(claudeProjectDir, `${newSessionId}.jsonl`)
   const jsonlContent =
-    entries
-      .map((entry) => sanitizeJsonLine(JSON.stringify(entry)))
+    rewrittenLines
+      .map((line) => sanitizeJsonLine(line))
       .filter(Boolean)
       .join(`\n`) + `\n`
+  fs.writeFileSync(jsonlPath, jsonlContent)
 
-  // Check if the file already exists (don't overwrite an active session)
-  const jsonlExisted = fs.existsSync(originalJsonlPath)
-  if (!jsonlExisted) {
-    fs.writeFileSync(originalJsonlPath, jsonlContent)
-  }
-  console.log(`  Wrote ${entries.length} JSONL entries temporarily`)
-
-  // === Fork the session using CC's --fork-session ===
-  console.log(`  Forking session via Claude Code...`)
-
-  try {
-    execSync(
-      `claude -r ${metadata.sessionId} --fork-session -p "Session cloned from fork. Ready to continue."`,
-      {
-        cwd: clonePath,
-        encoding: `utf-8`,
-        stdio: [`pipe`, `pipe`, `pipe`],
-      }
-    )
-  } catch (err) {
-    console.error(`Failed to fork session via Claude Code.`)
-    console.error(`Make sure 'claude' is installed and accessible.`)
-    const error = err as { stderr?: string }
-    if (error.stderr) console.error(error.stderr)
-    process.exit(1)
-  }
-
-  // Clean up the temporary original JSONL (only if we created it)
-  if (!jsonlExisted) {
-    try {
-      fs.unlinkSync(originalJsonlPath)
-      // Remove the directory if empty
-      const remaining = fs.readdirSync(originalProjectDir)
-      if (remaining.length === 0) {
-        fs.rmdirSync(originalProjectDir)
-      }
-    } catch {
-      // Best effort cleanup
-    }
-  }
-
-  console.log(`  Session forked successfully`)
+  console.log(`  New session ID: ${newSessionId}`)
+  console.log(`  Wrote ${rewrittenLines.length} entries to ${jsonlPath}`)
 
   // === Resume or print instructions ===
   if (options.resume) {
