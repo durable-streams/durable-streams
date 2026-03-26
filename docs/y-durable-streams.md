@@ -1,11 +1,11 @@
 ---
-title: Yjs
+title: y-durable-streams
 description: >-
   Sync Yjs CRDT documents over HTTP with automatic server-side compaction, snapshot management, and optional awareness (presence) support.
 outline: [2, 3]
 ---
 
-# Yjs
+# y-durable-streams
 
 Sync [Yjs](https://yjs.dev/) CRDT documents over Durable Streams using plain HTTP — no WebSocket infrastructure needed.
 

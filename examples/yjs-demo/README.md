@@ -1,4 +1,4 @@
-# Yjs collaborative editor demo
+# y-durable-streams collaborative editor demo
 
 A real-time collaborative text editor using y-durable-streams and CodeMirror. Open the same room in multiple browser windows to see live cursors and presence.
 

@@ -137,7 +137,7 @@ For a detailed walkthrough, see the [Durable Sessions for Collaborative AI](http
 
 - [State protocol specification](https://github.com/durable-streams/durable-streams/blob/main/packages/state/STATE-PROTOCOL.md) -- full protocol spec
 - [StreamDB](stream-db.md) -- reactive collections, queries, and optimistic actions
-- [Yjs](y-durable-streams.md) -- sync Yjs CRDTs for collaborative editing
+- [y-durable-streams](y-durable-streams.md) -- sync Yjs CRDTs for collaborative editing
 - [Package README](https://github.com/durable-streams/durable-streams/blob/main/packages/state/README.md) -- complete API reference
 - [Examples](https://github.com/durable-streams/durable-streams/tree/main/examples/state) -- background jobs dashboard and Wikipedia live events demo
 - [TanStack DB](https://tanstack.com/db) -- reactive collections and query engine
@@ -145,4 +145,4 @@ For a detailed walkthrough, see the [Durable Sessions for Collaborative AI](http
 
 ---
 
-See also: [Core concepts](concepts.md) | [JSON mode](json-mode.md) | [StreamDB](stream-db.md) | [Yjs](y-durable-streams.md)
+See also: [Core concepts](concepts.md) | [JSON mode](json-mode.md) | [StreamDB](stream-db.md) | [y-durable-streams](y-durable-streams.md)
