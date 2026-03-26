@@ -4,17 +4,9 @@ A real-time collaborative text editor using y-durable-streams and CodeMirror. Op
 
 ## Quick start
 
-### 1. Install `durable-streams-server`
+### 1. Start the servers
 
-Install with the quick-install script, or see the [deployment guide](https://durablestreams.com/deployment) for other options:
-
-```bash
-curl -sSL https://raw.githubusercontent.com/durable-streams/durable-streams/main/packages/caddy-plugin/install.sh | sh
-```
-
-The demo runs through `durable-streams-server` (a Caddy build) to enable HTTP/2 on localhost, which is needed for multiplexing SSE streams efficiently.
-
-### 2. Start the servers
+This requires the `durable-streams-server` binary — see the [deployment guide](https://durablestreams.com/deployment) for install options.
 
 ```bash
 cd examples/yjs-demo
@@ -24,7 +16,7 @@ pnpm dev:server
 
 This starts Caddy (HTTPS on `https://localhost:4443`) and the y-durable-streams server (internal, port 4438). All traffic routes through Caddy.
 
-### 3. Start the frontend
+### 2. Start the frontend
 
 In a second terminal:
 
@@ -33,7 +25,7 @@ cd examples/yjs-demo
 pnpm dev
 ```
 
-### 4. Open the demo
+### 3. Open the demo
 
 Go to `http://localhost:5173`. Your browser will warn about Caddy's self-signed certificate — visit `https://localhost:4443` first to accept it, then reload the demo.
 
@@ -81,4 +73,4 @@ On the client side:
 
 **"Error connecting to room"** — Check that both servers are running (`pnpm dev:server`) and you've accepted the certificate.
 
-**Caddy fails to start** — Make sure `durable-streams-server` is installed (see [step 1](#_1-install-durable-streams-server)) and port 4443 is free.
+**Caddy fails to start** — Make sure `durable-streams-server` is installed (see [deployment guide](https://durablestreams.com/deployment)) and port 4443 is free.
