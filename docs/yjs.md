@@ -156,7 +156,7 @@ Awareness heartbeats are sent every 15 seconds. When the provider disconnects, i
 
 ## How it works
 
-The provider uses a four-step sync protocol over HTTP:
+The provider uses a four-step sync protocol over HTTP. For the full wire format and details, see the [Yjs Durable Streams Protocol specification](https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/YJS-PROTOCOL.md).
 
 1. **Snapshot discovery** — Requests `?offset=snapshot`. The server responds with a 307 redirect to the latest snapshot offset, or to `-1` if no snapshot exists.
 2. **Snapshot loading** — Fetches the binary Yjs snapshot and applies it to the local document. The response includes a `stream-next-offset` header indicating where to continue.
@@ -176,59 +176,6 @@ Each document is accessed via a single URL with query parameters:
 ```
 
 Where `docPath` can include forward slashes (e.g., `project/chapter-1`).
-
-## Common patterns
-
-### Collaborative text editor
-
-```typescript
-import * as Y from "yjs"
-import { Awareness } from "y-protocols/awareness"
-import { YjsProvider } from "@durable-streams/y-durable-streams"
-
-const doc = new Y.Doc()
-const awareness = new Awareness(doc)
-const text = doc.getText("content")
-
-const provider = new YjsProvider({
-  doc,
-  baseUrl: "http://localhost:4438/v1/yjs/my-service",
-  docId: "shared-doc",
-  awareness,
-})
-
-// Bind to an editor (e.g., CodeMirror, ProseMirror, Quill)
-// text.insert(0, "Hello, world!")
-```
-
-### Room-based documents
-
-```typescript
-function joinRoom(roomId: string) {
-  const doc = new Y.Doc()
-  const awareness = new Awareness(doc)
-
-  const provider = new YjsProvider({
-    doc,
-    baseUrl: "http://localhost:4438/v1/yjs/my-service",
-    docId: `rooms/${roomId}`,
-    awareness,
-  })
-
-  return { doc, awareness, provider }
-}
-```
-
-### Document without presence
-
-```typescript
-const provider = new YjsProvider({
-  doc,
-  baseUrl: "http://localhost:4438/v1/yjs/my-service",
-  docId: "my-document",
-  // No awareness — skip presence overhead
-})
-```
 
 ## Best practices
 
