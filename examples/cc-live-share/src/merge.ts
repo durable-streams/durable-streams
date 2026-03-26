@@ -1,11 +1,8 @@
 /**
- * ds-cc merge: merge a forked CC session into the current session.
+ * ds-cc merge: merge two local CC sessions.
  *
- * Flow:
- * 1. Git merge the incoming fork's branch into a new merge branch
- * 2. If conflicts: get brief summaries, invoke agent to resolve
- * 3. Get detailed contexts from both sessions (in parallel with step 2 if conflicts)
- * 4. Create merged session: original JSONL + synthetic merge context message
+ * Both sessions must exist locally (JSONL + git branch).
+ * Remote sessions should be cloned first via `ds-cc clone`.
  */
 
 import * as fs from "node:fs"
@@ -14,22 +11,20 @@ import * as os from "node:os"
 import * as crypto from "node:crypto"
 import { execSync } from "node:child_process"
 import { isGitRepo } from "./git.js"
-import { sanitizeJsonLine } from "./sanitize.js"
 import { rewriteJsonlLines } from "./rewrite.js"
+import { sanitizeJsonLine } from "./sanitize.js"
 
 interface MergeOptions {
-  forkUrl: string
-  into: string
+  sessionA: string
+  sessionB: string
 }
 
-interface ForkMetadata {
-  type: string
-  version: number
+interface SessionInfo {
   sessionId: string
-  repo: string
-  branch: string
-  originalCwd: string
-  createdAt: string
+  jsonlPath: string
+  gitBranch: string
+  cwd: string
+  entries: Array<Record<string, unknown>>
 }
 
 function encodeCwd(cwd: string): string {
@@ -66,158 +61,125 @@ function claude(prompt: string, cwd: string): string {
 function claudeAgent(prompt: string, cwd: string): void {
   execSync(
     `claude -p ${JSON.stringify(prompt)} --dangerously-skip-permissions`,
-    {
-      cwd,
-      encoding: `utf-8`,
-      stdio: `inherit`,
-    }
+    { cwd, encoding: `utf-8`, stdio: `inherit` }
   )
 }
 
 /**
- * Read session entries from a DS fork URL.
+ * Find a CC session by ID. Searches ~/.claude/projects/ for matching JSONL.
  */
-async function readSessionFromDS(forkUrl: string): Promise<Array<unknown>> {
-  const sessionStreamUrl = `${forkUrl}/session`
-  const res = await fetch(`${sessionStreamUrl}?offset=-1`)
-  if (!res.ok) {
-    throw new Error(`Could not read session stream: ${res.status}`)
+function findSession(sessionId: string): SessionInfo | null {
+  const projectsDir = path.join(os.homedir(), `.claude`, `projects`)
+  if (!fs.existsSync(projectsDir)) return null
+
+  const projectDirs = fs.readdirSync(projectsDir)
+  for (const dir of projectDirs) {
+    const jsonlPath = path.join(projectsDir, dir, `${sessionId}.jsonl`)
+    if (!fs.existsSync(jsonlPath)) continue
+
+    const content = fs.readFileSync(jsonlPath, `utf-8`)
+    const lines = content.trim().split(`\n`)
+    const entries: Array<Record<string, unknown>> = []
+    let gitBranch = ``
+    let cwd = ``
+
+    for (const line of lines) {
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>
+        entries.push(entry)
+        if (entry.gitBranch && typeof entry.gitBranch === `string`) {
+          gitBranch = entry.gitBranch
+        }
+        if (entry.cwd && typeof entry.cwd === `string`) {
+          cwd = entry.cwd
+        }
+      } catch {
+        // skip unparseable lines
+      }
+    }
+
+    if (!gitBranch || !cwd) continue
+
+    return { sessionId, jsonlPath, gitBranch, cwd, entries }
   }
-  const body = await res.text()
-  const entries = JSON.parse(body)
-  return Array.isArray(entries) ? entries : [entries]
+
+  return null
 }
 
 /**
- * Read fork metadata from a DS fork URL.
+ * Extract conversation messages from JSONL entries for summarization.
  */
-async function readMetadata(forkUrl: string): Promise<ForkMetadata> {
-  const metaStreamUrl = `${forkUrl}/meta`
-  const res = await fetch(`${metaStreamUrl}?offset=-1`)
-  if (!res.ok) {
-    throw new Error(`Could not read metadata stream: ${res.status}`)
-  }
-  const body = await res.text()
-  const parsed = JSON.parse(body)
-  return Array.isArray(parsed) ? parsed[0] : parsed
-}
-
-/**
- * Get a brief summary of what a session did, by reading its JSONL from DS.
- */
-function getSessionSummary(
-  sessionEntries: Array<unknown>,
-  originalBranch: string,
-  cwd: string
+function extractMessages(
+  entries: Array<Record<string, unknown>>,
+  maxMessages: number,
+  maxChars: number
 ): string {
-  // Extract user and assistant messages for context
   const messages: Array<string> = []
-  for (const entry of sessionEntries) {
-    const e = entry as Record<string, unknown>
+  for (const e of entries) {
     if (e.type === `user` && e.message) {
       const msg = e.message as { content?: unknown }
       if (typeof msg.content === `string`) {
-        messages.push(`User: ${msg.content.slice(0, 200)}`)
+        messages.push(`User: ${msg.content.slice(0, maxChars)}`)
       }
     } else if ((!e.type || e.type === `assistant`) && e.message) {
       const msg = e.message as { role?: string; content?: unknown }
       if (msg.role === `assistant` && Array.isArray(msg.content)) {
         for (const block of msg.content) {
-          if (
-            (block as Record<string, unknown>).type === `text` &&
-            typeof (block as Record<string, unknown>).text === `string`
-          ) {
-            messages.push(
-              `Assistant: ${((block as Record<string, unknown>).text as string).slice(0, 200)}`
-            )
+          const b = block as Record<string, unknown>
+          if (b.type === `text` && typeof b.text === `string`) {
+            messages.push(`Assistant: ${b.text.slice(0, maxChars)}`)
           }
         }
       }
     }
   }
-
-  const conversationSnippet = messages.slice(-20).join(`\n`)
-
-  return claude(
-    `Here is a snippet of a Claude Code conversation from a forked session (branch: ${originalBranch}):\n\n${conversationSnippet}\n\nSummarize what this session accomplished in 3-5 sentences. Focus on what was changed, why, and key decisions made.`,
-    cwd
-  )
+  return messages.slice(-maxMessages).join(`\n`)
 }
 
-/**
- * Get a detailed context of what a session did, for the merged session.
- */
-function getDetailedContext(
-  sessionEntries: Array<unknown>,
-  originalBranch: string,
-  cwd: string
-): string {
-  const messages: Array<string> = []
-  for (const entry of sessionEntries) {
-    const e = entry as Record<string, unknown>
-    if (e.type === `user` && e.message) {
-      const msg = e.message as { content?: unknown }
-      if (typeof msg.content === `string`) {
-        messages.push(`User: ${msg.content.slice(0, 500)}`)
-      }
-    } else if ((!e.type || e.type === `assistant`) && e.message) {
-      const msg = e.message as { role?: string; content?: unknown }
-      if (msg.role === `assistant` && Array.isArray(msg.content)) {
-        for (const block of msg.content) {
-          if (
-            (block as Record<string, unknown>).type === `text` &&
-            typeof (block as Record<string, unknown>).text === `string`
-          ) {
-            messages.push(
-              `Assistant: ${((block as Record<string, unknown>).text as string).slice(0, 500)}`
-            )
-          }
-        }
-      }
-    }
+export function merge(options: MergeOptions): void {
+  // === Find both sessions ===
+  console.log(`Finding sessions...`)
+
+  const sessionA = findSession(options.sessionA)
+  if (!sessionA) {
+    console.error(`Session not found: ${options.sessionA}`)
+    console.error(`Search path: ~/.claude/projects/*/${options.sessionA}.jsonl`)
+    process.exit(1)
   }
-
-  const conversationSnippet = messages.slice(-30).join(`\n`)
-
-  return claude(
-    `Here is a Claude Code conversation from a forked session (branch: ${originalBranch}):\n\n${conversationSnippet}\n\nGive a detailed summary of everything this session accomplished. Include all key decisions, changes made, problems encountered, and current state. This will be used to brief Claude in a merged session, so be thorough.`,
-    cwd
+  console.log(
+    `  Session A: ${sessionA.sessionId} (branch: ${sessionA.gitBranch}, cwd: ${sessionA.cwd})`
   )
-}
 
-export async function merge(options: MergeOptions): Promise<void> {
-  const { forkUrl } = options
-  const repoCwd = process.cwd()
+  const sessionB = findSession(options.sessionB)
+  if (!sessionB) {
+    console.error(`Session not found: ${options.sessionB}`)
+    console.error(`Search path: ~/.claude/projects/*/${options.sessionB}.jsonl`)
+    process.exit(1)
+  }
+  console.log(
+    `  Session B: ${sessionB.sessionId} (branch: ${sessionB.gitBranch}, cwd: ${sessionB.cwd})`
+  )
 
+  // We need a git repo to work in. Use session A's cwd.
+  const repoCwd = sessionA.cwd
   if (!isGitRepo(repoCwd)) {
-    console.error(`Current directory is not a git repository.`)
+    console.error(`Session A's cwd is not a git repo: ${repoCwd}`)
     process.exit(1)
   }
 
-  // === Read incoming fork metadata ===
-  console.log(`Reading incoming fork metadata...`)
-  const incomingMeta = await readMetadata(forkUrl)
-  console.log(`  Branch: ${incomingMeta.branch}`)
-  console.log(`  Original session: ${incomingMeta.sessionId}`)
-
-  // Fetch the incoming branch
-  console.log(`  Fetching branch...`)
-  git(`fetch origin ${incomingMeta.branch}`, repoCwd)
-
-  // === Verify the target branch exists ===
-  const targetBranch = options.into
-  console.log(`  Target branch: ${targetBranch}`)
-
-  // Verify common ancestor
+  // === Verify common ancestor ===
+  console.log(`\nVerifying common ancestor...`)
   const mergeBase = gitMayFail(
-    `merge-base origin/${incomingMeta.branch} ${targetBranch}`,
+    `merge-base ${sessionA.gitBranch} ${sessionB.gitBranch}`,
     repoCwd
   )
   if (!mergeBase.ok) {
     console.error(
-      `No common ancestor between ${incomingMeta.branch} and ${targetBranch}.`
+      `No common ancestor between ${sessionA.gitBranch} and ${sessionB.gitBranch}.`
     )
-    console.error(`These branches may not be from the same fork.`)
+    console.error(
+      `These sessions may not have been forked from the same point.`
+    )
     process.exit(1)
   }
   console.log(`  Common ancestor: ${mergeBase.stdout.slice(0, 8)}`)
@@ -228,13 +190,16 @@ export async function merge(options: MergeOptions): Promise<void> {
   const mergePath = path.resolve(`session-merge-${mergeId}`)
 
   console.log(`\nCreating merge worktree...`)
-  git(`worktree add ${mergePath} -b ${mergeBranch} ${targetBranch}`, repoCwd)
+  git(
+    `worktree add ${mergePath} -b ${mergeBranch} ${sessionA.gitBranch}`,
+    repoCwd
+  )
   console.log(`  Created ${mergePath} on branch ${mergeBranch}`)
 
-  // === Attempt git merge ===
+  // === Git merge ===
   console.log(`\nMerging code...`)
   const mergeResult = gitMayFail(
-    `merge origin/${incomingMeta.branch} --no-commit --no-ff`,
+    `merge ${sessionB.gitBranch} --no-commit --no-ff`,
     mergePath
   )
 
@@ -242,7 +207,6 @@ export async function merge(options: MergeOptions): Promise<void> {
   let conflictNotes = ``
 
   if (!mergeResult.ok) {
-    // Check if there are actual conflicts
     const status = git(`status --porcelain`, mergePath)
     hasConflicts =
       status.includes(`UU `) || status.includes(`AA `) || status.includes(`DD `)
@@ -256,39 +220,32 @@ export async function merge(options: MergeOptions): Promise<void> {
     console.log(`  Clean merge, no conflicts.`)
   }
 
-  // === Read sessions from DS ===
-  console.log(`\nReading sessions from DS...`)
-  const incomingEntries = await readSessionFromDS(forkUrl)
-  console.log(`  Incoming session: ${incomingEntries.length} entries`)
-
-  // === Handle conflicts ===
+  // === Conflict resolution ===
   if (hasConflicts) {
     console.log(`\nGenerating summaries for conflict resolution...`)
-    const incomingSummary = getSessionSummary(
-      incomingEntries,
-      incomingMeta.branch,
-      mergePath
-    )
-    console.log(`  Incoming: ${incomingSummary.slice(0, 100)}...`)
 
-    // Get target session summary from git diff (we don't have a DS stream for it)
-    const targetDiff = gitMayFail(
-      `diff ${mergeBase.stdout.slice(0, 8)}..${targetBranch} --stat`,
+    const snippetA = extractMessages(sessionA.entries, 20, 200)
+    const summaryA = claude(
+      `Here is a snippet of a Claude Code conversation:\n\n${snippetA}\n\nSummarize what this session accomplished in 3-5 sentences.`,
       mergePath
     )
-    const targetSummaryPrompt = `The target branch (${targetBranch}) made the following changes from the common ancestor:\n\n${targetDiff.stdout}\n\nSummarize what this branch did in 2-3 sentences.`
-    const targetSummary = claude(targetSummaryPrompt, mergePath)
-    console.log(`  Target: ${targetSummary.slice(0, 100)}...`)
+    console.log(`  Session A: ${summaryA.slice(0, 100)}...`)
+
+    const snippetB = extractMessages(sessionB.entries, 20, 200)
+    const summaryB = claude(
+      `Here is a snippet of a Claude Code conversation:\n\n${snippetB}\n\nSummarize what this session accomplished in 3-5 sentences.`,
+      mergePath
+    )
+    console.log(`  Session B: ${summaryB.slice(0, 100)}...`)
 
     console.log(`\nResolving conflicts with agent...`)
     claudeAgent(
-      `Two branches of work are being merged and there are conflicts.\n\nBranch A (incoming, ${incomingMeta.branch}) did: ${incomingSummary}\n\nBranch B (target, ${targetBranch}) did: ${targetSummary}\n\nPlease resolve all merge conflicts in the working directory. Use git status to find conflicted files and resolve them. After resolving, stage the files with git add.`,
+      `Two branches of work are being merged and there are conflicts.\n\nBranch A (${sessionA.gitBranch}) did: ${summaryA}\n\nBranch B (${sessionB.gitBranch}) did: ${summaryB}\n\nPlease resolve all merge conflicts in the working directory. Use git status to find conflicted files and resolve them. After resolving, stage the files with git add.`,
       mergePath
     )
 
-    conflictNotes = `Conflicts were resolved by an agent. Incoming branch did: ${incomingSummary}. Target branch did: ${targetSummary}.`
+    conflictNotes = `Conflicts were resolved by an agent. Session A did: ${summaryA}. Session B did: ${summaryB}.`
 
-    // Verify conflicts are resolved
     const postStatus = git(`status --porcelain`, mergePath)
     if (postStatus.includes(`UU `) || postStatus.includes(`AA `)) {
       console.error(
@@ -302,11 +259,10 @@ export async function merge(options: MergeOptions): Promise<void> {
   // Commit the merge
   git(`add -A`, mergePath)
   const commitResult = gitMayFail(
-    `commit --no-edit -m "Merge ${incomingMeta.branch} into ${targetBranch}"`,
+    `commit --no-edit -m "Merge ${sessionB.gitBranch} into ${sessionA.gitBranch}"`,
     mergePath
   )
   if (!commitResult.ok) {
-    // Nothing to commit (identical trees) is fine
     console.log(`  Nothing to commit (trees are identical)`)
   } else {
     console.log(`  Merge committed.`)
@@ -314,54 +270,47 @@ export async function merge(options: MergeOptions): Promise<void> {
 
   // === Get detailed contexts ===
   console.log(`\nGenerating detailed contexts for merged session...`)
-  const incomingContext = getDetailedContext(
-    incomingEntries,
-    incomingMeta.branch,
-    mergePath
-  )
-  console.log(`  Incoming context: ${incomingContext.length} chars`)
 
-  const targetDiffForContext = gitMayFail(
-    `diff ${mergeBase.stdout.slice(0, 8)}..${targetBranch}`,
+  const detailA = extractMessages(sessionA.entries, 30, 500)
+  const contextA = claude(
+    `Here is a Claude Code conversation:\n\n${detailA}\n\nGive a detailed summary of everything this session accomplished. Include all key decisions, changes made, and current state. This will be used to brief Claude in a merged session.`,
     mergePath
   )
-  const targetContext = claude(
-    `Here is the git diff of changes made on branch ${targetBranch} from the common ancestor:\n\n${targetDiffForContext.stdout.slice(0, 5000)}\n\nGive a detailed summary of what was accomplished. Include key decisions, changes, and current state. This will be used to brief Claude in a merged session.`,
+  console.log(`  Session A context: ${contextA.length} chars`)
+
+  const detailB = extractMessages(sessionB.entries, 30, 500)
+  const contextB = claude(
+    `Here is a Claude Code conversation:\n\n${detailB}\n\nGive a detailed summary of everything this session accomplished. Include all key decisions, changes made, and current state. This will be used to brief Claude in a merged session.`,
     mergePath
   )
-  console.log(`  Target context: ${targetContext.length} chars`)
+  console.log(`  Session B context: ${contextB.length} chars`)
 
   // === Create merged session ===
   console.log(`\nCreating merged session...`)
 
-  // Read the original session JSONL from the incoming fork's DS stream
-  // (this is the base session that both forks diverged from)
-  const originalEntries = incomingEntries
-
   const mergedSessionId = crypto.randomUUID()
-  const jsonlLines = originalEntries.map((entry) => JSON.stringify(entry))
+
+  // Use session A's JSONL as the base
+  const jsonlLines = sessionA.entries.map((entry) => JSON.stringify(entry))
   const rewrittenLines = rewriteJsonlLines(
     jsonlLines,
-    incomingMeta.sessionId,
+    sessionA.sessionId,
     mergedSessionId,
-    incomingMeta.originalCwd,
+    sessionA.cwd,
     mergePath,
     mergeBranch
   )
 
-  // Create synthetic merge context message
-  const lastEntry = originalEntries[originalEntries.length - 1] as Record<
-    string,
-    unknown
-  >
-  const lastUuid = (lastEntry.uuid as string | undefined) ?? `merge-parent`
+  // Append synthetic merge context message
+  const lastEntry = sessionA.entries.at(-1)
+  const lastUuid = (lastEntry?.uuid as string | undefined) ?? `merge-parent`
   const mergeContextMessage = JSON.stringify({
     parentUuid: lastUuid,
     isSidechain: false,
     type: `user`,
     message: {
       role: `user`,
-      content: `Two branches of work have been merged into this session.\n\nIncoming branch (${incomingMeta.branch}):\n${incomingContext}\n\nTarget branch (${targetBranch}):\n${targetContext}\n\n${conflictNotes ? `Conflict resolution: ${conflictNotes}\n\n` : ``}The code has been merged. The working directory reflects the merged state.`,
+      content: `Two branches of work have been merged into this session.\n\nSession A (${sessionA.gitBranch}):\n${contextA}\n\nSession B (${sessionB.gitBranch}):\n${contextB}\n\n${conflictNotes ? `Conflict resolution: ${conflictNotes}\n\n` : ``}The code has been merged. The working directory reflects the merged state.`,
     },
     uuid: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
@@ -369,7 +318,6 @@ export async function merge(options: MergeOptions): Promise<void> {
     cwd: mergePath,
     gitBranch: mergeBranch,
   })
-
   rewrittenLines.push(mergeContextMessage)
 
   // Write JSONL

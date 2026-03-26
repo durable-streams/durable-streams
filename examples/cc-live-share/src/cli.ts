@@ -19,7 +19,7 @@ function usage(): void {
   ds-cc follow <stream-url> [--from-beginning]          Follow a shared session
   ds-cc fork [--session <id>] --server <url>            Fork (export) a CC session
   ds-cc clone <fork-url> [--resume] [--fast]             Clone (import) a forked session
-  ds-cc merge <fork-url> --into <branch>                Merge a fork into a target branch
+  ds-cc merge <session-id-A> <session-id-B>              Merge two local sessions
 
 Examples:
   ds-cc share --server http://localhost:4437
@@ -27,7 +27,7 @@ Examples:
   ds-cc fork --server http://localhost:4437
   ds-cc clone http://localhost:4437/cc/47515c25-...
   ds-cc clone --resume http://localhost:4437/cc/47515c25-...
-  ds-cc merge http://localhost:4437/cc/47515c25-... --into cc-session/clone-abc123
+  ds-cc merge <session-id-A> <session-id-B>
 `)
 }
 
@@ -49,12 +49,7 @@ function findPositionalArg(argv: Array<string>): string | undefined {
     const arg = argv[i]
     if (arg.startsWith(`-`)) {
       // Skip flag and its value
-      if (
-        arg === `--server` ||
-        arg === `--session` ||
-        arg === `--remote` ||
-        arg === `--into`
-      ) {
+      if (arg === `--server` || arg === `--session` || arg === `--remote`) {
         i++ // skip the value
       }
       continue
@@ -109,19 +104,19 @@ async function main(): Promise<void> {
     const fast = hasFlag(args, `--fast`)
     await clone({ forkUrl, resume, fast })
   } else if (command === `merge`) {
-    const forkUrl = findPositionalArg(args)
-    if (!forkUrl) {
-      console.error(`Error: fork URL is required\n`)
+    const sessionA = args[1]
+    const sessionB = args[2]
+    if (
+      !sessionA ||
+      !sessionB ||
+      sessionA.startsWith(`-`) ||
+      sessionB.startsWith(`-`)
+    ) {
+      console.error(`Error: two session IDs are required\n`)
       usage()
       process.exit(1)
     }
-    const into = parseArg(args, `--into`)
-    if (!into) {
-      console.error(`Error: --into <branch> is required\n`)
-      usage()
-      process.exit(1)
-    }
-    await merge({ forkUrl, into })
+    await merge({ sessionA, sessionB })
   } else {
     console.error(`Unknown command: ${command}\n`)
     usage()

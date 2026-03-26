@@ -1,16 +1,16 @@
 #!/usr/bin/env npx tsx
 
 /**
- * End-to-end test for Phase 3: merge.
- * Creates two forks, makes different changes, merges them.
- * Requires `claude` CLI to be installed (for conflict resolution agent).
+ * End-to-end test for Phase 3: merge two local sessions.
+ * Creates a repo with two branches making different changes, writes
+ * fake CC sessions for each, then merges them.
  */
 
 import * as fs from "node:fs"
 import * as path from "node:path"
 import * as os from "node:os"
+import * as crypto from "node:crypto"
 import { execSync } from "node:child_process"
-import { DurableStreamTestServer } from "@durable-streams/server"
 
 function git(command: string, cwd: string): string {
   return execSync(`git ${command}`, {
@@ -26,59 +26,79 @@ function encodeCwd(cwd: string): string {
 
 async function main() {
   const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), `ds-cc-phase3-`))
-  const bareRepo = path.join(tmpBase, `remote.git`)
-  const workRepo = path.join(tmpBase, `work`)
+  const repo = path.join(tmpBase, `repo`)
   const cleanupDirs: Array<string> = []
 
   console.log(`=== Setup ===`)
   console.log(`  Base: ${tmpBase}`)
 
-  // Create bare repo
-  fs.mkdirSync(bareRepo)
-  git(`init --bare`, bareRepo)
-
-  // Create working repo with initial commit
-  fs.mkdirSync(workRepo)
-  git(`init`, workRepo)
-  git(`checkout -b main`, workRepo)
-  fs.mkdirSync(path.join(workRepo, `src`), { recursive: true })
-  fs.writeFileSync(path.join(workRepo, `README.md`), `# Merge Test\n`)
+  // Create repo with initial commit
+  fs.mkdirSync(repo)
+  git(`init`, repo)
+  git(`checkout -b main`, repo)
+  fs.mkdirSync(path.join(repo, `src`), { recursive: true })
+  fs.writeFileSync(path.join(repo, `README.md`), `# Merge Test\n`)
   fs.writeFileSync(
-    path.join(workRepo, `src/app.ts`),
+    path.join(repo, `src/app.ts`),
     `export function greet() { return "hello" }\n`
   )
   fs.writeFileSync(
-    path.join(workRepo, `src/utils.ts`),
+    path.join(repo, `src/utils.ts`),
     `export function add(a: number, b: number) { return a + b }\n`
   )
-  git(`add -A`, workRepo)
-  git(`commit -m "initial commit"`, workRepo)
-  git(`remote add origin ${bareRepo}`, workRepo)
-  git(`push origin main`, workRepo)
+  git(`add -A`, repo)
+  git(`commit -m "initial commit"`, repo)
 
-  // Create a fake base CC session
-  const baseSessionId = `00000000-0000-0000-0000-000000000099`
-  const baseProjectDir = path.join(
+  // === Create Branch A: modifies app.ts ===
+  console.log(`\n=== Creating Branch A ===`)
+  git(`checkout -b cc-session/branch-a`, repo)
+  fs.writeFileSync(
+    path.join(repo, `src/app.ts`),
+    `export function greet(name: string) { return \`hello \${name}\` }\n`
+  )
+  git(`add -A`, repo)
+  git(`commit -m "add name param to greet"`, repo)
+
+  // === Create Branch B: modifies utils.ts ===
+  console.log(`=== Creating Branch B ===`)
+  git(`checkout main`, repo)
+  git(`checkout -b cc-session/branch-b`, repo)
+  fs.writeFileSync(
+    path.join(repo, `src/utils.ts`),
+    `export function add(a: number, b: number) { return a + b }\nexport function multiply(a: number, b: number) { return a * b }\n`
+  )
+  git(`add -A`, repo)
+  git(`commit -m "add multiply function"`, repo)
+  git(`checkout main`, repo)
+
+  // === Create fake CC sessions for each branch ===
+  console.log(`=== Creating fake CC sessions ===`)
+
+  const sessionAId = crypto.randomUUID()
+  const sessionBId = crypto.randomUUID()
+
+  // Session A JSONL
+  const sessionADir = path.join(
     os.homedir(),
     `.claude`,
     `projects`,
-    encodeCwd(workRepo)
+    encodeCwd(repo)
   )
-  cleanupDirs.push(baseProjectDir)
-  fs.mkdirSync(baseProjectDir, { recursive: true })
+  cleanupDirs.push(sessionADir)
+  fs.mkdirSync(sessionADir, { recursive: true })
 
-  const baseJsonlEntries = [
+  const sessionAEntries = [
     JSON.stringify({
       type: `user`,
       message: {
         role: `user`,
-        content: `Set up a project with greet and add functions.`,
+        content: `Add a name parameter to the greet function`,
       },
-      uuid: `base-1`,
+      uuid: `a-1`,
       parentUuid: null,
-      cwd: workRepo,
-      sessionId: baseSessionId,
-      gitBranch: `main`,
+      cwd: repo,
+      sessionId: sessionAId,
+      gitBranch: `cc-session/branch-a`,
       timestamp: new Date().toISOString(),
     }),
     JSON.stringify({
@@ -88,287 +108,163 @@ async function main() {
         content: [
           {
             type: `text`,
-            text: `Created src/app.ts with greet() and src/utils.ts with add().`,
+            text: `I updated greet() in src/app.ts to accept a name parameter and return a personalized greeting using a template literal.`,
           },
         ],
       },
-      uuid: `base-2`,
-      parentUuid: `base-1`,
-      cwd: workRepo,
-      sessionId: baseSessionId,
-      gitBranch: `main`,
+      uuid: `a-2`,
+      parentUuid: `a-1`,
+      cwd: repo,
+      sessionId: sessionAId,
+      gitBranch: `cc-session/branch-a`,
       timestamp: new Date().toISOString(),
     }),
   ]
   fs.writeFileSync(
-    path.join(baseProjectDir, `${baseSessionId}.jsonl`),
-    baseJsonlEntries.join(`\n`) + `\n`
+    path.join(sessionADir, `${sessionAId}.jsonl`),
+    sessionAEntries.join(`\n`) + `\n`
   )
+  console.log(`  Session A: ${sessionAId} (branch-a, modifies app.ts)`)
 
-  // Start DS server
-  console.log(`\n=== Starting DS server ===`)
-  const server = new DurableStreamTestServer({
-    port: 0,
-    checkpointRules: [
-      {
-        name: `compact`,
-        conditions: [
-          { path: `.type`, value: `system` },
-          { path: `.subtype`, value: `compact_boundary` },
+  // Session B JSONL
+  const sessionBEntries = [
+    JSON.stringify({
+      type: `user`,
+      message: { role: `user`, content: `Add a multiply function to utils` },
+      uuid: `b-1`,
+      parentUuid: null,
+      cwd: repo,
+      sessionId: sessionBId,
+      gitBranch: `cc-session/branch-b`,
+      timestamp: new Date().toISOString(),
+    }),
+    JSON.stringify({
+      type: `assistant`,
+      message: {
+        role: `assistant`,
+        content: [
+          {
+            type: `text`,
+            text: `I added a multiply() function to src/utils.ts that takes two numbers and returns their product.`,
+          },
         ],
       },
-    ],
-  })
-  await server.start()
-  const baseUrl = server.url
-  console.log(`  Server at ${baseUrl}`)
+      uuid: `b-2`,
+      parentUuid: `b-1`,
+      cwd: repo,
+      sessionId: sessionBId,
+      gitBranch: `cc-session/branch-b`,
+      timestamp: new Date().toISOString(),
+    }),
+  ]
+  fs.writeFileSync(
+    path.join(sessionADir, `${sessionBId}.jsonl`),
+    sessionBEntries.join(`\n`) + `\n`
+  )
+  console.log(`  Session B: ${sessionBId} (branch-b, modifies utils.ts)`)
+
+  // === Test merge ===
+  console.log(`\n=== Testing merge ===`)
+
+  const { merge } = await import(`../src/merge.js`)
+  const savedCwd = process.cwd()
+  process.chdir(repo)
 
   try {
-    const { DurableStream } = await import(`@durable-streams/client`)
-    const { sanitizeJsonLine } = await import(`../src/sanitize.js`)
-    const { exportBranch, getRemoteUrl } = await import(`../src/git.js`)
-
-    // === Create Fork A (changes greet function) ===
-    console.log(`\n=== Creating Fork A ===`)
-
-    // Make changes for fork A
-    fs.writeFileSync(
-      path.join(workRepo, `src/app.ts`),
-      `export function greet(name: string) { return \`hello \${name}\` }\n`
-    )
-    const epochA = Date.now()
-    const forkABranch = `cc-session/${baseSessionId}/${epochA}`
-    exportBranch(workRepo, forkABranch, `origin`)
-
-    // Restore working dir
-    fs.writeFileSync(
-      path.join(workRepo, `src/app.ts`),
-      `export function greet() { return "hello" }\n`
-    )
-
-    // Write Fork A to DS
-    const forkAUrl = `${baseUrl}/cc/${baseSessionId}/${epochA}`
-    await DurableStream.create({
-      url: `${forkAUrl}/session`,
-      contentType: `application/json`,
-    })
-    const forkAStream = new DurableStream({
-      url: `${forkAUrl}/session`,
-      contentType: `application/json`,
-    })
-
-    const forkAEntries = [
-      ...baseJsonlEntries,
-      JSON.stringify({
-        type: `user`,
-        message: { role: `user`, content: `Add a name parameter to greet()` },
-        uuid: `a-1`,
-        parentUuid: `base-2`,
-        cwd: workRepo,
-        sessionId: baseSessionId,
-        gitBranch: forkABranch,
-        timestamp: new Date().toISOString(),
-      }),
-      JSON.stringify({
-        type: `assistant`,
-        message: {
-          role: `assistant`,
-          content: [
-            {
-              type: `text`,
-              text: `Updated greet() to accept a name parameter.`,
-            },
-          ],
-        },
-        uuid: `a-2`,
-        parentUuid: `a-1`,
-        cwd: workRepo,
-        sessionId: baseSessionId,
-        gitBranch: forkABranch,
-        timestamp: new Date().toISOString(),
-      }),
-    ]
-
-    for (const entry of forkAEntries) {
-      const sanitized = sanitizeJsonLine(entry)
-      if (sanitized) await forkAStream.append(sanitized)
-    }
-
-    await DurableStream.create({
-      url: `${forkAUrl}/meta`,
-      contentType: `application/json`,
-    })
-    const forkAMeta = new DurableStream({
-      url: `${forkAUrl}/meta`,
-      contentType: `application/json`,
-    })
-    await forkAMeta.append(
-      JSON.stringify({
-        type: `fork-metadata`,
-        version: 1,
-        sessionId: baseSessionId,
-        repo: getRemoteUrl(workRepo, `origin`),
-        branch: forkABranch,
-        originalCwd: workRepo,
-        createdAt: new Date().toISOString(),
-      })
-    )
-    console.log(`  Fork A: ${forkAUrl}`)
-    console.log(`  Branch: ${forkABranch}`)
-
-    // === Create Fork B (changes utils function) ===
-    console.log(`\n=== Creating Fork B ===`)
-
-    fs.writeFileSync(
-      path.join(workRepo, `src/utils.ts`),
-      `export function add(a: number, b: number) { return a + b }\nexport function multiply(a: number, b: number) { return a * b }\n`
-    )
-    const epochB = Date.now() + 1 // ensure different
-    const forkBBranch = `cc-session/${baseSessionId}/${epochB}`
-    exportBranch(workRepo, forkBBranch, `origin`)
-
-    // Restore working dir
-    fs.writeFileSync(
-      path.join(workRepo, `src/utils.ts`),
-      `export function add(a: number, b: number) { return a + b }\n`
-    )
-
-    // Write Fork B to DS
-    const forkBUrl = `${baseUrl}/cc/${baseSessionId}/${epochB}`
-    await DurableStream.create({
-      url: `${forkBUrl}/session`,
-      contentType: `application/json`,
-    })
-    const forkBStream = new DurableStream({
-      url: `${forkBUrl}/session`,
-      contentType: `application/json`,
-    })
-
-    const forkBEntries = [
-      ...baseJsonlEntries,
-      JSON.stringify({
-        type: `user`,
-        message: { role: `user`, content: `Add a multiply function to utils` },
-        uuid: `b-1`,
-        parentUuid: `base-2`,
-        cwd: workRepo,
-        sessionId: baseSessionId,
-        gitBranch: forkBBranch,
-        timestamp: new Date().toISOString(),
-      }),
-      JSON.stringify({
-        type: `assistant`,
-        message: {
-          role: `assistant`,
-          content: [
-            { type: `text`, text: `Added multiply() to src/utils.ts.` },
-          ],
-        },
-        uuid: `b-2`,
-        parentUuid: `b-1`,
-        cwd: workRepo,
-        sessionId: baseSessionId,
-        gitBranch: forkBBranch,
-        timestamp: new Date().toISOString(),
-      }),
-    ]
-
-    for (const entry of forkBEntries) {
-      const sanitized = sanitizeJsonLine(entry)
-      if (sanitized) await forkBStream.append(sanitized)
-    }
-
-    await DurableStream.create({
-      url: `${forkBUrl}/meta`,
-      contentType: `application/json`,
-    })
-    const forkBMeta = new DurableStream({
-      url: `${forkBUrl}/meta`,
-      contentType: `application/json`,
-    })
-    await forkBMeta.append(
-      JSON.stringify({
-        type: `fork-metadata`,
-        version: 1,
-        sessionId: baseSessionId,
-        repo: getRemoteUrl(workRepo, `origin`),
-        branch: forkBBranch,
-        originalCwd: workRepo,
-        createdAt: new Date().toISOString(),
-      })
-    )
-    console.log(`  Fork B: ${forkBUrl}`)
-    console.log(`  Branch: ${forkBBranch}`)
-
-    // === Test merge: Fork A into Fork B's branch ===
-    console.log(`\n=== Testing merge (Fork A into Fork B) ===`)
-
-    // We need to be in a repo that has both branches
-    // Use the workRepo which has all branches via the bare remote
-    git(`fetch origin`, workRepo)
-
-    const { merge: mergeFn } = await import(`../src/merge.js`)
-    // Save cwd and change to workRepo for the merge
-    const savedCwd = process.cwd()
-    process.chdir(workRepo)
-
-    try {
-      await mergeFn({
-        forkUrl: forkAUrl,
-        into: `origin/${forkBBranch}`,
-      })
-    } catch (err) {
-      console.error(`Merge failed:`, err)
-    }
-
+    merge({ sessionA: sessionAId, sessionB: sessionBId })
+  } catch (err) {
+    console.error(`Merge failed:`, err)
     process.chdir(savedCwd)
+    process.exit(1)
+  }
 
-    // Check if merge worktree was created
-    const mergeWorktrees = fs
-      .readdirSync(tmpBase)
-      .filter((f) => f.startsWith(`session-merge-`))
+  process.chdir(savedCwd)
 
-    // Also check in workRepo parent for worktrees
-    const workRepoParent = path.dirname(workRepo)
-    const mergeInParent = fs
-      .readdirSync(workRepoParent)
-      .filter((f) => f.startsWith(`session-merge-`))
+  // === Verify results ===
+  console.log(`\n=== Verifying results ===`)
 
-    console.log(
-      `\n  Merge worktrees found: ${mergeWorktrees.length + mergeInParent.length}`
-    )
+  // Find the merge worktree
+  const mergeDir = fs
+    .readdirSync(repo)
+    .find((f) => f.startsWith(`session-merge-`))
 
-    // Check in the workRepo itself (path.resolve uses cwd which was workRepo)
-    const allFiles = fs.readdirSync(workRepo)
-    const mergeInWork = allFiles.filter((f) => f.startsWith(`session-merge-`))
-    if (mergeInWork.length > 0) {
-      const mergePath = path.join(workRepo, mergeInWork[0])
-      console.log(`  Merge worktree: ${mergePath}`)
+  if (!mergeDir) {
+    console.error(`  ERROR: No merge worktree found`)
+    process.exit(1)
+  }
 
-      // Verify merged code has both changes
-      const mergedApp = fs.readFileSync(
-        path.join(mergePath, `src/app.ts`),
+  const mergePath = path.join(repo, mergeDir)
+  console.log(`  Merge worktree: ${mergePath}`)
+
+  // Check merged code
+  const mergedApp = fs.readFileSync(path.join(mergePath, `src/app.ts`), `utf-8`)
+  const hasGreetName = mergedApp.includes(`name`)
+  console.log(`  Has greet(name): ${hasGreetName}`)
+
+  const mergedUtils = fs.readFileSync(
+    path.join(mergePath, `src/utils.ts`),
+    `utf-8`
+  )
+  const hasMultiply = mergedUtils.includes(`multiply`)
+  console.log(`  Has multiply: ${hasMultiply}`)
+
+  // Check merged session JSONL exists
+  const mergeEncodedCwd = encodeCwd(mergePath)
+  const mergeProjectDir = path.join(
+    os.homedir(),
+    `.claude`,
+    `projects`,
+    mergeEncodedCwd
+  )
+  cleanupDirs.push(mergeProjectDir)
+
+  if (fs.existsSync(mergeProjectDir)) {
+    const jsonlFiles = fs
+      .readdirSync(mergeProjectDir)
+      .filter((f) => f.endsWith(`.jsonl`))
+    console.log(`  Merged session JSONL: ${jsonlFiles.length > 0}`)
+
+    if (jsonlFiles.length > 0) {
+      const content = fs.readFileSync(
+        path.join(mergeProjectDir, jsonlFiles[0]),
         `utf-8`
       )
-      console.log(`  Has greet(name): ${mergedApp.includes(`name`)}`)
+      const lines = content.trim().split(`\n`)
+      console.log(`  Merged session entries: ${lines.length}`)
 
-      const mergedUtils = fs.readFileSync(
-        path.join(mergePath, `src/utils.ts`),
-        `utf-8`
-      )
-      console.log(`  Has multiply: ${mergedUtils.includes(`multiply`)}`)
+      // Check the last entry is the merge context message
+      const lastLine = JSON.parse(lines[lines.length - 1])
+      const hasMergeContext =
+        typeof lastLine.message?.content === `string` &&
+        lastLine.message.content.includes(
+          `Two branches of work have been merged`
+        )
+      console.log(`  Has merge context message: ${hasMergeContext}`)
     }
+  } else {
+    console.log(`  WARNING: No merged session directory found`)
+  }
 
-    console.log(`\n=== Phase 3 test complete! ===`)
-  } finally {
-    await server.stop()
-    fs.rmSync(tmpBase, { recursive: true, force: true })
-    for (const dir of cleanupDirs) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true })
-      } catch {
-        // best effort
-      }
+  if (hasGreetName && hasMultiply) {
+    console.log(`\n=== All Phase 3 tests passed! ===`)
+  } else {
+    console.error(`\n=== FAILED: Missing expected code changes ===`)
+    process.exit(1)
+  }
+
+  // Cleanup
+  // Remove worktree first before deleting repo
+  try {
+    git(`worktree remove ${mergePath} --force`, repo)
+  } catch {
+    // best effort
+  }
+  fs.rmSync(tmpBase, { recursive: true, force: true })
+  for (const dir of cleanupDirs) {
+    try {
+      fs.rmSync(dir, { recursive: true, force: true })
+    } catch {
+      // best effort
     }
   }
 }
