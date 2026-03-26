@@ -17,7 +17,7 @@ function usage(): void {
   ds-cc share [--session <id>] --server <url>           Live-share a CC session
   ds-cc follow <stream-url> [--from-beginning]          Follow a shared session
   ds-cc fork [--session <id>] --server <url>            Fork (export) a CC session
-  ds-cc clone <fork-url> [--resume]                     Clone (import) a forked session
+  ds-cc clone <fork-url> [--resume] [--fast]             Clone (import) a forked session
 
 Examples:
   ds-cc share --server http://localhost:4437
@@ -98,7 +98,8 @@ async function main(): Promise<void> {
       process.exit(1)
     }
     const resume = hasFlag(args, `--resume`)
-    await clone({ forkUrl, resume })
+    const fast = hasFlag(args, `--fast`)
+    await clone({ forkUrl, resume, fast })
   } else {
     console.error(`Unknown command: ${command}\n`)
     usage()

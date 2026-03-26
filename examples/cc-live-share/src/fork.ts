@@ -89,9 +89,10 @@ export async function fork(options: ForkOptions): Promise<void> {
   // === Export session to DS ===
   console.log(`\nExporting session to Durable Stream...`)
 
-  const sessionStreamUrl = `${options.server}/cc/${sessionId}/session`
-  const metaStreamUrl = `${options.server}/cc/${sessionId}/meta`
-  const branchName = `cc-session/${sessionId}`
+  const epoch = Date.now()
+  const sessionStreamUrl = `${options.server}/cc/${sessionId}/${epoch}/session`
+  const metaStreamUrl = `${options.server}/cc/${sessionId}/${epoch}/meta`
+  const branchName = `cc-session/${sessionId}/${epoch}`
 
   // Create session stream
   try {
@@ -159,8 +160,8 @@ export async function fork(options: ForkOptions): Promise<void> {
   console.log(`  Created and pushed branch: ${branchName}`)
 
   // === Done ===
-  const forkUrl = `${options.server}/cc/${sessionId}`
+  const forkUrl = `${options.server}/cc/${sessionId}/${epoch}`
   console.log(`\nFork URL: ${forkUrl}`)
   console.log(`\nShare this URL. Others can clone it with:`)
-  console.log(`  ds-cc clone --server ${options.server} ${forkUrl}`)
+  console.log(`  ds-cc clone ${forkUrl}`)
 }
