@@ -5,11 +5,14 @@ description: >-
 outline: [2, 3]
 ---
 
+<img src="/img/icons/yjs.svg" width="56px" />
+<br />
+
 # Yjs
 
 Sync [Yjs](https://yjs.dev/) CRDT documents over Durable Streams using plain HTTP — no WebSocket infrastructure needed.
 
-y-durable-streams provides a Yjs provider and server that handle snapshot discovery, live updates via long-polling or SSE, automatic server-side compaction, and optional awareness (presence) for cursors and user status.
+[y-durable-streams](https://github.com/durable-streams/durable-streams/tree/main/packages/y-durable-streams) provides a Yjs provider and server that handle snapshot discovery, live updates via long-polling or SSE, automatic server-side compaction, and optional awareness (presence) for cursors and user status.
 
 ## Installation
 
