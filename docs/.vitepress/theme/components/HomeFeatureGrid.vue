@@ -50,6 +50,12 @@ const items = [
     href: "/stream-fs",
     icon: "folder",
   },
+  {
+    title: "Yjs",
+    details: "Sync Yjs CRDTs over durable streams",
+    href: "/yjs",
+    icon: "collab",
+  },
 ]
 </script>
 
@@ -167,6 +173,21 @@ const items = [
             <path
               d="M3 7.5A1.5 1.5 0 0 1 4.5 6H9l2 2h8.5A1.5 1.5 0 0 1 21 9.5v8A1.5 1.5 0 0 1 19.5 19h-15A1.5 1.5 0 0 1 3 17.5v-10Z"
             />
+          </svg>
+          <svg
+            v-else-if="item.icon === 'collab'"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            stroke-width="1.9"
+            stroke-linecap="round"
+            stroke-linejoin="round"
+            aria-hidden="true"
+          >
+            <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2" />
+            <circle cx="9" cy="7" r="4" />
+            <path d="M23 21v-2a4 4 0 0 0-3-3.87" />
+            <path d="M16 3.13a4 4 0 0 1 0 7.75" />
           </svg>
           <svg
             v-else-if="item.icon === 'database'"
