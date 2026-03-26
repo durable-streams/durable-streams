@@ -15,6 +15,9 @@ const OBS_MIN_DIST = 4
 const OBS_MAX_DIST = 10
 const MAX_OBSTACLES = 20
 const POINTS_FOOD = 10
+const FOOD_LIFESPAN = 150
+const FOOD_FADE_IN = 3
+const FOOD_FADE_OUT = 20
 
 const PALETTE = {
   bg: `#1b1b1f`,
@@ -40,9 +43,12 @@ interface Point {
   y: number
 }
 
-interface Obstacle extends Point {
+interface Aged extends Point {
   age: number
 }
+
+type Obstacle = Aged
+type FoodItem = Aged
 
 interface PlayerState {
   snake: Array<Point>
@@ -54,7 +60,7 @@ interface PlayerState {
 }
 
 interface SharedGameState {
-  food: Point
+  foods: Array<FoodItem>
   obstacles: Array<Obstacle>
   tick: number
   cols: number
@@ -132,7 +138,7 @@ function buildOccupied(
   localSnake: Array<Point>,
   otherPlayers: Map<string, PlayerState>,
   obstacles: Array<Obstacle>,
-  food: Point
+  foods: Array<FoodItem>
 ): Set<string> {
   const set = new Set<string>()
   localSnake.forEach((s) => set.add(`${s.x},${s.y}`))
@@ -140,7 +146,7 @@ function buildOccupied(
     p.snake.forEach((s) => set.add(`${s.x},${s.y}`))
   })
   obstacles.forEach((o) => set.add(`${o.x},${o.y}`))
-  set.add(`${food.x},${food.y}`)
+  foods.forEach((f) => set.add(`${f.x},${f.y}`))
   return set
 }
 
@@ -165,20 +171,24 @@ function readSharedGame(
   rows: number
 ): SharedGameState {
   const gameMap = doc.getMap(`game`)
-  const food = (gameMap.get(`food`) as Point | undefined) || {
-    x: Math.floor(cols / 2),
-    y: 3,
-  }
+  // Support legacy single-food format
+  const rawFoods = gameMap.get(`foods`) as Array<FoodItem> | undefined
+  const legacyFood = gameMap.get(`food`) as Point | undefined
+  const foods = rawFoods
+    ? rawFoods
+    : legacyFood
+      ? [{ ...legacyFood, age: FOOD_FADE_IN }]
+      : [{ x: Math.floor(cols / 2), y: 3, age: FOOD_FADE_IN }]
   const obstacles =
     (gameMap.get(`obstacles`) as Array<Obstacle> | undefined) || []
   const tick = (gameMap.get(`tick`) as number) || 0
-  return { food, obstacles, tick, cols, rows }
+  return { foods, obstacles, tick, cols, rows }
 }
 
 function writeSharedGame(doc: Y.Doc, state: Partial<SharedGameState>) {
   const gameMap = doc.getMap(`game`)
   doc.transact(() => {
-    if (state.food !== undefined) gameMap.set(`food`, state.food)
+    if (state.foods !== undefined) gameMap.set(`foods`, state.foods)
     if (state.obstacles !== undefined) gameMap.set(`obstacles`, state.obstacles)
     if (state.tick !== undefined) gameMap.set(`tick`, state.tick)
   })
@@ -223,7 +233,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
   const [, setLocalDir] = useState({ dx: 1, dy: 0 })
   const [localScore, setLocalScore] = useState(0)
   const [sharedState, setSharedState] = useState<SharedGameState>({
-    food: { x: Math.floor(cols / 2), y: 3 },
+    foods: [{ x: Math.floor(cols / 2), y: 3, age: FOOD_FADE_IN }],
     obstacles: [],
     tick: 0,
     cols,
@@ -235,6 +245,9 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
   const [awarenessStates, setAwarenessStates] = useState<Map<number, any>>(
     new Map()
   )
+  const [copied, setCopied] = useState(false)
+  const [showPlayers, setShowPlayers] = useState(false)
+  const displayRoomName = roomId.replace(/__\d+x\d+(?:_\d+ms)?$/, ``)
 
   // High scores from StreamDB
   const { data: highScores = [] } = useLiveQuery(
@@ -318,9 +331,9 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     })
 
     const gameMap = doc.getMap(`game`)
-    if (!gameMap.has(`food`)) {
+    if (!gameMap.has(`foods`) && !gameMap.has(`food`)) {
       writeSharedGame(doc, {
-        food: { x: rand(0, cols - 1), y: rand(0, rows - 1) },
+        foods: [{ x: rand(0, cols - 1), y: rand(0, rows - 1), age: 0 }],
         obstacles: [],
         tick: 0,
       })
@@ -423,10 +436,29 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     [doc, playerId, playerName, playerColor, initSnake, submitScoreIfHigher]
   )
 
-  // Touch direction handler
-  const handleDirection = useCallback((dx: number, dy: number) => {
-    dirQueue.current.push({ dx, dy })
-  }, [])
+  // Touch handler — swipe relative to snake head
+  const svgRef = useRef<SVGSVGElement>(null)
+  const handleTouch = useCallback(
+    (e: React.TouchEvent) => {
+      e.preventDefault()
+      if (!svgRef.current || localSnake.length === 0) return
+      const touch = e.touches[0]
+      const rect = svgRef.current.getBoundingClientRect()
+      // Map touch position to game grid coordinates
+      const touchX = ((touch.clientX - rect.left) / rect.width) * cols
+      const touchY = ((touch.clientY - rect.top) / rect.height) * rows
+      const head = localSnake[0]
+      const dx = touchX - (head.x + 0.5)
+      const dy = touchY - (head.y + 0.5)
+      // Choose the axis with the larger delta
+      if (Math.abs(dx) > Math.abs(dy)) {
+        dirQueue.current.push({ dx: dx > 0 ? 1 : -1, dy: 0 })
+      } else {
+        dirQueue.current.push({ dx: 0, dy: dy > 0 ? 1 : -1 })
+      }
+    },
+    [localSnake, cols, rows]
+  )
 
   // Game loop
   useEffect(() => {
@@ -486,18 +518,16 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
 
       snake.unshift({ x: nx, y: ny })
 
-      let foodChanged = false
-      let newFood = sharedGame.food
-      if (nx === sharedGame.food.x && ny === sharedGame.food.y) {
+      // Check food collision — eat any food at the new head position
+      let currentFoods = sharedGame.foods.map((f) => ({ ...f }))
+      let foodsChanged = false
+      const eatenIdx = currentFoods.findIndex(
+        (f) => f.x === nx && f.y === ny && f.age >= FOOD_FADE_IN
+      )
+      if (eatenIdx >= 0) {
         score += POINTS_FOOD
-        const occupied = buildOccupied(
-          snake,
-          others,
-          currentObstacles,
-          sharedGame.food
-        )
-        newFood = spawnFood(cols, rows, occupied)
-        foodChanged = true
+        currentFoods.splice(eatenIdx, 1)
+        foodsChanged = true
       } else {
         snake.pop()
       }
@@ -510,6 +540,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       let obstaclesChanged = false
 
       if (isObstacleManager) {
+        // Age obstacles
         currentObstacles = currentObstacles.map((o) => ({
           ...o,
           age: o.age + 1,
@@ -526,7 +557,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
             snake,
             others,
             currentObstacles,
-            newFood
+            currentFoods
           )
           const obs = spawnObstacle(
             cols,
@@ -539,12 +570,31 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
             currentObstacles.push(obs)
           }
         }
+
+        // Age foods and remove expired
+        currentFoods = currentFoods.map((f) => ({ ...f, age: f.age + 1 }))
+        currentFoods = currentFoods.filter((f) => f.age < FOOD_LIFESPAN)
+        foodsChanged = true
+
+        // Spawn new food if below max (max = ceil(playerCount / 2), min 1)
+        const playerCount = allPlayerIds.length
+        const maxFoods = Math.max(1, Math.ceil(playerCount / 2))
+        if (currentFoods.length < maxFoods) {
+          const occupied = buildOccupied(
+            snake,
+            others,
+            currentObstacles,
+            currentFoods
+          )
+          const newFoodPos = spawnFood(cols, rows, occupied)
+          currentFoods.push({ ...newFoodPos, age: 0 })
+        }
       }
 
-      if (obstaclesChanged || foodChanged) {
+      if (obstaclesChanged || foodsChanged) {
         const update: Partial<SharedGameState> = {}
         if (obstaclesChanged) update.obstacles = currentObstacles
-        if (foodChanged) update.food = newFood
+        if (foodsChanged) update.foods = currentFoods
         writeSharedGame(doc, update)
       }
 
@@ -581,9 +631,16 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
 
   const W = cols * CELL
   const H = rows * CELL
-
   const topScore = mergedHighScores.length > 0 ? mergedHighScores[0] : null
   const connectedCount = awarenessStates.size + 1
+
+  const copyRoom = () => {
+    navigator.clipboard.writeText(displayRoomName).catch(() => {})
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1200)
+  }
+
+  const s = { font: 8, score: 14 } as const
 
   return (
     <div
@@ -596,7 +653,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         color: PALETTE.text,
         minHeight: `100dvh`,
         maxHeight: `100dvh`,
-        padding: `8px`,
+        padding: 8,
         boxSizing: `border-box`,
         overflow: `hidden`,
         touchAction: `none`,
@@ -606,11 +663,9 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
         @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.2 } }
         .live-dot { animation: blink 1.5s ease-in-out infinite; }
-        .dpad-btn { transition: none; -webkit-tap-highlight-color: transparent; }
-        .dpad-btn:active { background: rgba(208,188,255,0.1) !important; color: ${PALETTE.accent} !important; }
       `}</style>
 
-      {/* Header */}
+      {/* Header: EXIT | name@room | PLAYERS */}
       <div
         style={{
           display: `flex`,
@@ -619,6 +674,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           width: `100%`,
           maxWidth: W,
           marginBottom: 8,
+          fontSize: s.font,
         }}
       >
         <button
@@ -628,27 +684,118 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
             border: `none`,
             color: PALETTE.accent,
             fontFamily: `inherit`,
-            fontSize: 9,
+            fontSize: s.font,
             padding: `4px 0`,
             cursor: `pointer`,
-            opacity: 0.6,
           }}
         >
           EXIT
         </button>
         <div
-          style={{
-            fontSize: 12,
-            letterSpacing: 4,
-            color: PALETTE.accent,
-          }}
+          style={{ display: `flex`, gap: 6, cursor: `pointer` }}
+          onClick={copyRoom}
+          title="Click to copy room name"
         >
-          DURABLE SNAKE
+          <span style={{ color: PALETTE.accent }}>{playerName}</span>
+          <span style={{ color: PALETTE.dim }}>@</span>
+          <span
+            style={{
+              color: copied ? PALETTE.accent : PALETTE.text,
+              textDecoration: `underline`,
+              textUnderlineOffset: 3,
+            }}
+          >
+            {copied ? `COPIED` : displayRoomName}
+          </span>
         </div>
-        <div style={{ fontSize: 8, color: PALETTE.dim }}>{connectedCount}P</div>
+        <div
+          style={{
+            color: PALETTE.accent,
+            position: `relative`,
+            cursor: `pointer`,
+          }}
+          onMouseEnter={() => setShowPlayers(true)}
+          onMouseLeave={() => setShowPlayers(false)}
+          onClick={() => setShowPlayers((v) => !v)}
+        >
+          {connectedCount} PLAYERS
+          {showPlayers && otherPlayers.size > 0 && (
+            <div
+              style={{
+                position: `absolute`,
+                top: `100%`,
+                right: 0,
+                marginTop: 6,
+                background: PALETTE.bg,
+                border: `1px solid ${PALETTE.gridLine}`,
+                padding: 10,
+                zIndex: 5,
+                minWidth: 120,
+              }}
+            >
+              {Array.from(otherPlayers.values()).map((p, i) => (
+                <div
+                  key={i}
+                  style={{
+                    display: `flex`,
+                    justifyContent: `space-between`,
+                    gap: 8,
+                    padding: `3px 0`,
+                  }}
+                >
+                  <span
+                    style={{ display: `flex`, alignItems: `center`, gap: 4 }}
+                  >
+                    <span
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: `50%`,
+                        background: p.color,
+                        display: `inline-block`,
+                      }}
+                    />
+                    {p.name}
+                  </span>
+                  <span style={{ color: PALETTE.accent }}>{p.score}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
       </div>
 
-      {/* Score bar */}
+      {/* High score player name (right-aligned, above score row) */}
+      {topScore && (
+        <div
+          style={{
+            display: `flex`,
+            justifyContent: `flex-end`,
+            alignItems: `center`,
+            gap: 4,
+            width: `100%`,
+            maxWidth: W,
+            marginBottom: 6,
+            fontSize: s.font,
+          }}
+        >
+          <span style={{ color: PALETTE.dim }}>{topScore.playerName}</span>
+          {topScore.live && (
+            <span
+              className="live-dot"
+              style={{
+                width: 5,
+                height: 5,
+                borderRadius: `50%`,
+                background: PALETTE.accent,
+                display: `inline-block`,
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Score row: both numbers on one baseline */}
       <div
         style={{
           display: `flex`,
@@ -657,90 +804,32 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           width: `100%`,
           maxWidth: W,
           marginBottom: 8,
+          fontSize: s.font,
         }}
       >
-        <div>
-          <div style={{ fontSize: 7, color: PALETTE.dim, marginBottom: 4 }}>
-            {playerName}
-          </div>
-          <div style={{ display: `flex`, alignItems: `baseline`, gap: 6 }}>
-            <span style={{ fontSize: 16, color: PALETTE.accent }}>
-              {localScore}
-            </span>
-            <span style={{ fontSize: 8, color: PALETTE.dim }}>SCORE</span>
-          </div>
-        </div>
-        {otherPlayers.size > 0 && (
-          <div style={{ display: `flex`, gap: 10, fontSize: 8 }}>
-            {Array.from(otherPlayers.values()).map((p, i) => (
-              <span
-                key={i}
-                style={{ display: `flex`, alignItems: `center`, gap: 4 }}
-              >
-                <span
-                  style={{
-                    width: 6,
-                    height: 6,
-                    borderRadius: `50%`,
-                    background: p.color,
-                    display: `inline-block`,
-                  }}
-                />
-                <span style={{ color: PALETTE.dim }}>{p.name}</span>
-                <span style={{ color: PALETTE.accent }}>{p.score}</span>
-              </span>
-            ))}
-          </div>
-        )}
+        <span>
+          <span style={{ fontSize: s.score, color: PALETTE.accent }}>
+            {localScore}
+          </span>
+          {` `}
+          <span style={{ color: PALETTE.dim }}>SCORE</span>
+        </span>
         {topScore && (
-          <div style={{ textAlign: `right` }}>
-            <div
-              style={{
-                display: `flex`,
-                alignItems: `center`,
-                justifyContent: `flex-end`,
-                gap: 4,
-                marginBottom: 4,
-              }}
-            >
-              <span style={{ fontSize: 7, color: PALETTE.dim }}>
-                {topScore.playerName}
-              </span>
-              {topScore.live && (
-                <span
-                  className="live-dot"
-                  style={{
-                    width: 5,
-                    height: 5,
-                    borderRadius: `50%`,
-                    background: PALETTE.accent,
-                    display: `inline-block`,
-                  }}
-                />
-              )}
-            </div>
-            <div
-              style={{
-                display: `flex`,
-                alignItems: `baseline`,
-                justifyContent: `flex-end`,
-                gap: 6,
-              }}
-            >
-              <span style={{ fontSize: 8, color: PALETTE.dim }}>
-                HIGH SCORE
-              </span>
-              <span style={{ fontSize: 14, color: PALETTE.accent }}>
-                {topScore.score}
-              </span>
-            </div>
-          </div>
+          <span>
+            <span style={{ color: PALETTE.dim }}>HIGH SCORE</span>
+            {` `}
+            <span style={{ fontSize: s.score, color: PALETTE.accent }}>
+              {topScore.score}
+            </span>
+          </span>
         )}
       </div>
 
       {/* Game board */}
       <svg
+        ref={svgRef}
         viewBox={`0 0 ${W} ${H}`}
+        onTouchStart={handleTouch}
         style={{
           width: `100%`,
           maxWidth: W,
@@ -749,7 +838,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           border: `1px solid ${PALETTE.gridLine}`,
           flex: `1 1 auto`,
           minHeight: 0,
-          maxHeight: `calc(100dvh - 200px)`,
+          maxHeight: `calc(100dvh - 80px)`,
           objectFit: `contain`,
         }}
       >
@@ -778,331 +867,145 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         ))}
 
         {/* Food */}
-        <rect
-          x={sharedState.food.x * CELL + 1}
-          y={sharedState.food.y * CELL + 1}
-          width={CELL - 2}
-          height={CELL - 2}
-          fill={PALETTE.food}
-          stroke={PALETTE.food}
-          strokeWidth={1.5}
-        />
+        {sharedState.foods.map((f, i) => (
+          <rect
+            key={`food-${i}`}
+            x={f.x * CELL + 1}
+            y={f.y * CELL + 1}
+            width={CELL - 2}
+            height={CELL - 2}
+            fill={PALETTE.food}
+            stroke={PALETTE.food}
+            strokeWidth={1.5}
+            opacity={fadeOpacity(
+              f.age,
+              FOOD_FADE_IN,
+              FOOD_LIFESPAN,
+              FOOD_FADE_OUT
+            )}
+          />
+        ))}
 
         {/* Obstacles */}
-        {(() => {
-          const obsSet = new Set(
-            sharedState.obstacles
-              .filter((o) => o.age >= 3)
-              .map((o) => `${o.x},${o.y}`)
-          )
-          return sharedState.obstacles.map((o, i) => {
-            const isAppearing = o.age < 3
-            const isFading = o.age >= 180
-            const opacity = isAppearing
-              ? o.age / 3
-              : isFading
-                ? 1 - (o.age - 180) / 20
-                : 1
-            const x = o.x * CELL
-            const y = o.y * CELL
-            const color = PALETTE.obsSolid
-            // Appearing obstacles render as standalone rects
-            if (isAppearing) {
-              return (
-                <rect
-                  key={`obs-${i}`}
-                  x={x + 1}
-                  y={y + 1}
-                  width={CELL - 2}
-                  height={CELL - 2}
-                  fill="none"
-                  stroke={color}
-                  strokeWidth={1.5}
-                  opacity={opacity}
-                />
-              )
-            }
-            // Solid/fading obstacles merge like snakes
-            return (
-              <g key={`obs-${i}`} opacity={opacity}>
-                {!obsSet.has(`${o.x},${o.y - 1}`) && (
-                  <line
-                    x1={x}
-                    y1={y}
-                    x2={x + CELL}
-                    y2={y}
-                    stroke={color}
-                    strokeWidth={1.5}
-                  />
-                )}
-                {!obsSet.has(`${o.x},${o.y + 1}`) && (
-                  <line
-                    x1={x}
-                    y1={y + CELL}
-                    x2={x + CELL}
-                    y2={y + CELL}
-                    stroke={color}
-                    strokeWidth={1.5}
-                  />
-                )}
-                {!obsSet.has(`${o.x - 1},${o.y}`) && (
-                  <line
-                    x1={x}
-                    y1={y}
-                    x2={x}
-                    y2={y + CELL}
-                    stroke={color}
-                    strokeWidth={1.5}
-                  />
-                )}
-                {!obsSet.has(`${o.x + 1},${o.y}`) && (
-                  <line
-                    x1={x + CELL}
-                    y1={y}
-                    x2={x + CELL}
-                    y2={y + CELL}
-                    stroke={color}
-                    strokeWidth={1.5}
-                  />
-                )}
-              </g>
-            )
-          })
-        })()}
+        {renderMergedBlocks(
+          sharedState.obstacles.filter((o) => o.age >= 3),
+          PALETTE.obsSolid,
+          1.5,
+          (o) => fadeOpacity(o.age, 3, 200, 20)
+        )}
+        {sharedState.obstacles
+          .filter((o) => o.age < 3)
+          .map((o, i) => (
+            <rect
+              key={`obs-new-${i}`}
+              x={o.x * CELL + 1}
+              y={o.y * CELL + 1}
+              width={CELL - 2}
+              height={CELL - 2}
+              fill="none"
+              stroke={PALETTE.obsSolid}
+              strokeWidth={1.5}
+              opacity={o.age / 3}
+            />
+          ))}
 
-        {/* Other players' snakes */}
-        {Array.from(otherPlayers.entries()).map(([id, p]) => {
-          const set = new Set(p.snake.map((s) => `${s.x},${s.y}`))
-          return (
-            <g key={`player-${id}`} opacity={0.4}>
-              {p.snake.map((seg, i) => {
-                const x = seg.x * CELL
-                const y = seg.y * CELL
-                return (
-                  <g key={`${id}-seg-${i}`}>
-                    {!set.has(`${seg.x},${seg.y - 1}`) && (
-                      <line
-                        x1={x}
-                        y1={y}
-                        x2={x + CELL}
-                        y2={y}
-                        stroke={p.color}
-                        strokeWidth={1}
-                      />
-                    )}
-                    {!set.has(`${seg.x},${seg.y + 1}`) && (
-                      <line
-                        x1={x}
-                        y1={y + CELL}
-                        x2={x + CELL}
-                        y2={y + CELL}
-                        stroke={p.color}
-                        strokeWidth={1}
-                      />
-                    )}
-                    {!set.has(`${seg.x - 1},${seg.y}`) && (
-                      <line
-                        x1={x}
-                        y1={y}
-                        x2={x}
-                        y2={y + CELL}
-                        stroke={p.color}
-                        strokeWidth={1}
-                      />
-                    )}
-                    {!set.has(`${seg.x + 1},${seg.y}`) && (
-                      <line
-                        x1={x}
-                        y1={y}
-                        x2={x + CELL}
-                        y2={y + CELL}
-                        stroke={p.color}
-                        strokeWidth={1}
-                      />
-                    )}
-                  </g>
-                )
-              })}
-              {p.snake.length > 0 && (
-                <text
-                  x={p.snake[0].x * CELL + CELL / 2}
-                  y={p.snake[0].y * CELL - 5}
-                  textAnchor="middle"
-                  fontSize={7}
-                  fill={p.color}
-                  opacity={0.7}
-                  fontFamily="'Press Start 2P', monospace"
-                >
-                  {p.name}
-                </text>
-              )}
-            </g>
-          )
-        })}
+        {/* Other players */}
+        {Array.from(otherPlayers.entries()).map(([id, p]) => (
+          <g key={id} opacity={0.5}>
+            {renderMergedBlocks(p.snake, p.color, 1.5)}
+            {p.snake.length > 0 && (
+              <text
+                x={p.snake[0].x * CELL + CELL / 2}
+                y={p.snake[0].y * CELL - 5}
+                textAnchor="middle"
+                fontSize={7}
+                fill={p.color}
+                opacity={0.7}
+                fontFamily="'Press Start 2P', monospace"
+              >
+                {p.name}
+              </text>
+            )}
+          </g>
+        ))}
 
         {/* Local snake */}
-        {(() => {
-          const set = new Set(localSnake.map((s) => `${s.x},${s.y}`))
-          return localSnake.map((seg, i) => {
-            const x = seg.x * CELL
-            const y = seg.y * CELL
-            const sw = 1.5
-            return (
-              <g key={`seg-${i}`}>
-                {!set.has(`${seg.x},${seg.y - 1}`) && (
-                  <line
-                    x1={x}
-                    y1={y}
-                    x2={x + CELL}
-                    y2={y}
-                    stroke={playerColor}
-                    strokeWidth={sw}
-                  />
-                )}
-                {!set.has(`${seg.x},${seg.y + 1}`) && (
-                  <line
-                    x1={x}
-                    y1={y + CELL}
-                    x2={x + CELL}
-                    y2={y + CELL}
-                    stroke={playerColor}
-                    strokeWidth={sw}
-                  />
-                )}
-                {!set.has(`${seg.x - 1},${seg.y}`) && (
-                  <line
-                    x1={x}
-                    y1={y}
-                    x2={x}
-                    y2={y + CELL}
-                    stroke={playerColor}
-                    strokeWidth={sw}
-                  />
-                )}
-                {!set.has(`${seg.x + 1},${seg.y}`) && (
-                  <line
-                    x1={x + CELL}
-                    y1={y}
-                    x2={x + CELL}
-                    y2={y + CELL}
-                    stroke={playerColor}
-                    strokeWidth={sw}
-                  />
-                )}
-              </g>
-            )
-          })
-        })()}
+        {renderMergedBlocks(localSnake, playerColor, 1.5)}
       </svg>
-
-      {/* Circular D-pad */}
-      <div
-        style={{
-          position: `relative`,
-          width: 140,
-          height: 140,
-          marginTop: 8,
-          flexShrink: 0,
-          userSelect: `none`,
-          WebkitUserSelect: `none`,
-        }}
-      >
-        {/* Outer ring */}
-        <div
-          style={{
-            position: `absolute`,
-            inset: 0,
-            borderRadius: `50%`,
-            border: `1px solid rgba(208,188,255,0.15)`,
-          }}
-        />
-        {/* Up */}
-        <button
-          className="dpad-btn"
-          style={{
-            ...dpadCircleBtn,
-            top: 6,
-            left: `50%`,
-            transform: `translateX(-50%)`,
-          }}
-          onTouchStart={(e) => {
-            e.preventDefault()
-            handleDirection(0, -1)
-          }}
-          onMouseDown={() => handleDirection(0, -1)}
-        >
-          &#9650;
-        </button>
-        {/* Down */}
-        <button
-          className="dpad-btn"
-          style={{
-            ...dpadCircleBtn,
-            bottom: 6,
-            left: `50%`,
-            transform: `translateX(-50%)`,
-          }}
-          onTouchStart={(e) => {
-            e.preventDefault()
-            handleDirection(0, 1)
-          }}
-          onMouseDown={() => handleDirection(0, 1)}
-        >
-          &#9660;
-        </button>
-        {/* Left */}
-        <button
-          className="dpad-btn"
-          style={{
-            ...dpadCircleBtn,
-            left: 6,
-            top: `50%`,
-            transform: `translateY(-50%)`,
-          }}
-          onTouchStart={(e) => {
-            e.preventDefault()
-            handleDirection(-1, 0)
-          }}
-          onMouseDown={() => handleDirection(-1, 0)}
-        >
-          &#9664;
-        </button>
-        {/* Right */}
-        <button
-          className="dpad-btn"
-          style={{
-            ...dpadCircleBtn,
-            right: 6,
-            top: `50%`,
-            transform: `translateY(-50%)`,
-          }}
-          onTouchStart={(e) => {
-            e.preventDefault()
-            handleDirection(1, 0)
-          }}
-          onMouseDown={() => handleDirection(1, 0)}
-        >
-          &#9654;
-        </button>
-      </div>
     </div>
   )
 }
 
-const dpadCircleBtn: React.CSSProperties = {
-  position: `absolute`,
-  width: 44,
-  height: 44,
-  borderRadius: `50%`,
-  background: `transparent`,
-  border: `1px solid rgba(208,188,255,0.2)`,
-  color: `rgba(208,188,255,0.35)`,
-  fontSize: 14,
-  fontFamily: `inherit`,
-  cursor: `pointer`,
-  display: `flex`,
-  alignItems: `center`,
-  justifyContent: `center`,
-  touchAction: `manipulation`,
-  padding: 0,
+// ============================================================================
+// Shared SVG helpers
+// ============================================================================
+
+function fadeOpacity(
+  age: number,
+  fadeIn: number,
+  lifespan: number,
+  fadeOut: number
+): number {
+  if (age < fadeIn) return age / fadeIn
+  if (age >= lifespan - fadeOut)
+    return Math.max(0, 1 - (age - (lifespan - fadeOut)) / fadeOut)
+  return 1
+}
+
+function renderMergedBlocks(
+  points: Array<{ x: number; y: number; age?: number }>,
+  color: string,
+  sw: number,
+  opacityFn?: (p: { x: number; y: number; age?: number }) => number
+) {
+  const set = new Set(points.map((p) => `${p.x},${p.y}`))
+  return points.map((p, i) => {
+    const x = p.x * CELL
+    const y = p.y * CELL
+    const opacity = opacityFn ? opacityFn(p) : undefined
+    return (
+      <g key={i} opacity={opacity}>
+        {!set.has(`${p.x},${p.y - 1}`) && (
+          <line
+            x1={x}
+            y1={y}
+            x2={x + CELL}
+            y2={y}
+            stroke={color}
+            strokeWidth={sw}
+          />
+        )}
+        {!set.has(`${p.x},${p.y + 1}`) && (
+          <line
+            x1={x}
+            y1={y + CELL}
+            x2={x + CELL}
+            y2={y + CELL}
+            stroke={color}
+            strokeWidth={sw}
+          />
+        )}
+        {!set.has(`${p.x - 1},${p.y}`) && (
+          <line
+            x1={x}
+            y1={y}
+            x2={x}
+            y2={y + CELL}
+            stroke={color}
+            strokeWidth={sw}
+          />
+        )}
+        {!set.has(`${p.x + 1},${p.y}`) && (
+          <line
+            x1={x + CELL}
+            y1={y}
+            x2={x + CELL}
+            y2={y + CELL}
+            stroke={color}
+            strokeWidth={sw}
+          />
+        )}
+      </g>
+    )
+  })
 }

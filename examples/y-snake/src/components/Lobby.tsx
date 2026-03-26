@@ -28,6 +28,22 @@ const SPEED_OPTIONS = [
   { label: `Insane`, tick: 80 },
 ]
 
+function randomRoomName(): string {
+  const words = [
+    `neon`,
+    `cyber`,
+    `pixel`,
+    `hyper`,
+    `turbo`,
+    `mega`,
+    `ultra`,
+    `nova`,
+  ]
+  const word = words[Math.floor(Math.random() * words.length)]
+  const num = Math.floor(Math.random() * 900) + 100
+  return `${word}-${num}`
+}
+
 interface LobbyProps {
   playerName: string
   onPlayerNameChange: (name: string) => void
@@ -40,11 +56,13 @@ export function Lobby({
   onJoinRoom,
 }: LobbyProps) {
   const { registryDB } = useRegistryContext()
-  const [roomName, setRoomName] = useState(``)
-  const [sizeIdx, setSizeIdx] = useState(1) // default Medium
-  const [speedIdx, setSpeedIdx] = useState(1) // default Normal
+  const [roomName, setRoomName] = useState(randomRoomName)
+  const [sizeIdx] = useState(1) // default Medium
+  const [speedIdx] = useState(1) // default Normal
   const [isCreating, setIsCreating] = useState(false)
   const [roomPage, setRoomPage] = useState(0)
+  const [showJoinModal, setShowJoinModal] = useState(false)
+  const [joinRoomName, setJoinRoomName] = useState(``)
 
   // Tick every second so countdowns update
   const [, setTick] = useState(0)
@@ -99,7 +117,6 @@ export function Lobby({
       `}</style>
 
       <div style={styles.title}>DURABLE SNAKE</div>
-      <div style={styles.subtitle}>MULTIPLAYER</div>
 
       {/* Player Name */}
       <div style={styles.card}>
@@ -113,62 +130,106 @@ export function Lobby({
         />
       </div>
 
-      {/* Create Room */}
+      {/* Room */}
       <div style={styles.card}>
-        <div style={styles.cardTitle}>NEW ROOM</div>
+        <div style={styles.cardTitle}>ROOM</div>
 
-        <label style={styles.label}>ROOM NAME</label>
         <input
           style={styles.input}
           value={roomName}
           onChange={(e) => setRoomName(e.target.value)}
-          placeholder="my-room"
+          placeholder="room name"
           onKeyDown={(e) => e.key === `Enter` && createRoom()}
         />
 
-        <label style={styles.label}>BOARD</label>
-        <div style={styles.sizeRow}>
-          {BOARD_SIZES.map((s, i) => (
-            <button
-              key={s.label}
-              className="lobby-btn"
-              style={{
-                ...styles.sizeBtn,
-                ...(i === sizeIdx ? styles.sizeBtnActive : {}),
-              }}
-              onClick={() => setSizeIdx(i)}
-            >
-              {s.label}
-            </button>
-          ))}
+        <div style={{ display: `flex`, gap: 6 }}>
+          <button
+            className="lobby-btn"
+            style={{
+              ...styles.createBtn,
+              flex: 1,
+              opacity: isCreating ? 0.6 : 1,
+            }}
+            onClick={createRoom}
+            disabled={isCreating}
+          >
+            {isCreating ? `CREATING...` : `CREATE`}
+          </button>
+          <button
+            className="lobby-btn"
+            style={{ ...styles.joinBtn, flex: 1 }}
+            onClick={() => setShowJoinModal(true)}
+          >
+            JOIN
+          </button>
         </div>
-
-        <label style={styles.label}>SPEED</label>
-        <div style={styles.sizeRow}>
-          {SPEED_OPTIONS.map((s, i) => (
-            <button
-              key={s.label}
-              className="lobby-btn"
-              style={{
-                ...styles.sizeBtn,
-                ...(i === speedIdx ? styles.sizeBtnActive : {}),
-              }}
-              onClick={() => setSpeedIdx(i)}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
-
-        <button
-          className="lobby-btn"
-          style={{ ...styles.createBtn, opacity: isCreating ? 0.6 : 1 }}
-          onClick={createRoom}
-          disabled={isCreating}
-        >
-          {isCreating ? `CREATING...` : `CREATE & JOIN`}
-        </button>
       </div>
+
+      {/* Join modal */}
+      {showJoinModal && (
+        <div
+          style={{
+            position: `fixed`,
+            inset: 0,
+            background: `rgba(0,0,0,0.7)`,
+            display: `flex`,
+            alignItems: `center`,
+            justifyContent: `center`,
+            zIndex: 10,
+          }}
+          onClick={() => setShowJoinModal(false)}
+        >
+          <div
+            style={{ ...styles.card, marginBottom: 0 }}
+            onClick={(e) => e.stopPropagation()}
+          >
+            <div style={styles.cardTitle}>JOIN ROOM</div>
+            <input
+              style={styles.input}
+              value={joinRoomName}
+              onChange={(e) => setJoinRoomName(e.target.value)}
+              placeholder="enter room name"
+              autoFocus
+              onKeyDown={(e) => {
+                if (e.key === `Enter` && joinRoomName.trim()) {
+                  const size = BOARD_SIZES[sizeIdx]
+                  const speed = SPEED_OPTIONS[speedIdx]
+                  const roomId = `${joinRoomName.trim()}__${size.cols}x${size.rows}_${speed.tick}ms`
+                  onJoinRoom(roomId)
+                }
+              }}
+            />
+            <div style={{ display: `flex`, gap: 6 }}>
+              <button
+                className="lobby-btn"
+                style={{ ...styles.joinBtn, flex: 1 }}
+                onClick={() => setShowJoinModal(false)}
+              >
+                CANCEL
+              </button>
+              <button
+                className="lobby-btn"
+                style={{
+                  ...styles.createBtn,
+                  flex: 1,
+                  opacity: joinRoomName.trim() ? 1 : 0.4,
+                }}
+                disabled={!joinRoomName.trim()}
+                onClick={() => {
+                  if (joinRoomName.trim()) {
+                    const size = BOARD_SIZES[sizeIdx]
+                    const speed = SPEED_OPTIONS[speedIdx]
+                    const roomId = `${joinRoomName.trim()}__${size.cols}x${size.rows}_${speed.tick}ms`
+                    onJoinRoom(roomId)
+                  }
+                }}
+              >
+                JOIN
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Active Rooms */}
       {sortedRooms.length > 0 && (
@@ -232,8 +293,6 @@ export function Lobby({
           )}
         </div>
       )}
-
-      <div style={styles.hint}>Share the URL to play together.</div>
     </div>
   )
 }
@@ -245,12 +304,15 @@ function RoomItem({
   room: RoomMetadata
   onJoin: () => void
 }) {
+  const [copied, setCopied] = useState(false)
   const count = room.playerCount ?? 0
-  const remaining = Math.max(0, room.expiresAt - Date.now())
-  const mins = Math.floor(remaining / 60000)
-  const secs = Math.floor((remaining % 60000) / 1000)
-  const timeLeft = `${mins}:${secs.toString().padStart(2, `0`)}`
-  const isLow = remaining < 120_000
+
+  const copyName = (e: React.MouseEvent) => {
+    e.stopPropagation()
+    navigator.clipboard.writeText(room.name).catch(() => {})
+    setCopied(true)
+    setTimeout(() => setCopied(false), 1200)
+  }
 
   return (
     <div
@@ -267,7 +329,17 @@ function RoomItem({
     >
       <div style={{ display: `flex`, flexDirection: `column`, gap: 2 }}>
         <div style={{ display: `flex`, alignItems: `center`, gap: 6 }}>
-          <span style={{ fontSize: 8, color: PALETTE.text }}>{room.name}</span>
+          <span
+            style={{
+              fontSize: 8,
+              color: copied ? PALETTE.accent : PALETTE.text,
+              cursor: `pointer`,
+            }}
+            onClick={copyName}
+            title="Click to copy room name"
+          >
+            {copied ? `COPIED` : room.name}
+          </span>
           {count > 0 && (
             <span
               style={{
@@ -280,10 +352,7 @@ function RoomItem({
           )}
         </div>
         <span style={{ fontSize: 7, color: PALETTE.dim }}>
-          {room.boardSize} ·{` `}
-          <span style={{ color: isLow ? PALETTE.warn : PALETTE.dim }}>
-            {timeLeft}
-          </span>
+          {room.boardSize}
         </span>
       </div>
       <button
@@ -325,7 +394,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 16,
     letterSpacing: 4,
     color: PALETTE.accent,
-    marginBottom: 4,
+    marginBottom: 24,
   },
   subtitle: {
     fontSize: 7,
@@ -396,7 +465,17 @@ const styles: Record<string, React.CSSProperties> = {
     border: `none`,
     cursor: `pointer`,
     letterSpacing: 2,
-    marginTop: 4,
+  },
+  joinBtn: {
+    width: `100%`,
+    padding: `10px 0`,
+    fontSize: 8,
+    fontFamily: `inherit`,
+    background: `transparent`,
+    color: PALETTE.accent,
+    border: `1px solid ${PALETTE.accent}`,
+    cursor: `pointer`,
+    letterSpacing: 2,
   },
   hint: {
     fontSize: 6,

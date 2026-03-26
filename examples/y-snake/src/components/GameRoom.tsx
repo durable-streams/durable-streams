@@ -34,6 +34,14 @@ function getColor(index: number): string {
   return PLAYER_COLORS[index % PLAYER_COLORS.length]
 }
 
+function hashName(name: string): number {
+  let hash = 0
+  for (let i = 0; i < name.length; i++) {
+    hash = (hash * 31 + name.charCodeAt(i)) | 0
+  }
+  return Math.abs(hash)
+}
+
 // ============================================================================
 // GameRoom component
 // ============================================================================
@@ -57,7 +65,7 @@ export function GameRoom({
 
   const [{ playerId, playerColor }] = useState(() => {
     const id = `player-${Math.random().toString(36).slice(2, 10)}`
-    const colorIdx = Math.floor(Math.random() * PLAYER_COLORS.length)
+    const colorIdx = hashName(playerName)
     return { playerId: id, playerColor: getColor(colorIdx) }
   })
 
