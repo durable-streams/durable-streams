@@ -1,6 +1,6 @@
 # Yjs collaborative editor demo
 
-A real-time collaborative text editor using Yjs, CodeMirror, and Durable Streams. Open the same room in multiple browser windows to see live cursors and presence.
+A real-time collaborative text editor using y-durable-streams and CodeMirror. Open the same room in multiple browser windows to see live cursors and presence.
 
 ## Quick start
 
@@ -26,7 +26,7 @@ pnpm install
 pnpm dev:server
 ```
 
-This starts Caddy (HTTPS on `https://localhost:4443`) and a Yjs server (internal, port 4438). All traffic routes through Caddy.
+This starts Caddy (HTTPS on `https://localhost:4443`) and the y-durable-streams server (internal, port 4438). All traffic routes through Caddy.
 
 ### 3. Start the frontend
 
@@ -48,7 +48,7 @@ Create a room, then open the same URL in another window to collaborate.
 No configuration is needed for local development. When pointing at a remote server, create a `.env` file:
 
 ```env
-# Yjs document server
+# y-durable-streams server
 VITE_YJS_URL=https://your-server.com/v1/yjs
 VITE_YJS_TOKEN=your-bearer-token
 
@@ -59,8 +59,8 @@ VITE_DS_TOKEN=your-bearer-token
 
 | Variable         | Default              | Description                                      |
 | ---------------- | -------------------- | ------------------------------------------------ |
-| `VITE_YJS_URL`   | `<origin>/v1/yjs`    | Yjs document server URL                          |
-| `VITE_YJS_TOKEN` | —                    | Bearer token for the Yjs server                  |
+| `VITE_YJS_URL`   | `<origin>/v1/yjs`    | y-durable-streams server URL                     |
+| `VITE_YJS_TOKEN` | —                    | Bearer token for y-durable-streams               |
 | `VITE_DS_URL`    | `<origin>/v1/stream` | Durable Streams URL (used for the room registry) |
 | `VITE_DS_TOKEN`  | —                    | Bearer token for Durable Streams                 |
 
@@ -71,11 +71,11 @@ VITE_DS_TOKEN=your-bearer-token
 The demo has two server-side components behind a single Caddy origin:
 
 - **`/v1/stream/*`** — Caddy's built-in Durable Streams plugin stores the room registry (a JSON stream tracking which rooms exist).
-- **`/v1/yjs/*`** — A Node.js Yjs server that manages document sync, snapshots, and compaction. It stores Yjs updates in durable streams via Caddy.
+- **`/v1/yjs/*`** — The y-durable-streams server manages document sync, snapshots, and compaction. It stores Yjs updates in durable streams via Caddy.
 
 On the client side:
 
-- **YjsProvider** connects to a room's document, discovers the latest snapshot, applies it, then streams live updates over SSE.
+- **y-durable-streams client** connects to a room's document, discovers the latest snapshot, applies it, then streams live updates over SSE.
 - **Awareness** runs on a separate SSE stream to broadcast cursor positions and user presence.
 - **Room registry** uses StreamDB (backed by Durable State) to track rooms with reactive queries.
 

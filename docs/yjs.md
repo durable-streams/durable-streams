@@ -9,7 +9,7 @@ outline: [2, 3]
 
 Sync [Yjs](https://yjs.dev/) CRDT documents over Durable Streams using plain HTTP — no WebSocket infrastructure needed.
 
-The `@durable-streams/y-durable-streams` package provides a Yjs provider that handles snapshot discovery, live updates via long-polling or SSE, automatic server-side compaction, and optional awareness (presence) for cursors and user status.
+y-durable-streams provides a Yjs provider and server that handle snapshot discovery, live updates via long-polling or SSE, automatic server-side compaction, and optional awareness (presence) for cursors and user status.
 
 ## Installation
 
@@ -122,7 +122,7 @@ const provider = new YjsProvider({
 
 ## Awareness (presence)
 
-Pass an `Awareness` instance to enable presence support. The provider broadcasts local awareness state (cursors, selections, user info) and subscribes to remote awareness updates via a separate SSE stream.
+Pass an `Awareness` instance to enable presence support. y-durable-streams broadcasts local awareness state (cursors, selections, user info) and subscribes to remote awareness updates via a separate SSE stream.
 
 ```typescript
 import * as Y from "yjs"
@@ -156,7 +156,7 @@ Awareness heartbeats are sent every 15 seconds. When the provider disconnects, i
 
 ## How it works
 
-The provider uses a four-step sync protocol over HTTP. For the full wire format and details, see the [Yjs Durable Streams Protocol specification](https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/YJS-PROTOCOL.md).
+y-durable-streams uses a four-step sync protocol over HTTP. For the full wire format and details, see the [Yjs Durable Streams Protocol specification](https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/YJS-PROTOCOL.md).
 
 1. **Snapshot discovery** — Requests `?offset=snapshot`. The server responds with a 307 redirect to the latest snapshot offset, or to `-1` if no snapshot exists.
 2. **Snapshot loading** — Fetches the binary Yjs snapshot and applies it to the local document. The response includes a `stream-next-offset` header indicating where to continue.
@@ -165,7 +165,7 @@ The provider uses a four-step sync protocol over HTTP. For the full wire format 
 
 ### Compaction
 
-The server automatically compacts documents when accumulated updates exceed a size threshold. Compaction creates a new snapshot at the current offset, keeping initial sync fast for new clients. This is transparent to connected clients — existing connections continue uninterrupted.
+y-durable-streams automatically compacts documents when accumulated updates exceed a size threshold. Compaction creates a new snapshot at the current offset, keeping initial sync fast for new clients. This is transparent to connected clients — existing connections continue uninterrupted.
 
 ### URL structure
 
@@ -198,7 +198,7 @@ docId: "org/project/chapter-1"
 docId: "simple-doc"
 ```
 
-**Handle errors gracefully.** The provider automatically reconnects on transient failures, but listen for errors to update the UI.
+**Handle errors gracefully.** y-durable-streams automatically reconnects on transient failures, but listen for errors to update the UI.
 
 ```typescript
 provider.on("error", (error) => {
