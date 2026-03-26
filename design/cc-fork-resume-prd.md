@@ -84,13 +84,13 @@ Ready! Start the session with:
 The command:
 
 1. Reads the metadata stream to get repo URL, branch name, and original cwd
-2. Fetches the export branch from the git remote
-3. Creates a new local branch `cc-session/{new-session-id}` from the export branch (so the clone works on its own branch)
-4. Creates a git worktree for the new branch (isolated from the user's current work)
-5. Reads the JSONL session stream from the compaction checkpoint
-6. Rewrites path-sensitive fields (`cwd`, `sessionId`, `gitBranch`) to match the local environment
-7. Writes the JSONL to the CC projects directory for the worktree's cwd
-8. Prints the command to resume the session
+2. **Auto-detects** whether the current directory is inside the matching git repo:
+   - **If inside the repo**: fetches the export branch and creates a git worktree on a new clone branch (isolated from the user's current work)
+   - **If not in the repo** (or not in a git repo at all): does a fresh `git clone` of the repo and checks out the clone branch
+3. Reads the JSONL session stream from the compaction checkpoint
+4. Rewrites path-sensitive fields (`cwd`, `sessionId`, `gitBranch`) to match the local environment
+5. Writes the JSONL to the CC projects directory for the clone's cwd
+6. Prints the command to resume the session
 
 ### Resuming the cloned session
 
@@ -171,23 +171,32 @@ After this sequence, the user's working directory is exactly as it was before. T
 
 #### Import (clone)
 
-The clone command fetches the export branch and creates an isolated worktree with a new branch for the clone.
+The clone command auto-detects whether the user is inside the matching repo by checking if any remote URL matches the fork metadata's repo URL.
+
+**If inside the repo** (worktree mode):
 
 ```
 1. git fetch origin cc-session/{original-session-id}
 2. git worktree add ./session-{short-id} -b cc-session/{new-session-id} origin/cc-session/{original-session-id}
 ```
 
-This:
-
 - Fetches the export branch without affecting the user's current checkout
-- Creates a worktree at `./session-{short-id}` (using first 8 chars of the session ID for brevity)
-- The worktree is on a new branch `cc-session/{new-session-id}` forked from the export branch
-- The user can `cd` into the worktree and work independently
+- Creates a worktree at `./session-{short-id}` on a new clone branch
+- Multiple clones can coexist as separate worktrees
 
-**Why a new branch on clone:** Each clone gets its own branch so they can commit independently without conflicts. The original export branch (`cc-session/{original-id}`) stays untouched as the common ancestor — important for Phase 3 merging.
+**If not in the repo** (fresh clone mode):
 
-**Why worktrees:** Worktrees let the user work on the cloned session without disrupting their current branch or working directory. Multiple clones can coexist as separate worktrees.
+```
+1. git clone {repo-url} ./session-{short-id}
+2. git checkout cc-session/{original-session-id}
+3. git checkout -b cc-session/{new-session-id}
+```
+
+- Clones the entire repo into `./session-{short-id}`
+- Checks out the export branch, then creates the clone branch from it
+- No worktree needed since the clone is standalone
+
+**In both cases:** each clone gets its own branch `cc-session/{new-session-id}` so they can commit independently. The original export branch stays untouched as the common ancestor for Phase 3 merging.
 
 ### Detecting the git remote URL
 
