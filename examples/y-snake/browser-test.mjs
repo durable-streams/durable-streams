@@ -9,7 +9,9 @@ async function test() {
   const consoleMessages = []
 
   const page = await context.newPage()
-  page.on("console", (msg) => consoleMessages.push(`[${msg.type()}] ${msg.text()}`))
+  page.on("console", (msg) =>
+    consoleMessages.push(`[${msg.type()}] ${msg.text()}`)
+  )
   page.on("pageerror", (err) => errors.push(`PAGE ERROR: ${err.message}`))
 
   // Test 1: Lobby loads
@@ -42,9 +44,19 @@ async function test() {
 
   // Test 3: Game renders
   console.log("--- Test 3: Game board renders ---")
-  const hasSvg = await page.locator("svg").isVisible().catch(() => false)
-  const hasLobbyBtn = await page.locator("text=LOBBY").isVisible().catch(() => false)
-  const hasSnakeLabel = await page.locator("text=SNAKE").first().isVisible().catch(() => false)
+  const hasSvg = await page
+    .locator("svg")
+    .isVisible()
+    .catch(() => false)
+  const hasLobbyBtn = await page
+    .locator("text=LOBBY")
+    .isVisible()
+    .catch(() => false)
+  const hasSnakeLabel = await page
+    .locator("text=SNAKE")
+    .first()
+    .isVisible()
+    .catch(() => false)
   console.log(`  SVG game board visible: ${hasSvg}`)
   console.log(`  Lobby button visible: ${hasLobbyBtn}`)
   console.log(`  SNAKE label visible: ${hasSnakeLabel}`)
@@ -63,7 +75,9 @@ async function test() {
   console.log("--- Test 5: Game loop running ---")
   // Get initial snake head position by checking SVG rect positions
   const initialRects = await page.locator("svg rect").count()
-  console.log(`  SVG rects (snake segments + obstacles + grid): ${initialRects}`)
+  console.log(
+    `  SVG rects (snake segments + obstacles + grid): ${initialRects}`
+  )
   await page.waitForTimeout(2000) // wait for a few ticks
   const laterRects = await page.locator("svg rect").count()
   console.log(`  SVG rects after 2s: ${laterRects}`)
@@ -88,9 +102,14 @@ async function test() {
   // Extract room ID from URL
   const roomId = decodeURIComponent(url.split("#room/")[1] || "")
   console.log(`  Room ID: ${roomId}`)
-  await page2.goto(`${BASE}/#room/${encodeURIComponent(roomId)}`, { waitUntil: "networkidle" })
+  await page2.goto(`${BASE}/#room/${encodeURIComponent(roomId)}`, {
+    waitUntil: "networkidle",
+  })
   await page2.waitForTimeout(3000)
-  const page2HasSvg = await page2.locator("svg").isVisible().catch(() => false)
+  const page2HasSvg = await page2
+    .locator("svg")
+    .isVisible()
+    .catch(() => false)
   console.log(`  Second player sees game board: ${page2HasSvg}`)
 
   // Check if player count updated on first page
@@ -103,15 +122,23 @@ async function test() {
   console.log("--- Test 9: Leave room ---")
   await page2.locator("text=LOBBY").click()
   await page2.waitForTimeout(1000)
-  const backInLobby = await page2.locator("text=Create Room").isVisible().catch(() => false)
+  const backInLobby = await page2
+    .locator("text=Create Room")
+    .isVisible()
+    .catch(() => false)
   console.log(`  Second player back in lobby: ${backInLobby}`)
 
   // Test 10: ngrok embeddability
   console.log("--- Test 10: Ngrok embeddability ---")
   const page3 = await context.newPage()
-  page3.on("pageerror", (err) => errors.push(`PAGE3/NGROK ERROR: ${err.message}`))
+  page3.on("pageerror", (err) =>
+    errors.push(`PAGE3/NGROK ERROR: ${err.message}`)
+  )
   try {
-    await page3.goto("https://acff-148-69-194-62.ngrok-free.app", { waitUntil: "networkidle", timeout: 15000 })
+    await page3.goto("https://acff-148-69-194-62.ngrok-free.app", {
+      waitUntil: "networkidle",
+      timeout: 15000,
+    })
     const ngrokText = await page3.textContent("body")
     // ngrok free shows interstitial, check if we at least get a response
     const ngrokLoaded = ngrokText.length > 0
@@ -132,7 +159,12 @@ async function test() {
   }
 
   console.log("\n=== RESULTS ===")
-  const passed = errors.length === 0 && hasSnakeTitle && hasCreateRoom && hasSvg && hasRoomHash
+  const passed =
+    errors.length === 0 &&
+    hasSnakeTitle &&
+    hasCreateRoom &&
+    hasSvg &&
+    hasRoomHash
   console.log(passed ? "  ALL TESTS PASSED" : "  SOME TESTS FAILED")
 
   await browser.close()
