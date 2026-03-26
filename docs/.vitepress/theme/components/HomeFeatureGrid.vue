@@ -33,12 +33,6 @@ const items = [
     icon: "json",
   },
   {
-    title: "Durable State",
-    details: "Sync structured state over durable streams",
-    href: "/durable-state",
-    icon: "layers",
-  },
-  {
     title: "StreamDB",
     details: "A type-safe, reactive database in a stream",
     href: "/stream-db",
@@ -51,7 +45,7 @@ const items = [
     icon: "folder",
   },
   {
-    title: "y-durable-streams",
+    title: "Yjs",
     details: "Yjs provider for collaborative editing",
     href: "/yjs",
     icon: "collab",
