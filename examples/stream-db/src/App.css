@@ -20,16 +20,16 @@
 body {
   background: var(--bg);
   color: var(--text);
-  font-family: 'Outfit', sans-serif;
+  font-family: "Outfit", sans-serif;
   min-height: 100vh;
   -webkit-font-smoothing: antialiased;
 }
 
 body::before {
-  content: '';
+  content: "";
   position: fixed;
   inset: 0;
-  background: url('/header.jpg') center / cover no-repeat;
+  background: url("/header.jpg") center / cover no-repeat;
   opacity: 0.12;
   pointer-events: none;
   z-index: -1;
@@ -69,7 +69,7 @@ header {
 }
 
 header h1 {
-  font-family: 'Syne', sans-serif;
+  font-family: "Syne", sans-serif;
   font-size: 2.5rem;
   font-weight: 800;
   letter-spacing: -0.02em;
@@ -108,7 +108,7 @@ header p {
 }
 
 .col h2 {
-  font-family: 'Syne', sans-serif;
+  font-family: "Syne", sans-serif;
   font-size: 0.72rem;
   font-weight: 700;
   text-transform: uppercase;
@@ -131,7 +131,7 @@ header p {
 }
 
 .n {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 0.62rem;
   font-weight: 400;
   background: rgba(255, 255, 255, 0.06);
@@ -235,7 +235,7 @@ header p {
 .status-label {
   margin-left: auto;
   font-size: 0.68rem;
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   color: var(--muted);
 }
 
@@ -247,7 +247,7 @@ header p {
 }
 
 .agents .item code {
-  font-family: 'JetBrains Mono', monospace;
+  font-family: "JetBrains Mono", monospace;
   font-size: 0.72rem;
   color: var(--muted);
 }
@@ -261,7 +261,7 @@ header p {
   border-radius: 8px;
   background: transparent;
   color: var(--muted);
-  font-family: 'Outfit', sans-serif;
+  font-family: "Outfit", sans-serif;
   font-size: 0.82rem;
   font-weight: 500;
   cursor: pointer;
