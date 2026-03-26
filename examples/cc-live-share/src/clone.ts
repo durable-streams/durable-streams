@@ -168,7 +168,7 @@ export async function clone(options: CloneOptions): Promise<void> {
     console.log(`  Forking session via Claude Code...`)
 
     try {
-      const forkPrompt = `This session has been cloned to a new working directory: ${clonePath}. File paths in the conversation history may refer to the original location. Treat all paths as relative to the current working directory. Acknowledge briefly.`
+      const forkPrompt = `This session has been cloned to a new working directory: ${clonePath}. File paths in the conversation history may refer to the original location. Treat all paths as relative to the current working directory. This may be a different machine, so absolute paths outside this working directory may not exist — only rely on files within the working directory. Acknowledge briefly.`
       execSync(
         `claude -c --fork-session -p ${JSON.stringify(forkPrompt)} --max-turns 0`,
         {

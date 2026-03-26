@@ -310,7 +310,7 @@ export function merge(options: MergeOptions): void {
     type: `user`,
     message: {
       role: `user`,
-      content: `Two branches of work have been merged into this session.\n\nSession A (${sessionA.gitBranch}):\n${contextA}\n\nSession B (${sessionB.gitBranch}):\n${contextB}\n\n${conflictNotes ? `Conflict resolution: ${conflictNotes}\n\n` : ``}The code has been merged. The working directory reflects the merged state.\n\nNote: File paths in the session contexts above may refer to different working directories. The current working directory for this merged session is: ${mergePath}. All files should be treated as relative to this directory.`,
+      content: `Two branches of work have been merged into this session.\n\nSession A (${sessionA.gitBranch}):\n${contextA}\n\nSession B (${sessionB.gitBranch}):\n${contextB}\n\n${conflictNotes ? `Conflict resolution: ${conflictNotes}\n\n` : ``}The code has been merged. The working directory reflects the merged state.\n\nNote: File paths in the session contexts above may refer to different working directories. The current working directory for this merged session is: ${mergePath}. All files should be treated as relative to this directory. This may be a different machine from where the original sessions ran, so absolute paths outside this working directory may not exist — only rely on files within the working directory.`,
     },
     uuid: crypto.randomUUID(),
     timestamp: new Date().toISOString(),
