@@ -167,26 +167,20 @@ export function merge(options: MergeOptions): void {
     process.exit(1)
   }
 
-  // If session B's branch isn't in session A's repo, fetch it.
-  // This happens when sessions are in different clones of the same repo.
+  // Check that both branches exist in session A's repo
   const hasBranchB = gitMayFail(
     `rev-parse --verify ${sessionB.gitBranch}`,
     repoCwd
   )
   if (!hasBranchB.ok) {
-    console.log(
-      `  Session B's branch not found locally, fetching from ${sessionB.cwd}...`
+    console.error(`Branch '${sessionB.gitBranch}' not found in ${repoCwd}.`)
+    console.error(
+      `Session B's changes may not have been pushed. Try:\n` +
+        `  cd ${sessionB.cwd} && git push origin ${sessionB.gitBranch}\n` +
+        `Then fetch it:\n` +
+        `  cd ${repoCwd} && git fetch origin ${sessionB.gitBranch}`
     )
-    // Add session B's repo as a temporary remote
-    const tempRemote = `merge-tmp-${Date.now()}`
-    git(`remote add ${tempRemote} ${sessionB.cwd}`, repoCwd)
-    try {
-      git(`fetch ${tempRemote} ${sessionB.gitBranch}`, repoCwd)
-      // Create a local tracking branch
-      gitMayFail(`branch ${sessionB.gitBranch} FETCH_HEAD`, repoCwd)
-    } finally {
-      git(`remote remove ${tempRemote}`, repoCwd)
-    }
+    process.exit(1)
   }
 
   // === Verify common ancestor ===
