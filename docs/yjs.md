@@ -47,13 +47,13 @@ The provider connects automatically, discovers the latest snapshot, loads it, th
 
 ```typescript
 interface YjsProviderOptions {
-  doc: Y.Doc           // Yjs document to sync
-  baseUrl: string      // Server URL, e.g. "http://localhost:4438/v1/yjs/my-service"
-  docId: string        // Document ID (can include slashes, e.g. "project/chapter-1")
+  doc: Y.Doc // Yjs document to sync
+  baseUrl: string // Server URL, e.g. "http://localhost:4438/v1/yjs/my-service"
+  docId: string // Document ID (can include slashes, e.g. "project/chapter-1")
   awareness?: Awareness // Optional awareness for presence
   headers?: HeadersRecord // Optional auth headers
   liveMode?: "sse" | "long-poll" // Live update transport (default: "sse")
-  connect?: boolean    // Auto-connect on construction (default: true)
+  connect?: boolean // Auto-connect on construction (default: true)
 }
 ```
 
