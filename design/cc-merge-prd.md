@@ -67,42 +67,34 @@ Ready! Start the merged session with:
 ### Merge flow
 
 ```
-                    ┌─────────────────┐
-                    │  1. Summarize   │
-                    │  both sessions  │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │  2. Git merge   │
-                    │  (agent resolves│
-                    │   conflicts     │
-                    │   using         │
-                    │   summaries)    │
-                    └────────┬────────┘
-                             │
-                    ┌────────▼────────┐
-                    │  3. Create      │
-                    │  session C from │
-                    │  original JSONL │
-                    │  + summaries    │
-                    └─────────────────┘
+                                    ┌──────────────────────┐
+                                    │  1. Git merge        │
+                              ┌────▶│  (attempt merge)     │
+                              │     └──────────┬───────────┘
+                              │                │
+                              │     conflicts? ├──── no ──────────┐
+                              │                │                  │
+┌──────────────────────┐      │     ┌──────────▼───────────┐      │
+│  2. Get detailed     │      │     │  3. Get brief        │      │
+│  contexts from A & B │◀─────┤     │  summaries from A & B│      │
+│  (for merged session)│      │     │  (for conflict       │      │
+│                      │      │     │   resolution)        │      │
+│  [runs in parallel   │      │     └──────────┬───────────┘      │
+│   with steps 3+4]    │      │                │                  │
+└──────────┬───────────┘      │     ┌──────────▼───────────┐      │
+           │                  │     │  4. Agent resolves   │      │
+           │                  │     │  conflicts using     │      │
+           │                  │     │  summaries           │      │
+           │                  │     └──────────┬───────────┘      │
+           │                  │                │                  │
+           │                  │     ┌──────────▼──────────────────▼┐
+           └─────────────────────▶  │  5. Create session C from   │
+                                    │  original + detailed        │
+                                    │  contexts                   │
+                                    └─────────────────────────────┘
 ```
 
-### Step 1: Generate session summaries
-
-For each session being merged, the tool generates a natural-language summary of what that session accomplished. The summary is obtained by querying the session itself using CC's `--fork-session` flag:
-
-```bash
-claude -r <session-id> --fork-session -p "Summarize what you did since the fork point (branch cc-session/{original-id}). Include key decisions, what was changed, and why. Be concise (3-5 sentences)."
-```
-
-This resumes the session in print mode with `--fork-session` so the original session is untouched. The session has full context of its own work, so it can produce an accurate summary without us needing to parse or feed it the JSONL.
-
-**Output:** a short summary like "Refactored the auth middleware from session cookies to JWT tokens. Added token validation and refresh logic. Updated 5 test files to use the new auth flow."
-
-Both summaries are generated before the merge begins, since they're used in both the code merge (step 2) and the session creation (step 3).
-
-### Step 2: Git merge with agent-assisted conflict resolution
+### Step 1: Git merge
 
 The code merge uses standard git:
 
@@ -110,9 +102,33 @@ The code merge uses standard git:
 git merge cc-session/{fork-id} --no-commit
 ```
 
-**If clean merge:** commit and proceed to step 3.
+**If clean merge:** commit and skip to step 5.
 
-**If conflicts:** invoke an agent (CC) in the merged worktree with the session summaries. The agent finds and resolves conflicts itself — it can read the conflicted files, run `git status`, `git diff`, `git log`, etc. The summaries give it the _intent_ behind each branch's changes so it can make informed merge decisions.
+**If conflicts:** proceed to steps 3-4 for conflict resolution. Step 2 (detailed contexts) runs in parallel with steps 3-4.
+
+### Step 2: Get detailed contexts (runs in parallel)
+
+For each session (A and B), get a detailed post-fork context for the merged session. This starts immediately after the git merge (regardless of whether there are conflicts) and runs in parallel with conflict resolution:
+
+```bash
+claude -r <session-id> --fork-session -p "Give me a detailed summary of everything you did since the fork point (branch cc-session/{original-id}). Include all key decisions, changes made, problems encountered, and current state. Only cover work done after the fork — the shared context before the fork is already preserved."
+```
+
+These are the richer contexts used in step 5 to brief Claude in the merged session. They run in parallel with conflict resolution since they're independent.
+
+### Step 3: Get brief summaries (only if conflicts)
+
+Only generated if step 1 found conflicts. For each session, get a concise summary focused on intent:
+
+```bash
+claude -r <session-id> --fork-session -p "Summarize what you did since the fork point (branch cc-session/{original-id}). Include key decisions, what was changed, and why. Be concise (3-5 sentences)."
+```
+
+**Output:** a short summary like "Refactored the auth middleware from session cookies to JWT tokens. Added token validation and refresh logic. Updated 5 test files to use the new auth flow."
+
+### Step 4: Agent resolves conflicts (only if conflicts)
+
+Invoke an agent (CC) in the merged worktree with the brief summaries from step 3. The agent finds and resolves conflicts itself — it can read the conflicted files, run `git status`, `git diff`, `git log`, etc. The summaries give it the _intent_ behind each branch's changes so it can make informed merge decisions.
 
 The agent prompt is simply:
 
@@ -128,13 +144,13 @@ Use git status to find conflicted files and resolve them.
 
 The agent resolves each conflict, stages the files, and commits the merge.
 
-### Step 3: Create the merged session
+### Step 5: Create the merged session
 
-The merged session C is constructed from:
+Waits for both the code merge (steps 1/3/4) and the detailed contexts (step 2) to complete.
 
-The merged session C is created by forking the original session and extending it with a merge context message. The context message is richer than just the summaries used for conflict resolution — it includes the compacted contexts from both sessions so Claude retains as much detail as possible.
+The merged session C is created by forking the original session and extending it with a merge context message. The context message uses the detailed contexts from step 2 so Claude retains as much detail as possible about what each branch did.
 
-**Getting compacted contexts:** for each session (A and B), query the session using `--fork-session`:
+**Getting the detailed contexts** was done in step 2 (already complete by this point since it ran in parallel).
 
 ```bash
 claude -r <session-id> --fork-session -p "Give me a detailed summary of everything you did since the fork point (branch cc-session/{original-id}). Include all key decisions, changes made, problems encountered, and current state. Only cover work done after the fork — the shared context before the fork is already preserved."
@@ -191,13 +207,13 @@ The merge is always: fork → target, producing a new session. Neither the fork 
 
 ### Invoking the agent
 
-The merge tool invokes Claude for three tasks:
+The merge tool invokes Claude for up to three tasks:
 
-1. **Generating summaries** (for conflict resolution) — short summaries via `claude -r <session-id> --fork-session -p "summarize..."`. Original sessions are untouched thanks to `--fork-session`.
-2. **Resolving merge conflicts** — the agent runs in the merged worktree via `claude -p "resolve conflicts..."` with summaries as context. It uses git tools to find and fix conflicts itself.
-3. **Getting compacted contexts** (for the merged session) — detailed context via `claude -r <session-id> --fork-session -p "give me detailed context..."`. Richer than the summaries, used to brief Claude in the merged session.
+1. **Getting detailed contexts** (step 2) — always runs, in parallel with conflict resolution. Uses `claude -r <session-id> --fork-session -p` to get rich post-fork context. Original sessions untouched.
+2. **Generating brief summaries** (step 3) — only if conflicts. Uses `claude -r <session-id> --fork-session -p` for concise intent summaries.
+3. **Resolving merge conflicts** (step 4) — only if conflicts. The agent runs in the merged worktree via `claude -p` with brief summaries as context.
 
-All three use `claude -p` (CC print mode) with `--fork-session` where needed to avoid mutating existing sessions.
+For a clean merge, only task 1 runs. All tasks use `claude -p` (CC print mode) with `--fork-session` where needed to avoid mutating existing sessions.
 
 ---
 
