@@ -13,283 +13,253 @@ Phase 2 enables forking CC sessions and working independently. But forked sessio
 
 ## Goal
 
-Merge a forked CC session back, combining both the code (via git merge) and the conversation context (via a summary of both sessions' work). The result is a new CC session that has the original context, knows what both branches did, and has the merged code.
+Merge two local CC sessions that share a common ancestor, combining both the code (via git merge) and the conversation context (via summaries of both sessions' work). The result is a new CC session with the merged code and full awareness of what both sessions did.
 
 ## Non-goals (Phase 3)
 
 - **Real-time collaborative editing** — this is offline merge, not live collaboration
+- **Remote session merging** — both sessions must be local. Clone remote sessions first via `ds-cc clone`.
 - **Automatic conflict resolution without agent** — an agent (Claude) resolves conflicts
 - **JSONL-level merge** — we don't diff/merge individual JSONL entries; we summarize
-- **Three-way merge of arbitrary sessions** — merge is pairwise (one fork into one target)
 
 ## User experience
 
-### Merging a forked session
+### Merging two local sessions
 
 ```
-$ ds-cc merge <fork-url> --into <target-session-or-branch>
-Fetching session summaries...
-  Session A (fork): "Refactored auth middleware to use JWT, added token validation tests"
-  Session B (target): "Added rate limiting to API endpoints, updated OpenAPI spec"
+$ ds-cc merge <session-id-A> <session-id-B>
+Found session A: cc-session/clone-abc123 (examples/cc-live-share/merge-test.ts modified)
+Found session B: cc-session/clone-def456 (examples/cc-live-share/merge-test.ts modified)
+Common ancestor: fa0a8704
 
 Merging code...
-  git merge cc-session/abc123 into cc-session/def456
-  1 conflict in src/middleware.ts
+  1 conflict in examples/cc-live-share/merge-test.ts
   Resolving conflicts with agent...
-  Agent resolved 1 conflict (kept both changes)
-  Committed merge
+  Agent resolved 1 conflict
+  Merge committed.
+
+Generating contexts for merged session...
 
 Creating merged session...
-  New session ID: merged-789...
-  Context: original session + summaries of both branches + merge notes
+  Session ID: merged-789...
 
 Ready! Start the merged session with:
-  cd ./session-merged-789 && claude --continue
+  cd ./session-merge-789 && claude --continue
 ```
 
 ### Simple case (no conflicts)
 
 ```
-$ ds-cc merge <fork-url> --into <target-session-or-branch>
-Fetching session summaries...
+$ ds-cc merge <session-id-A> <session-id-B>
+Found session A: ...
+Found session B: ...
+
 Merging code...
   Clean merge, no conflicts.
+
 Creating merged session...
 
 Ready! Start the merged session with:
-  cd ./session-merged-789 && claude --continue
+  cd ./session-merge-789 && claude --continue
+```
+
+### Merging a remote session
+
+If one session is on another machine, clone it first:
+
+```
+$ ds-cc clone <fork-url>           # gives you a local session
+$ ds-cc merge <local-A> <local-B>  # now merge locally
 ```
 
 ---
 
 ## Technical design
 
+### Inputs
+
+Both arguments are CC session IDs. The merge command finds each session's JSONL on disk at `~/.claude/projects/{encoded-cwd}/{session-id}.jsonl` and reads the `gitBranch` field from the JSONL entries.
+
+### Discovering sessions
+
+Given a session ID, the merge command:
+
+1. Searches `~/.claude/projects/*/` for a JSONL file matching the session ID
+2. Reads the JSONL to extract `gitBranch` and `cwd`
+3. Uses the git branch for the code merge
+
 ### Merge flow
 
 ```
-                                    ┌──────────────────────┐
-                                    │  1. Git merge        │
-                              ┌────▶│  (attempt merge)     │
-                              │     └──────────┬───────────┘
-                              │                │
-                              │     conflicts? ├──── no ──────────┐
-                              │                │                  │
-┌──────────────────────┐      │     ┌──────────▼───────────┐      │
-│  2. Get detailed     │      │     │  3. Get brief        │      │
-│  contexts from A & B │◀─────┤     │  summaries from A & B│      │
-│  (for merged session)│      │     │  (for conflict       │      │
-│                      │      │     │   resolution)        │      │
-│  [runs in parallel   │      │     └──────────┬───────────┘      │
-│   with steps 3+4]    │      │                │                  │
-└──────────┬───────────┘      │     ┌──────────▼───────────┐      │
-           │                  │     │  4. Agent resolves   │      │
-           │                  │     │  conflicts using     │      │
-           │                  │     │  summaries           │      │
-           │                  │     └──────────┬───────────┘      │
-           │                  │                │                  │
-           │                  │     ┌──────────▼──────────────────▼┐
-           └─────────────────────▶  │  5. Create session C from   │
-                                    │  original + detailed        │
-                                    │  contexts                   │
-                                    └─────────────────────────────┘
+┌───────────────────────────┐
+│  1. Find both sessions    │
+│  (JSONL + git branches)   │
+└─────────────┬─────────────┘
+              │
+┌─────────────▼─────────────┐
+│  2. Verify common         │
+│  ancestor (git merge-base)│
+└─────────────┬─────────────┘
+              │
+┌─────────────▼─────────────┐
+│  3. Git merge             │
+│  (on new merge branch     │
+│   in a worktree)          │
+└─────────────┬─────────────┘
+              │
+   conflicts? ├──── no ──────────────┐
+              │                      │
+┌─────────────▼─────────────┐        │
+│  4. Get brief summaries   │        │
+│  from both session JSONLs │        │
+│  + invoke agent to        │        │
+│  resolve conflicts        │        │
+└─────────────┬─────────────┘        │
+              │                      │
+┌─────────────▼──────────────────────▼┐
+│  5. Get detailed contexts from      │
+│  both sessions (for merged session) │
+└─────────────┬───────────────────────┘
+              │
+┌─────────────▼─────────────┐
+│  6. Create merged session │
+│  (session A's JSONL +     │
+│   synthetic merge message)│
+└───────────────────────────┘
 ```
 
-### Step 1: Git merge
+### Step 1: Find both sessions
 
-The code merge uses standard git:
+For each session ID, search `~/.claude/projects/*/` for the matching JSONL file. Extract:
 
-```
-git merge cc-session/{fork-id} --no-commit
-```
+- `gitBranch` — the git branch the session was working on
+- `cwd` — the working directory
+- The JSONL content — for context extraction later
 
-**If clean merge:** commit and skip to step 5.
-
-**If conflicts:** proceed to steps 3-4 for conflict resolution. Step 2 (detailed contexts) runs in parallel with steps 3-4.
-
-### Step 2: Get detailed contexts (runs in parallel)
-
-For each session (A and B), get a detailed post-fork context for the merged session. This starts immediately after the git merge (regardless of whether there are conflicts) and runs in parallel with conflict resolution:
-
-```bash
-claude -r <session-id> --fork-session -p "Give me a detailed summary of everything you did since the fork point (branch cc-session/{original-id}). Include all key decisions, changes made, problems encountered, and current state. Only cover work done after the fork — the shared context before the fork is already preserved."
-```
-
-These are the richer contexts used in step 5 to brief Claude in the merged session. They run in parallel with conflict resolution since they're independent.
-
-### Step 3: Get brief summaries (only if conflicts)
-
-Only generated if step 1 found conflicts. For each session, get a concise summary focused on intent:
-
-```bash
-claude -r <session-id> --fork-session -p "Summarize what you did since the fork point (branch cc-session/{original-id}). Include key decisions, what was changed, and why. Be concise (3-5 sentences)."
-```
-
-**Output:** a short summary like "Refactored the auth middleware from session cookies to JWT tokens. Added token validation and refresh logic. Updated 5 test files to use the new auth flow."
-
-### Step 4: Agent resolves conflicts (only if conflicts)
-
-Invoke an agent (CC) in the merged worktree with the brief summaries from step 3. The agent finds and resolves conflicts itself — it can read the conflicted files, run `git status`, `git diff`, `git log`, etc. The summaries give it the _intent_ behind each branch's changes so it can make informed merge decisions.
-
-The agent prompt is simply:
+### Step 2: Verify common ancestor
 
 ```
-Two branches of work are being merged and there are conflicts.
-
-Branch A did: [summary A]
-Branch B did: [summary B]
-
-Please resolve all merge conflicts in the working directory.
-Use git status to find conflicted files and resolve them.
+git merge-base <branch-A> <branch-B>
 ```
 
-The agent resolves each conflict, stages the files, and commits the merge.
+If no common ancestor exists, reject the merge — the sessions didn't diverge from the same point.
 
-### Step 5: Create the merged session
+### Step 3: Git merge
 
-Waits for both the code merge (steps 1/3/4) and the detailed contexts (step 2) to complete.
+Create a merge worktree from session A's branch, then merge session B's branch into it:
 
-The merged session C is created by forking the original session and extending it with a merge context message. The context message uses the detailed contexts from step 2 so Claude retains as much detail as possible about what each branch did.
-
-**Getting the detailed contexts** was done in step 2 (already complete by this point since it ran in parallel).
-
-```bash
-claude -r <session-id> --fork-session -p "Give me a detailed summary of everything you did since the fork point (branch cc-session/{original-id}). Include all key decisions, changes made, problems encountered, and current state. Only cover work done after the fork — the shared context before the fork is already preserved."
+```
+git worktree add ./session-merge-{id} -b cc-session/merge-{id} <branch-A>
+cd ./session-merge-{id}
+git merge <branch-B> --no-commit --no-ff
 ```
 
-**Creating the merged session:**
+### Step 4: Conflict resolution (only if conflicts)
 
-1. Fork the original session using `claude -r <original-session-id> --fork-session` in the merged worktree directory. This gives session C the full original context with the correct cwd.
-2. Send a message to session C with the combined context:
+Read both sessions' JSONL to extract conversation context, then use `claude -p` to generate brief summaries. Invoke an agent in the merge worktree to resolve conflicts:
+
+```
+claude -p "Two branches are being merged with conflicts.
+Branch A did: [summary from A's JSONL]
+Branch B did: [summary from B's JSONL]
+Resolve all merge conflicts. Use git status to find them." --dangerously-skip-permissions
+```
+
+### Step 5: Get detailed contexts
+
+Read both sessions' JSONL and use `claude -p` to generate detailed summaries of what each session accomplished. These are used in the merged session's context message.
+
+### Step 6: Create merged session
+
+1. Take session A's JSONL as the base (the shared starting context)
+2. Append a synthetic merge context message with both detailed summaries
+3. Rewrite path-sensitive fields for the merge worktree
+4. Write to `~/.claude/projects/{encoded-merge-cwd}/{merged-session-id}.jsonl`
+
+The synthetic message gives Claude awareness of both branches' work:
 
 ```
 Two branches of work have been merged into this session.
 
-Session A context:
-[compacted context from A]
+Session A (branch cc-session/clone-abc):
+[detailed context from A]
 
-Session B context:
-[compacted context from B]
+Session B (branch cc-session/clone-def):
+[detailed context from B]
 
-The code has been merged. [Conflict resolution notes, if any.]
-
+The code has been merged. [Conflict notes if any.]
 The working directory reflects the merged state.
 ```
-
-This gives Claude in the merged session:
-
-- Full original context (from the forked JSONL)
-- Detailed context from both branches (from the compacted summaries)
-- Awareness of the merge and any conflict resolutions
-
-### Branch structure
-
-```
-cc-session/{original-id}          ← export snapshot (common ancestor / merge base)
-  ├── cc-session/{fork-a-id}      ← Alice's work (being merged in)
-  └── cc-session/{fork-b-id}      ← Bob's work (merge target)
-                                       │
-                                       ▼
-                              cc-session/{merged-id}  ← merged result (new branch)
-```
-
-The merge creates a new branch `cc-session/{merged-id}` with a git merge commit that has both fork branches as parents. This preserves full git history.
-
-### What gets merged into what
-
-The `--into` flag specifies the target. This can be:
-
-- A fork URL (another session from the same DS server)
-- A local branch name
-
-The merge is always: fork → target, producing a new session. Neither the fork nor the target session is modified.
-
-**Ancestry requirement:** the tool verifies that the fork and target share a common ancestor (the original export branch). If they don't, the merge is rejected with an error — there's no sensible base for a three-way merge.
-
-### Invoking the agent
-
-The merge tool invokes Claude for up to three tasks:
-
-1. **Getting detailed contexts** (step 2) — always runs, in parallel with conflict resolution. Uses `claude -r <session-id> --fork-session -p` to get rich post-fork context. Original sessions untouched.
-2. **Generating brief summaries** (step 3) — only if conflicts. Uses `claude -r <session-id> --fork-session -p` for concise intent summaries.
-3. **Resolving merge conflicts** (step 4) — only if conflicts. The agent runs in the merged worktree via `claude -p` with brief summaries as context.
-
-For a clean merge, only task 1 runs. All tasks use `claude -p` (CC print mode) with `--fork-session` where needed to avoid mutating existing sessions.
 
 ---
 
 ## Deliverables
 
-| #   | Deliverable                            | Description                                                                |
-| --- | -------------------------------------- | -------------------------------------------------------------------------- |
-| 1   | **Session context extractor**          | Queries sessions via `--fork-session` for summaries and compacted contexts |
-| 2   | **Git merge with conflict resolution** | Git merge + agent-assisted conflict resolution using summaries             |
-| 3   | **Merged session creator**             | Forks original session via `--fork-session`, appends merge context         |
-| 4   | **`ds-cc merge` command**              | CLI that orchestrates the full merge flow                                  |
-| 5   | **Ancestry verification**              | Validates common ancestor exists before attempting merge                   |
-
-### Ordering
-
-1. **Session summarizer** (deliverable 1) — standalone, testable independently
-2. **Git merge** (deliverable 2) — needs summarizer for conflict context
-3. **Merged session creator** (deliverable 3) — needs summarizer output
-4. **CLI command** (deliverable 4, 5) — orchestrates everything
+| #   | Deliverable                         | Description                                              |
+| --- | ----------------------------------- | -------------------------------------------------------- |
+| 1   | **Session finder**                  | Locates JSONL and git branch for a session ID            |
+| 2   | **Context extractor**               | Reads JSONL, generates summaries via `claude -p`         |
+| 3   | **Git merge + conflict resolution** | Merge branches, agent resolves conflicts                 |
+| 4   | **Merged session creator**          | Base JSONL + synthetic merge context                     |
+| 5   | **`ds-cc merge` command**           | CLI that takes two session IDs and orchestrates the flow |
 
 ---
 
 ## Resolved questions
 
-1. **Merge target** — merge into any session that shares a common ancestor with the fork. The tool verifies ancestry.
+1. **Merge inputs** — two local session IDs. Both must exist on the local machine. Remote sessions must be cloned first.
 
-2. **JSONL merge strategy** — don't merge JSONL entries. Start from the original session's JSONL (the shared base), append a synthetic summary message. Avoids compacting or diffing JSONL.
+2. **No DS required for merge** — merge operates entirely on local data (JSONL files + git branches). DS is only for fork/clone (moving sessions between machines).
 
-3. **Code + context merge** — not independent. The session summaries are generated first, then used for both code conflict resolution and the context message. This keeps them consistent.
+3. **JSONL merge strategy** — take session A's JSONL as the base, append a synthetic summary. No JSONL diffing.
 
-4. **Session mutation** — neither the fork nor the target session is mutated. The merge produces a new session C with its own ID and branch.
+4. **Session mutation** — neither input session is modified. Merge produces a new session in a new worktree.
 
-5. **Agent invocation** — use `claude -p` (CC print mode) for both summarization and conflict resolution. No API key setup needed.
+5. **Agent invocation** — `claude -p` for summaries, `claude -p --dangerously-skip-permissions` for conflict resolution.
 
 ---
 
 ## Example end-to-end flow
 
-Alice exports her session:
+Alice has a session and forks it to DS:
 
 ```
 ds-cc fork --server https://ds.example.com
-→ Fork URL: https://ds.example.com/cc/original-123
-→ Branch: cc-session/original-123
+→ Fork URL: https://ds.example.com/cc/original-123/1774535000000
 ```
 
 Bob and Carol each clone it:
 
 ```
-ds-cc clone https://ds.example.com/cc/original-123
-→ Bob works on session bob-456, branch cc-session/bob-456
-→ Carol works on session carol-789, branch cc-session/carol-789
+# Bob
+ds-cc clone https://ds.example.com/cc/original-123/1774535000000
+→ Local session: bob-456 in ./session-abc
+
+# Carol
+ds-cc clone https://ds.example.com/cc/original-123/1774535000000
+→ Local session: carol-789 in ./session-def
 ```
 
-Bob finishes and forks his work:
+Bob and Carol work independently in their sessions, making code changes via CC.
+
+Carol wants to merge Bob's work. Bob forks his session to DS, Carol clones it:
 
 ```
-ds-cc fork --server https://ds.example.com
-→ Fork URL: https://ds.example.com/cc/bob-456
-→ Branch: cc-session/bob-456 (updated with his commits)
+# Bob forks his work
+cd ./session-abc && ds-cc fork --server https://ds.example.com
+
+# Carol clones Bob's fork
+ds-cc clone https://ds.example.com/cc/bob-456/1774536000000
+→ Local session: bob-local-111 in ./session-ghi
 ```
 
-Carol finishes and wants to merge Bob's work into hers:
+Carol merges:
 
 ```
-ds-cc merge https://ds.example.com/cc/bob-456 --into cc-session/carol-789
-→ Summarizes both sessions
-→ Merges code (resolves 1 conflict)
-→ Creates session merged-abc on branch cc-session/merged-abc
-→ Carol runs: cd ./session-merged-abc && claude --continue
+ds-cc merge bob-local-111 carol-789
+→ Merges code (resolves conflicts if any)
+→ Creates merged session in ./session-merge-xyz
+→ cd ./session-merge-xyz && claude --continue
 ```
 
-Claude in the merged session knows:
-
-- Everything from the original session (before the fork)
-- What Bob did (summary)
-- What Carol did (summary)
-- That conflicts were resolved (and how)
-- The code reflects the merged state
+Claude in the merged session knows what both Bob and Carol did.
