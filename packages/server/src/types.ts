@@ -74,6 +74,12 @@ export interface Stream {
   producers?: Map<string, ProducerState>
 
   /**
+   * Named checkpoints mapping name → offset.
+   * Updated automatically by the server when appended messages match checkpoint rules.
+   */
+  checkpoints?: Map<string, string>
+
+  /**
    * Whether the stream is closed (no further appends permitted).
    * Once set to true, this is permanent and durable.
    */
@@ -123,6 +129,24 @@ export type StreamLifecycleHook = (
 ) => void | Promise<void>
 
 /**
+ * A checkpoint rule that matches JSON messages and returns a checkpoint name.
+ */
+export interface CheckpointRule {
+  /**
+   * Name of the checkpoint (e.g., "compact", "snapshot").
+   * Must match [a-z][a-z0-9-]* and be 1-64 characters.
+   */
+  name: string
+
+  /**
+   * JSON match conditions. All must match for the checkpoint to fire.
+   * Each entry is a [jsonPath, expectedValue] tuple.
+   * Path uses dot-separated keys (e.g., ".type", ".subtype").
+   */
+  conditions: Array<{ path: string; value: string }>
+}
+
+/**
  * Options for creating the test server.
  */
 export interface TestServerOptions {
@@ -158,6 +182,13 @@ export interface TestServerOptions {
    * Hook called when a stream is deleted.
    */
   onStreamDeleted?: StreamLifecycleHook
+
+  /**
+   * Checkpoint rules for automatic checkpoint creation on JSON-mode streams.
+   * Each rule defines conditions that, when matched on an appended JSON message,
+   * cause the server to store the message's offset under the rule's name.
+   */
+  checkpointRules?: Array<CheckpointRule>
 
   /**
    * Enable gzip/deflate compression for responses.
