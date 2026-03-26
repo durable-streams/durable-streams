@@ -149,7 +149,9 @@ const db = createStreamDB({
       mutationFn: async (user) => {
         const txid = crypto.randomUUID()
         await stream.append(
-          schema.users.insert({ value: user, headers: { txid } })
+          JSON.stringify(
+            schema.users.insert({ value: user, headers: { txid } })
+          )
         )
         await db.utils.awaitTxId(txid)
       },
@@ -176,7 +178,9 @@ const schema = createStateSchema({
 })
 
 await stream.append(
-  schema.config.insert({ value: { key: "theme", value: "dark" } })
+  JSON.stringify(
+    schema.config.insert({ value: { key: "theme", value: "dark" } })
+  )
 )
 ```
 
@@ -192,9 +196,11 @@ const schema = createStateSchema({
 })
 
 await stream.append(
-  schema.presence.update({
-    value: { userId: "alice", status: "online", lastSeen: Date.now() },
-  })
+  JSON.stringify(
+    schema.presence.update({
+      value: { userId: "alice", status: "online", lastSeen: Date.now() },
+    })
+  )
 )
 ```
 
@@ -208,9 +214,11 @@ const schema = createStateSchema({
   typing: { schema: typingSchema, type: "typing", primaryKey: "userId" },
 })
 
-await stream.append(schema.users.insert({ value: user }))
-await stream.append(schema.messages.insert({ value: message }))
-await stream.append(schema.reactions.insert({ value: reaction }))
+await stream.append(JSON.stringify(schema.users.insert({ value: user })))
+await stream.append(JSON.stringify(schema.messages.insert({ value: message })))
+await stream.append(
+  JSON.stringify(schema.reactions.insert({ value: reaction }))
+)
 ```
 
 ## Best practices
@@ -238,7 +246,9 @@ useEffect(() => {
 
 ```typescript
 const txid = crypto.randomUUID()
-await stream.append(schema.users.insert({ value: user, headers: { txid } }))
+await stream.append(
+  JSON.stringify(schema.users.insert({ value: user, headers: { txid } }))
+)
 await db.utils.awaitTxId(txid, 10000)
 ```
 

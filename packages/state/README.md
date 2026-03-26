@@ -353,10 +353,12 @@ const db = createStreamDB({
         const txid = crypto.randomUUID()
 
         await stream.append(
-          schema.users.insert({
-            value: user,
-            headers: { txid },
-          })
+          JSON.stringify(
+            schema.users.insert({
+              value: user,
+              headers: { txid },
+            })
+          )
         )
 
         // Wait for confirmation
@@ -375,11 +377,13 @@ const db = createStreamDB({
         const current = await db.collections.users.get(id)
 
         await stream.append(
-          schema.users.update({
-            value: { ...current, ...updates },
-            oldValue: current,
-            headers: { txid },
-          })
+          JSON.stringify(
+            schema.users.update({
+              value: { ...current, ...updates },
+              oldValue: current,
+              headers: { txid },
+            })
+          )
         )
 
         await db.utils.awaitTxId(txid)
@@ -462,9 +466,11 @@ const schema = createStateSchema({
 
 // Set value
 await stream.append(
-  schema.config.insert({
-    value: { key: "theme", value: "dark" },
-  })
+  JSON.stringify(
+    schema.config.insert({
+      value: { key: "theme", value: "dark" },
+    })
+  )
 )
 
 // Query value reactively
@@ -489,13 +495,15 @@ const schema = createStateSchema({
 
 // Update presence
 await stream.append(
-  schema.presence.update({
-    value: {
-      userId: "kyle",
-      status: "online",
-      lastSeen: Date.now(),
-    },
-  })
+  JSON.stringify(
+    schema.presence.update({
+      value: {
+        userId: "kyle",
+        status: "online",
+        lastSeen: Date.now(),
+      },
+    })
+  )
 )
 
 // Query presence with TanStack DB
