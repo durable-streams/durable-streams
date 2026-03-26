@@ -209,9 +209,18 @@ provider.on("error", (error) => {
 })
 ```
 
+## Live demo — multiplayer Snake
+
+A real-time multiplayer Snake game built with y-durable-streams. Game state syncs via a shared Yjs document, player presence uses awareness, and the room registry and high scores are powered by [StreamDB](/durable-state). Create a room and share the link to play with friends.
+
+<SnakeDemo />
+
+[View source on GitHub](https://github.com/durable-streams/durable-streams/tree/main/examples/y-snake)
+
 ## Learn more
 
 - [Yjs protocol specification](https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/YJS-PROTOCOL.md) — full protocol spec
 - [Package README](https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/README.md) — complete API reference
 - [Yjs demo](https://github.com/durable-streams/durable-streams/tree/main/examples/yjs-demo) — collaborative text editor example
+- [Snake demo](https://github.com/durable-streams/durable-streams/tree/main/examples/y-snake) — multiplayer Snake game example
 - [Yjs docs](https://docs.yjs.dev/) — Yjs documentation
