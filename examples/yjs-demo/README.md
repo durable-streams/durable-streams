@@ -52,19 +52,28 @@ Open `http://localhost:5173` in your browser.
 
 ## Configuration
 
-Both the Yjs server and Durable Streams endpoints default to `https://localhost:4443` — the single Caddy origin. You can override them with environment variables.
+Both the Yjs server and Durable Streams endpoints default to the current origin (or `https://localhost:4443` for local development). You can override them with environment variables.
 
 Create a `.env` file in the yjs-demo directory to customize:
 
 ```env
-VITE_SERVER_URL=https://localhost:4443
-VITE_DS_URL=https://localhost:4443
+# Yjs document server
+VITE_YJS_URL=https://localhost:4443/v1/yjs
+VITE_YJS_TOKEN=your-yjs-bearer-token
+
+# Room registry (Durable Streams)
+VITE_DS_URL=https://localhost:4443/v1/stream
+VITE_DS_TOKEN=your-ds-bearer-token
 ```
 
-| Variable          | Default                   | Description                                              |
-| ----------------- | ------------------------- | -------------------------------------------------------- |
-| `VITE_SERVER_URL` | `https://<hostname>:4443` | Base URL for the Yjs server (routed via `/v1/yjs/*`)     |
-| `VITE_DS_URL`     | `https://<hostname>:4443` | Base URL for Durable Streams (routed via `/v1/stream/*`) |
+| Variable         | Default              | Description                                                  |
+| ---------------- | -------------------- | ------------------------------------------------------------ |
+| `VITE_YJS_URL`   | `<origin>/v1/yjs`    | Base URL for the Yjs document server                         |
+| `VITE_YJS_TOKEN` | —                    | Bearer token for authenticating with the Yjs server          |
+| `VITE_DS_URL`    | `<origin>/v1/stream` | Base URL for Durable Streams (used for the room registry)    |
+| `VITE_DS_TOKEN`  | —                    | Bearer token for authenticating with the Durable Streams API |
+
+`VITE_SERVER_URL` is also supported as a fallback for `VITE_YJS_URL`.
 
 ## Architecture
 
