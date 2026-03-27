@@ -629,6 +629,61 @@ func (s *MemoryStore) appendToStream(stream *memoryStream, data []byte, opts App
 	return newOffset, nil
 }
 
+// readOwnMessages reads messages from a single stream's own messages slice,
+// returning those with offset > the given offset. It does NOT follow fork chains.
+// If capAtOffset is non-nil, messages at or beyond that offset are excluded.
+func readOwnMessages(stream *memoryStream, offset Offset, capAtOffset *Offset) []Message {
+	var messages []Message
+	for _, msg := range stream.messages {
+		if msg.Offset.ByteOffset > offset.ByteOffset {
+			if capAtOffset != nil && !msg.Offset.LessThanOrEqual(*capAtOffset) {
+				break
+			}
+			messages = append(messages, msg)
+		}
+	}
+	return messages
+}
+
+// readForkedStream reads messages across the fork chain. For non-forks it delegates
+// to readOwnMessages. For forks, it reads inherited messages from the source chain
+// (capped at ForkOffset) and then the fork's own messages, concatenating the results.
+// This method does NOT check SoftDeleted — forks must read through soft-deleted sources.
+func (s *MemoryStore) readForkedStream(stream *memoryStream, offset Offset) []Message {
+	if stream.metadata.ForkedFrom == "" {
+		// Not a fork: just read own messages, no cap
+		return readOwnMessages(stream, offset, nil)
+	}
+
+	var inherited []Message
+
+	// Only read from source if the requested offset is before the fork point
+	if offset.LessThan(stream.metadata.ForkOffset) {
+		sourceStream, ok := s.streams[stream.metadata.ForkedFrom]
+		if ok {
+			// Recursively read from source (source may itself be a fork)
+			sourceMessages := s.readForkedStream(sourceStream, offset)
+			// Cap at ForkOffset — source appends after fork creation are not visible
+			for _, msg := range sourceMessages {
+				if msg.Offset.LessThanOrEqual(stream.metadata.ForkOffset) {
+					inherited = append(inherited, msg)
+				}
+			}
+		}
+	}
+
+	// Read fork's own messages (offset >= ForkOffset)
+	ownMessages := readOwnMessages(stream, offset, nil)
+
+	if len(inherited) == 0 {
+		return ownMessages
+	}
+	if len(ownMessages) == 0 {
+		return inherited
+	}
+	return append(inherited, ownMessages...)
+}
+
 func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -643,25 +698,19 @@ func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) 
 		return nil, false, ErrStreamNotFound
 	}
 
-	// Find messages after the given offset
-	var messages []Message
-	for _, msg := range stream.messages {
-		if msg.Offset.ByteOffset > offset.ByteOffset {
-			messages = append(messages, msg)
-		}
-	}
+	// Read messages across fork chain
+	messages := s.readForkedStream(stream, offset)
 
-	// upToDate is true when client has reached the tail of the stream:
-	// - requested offset equals current tail (no new messages)
-	// - last returned message is at the current tail
-	// - stream is empty
+	// upToDate is true when client has reached the tail of the fork's own data
+	// (its CurrentOffset). For forks, this means we've read all inherited data
+	// AND all of the fork's own messages.
 	var upToDate bool
 	if len(messages) > 0 {
 		upToDate = messages[len(messages)-1].Offset.Equal(stream.metadata.CurrentOffset)
-	} else if len(stream.messages) == 0 {
-		upToDate = true
 	} else {
-		upToDate = offset.Equal(stream.metadata.CurrentOffset)
+		// No messages returned: either the stream has no data at all,
+		// or the client is already at the tail
+		upToDate = offset.Equal(stream.metadata.CurrentOffset) || stream.metadata.CurrentOffset.Equal(ZeroOffset)
 	}
 
 	return messages, upToDate, nil
@@ -685,6 +734,22 @@ func (s *MemoryStore) WaitForMessages(ctx context.Context, path string, offset O
 	if len(messages) > 0 {
 		return messages, false, false, nil
 	}
+
+	// For forks: if offset is in the inherited range (< ForkOffset),
+	// inherited data exists in the source. The Read call above should have
+	// returned it already, but if the source is missing/empty, don't wait
+	// — inherited data will never arrive via long-poll notifications
+	// (source appends don't notify fork waiters).
+	s.mu.RLock()
+	stream, ok = s.streams[path]
+	if ok && stream.metadata.ForkedFrom != "" && offset.LessThan(stream.metadata.ForkOffset) {
+		s.mu.RUnlock()
+		// Return empty — no data available and waiting won't help
+		// since source appends don't notify this fork's waiters.
+		// The upToDate flag should reflect the actual state.
+		return nil, false, false, nil
+	}
+	s.mu.RUnlock()
 
 	// No messages, set up wait
 	ch := make(chan struct{}, 1)
