@@ -88,6 +88,28 @@ export interface Stream {
     epoch: number
     seq: number
   }
+
+  /**
+   * Source stream path (set when this stream is a fork).
+   */
+  forkedFrom?: string
+
+  /**
+   * Divergence offset from the source stream.
+   * Format: "0000000000000000_0000000000000000"
+   */
+  forkOffset?: string
+
+  /**
+   * Number of forks referencing this stream.
+   * Defaults to 0.
+   */
+  refCount: number
+
+  /**
+   * Whether this stream is logically deleted but retained for fork readers.
+   */
+  softDeleted?: boolean
 }
 
 /**

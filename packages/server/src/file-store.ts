@@ -382,6 +382,7 @@ export class FileBackedStreamStore {
       producers,
       closed: meta.closed,
       closedBy: meta.closedBy,
+      refCount: 0,
     }
   }
 

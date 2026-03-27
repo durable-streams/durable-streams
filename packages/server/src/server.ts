@@ -36,6 +36,11 @@ const SSE_CLOSED_FIELD = `streamClosed`
 // Stream closure header
 const STREAM_CLOSED_HEADER = `Stream-Closed`
 
+// Fork headers
+const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
+const STREAM_REF_COUNT_HEADER = `Stream-Ref-Count`
+
 // Query params
 const OFFSET_QUERY_PARAM = `offset`
 const LIVE_QUERY_PARAM = `live`
@@ -427,11 +432,11 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq`
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset`
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Ref-Count, etag, content-type, content-encoding, vary`
     )
 
     // Browser security headers (Protocol Section 10.7)
@@ -511,7 +516,10 @@ export class DurableStreamTestServer {
       }
     } catch (err) {
       if (err instanceof Error) {
-        if (err.message.includes(`not found`)) {
+        if (err.message.includes(`soft-deleted`)) {
+          res.writeHead(410, { "content-type": `text/plain` })
+          res.end(`Stream is gone`)
+        } else if (err.message.includes(`not found`)) {
           res.writeHead(404, { "content-type": `text/plain` })
           res.end(`Stream not found`)
         } else if (
@@ -570,6 +578,14 @@ export class DurableStreamTestServer {
     const closedHeader = req.headers[STREAM_CLOSED_HEADER.toLowerCase()]
     const createClosed = closedHeader === `true`
 
+    // Parse fork headers
+    const forkedFromHeader = req.headers[
+      STREAM_FORKED_FROM_HEADER.toLowerCase()
+    ] as string | undefined
+    const forkOffsetHeader = req.headers[
+      STREAM_FORK_OFFSET_HEADER.toLowerCase()
+    ] as string | undefined
+
     // Validate TTL and Expires-At headers
     if (ttlHeader && expiresAtHeader) {
       res.writeHead(400, { "content-type": `text/plain` })
@@ -606,21 +622,54 @@ export class DurableStreamTestServer {
       }
     }
 
+    // Validate fork offset format if provided
+    if (forkOffsetHeader) {
+      const validOffsetPattern = /^\d+_\d+$/
+      if (!validOffsetPattern.test(forkOffsetHeader)) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Stream-Fork-Offset format`)
+        return
+      }
+    }
+
     // Read body if present
     const body = await this.readBody(req)
 
     const isNew = !this.store.has(path)
 
     // Support both sync (StreamStore) and async (FileBackedStreamStore) create
-    await Promise.resolve(
-      this.store.create(path, {
-        contentType,
-        ttlSeconds,
-        expiresAt: expiresAtHeader,
-        initialData: body.length > 0 ? body : undefined,
-        closed: createClosed,
-      })
-    )
+    try {
+      await Promise.resolve(
+        this.store.create(path, {
+          contentType,
+          ttlSeconds,
+          expiresAt: expiresAtHeader,
+          initialData: body.length > 0 ? body : undefined,
+          closed: createClosed,
+          forkedFrom: forkedFromHeader,
+          forkOffset: forkOffsetHeader,
+        })
+      )
+    } catch (err) {
+      if (err instanceof Error) {
+        if (err.message.includes(`Source stream not found`)) {
+          res.writeHead(404, { "content-type": `text/plain` })
+          res.end(`Source stream not found`)
+          return
+        }
+        if (err.message.includes(`Invalid fork offset`)) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`Fork offset beyond source stream length`)
+          return
+        }
+        if (err.message.includes(`soft-deleted`)) {
+          res.writeHead(409, { "content-type": `text/plain` })
+          res.end(`Stream is soft-deleted, path cannot be reused`)
+          return
+        }
+      }
+      throw err
+    }
 
     const stream = this.store.get(path)!
 
@@ -630,7 +679,7 @@ export class DurableStreamTestServer {
         this.options.onStreamCreated({
           type: `created`,
           path,
-          contentType,
+          contentType: stream.contentType ?? contentType,
           timestamp: Date.now(),
         })
       )
@@ -638,7 +687,7 @@ export class DurableStreamTestServer {
 
     // Return 201 for new streams, 200 for idempotent creates
     const headers: Record<string, string> = {
-      "content-type": contentType,
+      "content-type": stream.contentType ?? contentType,
       [STREAM_OFFSET_HEADER]: stream.currentOffset,
     }
 
@@ -652,6 +701,13 @@ export class DurableStreamTestServer {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
 
+    // Include fork headers if this is a forked stream
+    if (stream.forkedFrom) {
+      headers[STREAM_FORKED_FROM_HEADER] = stream.forkedFrom
+      headers[STREAM_FORK_OFFSET_HEADER] = stream.forkOffset!
+    }
+    headers[STREAM_REF_COUNT_HEADER] = String(stream.refCount)
+
     res.writeHead(isNew ? 201 : 200, headers)
     res.end()
   }
@@ -663,6 +719,13 @@ export class DurableStreamTestServer {
     const stream = this.store.get(path)
     if (!stream) {
       res.writeHead(404, { "content-type": `text/plain` })
+      res.end()
+      return
+    }
+
+    // Check for soft-deleted streams
+    if (stream.softDeleted) {
+      res.writeHead(410, { "content-type": `text/plain` })
       res.end()
       return
     }
@@ -681,6 +744,13 @@ export class DurableStreamTestServer {
     if (stream.closed) {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
+
+    // Include fork headers if this is a forked stream
+    if (stream.forkedFrom) {
+      headers[STREAM_FORKED_FROM_HEADER] = stream.forkedFrom
+      headers[STREAM_FORK_OFFSET_HEADER] = stream.forkOffset!
+    }
+    headers[STREAM_REF_COUNT_HEADER] = String(stream.refCount)
 
     // Generate ETag: {path}:-1:{offset}[:c] (includes closure status)
     // The :c suffix ensures ETag changes when a stream is closed, even without new data
@@ -705,6 +775,13 @@ export class DurableStreamTestServer {
     if (!stream) {
       res.writeHead(404, { "content-type": `text/plain` })
       res.end(`Stream not found`)
+      return
+    }
+
+    // Check for soft-deleted streams
+    if (stream.softDeleted) {
+      res.writeHead(410, { "content-type": `text/plain` })
+      res.end(`Stream is gone`)
       return
     }
 
@@ -1491,13 +1568,12 @@ export class DurableStreamTestServer {
    * Handle DELETE - delete stream
    */
   private async handleDelete(path: string, res: ServerResponse): Promise<void> {
-    if (!this.store.has(path)) {
+    const deleted = this.store.delete(path)
+    if (!deleted) {
       res.writeHead(404, { "content-type": `text/plain` })
       res.end(`Stream not found`)
       return
     }
-
-    this.store.delete(path)
 
     // Call lifecycle hook
     if (this.options.onStreamDeleted) {
