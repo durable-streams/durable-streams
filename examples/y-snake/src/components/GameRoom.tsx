@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react"
+import { useEffect, useMemo, useRef, useState } from "react"
 import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 import { YjsProvider } from "@durable-streams/y-durable-streams"
@@ -198,6 +198,37 @@ export function GameRoom({
     }
   }, [doc])
 
+  // Get expiresAt from registry (or default to 10 min from now)
+  const roomEntry = registryDB.collections.rooms.toArray.find(
+    (r) => r.roomId === roomId
+  )
+  const expiresAt = roomEntry?.expiresAt ?? Date.now() + ROOM_TTL_SECONDS * 1000
+
+  const value = useMemo<GameRoomContextValue>(
+    () => ({
+      doc,
+      awareness,
+      roomId,
+      playerId,
+      playerName,
+      playerColor,
+      isSynced,
+      isLoading,
+      expiresAt,
+    }),
+    [
+      doc,
+      awareness,
+      roomId,
+      playerId,
+      playerName,
+      playerColor,
+      isSynced,
+      isLoading,
+      expiresAt,
+    ]
+  )
+
   if (error) {
     return (
       <div style={styles.center}>
@@ -221,24 +252,6 @@ export function GameRoom({
     )
   }
 
-  // Get expiresAt from registry (or default to 10 min from now)
-  const roomEntry = registryDB.collections.rooms.toArray.find(
-    (r) => r.roomId === roomId
-  )
-  const expiresAt = roomEntry?.expiresAt ?? Date.now() + ROOM_TTL_SECONDS * 1000
-
-  const value: GameRoomContextValue = {
-    doc,
-    awareness,
-    roomId,
-    playerId,
-    playerName,
-    playerColor,
-    isSynced,
-    isLoading,
-    expiresAt,
-  }
-
   return (
     <GameRoomContext.Provider value={value}>
       <ScoresProvider roomId={roomId}>
@@ -256,18 +269,16 @@ const styles = {
     justifyContent: `center`,
     height: `100vh`,
     gap: 16,
-    fontFamily: `'JetBrains Mono', monospace`,
-    background: `#0B0E17`,
+    fontFamily: `'Press Start 2P', monospace`,
+    background: `#1b1b1f`,
   },
   btn: {
     fontFamily: `inherit`,
-    fontSize: 12,
+    fontSize: 8,
     padding: `8px 24px`,
-    background: `#00E5FF`,
+    background: `#d0bcff`,
     color: `#000`,
     border: `none`,
     cursor: `pointer`,
-    borderRadius: 4,
-    fontWeight: 700,
   },
 }

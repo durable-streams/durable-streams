@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { useLiveQuery } from "@tanstack/react-db"
 import { useGameRoom } from "./game-room-context"
 import { useRoomScores } from "./scores-context"
@@ -18,19 +18,22 @@ const POINTS_FOOD = 10
 const FOOD_LIFESPAN = 150
 const FOOD_FADE_IN = 3
 const FOOD_FADE_OUT = 20
+const OBSTACLE_LIFESPAN = 200
+const OBSTACLE_FADE_OUT = 20
+
+const FONT_SM = 8
+const FONT_SCORE = 14
 
 const PALETTE = {
   bg: `#1b1b1f`,
   grid: `#202127`,
   gridLine: `#2e2e32`,
+  border: `#2e2e32`,
   snake: `#75fbfd`,
-  snakeHead: `#75fbfd`,
   food: `#00d2a0`,
-  obsWarn: `#f6f95c`,
   obsSolid: `#d0bcff`,
   text: `rgba(235,235,245,0.68)`,
   accent: `#d0bcff`,
-  purple: `#998fe7`,
   dim: `rgba(235,235,245,0.38)`,
 }
 
@@ -227,10 +230,12 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
   const { doc, awareness, roomId, playerId, playerName, playerColor } =
     useGameRoom()
   const { scoresDB, submitScoreIfHigher } = useRoomScores()
-  const { cols, rows, baseTick } = parseRoomConfig(roomId)
+  const { cols, rows, baseTick } = useMemo(
+    () => parseRoomConfig(roomId),
+    [roomId]
+  )
 
   const [localSnake, setLocalSnake] = useState<Array<Point>>([])
-  const [, setLocalDir] = useState({ dx: 1, dy: 0 })
   const [localScore, setLocalScore] = useState(0)
   const [sharedState, setSharedState] = useState<SharedGameState>({
     foods: [{ x: Math.floor(cols / 2), y: 3, age: FOOD_FADE_IN }],
@@ -242,20 +247,18 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
   const [otherPlayers, setOtherPlayers] = useState<Map<string, PlayerState>>(
     new Map()
   )
-  const [awarenessStates, setAwarenessStates] = useState<Map<number, any>>(
-    new Map()
-  )
+  const [connectedCount, setConnectedCount] = useState(1)
   const [copied, setCopied] = useState(false)
   const [showPlayers, setShowPlayers] = useState(false)
   const displayRoomName = roomId.replace(/__\d+x\d+(?:_\d+ms)?$/, ``)
+  const copiedTimerRef = useRef<ReturnType<typeof setTimeout>>(undefined)
 
   // High scores from StreamDB
   const { data: highScores = [] } = useLiveQuery(
     (q) => (scoresDB ? q.from({ scores: scoresDB.collections.scores }) : null),
     [scoresDB]
   )
-  // Merge persisted high scores with live player scores (show whichever is higher)
-  const mergedHighScores = (() => {
+  const mergedHighScores = useMemo(() => {
     const byName = new Map<
       string,
       { playerName: string; score: number; live: boolean }
@@ -285,7 +288,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     }
 
     return [...byName.values()].sort((a, b) => b.score - a.score).slice(0, 10)
-  })()
+  }, [highScores, localScore, otherPlayers, playerName])
 
   const dirQueue = useRef<Array<{ dx: number; dy: number }>>([])
   const localRef = useRef({
@@ -311,7 +314,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
   useEffect(() => {
     const snake = initSnake()
     setLocalSnake(snake)
-    setLocalDir({ dx: 1, dy: 0 })
     setLocalScore(0)
     localRef.current = {
       snake,
@@ -366,19 +368,22 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     return () => playersMap.unobserve(handler)
   }, [doc, playerId])
 
-  // Observe awareness for player presence
+  // Observe awareness for player presence — only track count to minimize re-renders
   useEffect(() => {
     const handler = () => {
-      const states = new Map<number, any>()
       const activePlayerIds = new Set<string>()
+      let otherCount = 0
 
       awareness.getStates().forEach((state, clientId) => {
         if (clientId !== awareness.clientID) {
-          states.set(clientId, state)
+          otherCount++
           if (state.playerId) activePlayerIds.add(state.playerId)
         }
       })
-      setAwarenessStates(states)
+      setConnectedCount((prev) => {
+        const next = otherCount + 1
+        return prev === next ? prev : next
+      })
 
       const playersMap = doc.getMap(`players`)
       playersMap.forEach((_, key) => {
@@ -422,7 +427,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       }
       dirQueue.current = []
       setLocalSnake(snake)
-      setLocalDir(dir)
       setLocalScore(0)
       writeMyPlayer(doc, playerId, {
         snake,
@@ -435,6 +439,12 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     },
     [doc, playerId, playerName, playerColor, initSnake, submitScoreIfHigher]
   )
+
+  // Keep respawn in a ref so the game loop doesn't restart when it changes
+  const respawnRef = useRef(respawn)
+  useEffect(() => {
+    respawnRef.current = respawn
+  }, [respawn])
 
   // Touch handler — swipe relative to snake head
   const svgRef = useRef<SVGSVGElement>(null)
@@ -511,7 +521,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       )
 
       if (selfHit || obsHit || otherHit) {
-        respawn(score)
+        respawnRef.current(score)
         if (!isCancelled()) timeoutId = setTimeout(tick, baseTick)
         return
       }
@@ -545,7 +555,9 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           ...o,
           age: o.age + 1,
         }))
-        currentObstacles = currentObstacles.filter((o) => o.age < 200)
+        currentObstacles = currentObstacles.filter(
+          (o) => o.age < OBSTACLE_LIFESPAN
+        )
         obstaclesChanged = true
 
         if (obstacleTimer <= 0 && currentObstacles.length < MAX_OBSTACLES) {
@@ -602,7 +614,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
 
       Object.assign(ref, { snake, dir, score, obstacleTimer, speed: newSpeed })
       setLocalSnake([...snake])
-      setLocalDir({ ...dir })
       setLocalScore(score)
 
       writeMyPlayer(doc, playerId, {
@@ -623,7 +634,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       cancelled = true
       clearTimeout(timeoutId)
     }
-  }, [doc, playerId, playerName, playerColor, cols, rows, baseTick, respawn])
+  }, [doc, playerId, playerName, playerColor, cols, rows, baseTick])
 
   // ============================================================================
   // Render
@@ -632,15 +643,45 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
   const W = cols * CELL
   const H = rows * CELL
   const topScore = mergedHighScores.length > 0 ? mergedHighScores[0] : null
-  const connectedCount = awarenessStates.size + 1
 
-  const copyRoom = () => {
+  const copyRoom = useCallback(() => {
     navigator.clipboard.writeText(displayRoomName).catch(() => {})
     setCopied(true)
-    setTimeout(() => setCopied(false), 1200)
-  }
+    clearTimeout(copiedTimerRef.current)
+    copiedTimerRef.current = setTimeout(() => setCopied(false), 1200)
+  }, [displayRoomName])
 
-  const s = { font: 8, score: 14 } as const
+  useEffect(() => () => clearTimeout(copiedTimerRef.current), [])
+
+  const gridLines = useMemo(
+    () => (
+      <>
+        {Array.from({ length: cols }, (_, i) => (
+          <line
+            key={`v${i}`}
+            x1={i * CELL}
+            y1={0}
+            x2={i * CELL}
+            y2={H}
+            stroke={PALETTE.gridLine}
+            strokeWidth={0.5}
+          />
+        ))}
+        {Array.from({ length: rows }, (_, i) => (
+          <line
+            key={`h${i}`}
+            x1={0}
+            y1={i * CELL}
+            x2={W}
+            y2={i * CELL}
+            stroke={PALETTE.gridLine}
+            strokeWidth={0.5}
+          />
+        ))}
+      </>
+    ),
+    [cols, rows, W, H]
+  )
 
   return (
     <div
@@ -661,7 +702,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     >
       <style>{`
         @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');
-        @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.2 } }
+        @keyframes blink { 0%,100% { opacity:1 } 50% { opacity:0.3 } }
         .live-dot { animation: blink 1.5s ease-in-out infinite; }
       `}</style>
 
@@ -674,7 +715,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           width: `100%`,
           maxWidth: W,
           marginBottom: 8,
-          fontSize: s.font,
+          fontSize: FONT_SM,
         }}
       >
         <button
@@ -684,7 +725,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
             border: `none`,
             color: PALETTE.accent,
             fontFamily: `inherit`,
-            fontSize: s.font,
+            fontSize: FONT_SM,
             padding: `4px 0`,
             cursor: `pointer`,
           }}
@@ -727,7 +768,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
                 right: 0,
                 marginTop: 6,
                 background: PALETTE.bg,
-                border: `1px solid ${PALETTE.gridLine}`,
+                border: `1px solid ${PALETTE.border}`,
                 padding: 10,
                 zIndex: 5,
                 minWidth: 120,
@@ -776,7 +817,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
             width: `100%`,
             maxWidth: W,
             marginBottom: 6,
-            fontSize: s.font,
+            fontSize: FONT_SM,
           }}
         >
           <span style={{ color: PALETTE.dim }}>{topScore.playerName}</span>
@@ -804,11 +845,11 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           width: `100%`,
           maxWidth: W,
           marginBottom: 8,
-          fontSize: s.font,
+          fontSize: FONT_SM,
         }}
       >
         <span>
-          <span style={{ fontSize: s.score, color: PALETTE.accent }}>
+          <span style={{ fontSize: FONT_SCORE, color: PALETTE.accent }}>
             {localScore}
           </span>
           {` `}
@@ -818,7 +859,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           <span>
             <span style={{ color: PALETTE.dim }}>HIGH SCORE</span>
             {` `}
-            <span style={{ fontSize: s.score, color: PALETTE.accent }}>
+            <span style={{ fontSize: FONT_SCORE, color: PALETTE.accent }}>
               {topScore.score}
             </span>
           </span>
@@ -835,36 +876,14 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           maxWidth: W,
           height: `auto`,
           background: PALETTE.grid,
-          border: `1px solid ${PALETTE.gridLine}`,
+          border: `1px solid ${PALETTE.border}`,
           flex: `1 1 auto`,
           minHeight: 0,
-          maxHeight: `calc(100dvh - 80px)`,
+          maxHeight: `calc(100dvh - 120px)`,
           objectFit: `contain`,
         }}
       >
-        {/* Grid */}
-        {Array.from({ length: cols }, (_, i) => (
-          <line
-            key={`v${i}`}
-            x1={i * CELL}
-            y1={0}
-            x2={i * CELL}
-            y2={H}
-            stroke={PALETTE.gridLine}
-            strokeWidth={0.5}
-          />
-        ))}
-        {Array.from({ length: rows }, (_, i) => (
-          <line
-            key={`h${i}`}
-            x1={0}
-            y1={i * CELL}
-            x2={W}
-            y2={i * CELL}
-            stroke={PALETTE.gridLine}
-            strokeWidth={0.5}
-          />
-        ))}
+        {gridLines}
 
         {/* Food */}
         {sharedState.foods.map((f, i) => (
@@ -891,7 +910,8 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           sharedState.obstacles.filter((o) => o.age >= 3),
           PALETTE.obsSolid,
           1.5,
-          (o) => fadeOpacity(o.age, 3, 200, 20)
+          (o) =>
+            fadeOpacity(o.age ?? 0, 3, OBSTACLE_LIFESPAN, OBSTACLE_FADE_OUT)
         )}
         {sharedState.obstacles
           .filter((o) => o.age < 3)
@@ -920,7 +940,6 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
                 textAnchor="middle"
                 fontSize={7}
                 fill={p.color}
-                opacity={0.7}
                 fontFamily="'Press Start 2P', monospace"
               >
                 {p.name}
@@ -959,12 +978,12 @@ function renderMergedBlocks(
   opacityFn?: (p: { x: number; y: number; age?: number }) => number
 ) {
   const set = new Set(points.map((p) => `${p.x},${p.y}`))
-  return points.map((p, i) => {
+  return points.map((p) => {
     const x = p.x * CELL
     const y = p.y * CELL
     const opacity = opacityFn ? opacityFn(p) : undefined
     return (
-      <g key={i} opacity={opacity}>
+      <g key={`${p.x},${p.y}`} opacity={opacity}>
         {!set.has(`${p.x},${p.y - 1}`) && (
           <line
             x1={x}

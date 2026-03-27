@@ -10,8 +10,6 @@ const PALETTE = {
   border: `#2e2e32`,
   text: `rgba(235,235,245,0.68)`,
   accent: `#d0bcff`,
-  purple: `#998fe7`,
-  warn: `#FF8C3B`,
   dim: `rgba(235,235,245,0.38)`,
 }
 
@@ -27,6 +25,14 @@ const SPEED_OPTIONS = [
   { label: `Fast`, tick: 120 },
   { label: `Insane`, tick: 80 },
 ]
+
+function buildRoomId(
+  name: string,
+  size: { cols: number; rows: number },
+  speed: { tick: number }
+): string {
+  return `${name}__${size.cols}x${size.rows}_${speed.tick}ms`
+}
 
 function randomRoomName(): string {
   const words = [
@@ -57,8 +63,8 @@ export function Lobby({
 }: LobbyProps) {
   const { registryDB } = useRegistryContext()
   const [roomName, setRoomName] = useState(randomRoomName)
-  const [sizeIdx] = useState(1) // default Medium
-  const [speedIdx] = useState(1) // default Normal
+  const sizeIdx = 1 // Medium
+  const speedIdx = 1 // Normal
   const [isCreating, setIsCreating] = useState(false)
   const [roomPage, setRoomPage] = useState(0)
   const [showJoinModal, setShowJoinModal] = useState(false)
@@ -88,7 +94,7 @@ export function Lobby({
         roomName.trim() || `room-${Math.random().toString(36).slice(2, 7)}`
       const size = BOARD_SIZES[sizeIdx]
       const speed = SPEED_OPTIONS[speedIdx]
-      const roomId = `${name}__${size.cols}x${size.rows}_${speed.tick}ms`
+      const roomId = buildRoomId(name, size, speed)
 
       const createdAt = Date.now()
       const metadata: RoomMetadata = {
@@ -171,7 +177,7 @@ export function Lobby({
           style={{
             position: `fixed`,
             inset: 0,
-            background: `rgba(0,0,0,0.7)`,
+            background: `rgba(27,27,31,0.85)`,
             display: `flex`,
             alignItems: `center`,
             justifyContent: `center`,
@@ -192,10 +198,18 @@ export function Lobby({
               autoFocus
               onKeyDown={(e) => {
                 if (e.key === `Enter` && joinRoomName.trim()) {
-                  const size = BOARD_SIZES[sizeIdx]
-                  const speed = SPEED_OPTIONS[speedIdx]
-                  const roomId = `${joinRoomName.trim()}__${size.cols}x${size.rows}_${speed.tick}ms`
-                  onJoinRoom(roomId)
+                  const existing = sortedRooms.find(
+                    (r) => r.name === joinRoomName.trim()
+                  )
+                  onJoinRoom(
+                    existing
+                      ? existing.roomId
+                      : buildRoomId(
+                          joinRoomName.trim(),
+                          BOARD_SIZES[sizeIdx],
+                          SPEED_OPTIONS[speedIdx]
+                        )
+                  )
                 }
               }}
             />
@@ -217,10 +231,18 @@ export function Lobby({
                 disabled={!joinRoomName.trim()}
                 onClick={() => {
                   if (joinRoomName.trim()) {
-                    const size = BOARD_SIZES[sizeIdx]
-                    const speed = SPEED_OPTIONS[speedIdx]
-                    const roomId = `${joinRoomName.trim()}__${size.cols}x${size.rows}_${speed.tick}ms`
-                    onJoinRoom(roomId)
+                    const existing = sortedRooms.find(
+                      (r) => r.name === joinRoomName.trim()
+                    )
+                    onJoinRoom(
+                      existing
+                        ? existing.roomId
+                        : buildRoomId(
+                            joinRoomName.trim(),
+                            BOARD_SIZES[sizeIdx],
+                            SPEED_OPTIONS[speedIdx]
+                          )
+                    )
                   }
                 }}
               >
@@ -396,12 +418,6 @@ const styles: Record<string, React.CSSProperties> = {
     color: PALETTE.accent,
     marginBottom: 24,
   },
-  subtitle: {
-    fontSize: 7,
-    color: PALETTE.dim,
-    letterSpacing: 4,
-    marginBottom: 32,
-  },
   card: {
     background: PALETTE.card,
     border: `1px solid ${PALETTE.border}`,
@@ -416,13 +432,6 @@ const styles: Record<string, React.CSSProperties> = {
     letterSpacing: 2,
     marginBottom: 10,
   },
-  label: {
-    fontSize: 6,
-    color: PALETTE.dim,
-    display: `block`,
-    marginBottom: 4,
-    letterSpacing: 1,
-  },
   input: {
     width: `100%`,
     background: PALETTE.bg,
@@ -434,26 +443,6 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 10,
     outline: `none`,
     boxSizing: `border-box`,
-  },
-  sizeRow: {
-    display: `flex`,
-    gap: 4,
-    marginBottom: 12,
-  },
-  sizeBtn: {
-    flex: 1,
-    padding: `6px 4px`,
-    fontSize: 6,
-    fontFamily: `inherit`,
-    background: PALETTE.bg,
-    color: PALETTE.dim,
-    border: `1px solid ${PALETTE.border}`,
-    cursor: `pointer`,
-  },
-  sizeBtnActive: {
-    background: `rgba(208,188,255,0.1)`,
-    color: PALETTE.accent,
-    borderColor: PALETTE.accent,
   },
   createBtn: {
     width: `100%`,
@@ -476,13 +465,5 @@ const styles: Record<string, React.CSSProperties> = {
     border: `1px solid ${PALETTE.accent}`,
     cursor: `pointer`,
     letterSpacing: 2,
-  },
-  hint: {
-    fontSize: 6,
-    color: PALETTE.dim,
-    textAlign: `center`,
-    maxWidth: 340,
-    lineHeight: 1.8,
-    marginTop: 8,
   },
 }
