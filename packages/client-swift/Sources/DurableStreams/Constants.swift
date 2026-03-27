@@ -43,6 +43,9 @@ enum Headers {
 
     /// Response header indicating SSE data encoding (e.g., "base64")
     static let streamSSEDataEncoding = "Stream-SSE-Data-Encoding"
+
+    /// Request header for optimistic concurrency control (ETag)
+    static let ifMatch = "If-Match"
 }
 
 /// Query parameter names used by the Durable Streams protocol.

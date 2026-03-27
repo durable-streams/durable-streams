@@ -36,6 +36,7 @@ struct Command {
     data: Option<String>,
     binary: Option<bool>,
     seq: Option<i32>,
+    if_match: Option<String>,
     // Producer fields
     producer_id: Option<String>,
     epoch: Option<i32>,
@@ -409,6 +410,10 @@ async fn handle_append(state: &Arc<Mutex<Option<AppState>>>, cmd: Command) -> Re
         if seq > 0 {
             options = options.seq(seq.to_string());
         }
+    }
+
+    if let Some(ref if_match) = cmd.if_match {
+        options = options.if_match(if_match.clone());
     }
 
     // Merge dynamic headers with command headers

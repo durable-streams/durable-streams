@@ -315,6 +315,10 @@ async function executeOperation(
             ? resolveVariables(op.data, variables)
             : ``
 
+      const ifMatch = op.ifMatch
+        ? resolveVariables(op.ifMatch, variables)
+        : undefined
+
       const result = await client.send(
         {
           type: `append`,
@@ -322,6 +326,7 @@ async function executeOperation(
           data: op.binaryData ?? data,
           binary: !!op.binaryData,
           seq: op.seq,
+          ifMatch,
           headers: op.headers,
         },
         commandTimeout
@@ -337,6 +342,10 @@ async function executeOperation(
         op.expect?.storeOffsetAs
       ) {
         variables.set(op.expect.storeOffsetAs, result.offset)
+      }
+
+      if (op.saveAs) {
+        variables.set(op.saveAs, result)
       }
 
       return { result }
@@ -574,6 +583,10 @@ async function executeOperation(
 
       if (result.success && op.expect?.storeAs) {
         variables.set(op.expect.storeAs, result)
+      }
+
+      if (result.success && op.saveAs) {
+        variables.set(op.saveAs, result)
       }
 
       return { result }

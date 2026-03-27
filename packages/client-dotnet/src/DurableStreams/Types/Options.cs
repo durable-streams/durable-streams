@@ -124,6 +124,13 @@ public class AppendOptions
     public string? Seq { get; set; }
 
     /// <summary>
+    /// ETag for optimistic concurrency control.
+    /// If set, the append will fail with PreconditionFailedException if the stream's
+    /// current ETag doesn't match (412 Precondition Failed).
+    /// </summary>
+    public string? IfMatch { get; set; }
+
+    /// <summary>
     /// Additional headers for the request.
     /// </summary>
     public Dictionary<string, string>? Headers { get; set; }

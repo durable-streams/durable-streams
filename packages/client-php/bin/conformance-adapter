@@ -17,6 +17,7 @@ use DurableStreams\LiveMode;
 use DurableStreams\RetryOptions;
 use DurableStreams\Internal\HttpClient;
 use DurableStreams\Exception\DurableStreamException;
+use DurableStreams\Exception\PreconditionFailedException;
 use DurableStreams\Exception\StreamNotFoundException;
 use DurableStreams\Exception\StreamExistsException;
 use DurableStreams\Exception\SeqConflictException;
@@ -38,6 +39,7 @@ const ERROR_INTERNAL = 'INTERNAL_ERROR';
 const ERROR_NOT_SUPPORTED = 'NOT_SUPPORTED';
 const ERROR_INVALID_ARGUMENT = 'INVALID_ARGUMENT';
 const ERROR_STREAM_CLOSED = 'STREAM_CLOSED';
+const ERROR_PRECONDITION_FAILED = 'PRECONDITION_FAILED';
 
 // Global state
 $serverUrl = '';
@@ -143,6 +145,9 @@ function mapErrorCode(Throwable $e): array {
     }
     if ($e instanceof SeqConflictException) {
         return [ERROR_SEQ_CONFLICT, 409];
+    }
+    if ($e instanceof PreconditionFailedException) {
+        return [ERROR_PRECONDITION_FAILED, 412];
     }
     if ($e instanceof JsonException) {
         return [ERROR_PARSE, null];
@@ -309,9 +314,12 @@ function handleAppend(array $cmd): array {
     // Get seq if provided
     $seq = isset($cmd['seq']) ? (string)$cmd['seq'] : null;
 
+    // Get ifMatch if provided
+    $ifMatch = $cmd['ifMatch'] ?? null;
+
     // Create stream and append
     $ds = new DurableStream($url, $contentType, $mergedHeaders, $sharedClient);
-    $result = $ds->append($data, $seq);
+    $result = $ds->append($data, $seq, $ifMatch);
 
     $response = [
         'type' => 'append',

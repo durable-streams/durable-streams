@@ -43,7 +43,8 @@ type Command struct {
 	// Append fields
 	Data   string `json:"data,omitempty"`
 	Binary bool   `json:"binary,omitempty"`
-	Seq    int    `json:"seq,omitempty"`
+	Seq     int    `json:"seq,omitempty"`
+	IfMatch string `json:"ifMatch,omitempty"`
 	// IdempotentProducer fields
 	ProducerID  string   `json:"producerId,omitempty"`
 	Epoch       int      `json:"epoch,omitempty"`
@@ -496,6 +497,9 @@ func handleAppend(cmd Command) Result {
 	var opts []durablestreams.AppendOption
 	if cmd.Seq > 0 {
 		opts = append(opts, durablestreams.WithSeq(strconv.Itoa(cmd.Seq)))
+	}
+	if cmd.IfMatch != "" {
+		opts = append(opts, durablestreams.WithIfMatch(cmd.IfMatch))
 	}
 	if len(mergedHeaders) > 0 {
 		opts = append(opts, durablestreams.WithAppendHeaders(mergedHeaders))
@@ -1094,6 +1098,9 @@ func mapErrorCode(err *durablestreams.StreamError) string {
 	if errors.Is(err.Err, durablestreams.ErrStreamClosed) {
 		return "STREAM_CLOSED"
 	}
+	if errors.Is(err.Err, durablestreams.ErrPreconditionFailed) {
+		return "PRECONDITION_FAILED"
+	}
 	if errors.Is(err.Err, durablestreams.ErrOffsetGone) {
 		return "INVALID_OFFSET"
 	}
@@ -1118,6 +1125,8 @@ func mapErrorCode(err *durablestreams.StreamError) string {
 		return "CONFLICT"
 	case 410:
 		return "INVALID_OFFSET"
+	case 412:
+		return "PRECONDITION_FAILED"
 	case 429:
 		return "UNEXPECTED_STATUS"
 	default:

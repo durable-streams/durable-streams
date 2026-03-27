@@ -405,9 +405,20 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 
 	dirName := s.dirCache[path]
 
-	// Validate content type
+	// Validate content type (checked before If-Match per error precedence)
 	if opts.ContentType != "" && !ContentTypeMatches(meta.ContentType, opts.ContentType) {
 		return AppendResult{}, ErrContentTypeMismatch
+	}
+
+	// Atomic If-Match check (under lock — no TOCTOU race)
+	if opts.IfMatch != "" {
+		currentETag := fmt.Sprintf(`"%s"`, meta.CurrentOffset.String())
+		if opts.IfMatch != currentETag {
+			return AppendResult{
+				Offset:       meta.CurrentOffset,
+				StreamClosed: meta.Closed,
+			}, ErrPreconditionFailed
+		}
 	}
 
 	// Validate producer FIRST (if headers provided)

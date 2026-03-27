@@ -44,6 +44,20 @@ module DurableStreams
     end
   end
 
+  # Precondition failed - If-Match ETag mismatch (412)
+  class PreconditionFailedError < Error
+    attr_reader :current_etag, :current_offset, :stream_closed
+
+    def initialize(url: nil, current_etag: nil, current_offset: nil, stream_closed: false, **opts)
+      message = "Precondition failed: stream was modified by another writer"
+      message = "#{message} (#{url})" if url
+      super(message, url: url, status: 412, code: "PRECONDITION_FAILED", **opts)
+      @current_etag = current_etag
+      @current_offset = current_offset
+      @stream_closed = stream_closed
+    end
+  end
+
   # Content type mismatch (409)
   class ContentTypeMismatchError < Error
     def initialize(url: nil, expected: nil, actual: nil, **opts)
@@ -158,6 +172,17 @@ module DurableStreams
       else
         StreamExistsError.new(url: url, headers: headers)
       end
+    when 412
+      current_etag = headers&.[]("etag")
+      current_offset = headers&.[](STREAM_NEXT_OFFSET_HEADER)
+      stream_closed = headers&.[](STREAM_CLOSED_HEADER)&.downcase == "true"
+      PreconditionFailedError.new(
+        url: url,
+        current_etag: current_etag,
+        current_offset: current_offset,
+        stream_closed: stream_closed,
+        headers: headers
+      )
     when 429
       RateLimitedError.new(url: url, headers: headers)
     else

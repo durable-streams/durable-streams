@@ -231,6 +231,29 @@ impl DurableStream {
                     }
                     return Err(StreamError::SeqConflict);
                 }
+                412 => {
+                    let current_etag = resp
+                        .headers()
+                        .get(HEADER_ETAG)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let current_offset = resp
+                        .headers()
+                        .get(HEADER_STREAM_OFFSET)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.to_string());
+                    let stream_closed = resp
+                        .headers()
+                        .get(HEADER_STREAM_CLOSED)
+                        .and_then(|v| v.to_str().ok())
+                        .map(|s| s.eq_ignore_ascii_case("true"))
+                        .unwrap_or(false);
+                    return Err(StreamError::PreconditionFailed {
+                        current_etag,
+                        current_offset,
+                        stream_closed,
+                    });
+                }
                 // Retry on transient server errors
                 500 | 502 | 503 | 504 | 429 => {
                     last_error = Some(StreamError::from_status(status, &self.url));

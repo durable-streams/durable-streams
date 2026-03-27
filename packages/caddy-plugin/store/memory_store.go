@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -412,9 +413,20 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 		}, ErrStreamClosed
 	}
 
-	// Validate content type if provided
+	// Validate content type if provided (checked before If-Match per error precedence)
 	if opts.ContentType != "" && !ContentTypeMatches(stream.metadata.ContentType, opts.ContentType) {
 		return AppendResult{}, ErrContentTypeMismatch
+	}
+
+	// Atomic If-Match check (under lock — no TOCTOU race)
+	if opts.IfMatch != "" {
+		currentETag := fmt.Sprintf(`"%s"`, stream.metadata.CurrentOffset.String())
+		if opts.IfMatch != currentETag {
+			return AppendResult{
+				Offset:       stream.metadata.CurrentOffset,
+				StreamClosed: stream.metadata.Closed,
+			}, ErrPreconditionFailed
+		}
 	}
 
 	// Validate producer FIRST (if headers provided)
