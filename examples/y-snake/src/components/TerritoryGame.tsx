@@ -1,7 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
-import { useLiveQuery } from "@tanstack/react-db"
 import { useGameRoom } from "./game-room-context"
-import { useRoomScores } from "./scores-context"
 import type * as Y from "yjs"
 
 // ============================================================================
@@ -126,7 +124,6 @@ interface TerritoryGameProps {
 export function TerritoryGame({ onLeave }: TerritoryGameProps) {
   const { doc, awareness, roomId, playerId, playerName, playerColor } =
     useGameRoom()
-  const { scoresDB, submitScoreIfHigher } = useRoomScores()
   const { cols, rows } = useMemo(() => parseRoomConfig(roomId), [roomId])
   const totalCells = cols * rows
 
@@ -153,12 +150,6 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     stunnedUntil: 0,
   })
 
-  // High scores from StreamDB
-  const { data: highScores = [] } = useLiveQuery(
-    (q) => (scoresDB ? q.from({ scores: scoresDB.collections.scores }) : null),
-    [scoresDB]
-  )
-
   const myScore = useMemo(
     () => countCellsForPlayer(cells, playerId) * POINTS_PER_CELL,
     [cells, playerId]
@@ -177,58 +168,6 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     })
     return scores
   }, [cells])
-
-  const mergedHighScores = useMemo(() => {
-    const byName = new Map<
-      string,
-      { playerName: string; score: number; live: boolean }
-    >()
-
-    for (const entry of highScores) {
-      byName.set(entry.playerName, {
-        playerName: entry.playerName,
-        score: entry.score,
-        live: false,
-      })
-    }
-
-    // Current player
-    const myPct = Math.round((myScore / totalCells) * 100)
-    if (myPct > 0) {
-      const existing = byName.get(playerName)
-      if (!existing || myPct > existing.score) {
-        byName.set(playerName, {
-          playerName,
-          score: myPct,
-          live: true,
-        })
-      }
-    }
-
-    // Other players
-    otherPlayers.forEach((p) => {
-      const pScore =
-        playerScores.get(
-          // find playerId from name - we need to iterate
-          Array.from(otherPlayers.entries()).find(
-            ([, v]) => v.name === p.name
-          )?.[0] || ``
-        ) || 0
-      const pPct = Math.round((pScore / totalCells) * 100)
-      if (pPct > 0) {
-        const existing = byName.get(p.name)
-        if (!existing || pPct > existing.score) {
-          byName.set(p.name, {
-            playerName: p.name,
-            score: pPct,
-            live: true,
-          })
-        }
-      }
-    })
-
-    return [...byName.values()].sort((a, b) => b.score - a.score).slice(0, 10)
-  }, [highScores, myScore, otherPlayers, playerName, playerScores, totalCells])
 
   // Initialize player position
   useEffect(() => {
@@ -397,19 +336,35 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
 
   const onTouchEnd = useCallback(() => {
     touchStartRef.current = null
-    // Keep moving in the last direction on touch (don't stop)
+    dirRef.current = null // stop on lift
   }, [])
 
-  // Submit score on leave
+  // Mouse click — move toward clicked cell
+  const onBoardClick = useCallback(
+    (e: React.MouseEvent<SVGSVGElement>) => {
+      if (!svgRef.current) return
+      const rect = svgRef.current.getBoundingClientRect()
+      const cx = Math.floor(((e.clientX - rect.left) / rect.width) * cols)
+      const cy = Math.floor(((e.clientY - rect.top) / rect.height) * rows)
+      const ref = localRef.current
+      const dx = cx - ref.x
+      const dy = cy - ref.y
+      if (dx === 0 && dy === 0) {
+        dirRef.current = null
+        return
+      }
+      if (Math.abs(dx) > Math.abs(dy)) {
+        dirRef.current = { dx: dx > 0 ? 1 : -1, dy: 0 }
+      } else {
+        dirRef.current = { dx: 0, dy: dy > 0 ? 1 : -1 }
+      }
+    },
+    [cols, rows]
+  )
+
   const handleLeave = useCallback(() => {
-    const pct = Math.round(
-      (countCellsForPlayer(readCells(doc), playerId) / totalCells) * 100
-    )
-    if (pct > 0) {
-      submitScoreIfHigher(playerName, pct)
-    }
     onLeave()
-  }, [doc, playerId, totalCells, playerName, submitScoreIfHigher, onLeave])
+  }, [onLeave])
 
   // Movement loop
   useEffect(() => {
@@ -423,13 +378,10 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
       // Check stun
       if (ref.stunnedUntil && now < ref.stunnedUntil) return
 
-      // Compute new position (wrap around)
-      let nx = ref.x + dir.dx
-      let ny = ref.y + dir.dy
-      if (nx < 0) nx = cols - 1
-      else if (nx >= cols) nx = 0
-      if (ny < 0) ny = rows - 1
-      else if (ny >= rows) ny = 0
+      // Compute new position (clamp to bounds)
+      const nx = Math.max(0, Math.min(cols - 1, ref.x + dir.dx))
+      const ny = Math.max(0, Math.min(rows - 1, ref.y + dir.dy))
+      if (nx === ref.x && ny === ref.y) return // hit edge, no movement
 
       // Check collision with other players
       const others = readPlayers(doc, playerId)
@@ -487,7 +439,6 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
 
   const W = cols * CELL
   const H = rows * CELL
-  const topScore = mergedHighScores.length > 0 ? mergedHighScores[0] : null
 
   const copyRoom = useCallback(() => {
     navigator.clipboard.writeText(displayRoomName).catch(() => {})
@@ -537,8 +488,6 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     })
     return colors
   }, [playerId, playerColor, otherPlayers])
-
-  const now = Date.now()
 
   return (
     <div
@@ -673,36 +622,6 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
         </div>
       </div>
 
-      {/* High score holder name */}
-      {topScore && (
-        <div
-          style={{
-            display: `flex`,
-            justifyContent: `flex-end`,
-            alignItems: `center`,
-            gap: 4,
-            width: `100%`,
-            maxWidth: W,
-            marginBottom: 4,
-            fontSize: FONT_SM,
-          }}
-        >
-          <span style={{ color: PALETTE.dim }}>{topScore.playerName}</span>
-          {topScore.live && (
-            <span
-              className="live-dot"
-              style={{
-                width: 5,
-                height: 5,
-                borderRadius: `50%`,
-                background: PALETTE.accent,
-                display: `inline-block`,
-              }}
-            />
-          )}
-        </div>
-      )}
-
       {/* Score row */}
       <div
         style={{
@@ -722,17 +641,9 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
           {` `}
           <span style={{ color: PALETTE.dim }}>TERRITORY</span>
         </span>
-        {topScore && (
-          <span>
-            <span style={{ color: PALETTE.dim }}>HIGH SCORE</span>
-            {` `}
-            <span style={{ fontSize: FONT_SCORE, color: PALETTE.accent }}>
-              {topScore.score}%
-            </span>
-            {` `}
-            <span style={{ color: PALETTE.dim }}>{topScore.playerName}</span>
-          </span>
-        )}
+        <span style={{ color: PALETTE.dim }}>
+          WIN AT {Math.round(WIN_THRESHOLD * 100)}%
+        </span>
       </div>
 
       {/* Game board */}
@@ -742,6 +653,7 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
         onTouchStart={onTouchStart}
         onTouchMove={onTouchMove}
         onTouchEnd={onTouchEnd}
+        onClick={onBoardClick}
         style={{
           width: `100%`,
           maxWidth: W,
@@ -775,7 +687,8 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
 
         {/* Other player cursors */}
         {Array.from(otherPlayers.entries()).map(([id, p]) => {
-          const isStunned = p.stunnedUntil != null && now < p.stunnedUntil
+          const isStunned =
+            p.stunnedUntil != null && Date.now() < p.stunnedUntil
           return (
             <g key={id} className={isStunned ? `stunned` : undefined}>
               <rect
@@ -806,7 +719,7 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
         {(() => {
           const isStunned =
             localRef.current.stunnedUntil > 0 &&
-            now < localRef.current.stunnedUntil
+            Date.now() < localRef.current.stunnedUntil
           return (
             <g className={isStunned ? `stunned` : undefined}>
               <rect
