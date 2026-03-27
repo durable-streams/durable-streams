@@ -664,10 +664,12 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
         </span>
         <span style={{ textAlign: `right` }}>
           {leader && (
-            <span
-              style={{ color: PALETTE.dim, display: `block`, marginBottom: 4 }}
-            >
-              {leader.name}
+            <span style={{ display: `block`, marginBottom: 4 }}>
+              <span style={{ color: PALETTE.dim }}>{leader.name}</span>
+              {` `}
+              <span style={{ fontSize: FONT_SCORE, color: PALETTE.accent }}>
+                {leader.pct}%
+              </span>
             </span>
           )}
           <span
@@ -678,18 +680,7 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
                   : PALETTE.dim,
             }}
           >
-            WIN AT{` `}
-          </span>
-          <span
-            style={{
-              fontSize: FONT_SCORE,
-              color:
-                leader && leader.pct >= Math.round(WIN_THRESHOLD * 100) - 5
-                  ? `#FF3D71`
-                  : PALETTE.accent,
-            }}
-          >
-            {Math.round(WIN_THRESHOLD * 100)}%
+            WIN AT {Math.round(WIN_THRESHOLD * 100)}%
           </span>
         </span>
       </div>
