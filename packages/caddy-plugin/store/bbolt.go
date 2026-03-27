@@ -34,6 +34,11 @@ type bboltMetadata struct {
 	// Stream closure state
 	Closed   bool                   `json:"closed,omitempty"`
 	ClosedBy *bboltClosedByProducer `json:"closed_by,omitempty"`
+	// Fork state
+	ForkedFrom  string `json:"forked_from,omitempty"`
+	ForkOffset  string `json:"fork_offset,omitempty"`
+	RefCount    int32  `json:"ref_count,omitempty"`
+	SoftDeleted bool   `json:"soft_deleted,omitempty"`
 }
 
 // bboltClosedByProducer is the serialized form of ClosedByProducer
@@ -130,6 +135,14 @@ func (s *BboltMetadataStore) Put(meta *StreamMetadata, directoryName string) err
 		}
 	}
 
+	// Convert fork fields
+	bm.ForkedFrom = meta.ForkedFrom
+	if meta.ForkedFrom != "" {
+		bm.ForkOffset = meta.ForkOffset.String()
+	}
+	bm.RefCount = meta.RefCount
+	bm.SoftDeleted = meta.SoftDeleted
+
 	data, err := json.Marshal(bm)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -210,6 +223,18 @@ func (s *BboltMetadataStore) Get(path string) (*StreamMetadata, string, error) {
 				Seq:        bm.ClosedBy.Seq,
 			}
 		}
+
+		// Deserialize fork fields
+		meta.ForkedFrom = bm.ForkedFrom
+		if bm.ForkOffset != "" {
+			forkOffset, err := ParseOffset(bm.ForkOffset)
+			if err != nil {
+				return fmt.Errorf("invalid fork offset: %w", err)
+			}
+			meta.ForkOffset = forkOffset
+		}
+		meta.RefCount = bm.RefCount
+		meta.SoftDeleted = bm.SoftDeleted
 
 		return nil
 	})
@@ -450,6 +475,18 @@ func (s *BboltMetadataStore) ForEach(fn func(meta *StreamMetadata, directoryName
 					Seq:        bm.ClosedBy.Seq,
 				}
 			}
+
+			// Deserialize fork fields
+			meta.ForkedFrom = bm.ForkedFrom
+			if bm.ForkOffset != "" {
+				forkOffset, err := ParseOffset(bm.ForkOffset)
+				if err != nil {
+					return fmt.Errorf("invalid fork offset: %w", err)
+				}
+				meta.ForkOffset = forkOffset
+			}
+			meta.RefCount = bm.RefCount
+			meta.SoftDeleted = bm.SoftDeleted
 
 			return fn(meta, bm.DirectoryName)
 		})
