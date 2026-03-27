@@ -22,6 +22,7 @@ Copyright (c) 2025 ElectricSQL
 3. [Protocol Overview](#3-protocol-overview)
 4. [Stream Model](#4-stream-model)
    - 4.1. [Stream Closure](#41-stream-closure)
+   - 4.2. [Stream forking](#42-stream-forking)
 5. [HTTP Operations](#5-http-operations)
    - 5.1. [Create Stream](#51-create-stream)
    - 5.2. [Append to Stream](#52-append-to-stream)
@@ -126,6 +127,68 @@ After closure, the stream's data remains fully readable. Only new appends are re
 **Stream-Closed Header Value:**
 
 The `Stream-Closed` header uses the value `true` (case-insensitive) to indicate closure. Servers **MUST** treat the header as present only when its value is exactly `true` (case-insensitive comparison). Other values such as `false`, `yes`, `1`, or empty string **MUST** be treated as if the header were absent. Servers **SHOULD NOT** return error responses for non-`true` values; they simply ignore the header.
+
+### 4.2. Stream forking
+
+Stream forking creates a new stream that inherits data from a source stream up to a specified offset. The fork is a variant of stream creation — a `PUT` with additional headers.
+
+**Properties of stream forking:**
+
+- **O(1) metadata**: Fork stores only the source path and fork offset. No data is copied.
+- **Transparent reads**: Clients read a forked stream identically to a regular stream. The server stitches source and fork data transparently.
+- **Lifecycle independence**: Deleting a source does not affect forks. Forks hold a reference count on the source, preventing data cleanup until all forks are removed.
+- **Offset pass-through**: Forked streams use the same offset space as the source. No offset translation.
+
+#### Fork creation headers
+
+These headers are used on `PUT` requests to create a forked stream:
+
+- `Stream-Forked-From: <source-path>`: The URL path of the source stream to fork from. When present, the `PUT` creates a fork rather than a new empty stream.
+- `Stream-Fork-Offset: <offset>`: The divergence point in the source stream. The fork inherits all data from the source up to (but not including) this offset. If omitted, defaults to the source stream's current tail offset.
+
+When forking, the `Content-Type` header is optional — if omitted, the fork inherits the source stream's content type. `Stream-TTL` and `Stream-Expires-At` are capped at the source stream's expiry time.
+
+#### Fork response headers
+
+The following headers are returned on `HEAD`, `GET`, and `PUT` (creation) responses for forked streams:
+
+- `Stream-Forked-From: <source-path>`: The source stream path. Present only for forked streams.
+- `Stream-Fork-Offset: <offset>`: The divergence point. Present only for forked streams.
+
+The following header is returned on `HEAD` and `GET` responses for all streams:
+
+- `Stream-Ref-Count: <integer>`: The number of forks referencing this stream. `0` if none.
+
+Non-forked streams do not include `Stream-Forked-From` or `Stream-Fork-Offset` headers.
+
+#### Fork creation errors
+
+| Condition                        | Status          | Description                                                       |
+| -------------------------------- | --------------- | ----------------------------------------------------------------- |
+| Source stream not found          | 404 Not Found   | The `Stream-Forked-From` path does not exist                      |
+| Fork offset beyond stream length | 400 Bad Request | The `Stream-Fork-Offset` exceeds the source stream's current tail |
+| Invalid offset format            | 400 Bad Request | The `Stream-Fork-Offset` value is malformed                       |
+| Target path already in use       | 409 Conflict    | A stream already exists at the target URL                         |
+| Source is soft-deleted           | 409 Conflict    | The source stream has been deleted but still has forks            |
+
+#### Idempotent fork creation
+
+Fork creation follows the same idempotency rules as regular stream creation (Section 5.1). If a stream already exists at the target URL with matching configuration — including `Stream-Forked-From` and `Stream-Fork-Offset` — the server **MUST** return `200 OK`. If the configuration differs, the server **MUST** return `409 Conflict`.
+
+#### Closed stream forking
+
+Closed streams **MAY** be forked. The resulting fork starts in the open state regardless of the source stream's closed status. This enables forking from historical points in completed streams.
+
+#### Soft-delete and lifecycle
+
+When a stream with active forks (reference count > 0) is deleted via `DELETE`, it transitions to a **soft-deleted** state:
+
+- The stream returns `410 Gone` for direct operations (`GET`, `HEAD`, `POST`, `DELETE`)
+- The stream's path is blocked from re-creation via `PUT` (`409 Conflict`)
+- The stream's data is preserved for fork readers
+- When the last fork referencing the stream is deleted, the stream's data is cleaned up
+
+Garbage collection cascades: if deleting a fork causes its source's reference count to reach zero and the source is also soft-deleted, the source is cleaned up too. This cascade continues up the fork chain.
 
 ## 5. HTTP Operations
 
@@ -999,6 +1062,9 @@ This document requests registration of the following HTTP headers in the "Perman
 | `Stream-Next-Offset` | permanent | This document |
 | `Stream-Up-To-Date`  | permanent | This document |
 | `Stream-Closed`      | permanent | This document |
+| `Stream-Forked-From` | permanent | This document |
+| `Stream-Fork-Offset` | permanent | This document |
+| `Stream-Ref-Count`   | permanent | This document |
 
 **Descriptions:**
 
@@ -1009,6 +1075,9 @@ This document requests registration of the following HTTP headers in the "Perman
 - `Stream-Next-Offset`: Next offset for subsequent reads (opaque string)
 - `Stream-Up-To-Date`: Indicates up-to-date response (presence header)
 - `Stream-Closed`: Indicates stream is closed / end-of-stream (presence header, value `true`)
+- `Stream-Forked-From`: Source stream path for forked streams (opaque string)
+- `Stream-Fork-Offset`: Divergence point offset for forked streams (opaque string)
+- `Stream-Ref-Count`: Number of forks referencing a stream (non-negative integer)
 
 ## 12. References
 
