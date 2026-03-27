@@ -294,8 +294,11 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (e.key in DIR_MAP) {
         e.preventDefault()
+        const wasEmpty = !dirRef.current
         pressed.add(e.key)
         dirRef.current = DIR_MAP[e.key]
+        // Immediate move on first keypress (don't wait for interval)
+        if (wasEmpty) moveRef.current?.(DIR_MAP[e.key])
       }
     }
 
