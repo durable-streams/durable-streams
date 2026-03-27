@@ -338,6 +338,27 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     e.preventDefault()
     const t = e.touches[0]
     touchStartRef.current = { x: t.clientX, y: t.clientY }
+    // Immediate move toward touch position (like click)
+    const svg = svgRef.current
+    if (!svg) return
+    const pt = svg.createSVGPoint()
+    pt.x = t.clientX
+    pt.y = t.clientY
+    const ctm = svg.getScreenCTM()
+    if (!ctm) return
+    const svgPt = pt.matrixTransform(ctm.inverse())
+    const cx = svgPt.x / CELL - 0.5
+    const cy = svgPt.y / CELL - 0.5
+    const ref = localRef.current
+    const dx = cx - ref.x
+    const dy = cy - ref.y
+    if (dx === 0 && dy === 0) return
+    const dir =
+      Math.abs(dx) > Math.abs(dy)
+        ? { dx: dx > 0 ? 1 : -1, dy: 0 }
+        : { dx: 0, dy: dy > 0 ? 1 : -1 }
+    dirRef.current = dir
+    moveRef.current?.(dir)
   }, [])
 
   const onTouchMove = useCallback((e: React.TouchEvent) => {
@@ -666,17 +687,9 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
           <span style={{ color: PALETTE.dim }}>TERRITORY</span>
         </div>
         <div style={{ textAlign: `right` }}>
-          {leader && (
-            <div style={{ marginBottom: 4 }}>
-              <span style={{ color: PALETTE.dim }}>{leader.name}</span>
-              {` `}
-              <span style={{ fontSize: FONT_SCORE, color: PALETTE.accent }}>
-                {leader.pct}%
-              </span>
-            </div>
-          )}
           <div
             style={{
+              marginBottom: leader ? 4 : 0,
               color:
                 leader && leader.pct >= Math.round(WIN_THRESHOLD * 100) - 5
                   ? `#FF3D71`
@@ -685,6 +698,15 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
           >
             WIN AT {Math.round(WIN_THRESHOLD * 100)}%
           </div>
+          {leader && (
+            <div>
+              <span style={{ color: PALETTE.dim }}>{leader.name}</span>
+              {` `}
+              <span style={{ fontSize: FONT_SCORE, color: PALETTE.accent }}>
+                {leader.pct}%
+              </span>
+            </div>
+          )}
         </div>
       </div>
 
