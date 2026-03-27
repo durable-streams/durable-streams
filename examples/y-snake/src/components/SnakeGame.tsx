@@ -196,7 +196,7 @@ function writeSharedGame(doc: Y.Doc, state: Partial<SharedGameState>) {
 // Food cell helpers (Y.Map CRDT)
 // ============================================================================
 
-function getFoodMap(doc: Y.Doc) {
+function getFoodMap(doc: Y.Doc): Y.Map<FoodCell> {
   return doc.getMap(`foodCells`)
 }
 
@@ -213,16 +213,6 @@ function readFoodCells(doc: Y.Doc): Map<string, FoodCell> {
     result.set(key, cell)
   })
   return result
-}
-
-function tryEatFood(doc: Y.Doc, key: string, eatenBy: string): boolean {
-  const foodMap = getFoodMap(doc)
-  const cell = foodMap.get(key)
-  if (!cell || cell.eatenBy) return false
-  doc.transact(() => {
-    foodMap.set(key, { ...cell, eatenBy })
-  })
-  return true
 }
 
 function cleanupFoodCells(doc: Y.Doc) {
@@ -599,7 +589,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
 
       snake.unshift({ x: nx, y: ny })
 
-      // Food collision — each player writes eatenBy via Y.Map LWW
+      // Food collision — delete the cell from the Y.Map
       const foodKey = `${nx},${ny}`
       const foodMap = getFoodMap(doc)
       const foodAtHead = foodMap.get(foodKey)
@@ -609,7 +599,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         !foodAtHead.eatenBy &&
         now - foodAtHead.spawnedAt >= FOOD_FADE_IN_MS
       ) {
-        tryEatFood(doc, foodKey, playerId)
+        doc.transact(() => foodMap.delete(foodKey))
         score += POINTS_FOOD
       } else {
         snake.pop()
