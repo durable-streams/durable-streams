@@ -152,10 +152,7 @@ export function GameRoom({
       const elected = allPlayerIds[0] === playerId
       setIsRegistryWriter(elected)
 
-      if (!elected) {
-        lastCountRef.current = count
-        return
-      }
+      if (!elected) return
 
       if (count === lastCountRef.current) return
       lastCountRef.current = count
@@ -166,6 +163,26 @@ export function GameRoom({
       if (existing) {
         try {
           registryDB.actions.addRoom({ ...existing, playerCount: count })
+        } catch {
+          /* best-effort */
+        }
+      } else {
+        // Registry hasn't synced yet — reconstruct metadata so the room
+        // appears in the lobby. Use the room's own TTL for expiresAt.
+        const nameMatch = roomId.match(/^(.+?)__/)
+        const name = nameMatch ? nameMatch[1] : roomId
+        const sizeMatch = roomId.match(/__(\d+x\d+)/)
+        const boardSize = sizeMatch ? sizeMatch[1] : `30x24`
+        const now = Date.now()
+        try {
+          registryDB.actions.addRoom({
+            roomId,
+            name,
+            boardSize,
+            createdAt: now,
+            expiresAt: now + ROOM_TTL_SECONDS * 1000,
+            playerCount: count,
+          })
         } catch {
           /* best-effort */
         }
