@@ -342,22 +342,25 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
   // Mouse click — click an adjacent cell to move there (one step)
   const moveRef = useRef<(dir: { dx: number; dy: number }) => void>(undefined)
 
-  const onBoardClick = useCallback(
-    (e: React.MouseEvent<SVGSVGElement>) => {
-      if (!svgRef.current) return
-      const rect = svgRef.current.getBoundingClientRect()
-      const cx = Math.floor(((e.clientX - rect.left) / rect.width) * cols)
-      const cy = Math.floor(((e.clientY - rect.top) / rect.height) * rows)
-      const ref = localRef.current
-      const dx = cx - ref.x
-      const dy = cy - ref.y
-      // Only allow adjacent cells (distance of 1)
-      if (Math.abs(dx) + Math.abs(dy) !== 1) return
-      // Single step — call the move function directly, don't set dirRef
-      moveRef.current?.({ dx, dy })
-    },
-    [cols, rows]
-  )
+  const onBoardClick = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
+    const svg = svgRef.current
+    if (!svg) return
+    // Use SVG coordinate transform for accurate mapping
+    const pt = svg.createSVGPoint()
+    pt.x = e.clientX
+    pt.y = e.clientY
+    const ctm = svg.getScreenCTM()
+    if (!ctm) return
+    const svgPt = pt.matrixTransform(ctm.inverse())
+    const cx = Math.floor(svgPt.x / CELL)
+    const cy = Math.floor(svgPt.y / CELL)
+    const ref = localRef.current
+    const dx = cx - ref.x
+    const dy = cy - ref.y
+    // Only allow adjacent cells (manhattan distance of 1)
+    if (Math.abs(dx) + Math.abs(dy) !== 1) return
+    moveRef.current?.({ dx, dy })
+  }, [])
 
   const handleLeave = useCallback(() => {
     onLeave()
