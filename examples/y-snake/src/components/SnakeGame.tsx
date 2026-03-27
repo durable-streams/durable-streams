@@ -437,7 +437,15 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         alive: true,
       })
     },
-    [doc, playerId, playerName, playerColor, initSnake, submitScoreIfHigher]
+    [
+      doc,
+      playerId,
+      playerName,
+      playerColor,
+      baseTick,
+      initSnake,
+      submitScoreIfHigher,
+    ]
   )
 
   // Keep respawn in a ref so the game loop doesn't restart when it changes
@@ -806,37 +814,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         </div>
       </div>
 
-      {/* High score player name (right-aligned, above score row) */}
-      {topScore && (
-        <div
-          style={{
-            display: `flex`,
-            justifyContent: `flex-end`,
-            alignItems: `center`,
-            gap: 4,
-            width: `100%`,
-            maxWidth: W,
-            marginBottom: 6,
-            fontSize: FONT_SM,
-          }}
-        >
-          <span style={{ color: PALETTE.dim }}>{topScore.playerName}</span>
-          {topScore.live && (
-            <span
-              className="live-dot"
-              style={{
-                width: 5,
-                height: 5,
-                borderRadius: `50%`,
-                background: PALETTE.accent,
-                display: `inline-block`,
-              }}
-            />
-          )}
-        </div>
-      )}
-
-      {/* Score row: both numbers on one baseline */}
+      {/* Score row */}
       <div
         style={{
           display: `flex`,
@@ -856,7 +834,23 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           <span style={{ color: PALETTE.dim }}>SCORE</span>
         </span>
         {topScore && (
-          <span>
+          <span style={{ textAlign: `right` }}>
+            <span style={{ color: PALETTE.dim }}>{topScore.playerName}</span>
+            {topScore.live && (
+              <span
+                className="live-dot"
+                style={{
+                  width: 5,
+                  height: 5,
+                  borderRadius: `50%`,
+                  background: PALETTE.accent,
+                  display: `inline-block`,
+                  marginLeft: 4,
+                  verticalAlign: `middle`,
+                }}
+              />
+            )}
+            <br />
             <span style={{ color: PALETTE.dim }}>HIGH SCORE</span>
             {` `}
             <span style={{ fontSize: FONT_SCORE, color: PALETTE.accent }}>
