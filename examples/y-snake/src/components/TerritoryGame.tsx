@@ -339,7 +339,9 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     dirRef.current = null // stop on lift
   }, [])
 
-  // Mouse click — move toward clicked cell
+  // Mouse click — click an adjacent cell to move there (one step)
+  const moveRef = useRef<(dir: { dx: number; dy: number }) => void>(undefined)
+
   const onBoardClick = useCallback(
     (e: React.MouseEvent<SVGSVGElement>) => {
       if (!svgRef.current) return
@@ -349,15 +351,10 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
       const ref = localRef.current
       const dx = cx - ref.x
       const dy = cy - ref.y
-      if (dx === 0 && dy === 0) {
-        dirRef.current = null
-        return
-      }
-      if (Math.abs(dx) > Math.abs(dy)) {
-        dirRef.current = { dx: dx > 0 ? 1 : -1, dy: 0 }
-      } else {
-        dirRef.current = { dx: 0, dy: dy > 0 ? 1 : -1 }
-      }
+      // Only allow adjacent cells (distance of 1)
+      if (Math.abs(dx) + Math.abs(dy) !== 1) return
+      // Single step — call the move function directly, don't set dirRef
+      moveRef.current?.({ dx, dy })
     },
     [cols, rows]
   )
@@ -366,24 +363,18 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     onLeave()
   }, [onLeave])
 
-  // Movement loop
+  // Movement logic — shared by keyboard interval and mouse click
   useEffect(() => {
-    const intervalId = setInterval(() => {
-      const dir = dirRef.current
-      if (!dir) return
-
+    const doMove = (dir: { dx: number; dy: number }) => {
       const ref = localRef.current
       const now = Date.now()
 
-      // Check stun
       if (ref.stunnedUntil && now < ref.stunnedUntil) return
 
-      // Compute new position (clamp to bounds)
       const nx = Math.max(0, Math.min(cols - 1, ref.x + dir.dx))
       const ny = Math.max(0, Math.min(rows - 1, ref.y + dir.dy))
-      if (nx === ref.x && ny === ref.y) return // hit edge, no movement
+      if (nx === ref.x && ny === ref.y) return
 
-      // Check collision with other players
       const others = readPlayers(doc, playerId)
       const collidedWith = Array.from(others.entries()).find(
         ([, p]) => p.x === nx && p.y === ny
@@ -406,12 +397,10 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
         return
       }
 
-      // Move
       ref.x = nx
       ref.y = ny
       setLocalPos({ x: nx, y: ny })
 
-      // Write position
       const playersMap = getPlayersMap(doc)
       playersMap.set(playerId, {
         x: nx,
@@ -420,7 +409,6 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
         color: playerColor,
       })
 
-      // Claim cell
       const cellsMap = getCellsMap(doc)
       doc.transact(() => {
         cellsMap.set(`${nx},${ny}`, {
@@ -428,6 +416,15 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
           claimedAt: Date.now(),
         })
       })
+    }
+
+    // Expose for click handler
+    moveRef.current = doMove
+
+    // Keyboard repeat interval
+    const intervalId = setInterval(() => {
+      const dir = dirRef.current
+      if (dir) doMove(dir)
     }, MOVE_INTERVAL)
 
     return () => clearInterval(intervalId)
