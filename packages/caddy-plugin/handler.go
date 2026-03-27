@@ -37,6 +37,13 @@ const (
 	HeaderProducerReceivedSeq = "Producer-Received-Seq"
 )
 
+// Fork headers
+const (
+	HeaderStreamForkedFrom = "Stream-Forked-From"
+	HeaderStreamForkOffset = "Stream-Fork-Offset"
+	HeaderStreamRefCount   = "Stream-Ref-Count"
+)
+
 // sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
 // Per SSE spec, these are all valid line terminators that could be used for injection attacks
 var sseLineTerminators = regexp.MustCompile(`\r\n|\r|\n`)
@@ -46,8 +53,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq")
-	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset")
+	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Ref-Count")
 
 	// Browser security headers (Protocol Section 10.7)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -101,6 +108,10 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	// Parse Stream-Closed header
 	createClosed := closedStr == "true"
 
+	// Parse fork headers
+	forkedFromStr := r.Header.Get(HeaderStreamForkedFrom)
+	forkOffsetStr := r.Header.Get(HeaderStreamForkOffset)
+
 	// Validate TTL and ExpiresAt aren't both provided
 	if ttlStr != "" && expiresAtStr != "" {
 		return newHTTPError(http.StatusBadRequest, "cannot specify both Stream-TTL and Stream-Expires-At")
@@ -142,14 +153,43 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		ExpiresAt:   expiresAt,
 		InitialData: initialData,
 		Closed:      createClosed,
+		ForkedFrom:  forkedFromStr,
+	}
+
+	// Parse fork offset if provided
+	if forkOffsetStr != "" {
+		forkOffset, err := store.ParseOffset(forkOffsetStr)
+		if err != nil {
+			return newHTTPError(http.StatusBadRequest, "invalid Stream-Fork-Offset format")
+		}
+		opts.ForkOffset = &forkOffset
 	}
 
 	meta, wasCreated, err := h.store.Create(path, opts)
 	if err != nil {
+		if errors.Is(err, store.ErrStreamNotFound) {
+			return newHTTPError(http.StatusNotFound, "source stream not found")
+		}
+		if errors.Is(err, store.ErrInvalidForkOffset) {
+			return newHTTPError(http.StatusBadRequest, "fork offset beyond source stream length")
+		}
+		if errors.Is(err, store.ErrStreamSoftDeleted) {
+			return newHTTPError(http.StatusConflict, "stream is soft-deleted, path cannot be reused")
+		}
+		if errors.Is(err, store.ErrStreamExists) {
+			return newHTTPError(http.StatusConflict, "stream already exists")
+		}
 		if errors.Is(err, store.ErrConfigMismatch) {
 			return newHTTPError(http.StatusConflict, "stream exists with different configuration")
 		}
 		return err
+	}
+
+	// Check for soft-deleted existing stream
+	if meta != nil && meta.SoftDeleted {
+		w.WriteHeader(http.StatusConflict)
+		w.Write([]byte("stream is soft-deleted, path cannot be reused"))
+		return nil
 	}
 
 	// Set response headers
@@ -160,6 +200,13 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	if meta.Closed {
 		w.Header().Set(HeaderStreamClosed, "true")
 	}
+
+	// Include fork headers if this is a forked stream
+	if meta.ForkedFrom != "" {
+		w.Header().Set(HeaderStreamForkedFrom, meta.ForkedFrom)
+		w.Header().Set(HeaderStreamForkOffset, meta.ForkOffset.String())
+	}
+	w.Header().Set(HeaderStreamRefCount, strconv.FormatInt(int64(meta.RefCount), 10))
 
 	if wasCreated {
 		// Build full URL for Location header
@@ -184,6 +231,16 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	}
 
 	return nil
+}
+
+// isSoftDeleted checks if a stream is soft-deleted and writes 410 Gone if so.
+// Returns true if the stream is soft-deleted (caller should stop handling the request).
+func (h *Handler) isSoftDeleted(w http.ResponseWriter, meta *store.StreamMetadata) bool {
+	if meta != nil && meta.SoftDeleted {
+		w.WriteHeader(http.StatusGone)
+		return true
+	}
+	return false
 }
 
 // handleHead handles HEAD requests for stream metadata
@@ -211,6 +268,13 @@ func (h *Handler) handleHead(w http.ResponseWriter, r *http.Request, path string
 	if meta.Closed {
 		w.Header().Set(HeaderStreamClosed, "true")
 	}
+
+	// Include fork headers if this is a forked stream
+	if meta.ForkedFrom != "" {
+		w.Header().Set(HeaderStreamForkedFrom, meta.ForkedFrom)
+		w.Header().Set(HeaderStreamForkOffset, meta.ForkOffset.String())
+	}
+	w.Header().Set(HeaderStreamRefCount, strconv.FormatInt(int64(meta.RefCount), 10))
 
 	w.WriteHeader(http.StatusOK)
 	return nil
@@ -425,6 +489,13 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		responseCursor := generateResponseCursor(cursor)
 		w.Header().Set(HeaderStreamCursor, responseCursor)
 	}
+
+	// Include fork headers if this is a forked stream
+	if meta.ForkedFrom != "" {
+		w.Header().Set(HeaderStreamForkedFrom, meta.ForkedFrom)
+		w.Header().Set(HeaderStreamForkOffset, meta.ForkOffset.String())
+	}
+	w.Header().Set(HeaderStreamRefCount, strconv.FormatInt(int64(meta.RefCount), 10))
 
 	// Set ETag for caching
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, nextOffset.String()))
