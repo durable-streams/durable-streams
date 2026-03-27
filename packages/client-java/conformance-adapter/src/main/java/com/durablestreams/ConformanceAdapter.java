@@ -967,37 +967,6 @@ public class ConformanceAdapter {
                 result.put("success", true);
                 return result;
             }
-            case "retry-options": {
-                Number maxRetriesNum = (Number) target.get("maxRetries");
-                long maxRetries = maxRetriesNum != null ? maxRetriesNum.longValue() : 3;
-                Number initialDelayMsNum = (Number) target.get("initialDelayMs");
-                long initialDelayMs = initialDelayMsNum != null ? initialDelayMsNum.longValue() : 100;
-                Number maxDelayMsNum = (Number) target.get("maxDelayMs");
-                long maxDelayMs = maxDelayMsNum != null ? maxDelayMsNum.longValue() : 5000;
-                Number multiplierNum = (Number) target.get("multiplier");
-                double multiplier = multiplierNum != null ? multiplierNum.doubleValue() : 2.0;
-
-                if (maxRetries < 0) {
-                    return errorResult("validate", "INVALID_ARGUMENT", "maxRetries must be non-negative, got: " + maxRetries, 400);
-                }
-
-                if (initialDelayMs < 1) {
-                    return errorResult("validate", "INVALID_ARGUMENT", "initialDelayMs must be positive, got: " + initialDelayMs, 400);
-                }
-
-                if (maxDelayMs < 1) {
-                    return errorResult("validate", "INVALID_ARGUMENT", "maxDelayMs must be positive, got: " + maxDelayMs, 400);
-                }
-
-                if (multiplier < 1.0) {
-                    return errorResult("validate", "INVALID_ARGUMENT", "multiplier must be >= 1.0, got: " + multiplier, 400);
-                }
-
-                Map<String, Object> result = new LinkedHashMap<>();
-                result.put("type", "validate");
-                result.put("success", true);
-                return result;
-            }
             default:
                 return errorResult("validate", "NOT_SUPPORTED", "Unknown validation target: " + targetType, 400);
         }

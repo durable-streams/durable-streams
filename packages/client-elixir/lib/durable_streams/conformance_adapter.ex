@@ -130,7 +130,8 @@ defmodule DurableStreams.ConformanceAdapter do
         "sse" => DurableStreams.HTTP.Finch.available?(),  # True SSE requires Finch
         "longPoll" => true,
         "streaming" => true,
-        "dynamicHeaders" => true
+        "dynamicHeaders" => true,
+        "auto" => true
       }
     }
 
@@ -311,6 +312,7 @@ defmodule DurableStreams.ConformanceAdapter do
       case live do
         "long-poll" -> :long_poll
         "sse" -> :sse
+        true -> :long_poll
         false -> false
         nil -> false
         _ -> false
@@ -682,9 +684,6 @@ defmodule DurableStreams.ConformanceAdapter do
       case target_type do
         "idempotent-producer" ->
           validate_idempotent_producer(target)
-
-        "retry-options" ->
-          validate_retry_options(target)
 
         _ ->
           error_result("validate", "NOT_SUPPORTED", "Unknown validation target: #{target_type}")
@@ -1305,33 +1304,6 @@ defmodule DurableStreams.ConformanceAdapter do
 
       max_batch_bytes < 1 ->
         error_result("validate", "INVALID_ARGUMENT", "maxBatchBytes must be positive, got: #{max_batch_bytes}")
-
-      true ->
-        %{
-          "type" => "validate",
-          "success" => true
-        }
-    end
-  end
-
-  defp validate_retry_options(target) do
-    max_retries = target["maxRetries"] || 3
-    initial_delay_ms = target["initialDelayMs"] || 100
-    max_delay_ms = target["maxDelayMs"] || 5000
-    multiplier = target["multiplier"] || 2.0
-
-    cond do
-      max_retries < 0 ->
-        error_result("validate", "INVALID_ARGUMENT", "maxRetries must be non-negative, got: #{max_retries}")
-
-      initial_delay_ms < 1 ->
-        error_result("validate", "INVALID_ARGUMENT", "initialDelayMs must be positive, got: #{initial_delay_ms}")
-
-      max_delay_ms < 1 ->
-        error_result("validate", "INVALID_ARGUMENT", "maxDelayMs must be positive, got: #{max_delay_ms}")
-
-      multiplier < 1.0 ->
-        error_result("validate", "INVALID_ARGUMENT", "multiplier must be >= 1.0, got: #{multiplier}")
 
       true ->
         %{

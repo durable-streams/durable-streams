@@ -81,8 +81,6 @@ interface ClientFeatures {
   auto?: boolean
   streaming?: boolean
   dynamicHeaders?: boolean
-  retryOptions?: boolean
-  batchItems?: boolean
   strictZeroValidation?: boolean
 }
 
@@ -1262,10 +1260,6 @@ function featureToProperty(feature: string): keyof ClientFeatures | undefined {
     streaming: `streaming`,
     dynamicHeaders: `dynamicHeaders`,
     "dynamic-headers": `dynamicHeaders`,
-    retryOptions: `retryOptions`,
-    "retry-options": `retryOptions`,
-    batchItems: `batchItems`,
-    "batch-items": `batchItems`,
     strictZeroValidation: `strictZeroValidation`,
     "strict-zero-validation": `strictZeroValidation`,
   }
