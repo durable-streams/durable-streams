@@ -536,16 +536,13 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
 
       snake.unshift({ x: nx, y: ny })
 
-      // Check food collision — eat any food at the new head position
+      // Check food collision locally for immediate feedback
       let currentFoods = sharedGame.foods.map((f) => ({ ...f }))
-      let foodsChanged = false
-      const eatenIdx = currentFoods.findIndex(
+      const ateFood = currentFoods.some(
         (f) => f.x === nx && f.y === ny && f.age >= FOOD_FADE_IN
       )
-      if (eatenIdx >= 0) {
+      if (ateFood) {
         score += POINTS_FOOD
-        currentFoods.splice(eatenIdx, 1)
-        foodsChanged = true
       } else {
         snake.pop()
       }
@@ -556,6 +553,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       const isObstacleManager = allPlayerIds[0] === playerId
 
       let obstaclesChanged = false
+      let foodsChanged = false
 
       if (isObstacleManager) {
         // Age obstacles
@@ -590,6 +588,17 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
             currentObstacles.push(obs)
           }
         }
+
+        // Remove foods eaten by any player (check all snake heads)
+        const allHeads = new Set<string>()
+        allHeads.add(`${nx},${ny}`)
+        others.forEach((p) => {
+          if (p.snake.length > 0)
+            allHeads.add(`${p.snake[0].x},${p.snake[0].y}`)
+        })
+        currentFoods = currentFoods.filter(
+          (f) => !allHeads.has(`${f.x},${f.y}`) || f.age < FOOD_FADE_IN
+        )
 
         // Age foods and remove expired
         currentFoods = currentFoods.map((f) => ({ ...f, age: f.age + 1 }))
