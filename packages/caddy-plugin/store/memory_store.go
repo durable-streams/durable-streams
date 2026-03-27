@@ -314,6 +314,11 @@ func (s *MemoryStore) Get(path string) (*StreamMetadata, error) {
 		return nil, ErrStreamNotFound
 	}
 
+	// Check if stream is soft-deleted (external callers shouldn't see them)
+	if stream.metadata.SoftDeleted {
+		return nil, ErrStreamSoftDeleted
+	}
+
 	// Check if stream has expired
 	if stream.metadata.IsExpired() {
 		return nil, ErrStreamNotFound // Return not found for expired streams
@@ -330,6 +335,10 @@ func (s *MemoryStore) Has(path string) bool {
 	if !ok {
 		return false
 	}
+	// Soft-deleted streams are not visible
+	if stream.metadata.SoftDeleted {
+		return false
+	}
 	// Check if stream has expired
 	return !stream.metadata.IsExpired()
 }
@@ -338,10 +347,61 @@ func (s *MemoryStore) Delete(path string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, ok := s.streams[path]; !ok {
+	stream, ok := s.streams[path]
+	if !ok {
 		return ErrStreamNotFound
 	}
+
+	// Already soft-deleted: idempotent success
+	if stream.metadata.SoftDeleted {
+		return nil
+	}
+
+	// If there are forks referencing this stream, soft-delete instead
+	if stream.metadata.RefCount > 0 {
+		stream.metadata.SoftDeleted = true
+		return nil
+	}
+
+	// RefCount == 0: full delete with cascading GC
+	return s.deleteWithCascade(path)
+}
+
+// deleteWithCascade fully deletes a stream and cascades to soft-deleted parents
+// whose refcount drops to zero. Caller must hold s.mu.
+func (s *MemoryStore) deleteWithCascade(path string) error {
+	stream, ok := s.streams[path]
+	if !ok {
+		return nil
+	}
+
+	forkedFrom := stream.metadata.ForkedFrom
+
+	// Delete this stream's data
 	delete(s.streams, path)
+
+	// Cancel long-poll waiters for this stream
+	s.longPoll.notify(path)
+
+	// If this stream is a fork, decrement the source's refcount
+	if forkedFrom != "" {
+		parent, ok := s.streams[forkedFrom]
+		if ok {
+			parent.metadata.RefCount--
+
+			if parent.metadata.RefCount < 0 {
+				// Bug: refcount should never go negative
+				parent.metadata.RefCount = 0
+				return ErrRefCountUnderflow
+			}
+
+			// If parent refcount hit 0 and parent is soft-deleted, cascade
+			if parent.metadata.RefCount == 0 && parent.metadata.SoftDeleted {
+				return s.deleteWithCascade(forkedFrom)
+			}
+		}
+	}
+
 	return nil
 }
 
@@ -486,6 +546,11 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 	stream, ok := s.streams[path]
 	if !ok {
 		return AppendResult{}, ErrStreamNotFound
+	}
+
+	// Check if stream is soft-deleted
+	if stream.metadata.SoftDeleted {
+		return AppendResult{}, ErrStreamSoftDeleted
 	}
 
 	// Check if stream has expired
@@ -686,15 +751,35 @@ func (s *MemoryStore) readForkedStream(stream *memoryStream, offset Offset) []Me
 
 func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	stream, ok := s.streams[path]
 	if !ok {
+		s.mu.RUnlock()
 		return nil, false, ErrStreamNotFound
 	}
 
 	// Check if stream has expired
 	if stream.metadata.IsExpired() {
+		if stream.metadata.RefCount > 0 {
+			// Expiry with active forks: treat as soft-delete
+			// Need write lock to mutate
+			s.mu.RUnlock()
+			s.mu.Lock()
+			// Re-check under write lock
+			stream, ok = s.streams[path]
+			if ok && stream.metadata.IsExpired() && stream.metadata.RefCount > 0 {
+				stream.metadata.SoftDeleted = true
+			}
+			s.mu.Unlock()
+			return nil, false, ErrStreamNotFound
+		}
+		s.mu.RUnlock()
+		return nil, false, ErrStreamNotFound
+	}
+
+	// Soft-deleted streams are not visible for direct reads
+	if stream.metadata.SoftDeleted {
+		s.mu.RUnlock()
 		return nil, false, ErrStreamNotFound
 	}
 
@@ -713,6 +798,7 @@ func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) 
 		upToDate = offset.Equal(stream.metadata.CurrentOffset) || stream.metadata.CurrentOffset.Equal(ZeroOffset)
 	}
 
+	s.mu.RUnlock()
 	return messages, upToDate, nil
 }
 
