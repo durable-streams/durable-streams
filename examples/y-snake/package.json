@@ -1,0 +1,32 @@
+{
+  "name": "@durable-streams/y-snake",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "dev:server": "tsx server.ts",
+    "build": "tsc && vite build",
+    "preview": "vite preview"
+  },
+  "devDependencies": {
+    "@types/react": "^19.2.7",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.1",
+    "playwright": "^1.58.2",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3",
+    "vite": "^7.2.4"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:^",
+    "@durable-streams/state": "workspace:^",
+    "@durable-streams/y-durable-streams": "workspace:^",
+    "@tanstack/react-db": "latest",
+    "lib0": "^0.2.99",
+    "react": "^19.2.1",
+    "react-dom": "^19.2.1",
+    "y-protocols": "^1.0.6",
+    "yjs": "^13.6.24"
+  }
+}

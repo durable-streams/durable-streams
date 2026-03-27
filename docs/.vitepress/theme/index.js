@@ -6,6 +6,7 @@ import HostedElectricCard from "./components/HostedElectricCard.vue"
 import IntentLink from "./components/IntentLink.vue"
 import NavSignupButton from "./components/NavSignupButton.vue"
 import ServerConformanceDiagram from "./components/ServerConformanceDiagram.vue"
+import SnakeDemo from "./components/SnakeDemo.vue"
 import YoutubeEmbed from "./components/YoutubeEmbed.vue"
 import Layout from "./Layout.vue"
 
@@ -17,6 +18,7 @@ export default {
     app.component("IntentLink", IntentLink)
     app.component("NavSignupButton", NavSignupButton)
     app.component("ServerConformanceDiagram", ServerConformanceDiagram)
+    app.component("SnakeDemo", SnakeDemo)
     app.component("VPButton", VPButton)
     app.component("YoutubeEmbed", YoutubeEmbed)
   },

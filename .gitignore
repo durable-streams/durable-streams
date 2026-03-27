@@ -200,4 +200,4 @@ examples/yjs-demo/.tanstack
 .claude/
 
 # MacOS
-.DS_Store
+.DS_Store.superpowers/
