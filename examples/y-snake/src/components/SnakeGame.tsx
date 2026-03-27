@@ -15,9 +15,10 @@ const OBS_MIN_DIST = 4
 const OBS_MAX_DIST = 10
 const MAX_OBSTACLES = 20
 const POINTS_FOOD = 10
-const FOOD_LIFESPAN = 150
-const FOOD_FADE_IN = 3
-const FOOD_FADE_OUT = 20
+const FOOD_TTL_MS = 25_000
+const FOOD_FADE_IN_MS = 600
+const FOOD_FADE_OUT_MS = 4_000
+const FOOD_EATEN_LINGER_MS = 300
 const OBSTACLE_LIFESPAN = 200
 const OBSTACLE_FADE_OUT = 20
 
@@ -51,7 +52,11 @@ interface Aged extends Point {
 }
 
 type Obstacle = Aged
-type FoodItem = Aged
+
+interface FoodCell {
+  spawnedAt: number
+  eatenBy?: string
+}
 
 interface PlayerState {
   snake: Array<Point>
@@ -63,7 +68,6 @@ interface PlayerState {
 }
 
 interface SharedGameState {
-  foods: Array<FoodItem>
   obstacles: Array<Obstacle>
   tick: number
   cols: number
@@ -141,7 +145,7 @@ function buildOccupied(
   localSnake: Array<Point>,
   otherPlayers: Map<string, PlayerState>,
   obstacles: Array<Obstacle>,
-  foods: Array<FoodItem>
+  foodKeys: Set<string>
 ): Set<string> {
   const set = new Set<string>()
   localSnake.forEach((s) => set.add(`${s.x},${s.y}`))
@@ -149,7 +153,7 @@ function buildOccupied(
     p.snake.forEach((s) => set.add(`${s.x},${s.y}`))
   })
   obstacles.forEach((o) => set.add(`${o.x},${o.y}`))
-  foods.forEach((f) => set.add(`${f.x},${f.y}`))
+  foodKeys.forEach((k) => set.add(k))
   return set
 }
 
@@ -174,27 +178,74 @@ function readSharedGame(
   rows: number
 ): SharedGameState {
   const gameMap = doc.getMap(`game`)
-  // Support legacy single-food format
-  const rawFoods = gameMap.get(`foods`) as Array<FoodItem> | undefined
-  const legacyFood = gameMap.get(`food`) as Point | undefined
-  const foods = rawFoods
-    ? rawFoods
-    : legacyFood
-      ? [{ ...legacyFood, age: FOOD_FADE_IN }]
-      : [{ x: Math.floor(cols / 2), y: 3, age: FOOD_FADE_IN }]
   const obstacles =
     (gameMap.get(`obstacles`) as Array<Obstacle> | undefined) || []
   const tick = (gameMap.get(`tick`) as number) || 0
-  return { foods, obstacles, tick, cols, rows }
+  return { obstacles, tick, cols, rows }
 }
 
 function writeSharedGame(doc: Y.Doc, state: Partial<SharedGameState>) {
   const gameMap = doc.getMap(`game`)
   doc.transact(() => {
-    if (state.foods !== undefined) gameMap.set(`foods`, state.foods)
     if (state.obstacles !== undefined) gameMap.set(`obstacles`, state.obstacles)
     if (state.tick !== undefined) gameMap.set(`tick`, state.tick)
   })
+}
+
+// ============================================================================
+// Food cell helpers (Y.Map CRDT)
+// ============================================================================
+
+function getFoodMap(doc: Y.Doc) {
+  return doc.getMap(`foodCells`)
+}
+
+function readFoodCells(doc: Y.Doc): Map<string, FoodCell> {
+  const result = new Map<string, FoodCell>()
+  const foodMap = getFoodMap(doc)
+  const now = Date.now()
+  foodMap.forEach((val, key) => {
+    const cell = val
+    // Skip fully expired cells
+    if (now - cell.spawnedAt > FOOD_TTL_MS) return
+    // Skip eaten cells that have lingered
+    if (cell.eatenBy && now - cell.spawnedAt > FOOD_TTL_MS) return
+    result.set(key, cell)
+  })
+  return result
+}
+
+function tryEatFood(doc: Y.Doc, key: string, eatenBy: string): boolean {
+  const foodMap = getFoodMap(doc)
+  const cell = foodMap.get(key)
+  if (!cell || cell.eatenBy) return false
+  doc.transact(() => {
+    foodMap.set(key, { ...cell, eatenBy })
+  })
+  return true
+}
+
+function cleanupFoodCells(doc: Y.Doc) {
+  const foodMap = getFoodMap(doc)
+  const now = Date.now()
+  const toDelete: Array<string> = []
+  foodMap.forEach((val, key) => {
+    const cell = val
+    if (now - cell.spawnedAt > FOOD_TTL_MS) {
+      toDelete.push(key)
+    } else if (
+      cell.eatenBy &&
+      now - cell.spawnedAt > cell.spawnedAt + FOOD_EATEN_LINGER_MS
+    ) {
+      // eatenBy set and lingered enough — clean up
+      toDelete.push(key)
+    }
+  })
+  if (toDelete.length > 0) {
+    doc.transact(() => {
+      toDelete.forEach((k) => foodMap.delete(k))
+    })
+  }
 }
 
 function readPlayers(doc: Y.Doc, myId: string): Map<string, PlayerState> {
@@ -238,12 +289,12 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
   const [localSnake, setLocalSnake] = useState<Array<Point>>([])
   const [localScore, setLocalScore] = useState(0)
   const [sharedState, setSharedState] = useState<SharedGameState>({
-    foods: [{ x: Math.floor(cols / 2), y: 3, age: FOOD_FADE_IN }],
     obstacles: [],
     tick: 0,
     cols,
     rows,
   })
+  const [foodCells, setFoodCells] = useState<Map<string, FoodCell>>(new Map())
   const [otherPlayers, setOtherPlayers] = useState<Map<string, PlayerState>>(
     new Map()
   )
@@ -332,12 +383,12 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       alive: true,
     })
 
-    const gameMap = doc.getMap(`game`)
-    if (!gameMap.has(`foods`) && !gameMap.has(`food`)) {
-      writeSharedGame(doc, {
-        foods: [{ x: rand(0, cols - 1), y: rand(0, rows - 1), age: 0 }],
-        obstacles: [],
-        tick: 0,
+    // Spawn initial food if none exists
+    const foodMap = getFoodMap(doc)
+    if (foodMap.size === 0) {
+      const pos = spawnFood(cols, rows, new Set())
+      doc.transact(() => {
+        foodMap.set(`${pos.x},${pos.y}`, { spawnedAt: Date.now() })
       })
     }
 
@@ -356,6 +407,15 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     handler()
     return () => gameMap.unobserve(handler)
   }, [doc, cols, rows])
+
+  // Observe food cells (Y.Map CRDT)
+  useEffect(() => {
+    const foodMap = getFoodMap(doc)
+    const handler = () => setFoodCells(readFoodCells(doc))
+    foodMap.observe(handler)
+    handler()
+    return () => foodMap.unobserve(handler)
+  }, [doc])
 
   // Observe other players
   useEffect(() => {
@@ -539,24 +599,27 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
 
       snake.unshift({ x: nx, y: ny })
 
-      // Check food collision locally for immediate feedback
-      let currentFoods = sharedGame.foods.map((f) => ({ ...f }))
-      const ateFood = currentFoods.some(
-        (f) => f.x === nx && f.y === ny && f.age >= FOOD_FADE_IN
-      )
-      if (ateFood) {
+      // Food collision — each player writes eatenBy via Y.Map LWW
+      const foodKey = `${nx},${ny}`
+      const foodMap = getFoodMap(doc)
+      const foodAtHead = foodMap.get(foodKey)
+      const now = Date.now()
+      if (
+        foodAtHead &&
+        !foodAtHead.eatenBy &&
+        now - foodAtHead.spawnedAt >= FOOD_FADE_IN_MS
+      ) {
+        tryEatFood(doc, foodKey, playerId)
         score += POINTS_FOOD
       } else {
         snake.pop()
       }
 
+      // Obstacle manager handles obstacles + food spawning/cleanup
       const allPlayerIds = [playerId]
       others.forEach((_, id) => allPlayerIds.push(id))
       allPlayerIds.sort()
       const isObstacleManager = allPlayerIds[0] === playerId
-
-      let obstaclesChanged = false
-      let foodsChanged = false
 
       if (isObstacleManager) {
         // Age obstacles
@@ -567,18 +630,19 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         currentObstacles = currentObstacles.filter(
           (o) => o.age < OBSTACLE_LIFESPAN
         )
-        obstaclesChanged = true
 
         if (obstacleTimer <= 0 && currentObstacles.length < MAX_OBSTACLES) {
           obstacleTimer = Math.max(
             10,
             OBSTACLE_INTERVAL - Math.floor(score / 80)
           )
+          const foodKeys = new Set<string>()
+          foodMap.forEach((_: unknown, k: string) => foodKeys.add(k))
           const occupied = buildOccupied(
             snake,
             others,
             currentObstacles,
-            currentFoods
+            foodKeys
           )
           const obs = spawnObstacle(
             cols,
@@ -592,42 +656,30 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           }
         }
 
-        // Remove foods eaten by any player (check all snake heads)
-        const allHeads = new Set<string>()
-        allHeads.add(`${nx},${ny}`)
-        others.forEach((p) => {
-          if (p.snake.length > 0)
-            allHeads.add(`${p.snake[0].x},${p.snake[0].y}`)
-        })
-        currentFoods = currentFoods.filter(
-          (f) => !allHeads.has(`${f.x},${f.y}`) || f.age < FOOD_FADE_IN
-        )
+        writeSharedGame(doc, { obstacles: currentObstacles })
 
-        // Age foods and remove expired
-        currentFoods = currentFoods.map((f) => ({ ...f, age: f.age + 1 }))
-        currentFoods = currentFoods.filter((f) => f.age < FOOD_LIFESPAN)
-        foodsChanged = true
+        // Cleanup expired/eaten food cells
+        cleanupFoodCells(doc)
 
-        // Spawn new food if below max (max = ceil(playerCount / 2), min 1)
-        const playerCount = allPlayerIds.length
-        const maxFoods = Math.max(1, Math.ceil(playerCount / 2))
-        if (currentFoods.length < maxFoods) {
+        // Spawn food — 1 per player in the room
+        const activeFoodCount = Array.from(foodMap.values()).filter(
+          (v) => !v.eatenBy
+        ).length
+        const maxFoods = Math.max(1, allPlayerIds.length)
+        if (activeFoodCount < maxFoods) {
+          const foodKeys = new Set<string>()
+          foodMap.forEach((_: unknown, k: string) => foodKeys.add(k))
           const occupied = buildOccupied(
             snake,
             others,
             currentObstacles,
-            currentFoods
+            foodKeys
           )
-          const newFoodPos = spawnFood(cols, rows, occupied)
-          currentFoods.push({ ...newFoodPos, age: 0 })
+          const pos = spawnFood(cols, rows, occupied)
+          doc.transact(() => {
+            foodMap.set(`${pos.x},${pos.y}`, { spawnedAt: Date.now() })
+          })
         }
-      }
-
-      if (obstaclesChanged || foodsChanged) {
-        const update: Partial<SharedGameState> = {}
-        if (obstaclesChanged) update.obstacles = currentObstacles
-        if (foodsChanged) update.foods = currentFoods
-        writeSharedGame(doc, update)
       }
 
       const newSpeed = Math.max(60, baseTick - Math.floor(score / 20))
@@ -906,25 +958,33 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       >
         {gridLines}
 
-        {/* Food */}
-        {sharedState.foods.map((f, i) => (
-          <rect
-            key={`food-${i}`}
-            x={f.x * CELL + 1}
-            y={f.y * CELL + 1}
-            width={CELL - 2}
-            height={CELL - 2}
-            fill={PALETTE.food}
-            stroke={PALETTE.food}
-            strokeWidth={1.5}
-            opacity={fadeOpacity(
-              f.age,
-              FOOD_FADE_IN,
-              FOOD_LIFESPAN,
-              FOOD_FADE_OUT
-            )}
-          />
-        ))}
+        {/* Food (Y.Map CRDT cells) */}
+        {Array.from(foodCells.entries()).map(([key, cell]) => {
+          const [fx, fy] = key.split(`,`).map(Number)
+          const age = Date.now() - cell.spawnedAt
+          const isEaten = !!cell.eatenBy
+          let opacity = 1
+          if (age < FOOD_FADE_IN_MS) opacity = age / FOOD_FADE_IN_MS
+          else if (age > FOOD_TTL_MS - FOOD_FADE_OUT_MS)
+            opacity = Math.max(
+              0,
+              1 - (age - (FOOD_TTL_MS - FOOD_FADE_OUT_MS)) / FOOD_FADE_OUT_MS
+            )
+          if (isEaten) opacity = 0.3
+          return (
+            <rect
+              key={key}
+              x={fx * CELL + 1}
+              y={fy * CELL + 1}
+              width={CELL - 2}
+              height={CELL - 2}
+              fill={PALETTE.food}
+              stroke={PALETTE.food}
+              strokeWidth={1.5}
+              opacity={opacity}
+            />
+          )
+        })}
 
         {/* Obstacles */}
         {renderMergedBlocks(
