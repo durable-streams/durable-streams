@@ -3,10 +3,10 @@ import type { ReactNode } from "react"
 
 // Hardcoded defaults for the hosted demo.
 // Override with VITE_YJS_URL / VITE_DS_URL env vars for other deployments.
-const DEMO_YJS_URL = `https://api-pr-1381.electric-sql.dev/v1/yjs/svc-yjs-uptight-guan-v9uu1ohxuq`
-const DEMO_YJS_TOKEN = `eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXJ2aWNlX2lkIjoic3ZjLXlqcy11cHRpZ2h0LWd1YW4tdjl1dTFvaHh1cSIsImlhdCI6MTc3NDUyOTYyNX0.w8lmZMNZhnxm7qZzgEFU1J646TA88b87fTjXH6zwkEs`
-const DEMO_DS_URL = `https://api-pr-1381.electric-sql.dev/v1/stream/svc-light-wren-58kdb6p2hz`
-const DEMO_DS_TOKEN = `eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXJ2aWNlX2lkIjoic3ZjLWxpZ2h0LXdyZW4tNThrZGI2cDJoeiIsImlhdCI6MTc3NDUyOTY3NX0.1C_Mq_W5LuS8PSC933l9IQUykmAf3Wu3J9ZXy0Cg1Xw`
+const DEMO_YJS_URL = `https://api.electric-sql.cloud/v1/yjs/svc-yjs-deaf-toucan-o6vsn08e5t`
+const DEMO_YJS_TOKEN = `eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXJ2aWNlX2lkIjoic3ZjLXlqcy1kZWFmLXRvdWNhbi1vNnZzbjA4ZTV0IiwiaWF0IjoxNzc0NjI2MTIxfQ.2fYxPAYFGkKh-5N41Auj9RIqSCJ8g9UQy1QxJoKzNl0`
+const DEMO_DS_URL = `https://api.electric-sql.cloud/v1/stream/svc-irrelevant-aardwolf-optt07siiw`
+const DEMO_DS_TOKEN = `eyJ0eXAiOiJKV1QiLCJhbGciOiJIUzI1NiJ9.eyJzZXJ2aWNlX2lkIjoic3ZjLWlycmVsZXZhbnQtYWFyZHdvbGYtb3B0dDA3c2lpdyIsImlhdCI6MTc3NDYyNjE2Mn0.k2GHVroWJH69qAyVGot8Oc2kiXeYFAocSxRUojz5GmY`
 
 interface ServerEndpointContextValue {
   yjsEndpoint: string
