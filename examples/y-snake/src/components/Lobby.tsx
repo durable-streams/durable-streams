@@ -327,7 +327,6 @@ function RoomItem({
   onJoin: () => void
 }) {
   const [copied, setCopied] = useState(false)
-  const count = room.playerCount ?? 0
 
   const copyName = (e: React.MouseEvent) => {
     e.stopPropagation()
@@ -362,16 +361,6 @@ function RoomItem({
           >
             {copied ? `COPIED` : room.name}
           </span>
-          {count > 0 && (
-            <span
-              style={{
-                fontSize: 7,
-                color: PALETTE.accent,
-              }}
-            >
-              {count}P
-            </span>
-          )}
         </div>
         <span style={{ fontSize: 7, color: PALETTE.dim }}>
           {room.boardSize}

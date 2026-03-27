@@ -134,80 +134,17 @@ export function GameRoom({
     playerId,
   ])
 
-  // Elect a single writer for registry updates (lowest playerId wins)
-  const [isRegistryWriter, setIsRegistryWriter] = useState(false)
-  const lastCountRef = useRef(-1)
-
+  // Renew room TTL periodically so active rooms don't expire.
+  // Only the elected writer (lowest playerId) performs the renewal.
   useEffect(() => {
-    const updatePlayerCount = () => {
-      const states = awareness.getStates()
-      const count = states.size
-
-      // Election: collect all playerIds (always include self), sort, check if we're first
+    const renewTTL = () => {
       const playerIdSet = new Set<string>([playerId])
-      states.forEach((state) => {
+      awareness.getStates().forEach((state) => {
         if (state.playerId) playerIdSet.add(state.playerId as string)
       })
       const allPlayerIds = [...playerIdSet].sort()
-      const elected = allPlayerIds[0] === playerId
-      setIsRegistryWriter(elected)
+      if (allPlayerIds[0] !== playerId) return
 
-      if (!elected) return
-
-      if (count === lastCountRef.current) return
-      lastCountRef.current = count
-
-      const existing = registryDB.collections.rooms.toArray.find(
-        (r) => r.roomId === roomId
-      )
-      if (existing) {
-        try {
-          registryDB.actions.addRoom({ ...existing, playerCount: count })
-        } catch {
-          /* best-effort */
-        }
-      } else {
-        // Registry hasn't synced yet — reconstruct metadata so the room
-        // appears in the lobby. Use the room's own TTL for expiresAt.
-        const nameMatch = roomId.match(/^(.+?)__/)
-        const name = nameMatch ? nameMatch[1] : roomId
-        const sizeMatch = roomId.match(/__(\d+x\d+)/)
-        const boardSize = sizeMatch ? sizeMatch[1] : `30x24`
-        const now = Date.now()
-        try {
-          registryDB.actions.addRoom({
-            roomId,
-            name,
-            boardSize,
-            createdAt: now,
-            expiresAt: now + ROOM_TTL_SECONDS * 1000,
-            playerCount: count,
-          })
-        } catch {
-          /* best-effort */
-        }
-      }
-    }
-    awareness.on(`change`, updatePlayerCount)
-    const timeout = setTimeout(updatePlayerCount, 1000)
-    return () => {
-      awareness.off(`change`, updatePlayerCount)
-      clearTimeout(timeout)
-      // Delete room from registry when the last player leaves
-      if (awareness.getStates().size <= 1) {
-        try {
-          registryDB.actions.deleteRoom(roomId)
-        } catch {
-          /* best-effort */
-        }
-      }
-    }
-  }, [awareness, registryDB, roomId, playerId])
-
-  // Renew room TTL while this client is the elected registry writer
-  useEffect(() => {
-    if (!isRegistryWriter) return
-    const interval = setInterval(() => {
       const existing = registryDB.collections.rooms.toArray.find(
         (r) => r.roomId === roomId
       )
@@ -221,9 +158,10 @@ export function GameRoom({
           /* best-effort */
         }
       }
-    }, ROOM_TTL_RENEWAL_MS)
+    }
+    const interval = setInterval(renewTTL, ROOM_TTL_RENEWAL_MS)
     return () => clearInterval(interval)
-  }, [isRegistryWriter, registryDB, roomId])
+  }, [awareness, registryDB, roomId, playerId])
 
   // Clean up doc on unmount
   useEffect(() => {
