@@ -7556,4 +7556,2086 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
     })
   })
+
+  // ============================================================================
+  // Fork - Creation
+  // ============================================================================
+
+  describe(`Fork - Creation`, () => {
+    const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+    const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
+    const STREAM_CLOSED_HEADER_FORK = `Stream-Closed`
+
+    const uniqueId = () =>
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    test(`should fork at current head (default)`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-head-src-${id}`
+      const forkPath = `/v1/stream/fork-create-head-fork-${id}`
+
+      // Create source with data
+      const createRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source data`,
+      })
+      expect(createRes.status).toBe(201)
+
+      const sourceOffset = createRes.headers.get(STREAM_OFFSET_HEADER)
+      expect(sourceOffset).toBeDefined()
+
+      // Fork without specifying offset → defaults to head
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+      expect(forkRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBe(sourcePath)
+      expect(forkRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBe(sourceOffset)
+    })
+
+    test(`should fork at a specific offset`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-offset-src-${id}`
+      const forkPath = `/v1/stream/fork-create-offset-fork-${id}`
+
+      // Create source
+      const createRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `first`,
+      })
+      expect(createRes.status).toBe(201)
+      const midOffset = createRes.headers.get(STREAM_OFFSET_HEADER)!
+
+      // Append more data
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `second`,
+      })
+
+      // Fork at the mid offset (only inheriting "first")
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: midOffset,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+      expect(forkRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBe(midOffset)
+
+      // Read fork → should only see "first"
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`first`)
+    })
+
+    test(`should fork at zero offset (empty inherited data)`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-zero-src-${id}`
+      const forkPath = `/v1/stream/fork-create-zero-fork-${id}`
+
+      // Create source with data
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source data`,
+      })
+
+      // Fork at zero offset
+      const zeroOffset = `0000000000000000_0000000000000000`
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: zeroOffset,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+      expect(forkRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBe(zeroOffset)
+
+      // Read fork → should be empty (no inherited data)
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(``)
+      expect(readRes.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+    })
+
+    test(`should fork at head offset (all source data inherited)`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-all-src-${id}`
+      const forkPath = `/v1/stream/fork-create-all-fork-${id}`
+
+      // Create source with data
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `chunk1`,
+      })
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `chunk2`,
+      })
+
+      // Get head offset
+      const headRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      const headOffset = headRes.headers.get(STREAM_OFFSET_HEADER)!
+
+      // Fork at head offset → all data inherited
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: headOffset,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Read fork → should see all source data
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`chunk1chunk2`)
+    })
+
+    test(`should return 404 when forking a nonexistent stream`, async () => {
+      const id = uniqueId()
+      const forkPath = `/v1/stream/fork-create-404-fork-${id}`
+
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: `/v1/stream/nonexistent-${id}`,
+        },
+      })
+      expect(forkRes.status).toBe(404)
+    })
+
+    test(`should return 400 when forking at offset beyond stream length`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-beyond-src-${id}`
+      const forkPath = `/v1/stream/fork-create-beyond-fork-${id}`
+
+      // Create source with data
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `small data`,
+      })
+
+      // Fork at an offset far beyond what exists
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `9999999999999999_9999999999999999`,
+        },
+      })
+      expect(forkRes.status).toBe(400)
+    })
+
+    test(`should return 409 when forking to path already in use with different config`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-conflict-src-${id}`
+      const forkPath = `/v1/stream/fork-create-conflict-fork-${id}`
+
+      // Create source with text/plain
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source`,
+      })
+
+      // Create a regular stream at the fork path with application/json
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+
+      // Try to fork to the already-used path (different content type) → 409
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(409)
+    })
+
+    test(`should fork a closed stream — fork starts open`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-closed-src-${id}`
+      const forkPath = `/v1/stream/fork-create-closed-fork-${id}`
+
+      // Create and close source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `closed data`,
+      })
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { [STREAM_CLOSED_HEADER_FORK]: `true` },
+      })
+
+      // Fork the closed stream
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+      // Fork should NOT be closed
+      expect(forkRes.headers.get(STREAM_CLOSED_HEADER_FORK)).toBeNull()
+
+      // Should be able to append to fork
+      const appendRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` fork data`,
+      })
+      expect(appendRes.status).toBe(204)
+    })
+
+    test(`should fork an empty stream`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-empty-src-${id}`
+      const forkPath = `/v1/stream/fork-create-empty-fork-${id}`
+
+      // Create empty source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      // Fork it
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Read fork → empty
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(``)
+      expect(readRes.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+    })
+
+    test(`should fork preserving content-type when specified`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-ct-src-${id}`
+      const forkPath = `/v1/stream/fork-create-ct-fork-${id}`
+
+      // Create source with application/json
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"key":"value"}]`,
+      })
+
+      // Fork with matching content-type
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/json`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+      expect(forkRes.headers.get(`content-type`)).toBe(`application/json`)
+
+      // HEAD on fork should also show the content type
+      const headRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      expect(headRes.headers.get(`content-type`)).toBe(`application/json`)
+    })
+  })
+
+  // ============================================================================
+  // Fork - Reading
+  // ============================================================================
+
+  describe(`Fork - Reading`, () => {
+    const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+    const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
+    const STREAM_REF_COUNT_HEADER = `Stream-Ref-Count`
+
+    const uniqueId = () =>
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    test(`should read entire fork (source + fork data)`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-read-entire-src-${id}`
+      const forkPath = `/v1/stream/fork-read-entire-fork-${id}`
+
+      // Create source with data
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source`,
+      })
+
+      // Fork at head
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Append to fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` fork`,
+      })
+
+      // Read from beginning → should stitch source + fork data
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`source fork`)
+    })
+
+    test(`should read only inherited portion`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-read-inherited-src-${id}`
+      const forkPath = `/v1/stream/fork-read-inherited-fork-${id}`
+
+      // Create source with data
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `inherited data`,
+      })
+
+      // Fork at head
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Read fork from -1 (no fork-only data yet)
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`inherited data`)
+      expect(readRes.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+    })
+
+    test(`should read only fork's own data (starting past fork offset)`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-read-own-src-${id}`
+      const forkPath = `/v1/stream/fork-read-own-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source`,
+      })
+
+      // Get source head offset
+      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      const forkOffset = sourceHead.headers.get(STREAM_OFFSET_HEADER)!
+
+      // Fork at head
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Append to fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `fork only`,
+      })
+
+      // Read from fork offset → should only get fork's own data
+      const readRes = await fetch(
+        `${getBaseUrl()}${forkPath}?offset=${forkOffset}`
+      )
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`fork only`)
+    })
+
+    test(`should read across fork boundary`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-read-boundary-src-${id}`
+      const forkPath = `/v1/stream/fork-read-boundary-fork-${id}`
+
+      // Create source with multiple chunks
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `A`,
+      })
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `B`,
+      })
+
+      // Fork at head (inherits A and B)
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Append to fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `C`,
+      })
+
+      // Read entire fork → should seamlessly stitch A + B + C
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`ABC`)
+    })
+
+    test(`should not show source appends after fork`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-read-isolation-src-${id}`
+      const forkPath = `/v1/stream/fork-read-isolation-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `before`,
+      })
+
+      // Fork at head
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Append to SOURCE after fork
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` after`,
+      })
+
+      // Read fork → should NOT see "after"
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`before`)
+    })
+
+    test(`should include fork headers on HEAD/GET/PUT responses`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-read-headers-src-${id}`
+      const forkPath = `/v1/stream/fork-read-headers-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+
+      // Fork
+      const putRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(putRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBe(sourcePath)
+      expect(putRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeDefined()
+
+      // HEAD on fork
+      const headRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      expect(headRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBe(sourcePath)
+      expect(headRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeDefined()
+
+      // HEAD on source should show ref count
+      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      const refCount = sourceHead.headers.get(STREAM_REF_COUNT_HEADER)
+      expect(refCount).toBeDefined()
+      expect(parseInt(refCount!)).toBeGreaterThanOrEqual(1)
+    })
+  })
+
+  // ============================================================================
+  // Fork - Appending
+  // ============================================================================
+
+  describe(`Fork - Appending`, () => {
+    const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+    const STREAM_CLOSED_HEADER_FORK = `Stream-Closed`
+
+    const uniqueId = () =>
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    test(`should append to a fork`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-append-src-${id}`
+      const forkPath = `/v1/stream/fork-append-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Append to fork
+      const appendRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` appended`,
+      })
+      expect(appendRes.status).toBe(204)
+      expect(appendRes.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+
+      // Read fork
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      const body = await readRes.text()
+      expect(body).toBe(`source appended`)
+    })
+
+    test(`should support idempotent producer on fork`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-append-idempotent-src-${id}`
+      const forkPath = `/v1/stream/fork-append-idempotent-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Append with producer headers
+      const append1 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Producer-Id": `fork-producer-${id}`,
+          "Producer-Epoch": `0`,
+          "Producer-Seq": `0`,
+        },
+        body: `msg1`,
+      })
+      expect(append1.status).toBe(200)
+
+      // Retry with same producer headers → deduplicated
+      const append1Retry = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Producer-Id": `fork-producer-${id}`,
+          "Producer-Epoch": `0`,
+          "Producer-Seq": `0`,
+        },
+        body: `msg1`,
+      })
+      expect(append1Retry.status).toBe(204) // Duplicate → 204
+
+      // Read fork → only one copy of msg1
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      const body = await readRes.text()
+      expect(body).toBe(`sourcemsg1`)
+    })
+
+    test(`should close forked stream independently`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-append-close-src-${id}`
+      const forkPath = `/v1/stream/fork-append-close-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Append then close fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` final`,
+      })
+      const closeRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { [STREAM_CLOSED_HEADER_FORK]: `true` },
+      })
+      expect([200, 204]).toContain(closeRes.status)
+      expect(closeRes.headers.get(STREAM_CLOSED_HEADER_FORK)).toBe(`true`)
+
+      // Source should still be open
+      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      expect(sourceHead.headers.get(STREAM_CLOSED_HEADER_FORK)).toBeNull()
+    })
+
+    test(`should not affect fork when source is closed`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-append-src-close-src-${id}`
+      const forkPath = `/v1/stream/fork-append-src-close-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Close source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { [STREAM_CLOSED_HEADER_FORK]: `true` },
+      })
+
+      // Fork should still accept appends
+      const appendRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` fork data`,
+      })
+      expect(appendRes.status).toBe(204)
+
+      // Fork should not be closed
+      const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      expect(forkHead.headers.get(STREAM_CLOSED_HEADER_FORK)).toBeNull()
+    })
+
+    test(`should append to source after fork — source independent`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-append-src-indep-src-${id}`
+      const forkPath = `/v1/stream/fork-append-src-indep-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `initial`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Append to source
+      const appendRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` extra`,
+      })
+      expect(appendRes.status).toBe(204)
+
+      // Source should have all data
+      const sourceRead = await fetch(`${getBaseUrl()}${sourcePath}?offset=-1`)
+      const sourceBody = await sourceRead.text()
+      expect(sourceBody).toBe(`initial extra`)
+
+      // Fork should NOT see the extra data
+      const forkRead = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      const forkBody = await forkRead.text()
+      expect(forkBody).toBe(`initial`)
+    })
+  })
+
+  // ============================================================================
+  // Fork - Recursive
+  // ============================================================================
+
+  describe(`Fork - Recursive`, () => {
+    const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+
+    const uniqueId = () =>
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    test(`should create a three-level fork chain`, async () => {
+      const id = uniqueId()
+      const level0 = `/v1/stream/fork-recursive-l0-${id}`
+      const level1 = `/v1/stream/fork-recursive-l1-${id}`
+      const level2 = `/v1/stream/fork-recursive-l2-${id}`
+
+      // Create level 0 (root)
+      await fetch(`${getBaseUrl()}${level0}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `L0`,
+      })
+
+      // Fork level 1 from level 0
+      const fork1Res = await fetch(`${getBaseUrl()}${level1}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level0,
+        },
+      })
+      expect(fork1Res.status).toBe(201)
+
+      // Fork level 2 from level 1
+      const fork2Res = await fetch(`${getBaseUrl()}${level2}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level1,
+        },
+      })
+      expect(fork2Res.status).toBe(201)
+    })
+
+    test(`should fork at mid-point of inherited data`, async () => {
+      const id = uniqueId()
+      const level0 = `/v1/stream/fork-recursive-mid-l0-${id}`
+      const level1 = `/v1/stream/fork-recursive-mid-l1-${id}`
+      const level2 = `/v1/stream/fork-recursive-mid-l2-${id}`
+
+      // Create level 0 with data
+      await fetch(`${getBaseUrl()}${level0}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `A`,
+      })
+      await fetch(`${getBaseUrl()}${level0}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `B`,
+      })
+
+      // Fork level 1 at head of level 0 (inherits A+B)
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level0,
+        },
+      })
+
+      // Append to level 1
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `C`,
+      })
+
+      // Get the offset after inheriting A+B (before C) from level 1
+      // This is the fork offset of level 1
+      const l1Head = await fetch(`${getBaseUrl()}${level1}`, {
+        method: `HEAD`,
+      })
+      // Verify HEAD returns expected offset
+      expect(l1Head.headers.get(STREAM_OFFSET_HEADER)).toBeDefined()
+
+      // Fork level 2 from level 1 at head (inherits A+B+C)
+      const fork2Res = await fetch(`${getBaseUrl()}${level2}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level1,
+        },
+      })
+      expect(fork2Res.status).toBe(201)
+
+      // Read level 2 → should see A+B+C
+      const readRes = await fetch(`${getBaseUrl()}${level2}?offset=-1`)
+      const body = await readRes.text()
+      expect(body).toBe(`ABC`)
+    })
+
+    test(`should read correctly across three levels`, async () => {
+      const id = uniqueId()
+      const level0 = `/v1/stream/fork-recursive-read-l0-${id}`
+      const level1 = `/v1/stream/fork-recursive-read-l1-${id}`
+      const level2 = `/v1/stream/fork-recursive-read-l2-${id}`
+
+      // Level 0: A
+      await fetch(`${getBaseUrl()}${level0}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `A`,
+      })
+
+      // Level 1: fork of level 0, then append B
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level0,
+        },
+      })
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `B`,
+      })
+
+      // Level 2: fork of level 1, then append C
+      await fetch(`${getBaseUrl()}${level2}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level1,
+        },
+      })
+      await fetch(`${getBaseUrl()}${level2}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `C`,
+      })
+
+      // Read each level
+      const r0 = await (
+        await fetch(`${getBaseUrl()}${level0}?offset=-1`)
+      ).text()
+      expect(r0).toBe(`A`)
+
+      const r1 = await (
+        await fetch(`${getBaseUrl()}${level1}?offset=-1`)
+      ).text()
+      expect(r1).toBe(`AB`)
+
+      const r2 = await (
+        await fetch(`${getBaseUrl()}${level2}?offset=-1`)
+      ).text()
+      expect(r2).toBe(`ABC`)
+    })
+
+    test(`should append at each level independently`, async () => {
+      const id = uniqueId()
+      const level0 = `/v1/stream/fork-recursive-indep-l0-${id}`
+      const level1 = `/v1/stream/fork-recursive-indep-l1-${id}`
+      const level2 = `/v1/stream/fork-recursive-indep-l2-${id}`
+
+      // Level 0: X
+      await fetch(`${getBaseUrl()}${level0}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `X`,
+      })
+
+      // Level 1: fork, append Y
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level0,
+        },
+      })
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `Y`,
+      })
+
+      // Level 2: fork of level 1, append Z
+      await fetch(`${getBaseUrl()}${level2}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level1,
+        },
+      })
+      await fetch(`${getBaseUrl()}${level2}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `Z`,
+      })
+
+      // Now append more to level 0 → should not affect levels 1 or 2
+      await fetch(`${getBaseUrl()}${level0}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `0`,
+      })
+
+      // Append more to level 1 → should not affect level 2
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `1`,
+      })
+
+      const r0 = await (
+        await fetch(`${getBaseUrl()}${level0}?offset=-1`)
+      ).text()
+      expect(r0).toBe(`X0`)
+
+      const r1 = await (
+        await fetch(`${getBaseUrl()}${level1}?offset=-1`)
+      ).text()
+      expect(r1).toBe(`XY1`)
+
+      const r2 = await (
+        await fetch(`${getBaseUrl()}${level2}?offset=-1`)
+      ).text()
+      expect(r2).toBe(`XYZ`)
+    })
+  })
+
+  // ============================================================================
+  // Fork - Live Modes
+  // ============================================================================
+
+  describe(`Fork - Live Modes`, () => {
+    const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+
+    const uniqueId = () =>
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    test(`should return inherited data immediately on long-poll`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-live-inherited-src-${id}`
+      const forkPath = `/v1/stream/fork-live-inherited-fork-${id}`
+
+      // Create source with data
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `inherited data`,
+      })
+
+      // Fork at head
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Long-poll at -1 → should immediately return inherited data
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 3000)
+
+      try {
+        const response = await fetch(
+          `${getBaseUrl()}${forkPath}?offset=-1&live=long-poll`,
+          { method: `GET`, signal: controller.signal }
+        )
+        clearTimeout(timeoutId)
+
+        expect(response.status).toBe(200)
+        const body = await response.text()
+        expect(body).toBe(`inherited data`)
+        expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      } catch (e) {
+        clearTimeout(timeoutId)
+        if (!(e instanceof Error && e.name === `AbortError`)) throw e
+        // Should not reach here — data should be returned immediately
+        expect(true).toBe(false)
+      }
+    })
+
+    test(
+      `should wait for fork appends, not source appends, on long-poll at tail`,
+      async () => {
+        const id = uniqueId()
+        const sourcePath = `/v1/stream/fork-live-tail-src-${id}`
+        const forkPath = `/v1/stream/fork-live-tail-fork-${id}`
+
+        // Create source with data
+        await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `source`,
+        })
+
+        // Fork at head
+        await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          },
+        })
+
+        // Get the fork's current head offset
+        const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `GET`,
+        })
+        await forkHead.text() // consume body
+        const forkOffset = forkHead.headers.get(STREAM_OFFSET_HEADER)!
+
+        // Start long-poll at fork tail
+        const longPollPromise = fetch(
+          `${getBaseUrl()}${forkPath}?offset=${forkOffset}&live=long-poll`,
+          { method: `GET` }
+        )
+
+        // Give the long-poll a moment to register
+        await new Promise((r) => setTimeout(r, 50))
+
+        // Append to source (should NOT wake up fork long-poll)
+        await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: ` source extra`,
+        })
+
+        // Now append to fork (should wake up the long-poll)
+        await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: ` fork new`,
+        })
+
+        const response = await longPollPromise
+        expect(response.status).toBe(200)
+        const body = await response.text()
+        expect(body).toBe(` fork new`)
+      },
+      getLongPollTestTimeoutMs()
+    )
+
+    test(`should stream fork data via SSE`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-live-sse-src-${id}`
+      const forkPath = `/v1/stream/fork-live-sse-fork-${id}`
+
+      // Create source with data
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `inherited`,
+      })
+
+      // Fork and append
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` forked`,
+      })
+
+      // SSE from beginning
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${forkPath}?offset=-1&live=sse`,
+        { untilContent: `forked`, timeoutMs: 5000, maxChunks: 20 }
+      )
+
+      expect(response.status).toBe(200)
+      expect(received).toContain(`inherited`)
+      expect(received).toContain(`forked`)
+    })
+
+    test(`should handle long-poll handover at fork offset`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-live-handover-src-${id}`
+      const forkPath = `/v1/stream/fork-live-handover-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source data`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Read inherited data to get fork offset
+      const readRes = await fetch(
+        `${getBaseUrl()}${forkPath}?offset=-1&live=long-poll`
+      )
+      expect(readRes.status).toBe(200)
+      const firstBody = await readRes.text()
+      expect(firstBody).toBe(`source data`)
+      const nextOffset = readRes.headers.get(STREAM_OFFSET_HEADER)!
+
+      // Append to fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: ` fork append`,
+      })
+
+      // Continue reading from next offset → should get fork data
+      // Use catch-up mode since data is already appended
+      const readRes2 = await fetch(
+        `${getBaseUrl()}${forkPath}?offset=${nextOffset}`
+      )
+      expect(readRes2.status).toBe(200)
+      const secondBody = await readRes2.text()
+      expect(secondBody).toBe(` fork append`)
+    })
+  })
+
+  // ============================================================================
+  // Fork - Deletion and Lifecycle
+  // ============================================================================
+
+  describe(`Fork - Deletion and Lifecycle`, () => {
+    const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+    const STREAM_REF_COUNT_HEADER = `Stream-Ref-Count`
+
+    const uniqueId = () =>
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    test(`should delete fork without affecting source`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-src-unaffected-src-${id}`
+      const forkPath = `/v1/stream/fork-del-src-unaffected-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `source data`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Delete fork
+      const deleteRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `DELETE`,
+      })
+      expect(deleteRes.status).toBe(204)
+
+      // Fork should be gone
+      const forkRead = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `GET`,
+      })
+      expect(forkRead.status).toBe(404)
+
+      // Source should still be alive
+      const sourceRead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `GET`,
+      })
+      expect(sourceRead.status).toBe(200)
+      const body = await sourceRead.text()
+      expect(body).toBe(`source data`)
+    })
+
+    test(`should soft-delete source while fork exists — fork still reads`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-soft-src-${id}`
+      const forkPath = `/v1/stream/fork-del-soft-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `preserved data`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Delete source
+      const deleteRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `DELETE`,
+      })
+      expect(deleteRes.status).toBe(204)
+
+      // Source should be soft-deleted (410 Gone)
+      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      expect(sourceHead.status).toBe(410)
+
+      // Fork should still be readable with inherited data
+      const forkRead = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(forkRead.status).toBe(200)
+      const body = await forkRead.text()
+      expect(body).toBe(`preserved data`)
+    })
+
+    test(`should block re-creation of soft-deleted source (PUT returns 409)`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-block-recreate-src-${id}`
+      const forkPath = `/v1/stream/fork-del-block-recreate-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `original`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Delete source (soft-delete)
+      await fetch(`${getBaseUrl()}${sourcePath}`, { method: `DELETE` })
+
+      // Try to re-create source → 409
+      const recreateRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      expect(recreateRes.status).toBe(409)
+    })
+
+    test(`should cascade GC when last fork is deleted`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-cascade-src-${id}`
+      const forkPath = `/v1/stream/fork-del-cascade-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `cascade data`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Delete source (soft-delete because fork exists)
+      await fetch(`${getBaseUrl()}${sourcePath}`, { method: `DELETE` })
+
+      // Source should be 410 (soft-deleted)
+      const sourceHead1 = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      expect(sourceHead1.status).toBe(410)
+
+      // Delete fork → should trigger cascading GC of source
+      const deleteFork = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `DELETE`,
+      })
+      expect(deleteFork.status).toBe(204)
+
+      // Source should now be fully gone (404)
+      const sourceHead2 = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      expect(sourceHead2.status).toBe(404)
+    })
+
+    test(`should cascade GC through three levels`, async () => {
+      const id = uniqueId()
+      const level0 = `/v1/stream/fork-del-cascade3-l0-${id}`
+      const level1 = `/v1/stream/fork-del-cascade3-l1-${id}`
+      const level2 = `/v1/stream/fork-del-cascade3-l2-${id}`
+
+      // Create chain: level0 → level1 → level2
+      await fetch(`${getBaseUrl()}${level0}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `root`,
+      })
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level0,
+        },
+      })
+      await fetch(`${getBaseUrl()}${level2}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level1,
+        },
+      })
+
+      // Delete level0 and level1 (both soft-deleted due to refs)
+      await fetch(`${getBaseUrl()}${level0}`, { method: `DELETE` })
+      await fetch(`${getBaseUrl()}${level1}`, { method: `DELETE` })
+
+      // Both should be 410
+      expect(
+        (await fetch(`${getBaseUrl()}${level0}`, { method: `HEAD` })).status
+      ).toBe(410)
+      expect(
+        (await fetch(`${getBaseUrl()}${level1}`, { method: `HEAD` })).status
+      ).toBe(410)
+
+      // Delete level2 → cascade should clean up level1 and level0
+      await fetch(`${getBaseUrl()}${level2}`, { method: `DELETE` })
+
+      // All should be 404
+      expect(
+        (await fetch(`${getBaseUrl()}${level0}`, { method: `HEAD` })).status
+      ).toBe(404)
+      expect(
+        (await fetch(`${getBaseUrl()}${level1}`, { method: `HEAD` })).status
+      ).toBe(404)
+      expect(
+        (await fetch(`${getBaseUrl()}${level2}`, { method: `HEAD` })).status
+      ).toBe(404)
+    })
+
+    test(`should preserve data when deleting middle of chain`, async () => {
+      const id = uniqueId()
+      const level0 = `/v1/stream/fork-del-middle-l0-${id}`
+      const level1 = `/v1/stream/fork-del-middle-l1-${id}`
+      const level2 = `/v1/stream/fork-del-middle-l2-${id}`
+
+      // Create chain: level0 → level1 → level2
+      await fetch(`${getBaseUrl()}${level0}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `A`,
+      })
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level0,
+        },
+      })
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `B`,
+      })
+      await fetch(`${getBaseUrl()}${level2}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level1,
+        },
+      })
+      await fetch(`${getBaseUrl()}${level2}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `C`,
+      })
+
+      // Delete level1 (middle) → soft-delete because level2 refs it
+      await fetch(`${getBaseUrl()}${level1}`, { method: `DELETE` })
+
+      // Level1 should be 410 (soft-deleted)
+      expect(
+        (await fetch(`${getBaseUrl()}${level1}`, { method: `HEAD` })).status
+      ).toBe(410)
+
+      // Level2 should still read all inherited data: A+B+C
+      const readRes = await fetch(`${getBaseUrl()}${level2}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`ABC`)
+
+      // Level0 should still be alive and readable
+      const l0Read = await fetch(`${getBaseUrl()}${level0}?offset=-1`)
+      expect(l0Read.status).toBe(200)
+      expect(await l0Read.text()).toBe(`A`)
+    })
+
+    test(`should never let refcount go below zero`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-refcount-src-${id}`
+      const forkPath = `/v1/stream/fork-del-refcount-fork-${id}`
+
+      // Create source and fork
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Delete fork
+      await fetch(`${getBaseUrl()}${forkPath}`, { method: `DELETE` })
+
+      // Source should have refCount 0 (not negative)
+      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      expect(sourceHead.status).toBe(200)
+      const refCount = sourceHead.headers.get(STREAM_REF_COUNT_HEADER)
+      expect(parseInt(refCount!)).toBe(0)
+    })
+
+    test(`should keep source alive when all forks are deleted`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-allgone-src-${id}`
+      const fork1Path = `/v1/stream/fork-del-allgone-f1-${id}`
+      const fork2Path = `/v1/stream/fork-del-allgone-f2-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `alive`,
+      })
+
+      // Create two forks
+      await fetch(`${getBaseUrl()}${fork1Path}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      await fetch(`${getBaseUrl()}${fork2Path}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Delete both forks
+      await fetch(`${getBaseUrl()}${fork1Path}`, { method: `DELETE` })
+      await fetch(`${getBaseUrl()}${fork2Path}`, { method: `DELETE` })
+
+      // Source should still be alive and readable
+      const sourceRead = await fetch(`${getBaseUrl()}${sourcePath}?offset=-1`)
+      expect(sourceRead.status).toBe(200)
+      const body = await sourceRead.text()
+      expect(body).toBe(`alive`)
+
+      // RefCount should be 0
+      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      expect(parseInt(sourceHead.headers.get(STREAM_REF_COUNT_HEADER)!)).toBe(0)
+    })
+  })
+
+  // ============================================================================
+  // Fork - TTL and Expiry
+  // ============================================================================
+
+  describe(`Fork - TTL and Expiry`, () => {
+    const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+
+    const uniqueId = () =>
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+    const sleep = (ms: number) =>
+      new Promise((resolve) => setTimeout(resolve, ms))
+
+    test(`should inherit source expiry when none specified`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-ttl-inherit-src-${id}`
+      const forkPath = `/v1/stream/fork-ttl-inherit-fork-${id}`
+
+      const expiresAt = new Date(Date.now() + 3600000).toISOString()
+
+      // Create source with expiry
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-Expires-At": expiresAt,
+        },
+        body: `data`,
+      })
+
+      // Fork without specifying expiry → should inherit
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Fork should have expiry metadata
+      const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      expect(forkHead.status).toBe(200)
+      // If server returns Stream-Expires-At, verify it's set
+      const forkExpires = forkHead.headers.get(`Stream-Expires-At`)
+      if (forkExpires) {
+        expect(new Date(forkExpires).getTime()).toBeLessThanOrEqual(
+          new Date(expiresAt).getTime()
+        )
+      }
+    })
+
+    test(`should allow fork with shorter TTL`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-ttl-shorter-src-${id}`
+      const forkPath = `/v1/stream/fork-ttl-shorter-fork-${id}`
+
+      // Create source with long TTL
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `3600`,
+        },
+        body: `data`,
+      })
+
+      // Fork with shorter TTL
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          "Stream-TTL": `1800`,
+        },
+      })
+      expect([200, 201]).toContain(forkRes.status)
+    })
+
+    test(`should cap fork TTL at source expiry`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-ttl-cap-src-${id}`
+      const forkPath = `/v1/stream/fork-ttl-cap-fork-${id}`
+
+      // Create source with short TTL (10 seconds)
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `10`,
+        },
+        body: `data`,
+      })
+
+      // Fork with much longer TTL → should be capped
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          "Stream-TTL": `99999`,
+        },
+      })
+      expect([200, 201]).toContain(forkRes.status)
+
+      // Fork's expiry should not exceed source's
+      const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      const forkExpires = forkHead.headers.get(`Stream-Expires-At`)
+      if (forkExpires) {
+        // Fork expires at most 10 seconds from source creation
+        const now = Date.now()
+        const forkExpiryMs = new Date(forkExpires).getTime()
+        // Should expire within ~15 seconds from now (10s TTL + some slack)
+        expect(forkExpiryMs).toBeLessThan(now + 15000)
+      }
+    })
+
+    test.concurrent(
+      `should expire fork based on TTL (releases refcount)`,
+      async () => {
+        const id = uniqueId()
+        const sourcePath = `/v1/stream/fork-ttl-expire-src-${id}`
+        const forkPath = `/v1/stream/fork-ttl-expire-fork-${id}`
+
+        // Create source with 60s TTL
+        await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-TTL": `60`,
+          },
+          body: `data`,
+        })
+
+        // Fork with 1s TTL
+        await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_FORKED_FROM_HEADER]: sourcePath,
+            "Stream-TTL": `1`,
+          },
+        })
+
+        // Fork should exist initially
+        const forkHeadBefore = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `HEAD`,
+        })
+        expect(forkHeadBefore.status).toBe(200)
+
+        // Wait for fork to expire
+        await sleep(1500)
+
+        // Fork should be gone
+        const forkHeadAfter = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `HEAD`,
+        })
+        expect(forkHeadAfter.status).toBe(404)
+      }
+    )
+
+    test.concurrent(
+      `should expire source with living forks (source goes 410)`,
+      async () => {
+        const id = uniqueId()
+        const sourcePath = `/v1/stream/fork-ttl-src-expire-src-${id}`
+        const forkPath = `/v1/stream/fork-ttl-src-expire-fork-${id}`
+
+        // Create source with 1s TTL
+        await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-TTL": `1`,
+          },
+          body: `data`,
+        })
+
+        // Fork (inherits source expiry — also 1s)
+        await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          },
+        })
+
+        // Wait for expiry
+        await sleep(1500)
+
+        // Source should expire. With refCount > 0 it might be 410 or 404
+        // depending on whether expiry also checks refCount.
+        const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `HEAD`,
+        })
+        expect([404, 410]).toContain(sourceHead.status)
+
+        // Fork should also expire (inherited same expiry)
+        const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `HEAD`,
+        })
+        expect([404, 410]).toContain(forkHead.status)
+      }
+    )
+  })
+
+  // ============================================================================
+  // Fork - JSON Mode
+  // ============================================================================
+
+  describe(`Fork - JSON Mode`, () => {
+    const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+
+    const uniqueId = () =>
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    test(`should fork a JSON stream`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-json-src-${id}`
+      const forkPath = `/v1/stream/fork-json-fork-${id}`
+
+      // Create JSON source with data
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"event":"one"}]`,
+      })
+
+      // Fork with matching content type
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/json`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+      expect(forkRes.headers.get(`content-type`)).toBe(`application/json`)
+
+      // Read fork → should be a JSON array
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      expect(readRes.headers.get(`content-type`)).toBe(`application/json`)
+      const body = JSON.parse(await readRes.text())
+      expect(Array.isArray(body)).toBe(true)
+      expect(body).toEqual([{ event: `one` }])
+    })
+
+    test(`should read forked JSON across boundary`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-json-boundary-src-${id}`
+      const forkPath = `/v1/stream/fork-json-boundary-fork-${id}`
+
+      // Create JSON source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"from":"source"}]`,
+      })
+
+      // Fork at head with matching content type
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/json`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Append to fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"from":"fork"}]`,
+      })
+
+      // Read entire fork → should be a valid JSON array with both items
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = JSON.parse(await readRes.text())
+      expect(Array.isArray(body)).toBe(true)
+      expect(body).toEqual([{ from: `source` }, { from: `fork` }])
+    })
+  })
+
+  // ============================================================================
+  // Fork - Edge Cases
+  // ============================================================================
+
+  describe(`Fork - Edge Cases`, () => {
+    const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+    const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
+    const STREAM_REF_COUNT_HEADER = `Stream-Ref-Count`
+
+    const uniqueId = () =>
+      `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+    test(`should handle fork then immediately delete source`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-edge-imm-del-src-${id}`
+      const forkPath = `/v1/stream/fork-edge-imm-del-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `ephemeral`,
+      })
+
+      // Fork
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+
+      // Immediately delete source
+      await fetch(`${getBaseUrl()}${sourcePath}`, { method: `DELETE` })
+
+      // Fork should still work
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`ephemeral`)
+    })
+
+    test(`should handle many forks of same stream (10 forks)`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-edge-many-src-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `shared data`,
+      })
+
+      // Create 10 forks
+      const forkPaths: Array<string> = []
+      for (let i = 0; i < 10; i++) {
+        const forkPath = `/v1/stream/fork-edge-many-f${i}-${id}`
+        const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          },
+        })
+        expect(forkRes.status).toBe(201)
+        forkPaths.push(forkPath)
+      }
+
+      // Verify source refcount
+      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      const refCount = sourceHead.headers.get(STREAM_REF_COUNT_HEADER)
+      expect(parseInt(refCount!)).toBe(10)
+
+      // Each fork should read the same data
+      for (const fp of forkPaths) {
+        const readRes = await fetch(`${getBaseUrl()}${fp}?offset=-1`)
+        expect(readRes.status).toBe(200)
+        const body = await readRes.text()
+        expect(body).toBe(`shared data`)
+      }
+
+      // Delete all forks
+      for (const fp of forkPaths) {
+        await fetch(`${getBaseUrl()}${fp}`, { method: `DELETE` })
+      }
+
+      // Source refcount should be 0
+      const sourceHead2 = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      expect(parseInt(sourceHead2.headers.get(STREAM_REF_COUNT_HEADER)!)).toBe(
+        0
+      )
+    })
+
+    test(`should fork at every offset position`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-edge-every-offset-src-${id}`
+
+      // Create source with multiple chunks
+      const createRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `A`,
+      })
+      const offset0 = `0000000000000000_0000000000000000` // before any data
+      const offset1 = createRes.headers.get(STREAM_OFFSET_HEADER)! // after A
+
+      const append1 = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `B`,
+      })
+      const offset2 = append1.headers.get(STREAM_OFFSET_HEADER)! // after B
+
+      const append2 = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `C`,
+      })
+      const offset3 = append2.headers.get(STREAM_OFFSET_HEADER)! // after C
+
+      // Fork at offset0 (empty inherited)
+      const f0 = `/v1/stream/fork-edge-every-f0-${id}`
+      const f0Res = await fetch(`${getBaseUrl()}${f0}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: offset0,
+        },
+      })
+      expect(f0Res.status).toBe(201)
+      const f0Body = await (
+        await fetch(`${getBaseUrl()}${f0}?offset=-1`)
+      ).text()
+      expect(f0Body).toBe(``)
+
+      // Fork at offset1 (inherits A)
+      const f1 = `/v1/stream/fork-edge-every-f1-${id}`
+      await fetch(`${getBaseUrl()}${f1}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: offset1,
+        },
+      })
+      const f1Body = await (
+        await fetch(`${getBaseUrl()}${f1}?offset=-1`)
+      ).text()
+      expect(f1Body).toBe(`A`)
+
+      // Fork at offset2 (inherits A+B)
+      const f2 = `/v1/stream/fork-edge-every-f2-${id}`
+      await fetch(`${getBaseUrl()}${f2}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: offset2,
+        },
+      })
+      const f2Body = await (
+        await fetch(`${getBaseUrl()}${f2}?offset=-1`)
+      ).text()
+      expect(f2Body).toBe(`AB`)
+
+      // Fork at offset3 (inherits A+B+C)
+      const f3 = `/v1/stream/fork-edge-every-f3-${id}`
+      await fetch(`${getBaseUrl()}${f3}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: offset3,
+        },
+      })
+      const f3Body = await (
+        await fetch(`${getBaseUrl()}${f3}?offset=-1`)
+      ).text()
+      expect(f3Body).toBe(`ABC`)
+    })
+
+    test(`should handle idempotent fork creation (PUT twice)`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-edge-idempotent-src-${id}`
+      const forkPath = `/v1/stream/fork-edge-idempotent-fork-${id}`
+
+      // Create source
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+
+      // First fork PUT → 201
+      const fork1 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(fork1.status).toBe(201)
+
+      // Second fork PUT with same headers → 200 (idempotent)
+      const fork2 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(fork2.status).toBe(200)
+
+      // Source refcount should still be 1 (not incremented by idempotent PUT)
+      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      const refCount = sourceHead.headers.get(STREAM_REF_COUNT_HEADER)
+      expect(parseInt(refCount!)).toBe(1)
+    })
+  })
 }
