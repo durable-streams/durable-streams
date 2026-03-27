@@ -454,29 +454,32 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
     respawnRef.current = respawn
   }, [respawn])
 
-  // Touch handler — swipe relative to snake head
+  // Swipe gesture handler
   const svgRef = useRef<SVGSVGElement>(null)
-  const handleTouch = useCallback(
-    (e: React.TouchEvent) => {
-      e.preventDefault()
-      if (!svgRef.current || localSnake.length === 0) return
-      const touch = e.touches[0]
-      const rect = svgRef.current.getBoundingClientRect()
-      // Map touch position to game grid coordinates
-      const touchX = ((touch.clientX - rect.left) / rect.width) * cols
-      const touchY = ((touch.clientY - rect.top) / rect.height) * rows
-      const head = localSnake[0]
-      const dx = touchX - (head.x + 0.5)
-      const dy = touchY - (head.y + 0.5)
-      // Choose the axis with the larger delta
-      if (Math.abs(dx) > Math.abs(dy)) {
-        dirQueue.current.push({ dx: dx > 0 ? 1 : -1, dy: 0 })
-      } else {
-        dirQueue.current.push({ dx: 0, dy: dy > 0 ? 1 : -1 })
-      }
-    },
-    [localSnake, cols, rows]
-  )
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null)
+  const SWIPE_THRESHOLD = 10 // min pixels to register a swipe
+
+  const onTouchStart = useCallback((e: React.TouchEvent) => {
+    e.preventDefault()
+    const t = e.touches[0]
+    touchStartRef.current = { x: t.clientX, y: t.clientY }
+  }, [])
+
+  const onTouchMove = useCallback((e: React.TouchEvent) => {
+    e.preventDefault()
+    if (!touchStartRef.current) return
+    const t = e.touches[0]
+    const dx = t.clientX - touchStartRef.current.x
+    const dy = t.clientY - touchStartRef.current.y
+    if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) return
+    // Register swipe direction and reset start for continuous control
+    if (Math.abs(dx) > Math.abs(dy)) {
+      dirQueue.current.push({ dx: dx > 0 ? 1 : -1, dy: 0 })
+    } else {
+      dirQueue.current.push({ dx: 0, dy: dy > 0 ? 1 : -1 })
+    }
+    touchStartRef.current = { x: t.clientX, y: t.clientY }
+  }, [])
 
   // Game loop
   useEffect(() => {
@@ -887,7 +890,8 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
       <svg
         ref={svgRef}
         viewBox={`0 0 ${W} ${H}`}
-        onTouchStart={handleTouch}
+        onTouchStart={onTouchStart}
+        onTouchMove={onTouchMove}
         style={{
           width: `100%`,
           maxWidth: W,
