@@ -345,21 +345,24 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
   const onBoardClick = useCallback((e: React.MouseEvent<SVGSVGElement>) => {
     const svg = svgRef.current
     if (!svg) return
-    // Use SVG coordinate transform for accurate mapping
     const pt = svg.createSVGPoint()
     pt.x = e.clientX
     pt.y = e.clientY
     const ctm = svg.getScreenCTM()
     if (!ctm) return
     const svgPt = pt.matrixTransform(ctm.inverse())
-    const cx = Math.floor(svgPt.x / CELL)
-    const cy = Math.floor(svgPt.y / CELL)
+    const cx = svgPt.x / CELL - 0.5
+    const cy = svgPt.y / CELL - 0.5
     const ref = localRef.current
     const dx = cx - ref.x
     const dy = cy - ref.y
-    // Only allow adjacent cells (manhattan distance of 1)
-    if (Math.abs(dx) + Math.abs(dy) !== 1) return
-    moveRef.current?.({ dx, dy })
+    if (dx === 0 && dy === 0) return
+    // Move one step in the cardinal direction closest to the click
+    if (Math.abs(dx) > Math.abs(dy)) {
+      moveRef.current?.({ dx: dx > 0 ? 1 : -1, dy: 0 })
+    } else {
+      moveRef.current?.({ dx: 0, dy: dy > 0 ? 1 : -1 })
+    }
   }, [])
 
   const handleLeave = useCallback(() => {
