@@ -540,6 +540,119 @@ func (s *BboltMetadataStore) SetClosed(path string, closed bool, closedBy *Close
 	})
 }
 
+// IncrementRefCount atomically increments the refcount for a stream
+func (s *BboltMetadataStore) IncrementRefCount(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return fmt.Errorf("store is closed")
+	}
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(metadataBucket)
+
+		data := b.Get([]byte(path))
+		if data == nil {
+			return ErrStreamNotFound
+		}
+
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+
+		var bm bboltMetadata
+		if err := json.Unmarshal(dataCopy, &bm); err != nil {
+			return err
+		}
+
+		bm.RefCount++
+
+		newData, err := json.Marshal(bm)
+		if err != nil {
+			return err
+		}
+
+		return b.Put([]byte(path), newData)
+	})
+}
+
+// DecrementRefCount atomically decrements the refcount for a stream.
+// Returns the new refcount, whether the stream is soft-deleted, and any error.
+func (s *BboltMetadataStore) DecrementRefCount(path string) (newRefCount int32, softDeleted bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return 0, false, fmt.Errorf("store is closed")
+	}
+
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(metadataBucket)
+
+		data := b.Get([]byte(path))
+		if data == nil {
+			return ErrStreamNotFound
+		}
+
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+
+		var bm bboltMetadata
+		if err := json.Unmarshal(dataCopy, &bm); err != nil {
+			return err
+		}
+
+		bm.RefCount--
+		newRefCount = bm.RefCount
+		softDeleted = bm.SoftDeleted
+
+		newData, err := json.Marshal(bm)
+		if err != nil {
+			return err
+		}
+
+		return b.Put([]byte(path), newData)
+	})
+
+	return newRefCount, softDeleted, err
+}
+
+// SoftDelete atomically marks a stream as soft-deleted
+func (s *BboltMetadataStore) SoftDelete(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return fmt.Errorf("store is closed")
+	}
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(metadataBucket)
+
+		data := b.Get([]byte(path))
+		if data == nil {
+			return ErrStreamNotFound
+		}
+
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+
+		var bm bboltMetadata
+		if err := json.Unmarshal(dataCopy, &bm); err != nil {
+			return err
+		}
+
+		bm.SoftDeleted = true
+
+		newData, err := json.Marshal(bm)
+		if err != nil {
+			return err
+		}
+
+		return b.Put([]byte(path), newData)
+	})
+}
+
 // Close closes the bbolt database
 func (s *BboltMetadataStore) Close() error {
 	s.mu.Lock()
