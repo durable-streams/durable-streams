@@ -735,16 +735,6 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
                 stroke={playerColor}
                 strokeWidth={2}
               />
-              <text
-                x={localPos.x * CELL + CELL / 2}
-                y={localPos.y * CELL - 4}
-                textAnchor="middle"
-                fontSize={6}
-                fill={playerColor}
-                fontFamily="'Press Start 2P', monospace"
-              >
-                {playerName}
-              </text>
             </g>
           )
         })()}
