@@ -814,7 +814,37 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
         </div>
       </div>
 
-      {/* Score row */}
+      {/* High score holder name */}
+      {topScore && (
+        <div
+          style={{
+            display: `flex`,
+            justifyContent: `flex-end`,
+            alignItems: `center`,
+            gap: 4,
+            width: `100%`,
+            maxWidth: W,
+            marginBottom: 4,
+            fontSize: FONT_SM,
+          }}
+        >
+          <span style={{ color: PALETTE.dim }}>{topScore.playerName}</span>
+          {topScore.live && (
+            <span
+              className="live-dot"
+              style={{
+                width: 5,
+                height: 5,
+                borderRadius: `50%`,
+                background: PALETTE.accent,
+                display: `inline-block`,
+              }}
+            />
+          )}
+        </div>
+      )}
+
+      {/* Score row — single line, baseline aligned */}
       <div
         style={{
           display: `flex`,
@@ -834,23 +864,7 @@ export function SnakeGame({ onLeave }: SnakeGameProps) {
           <span style={{ color: PALETTE.dim }}>SCORE</span>
         </span>
         {topScore && (
-          <span style={{ textAlign: `right` }}>
-            <span style={{ color: PALETTE.dim }}>{topScore.playerName}</span>
-            {topScore.live && (
-              <span
-                className="live-dot"
-                style={{
-                  width: 5,
-                  height: 5,
-                  borderRadius: `50%`,
-                  background: PALETTE.accent,
-                  display: `inline-block`,
-                  marginLeft: 4,
-                  verticalAlign: `middle`,
-                }}
-              />
-            )}
-            <br />
+          <span>
             <span style={{ color: PALETTE.dim }}>HIGH SCORE</span>
             {` `}
             <span style={{ fontSize: FONT_SCORE, color: PALETTE.accent }}>
