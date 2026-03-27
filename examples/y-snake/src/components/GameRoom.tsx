@@ -7,6 +7,7 @@ import { GameRoomContext } from "./game-room-context"
 import { ScoresProvider } from "./scores-context"
 import { useRegistryContext } from "./registry-context"
 import { SnakeGame } from "./SnakeGame"
+import { TerritoryGame } from "./TerritoryGame"
 import type { YjsProviderStatus } from "@durable-streams/y-durable-streams"
 import type { GameRoomContextValue } from "./game-room-context"
 
@@ -46,11 +47,14 @@ function hashName(name: string): number {
 // GameRoom component
 // ============================================================================
 
+export type GameType = `snake` | `territory`
+
 interface GameRoomProps {
   roomId: string
   yjsBaseUrl: string
   yjsHeaders?: Record<string, string>
   playerName: string
+  game: GameType
   onLeave: () => void
 }
 
@@ -59,6 +63,7 @@ export function GameRoom({
   yjsBaseUrl,
   yjsHeaders,
   playerName,
+  game,
   onLeave,
 }: GameRoomProps) {
   const { registryDB } = useRegistryContext()
@@ -219,7 +224,11 @@ export function GameRoom({
   return (
     <GameRoomContext.Provider value={value}>
       <ScoresProvider roomId={roomId}>
-        <SnakeGame onLeave={onLeave} />
+        {game === `territory` ? (
+          <TerritoryGame onLeave={onLeave} />
+        ) : (
+          <SnakeGame onLeave={onLeave} />
+        )}
       </ScoresProvider>
     </GameRoomContext.Provider>
   )
