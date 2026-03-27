@@ -8,6 +8,7 @@
  */
 
 import { validatePreSignedUrl, validateServiceJwt } from "./tokens"
+import { buildBackendUrl, resolveBackendHeaders } from "./backend"
 import { sendError } from "./response"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { ProxyServerOptions } from "./types"
@@ -78,7 +79,7 @@ export async function handleReadStream(
   }
 
   // Build the durable streams URL
-  const dsUrl = new URL(`/v1/streams/${streamId}`, options.durableStreamsUrl)
+  const dsUrl = new URL(buildBackendUrl(options, streamId))
 
   // Forward query parameters
   const offset = url.searchParams.get(`offset`)
@@ -93,9 +94,14 @@ export async function handleReadStream(
 
   try {
     // Proxy the request to the durable streams server
+    const extra = await resolveBackendHeaders(options, {
+      streamId,
+      method: `GET`,
+    })
     const dsResponse = await fetch(dsUrl.toString(), {
       method: `GET`,
       headers: {
+        ...extra,
         Accept: req.headers.accept ?? `*/*`,
       },
     })
