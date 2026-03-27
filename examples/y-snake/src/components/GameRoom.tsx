@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react"
 import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 import { YjsProvider } from "@durable-streams/y-durable-streams"
-import { ROOM_TTL_SECONDS } from "../utils/schemas"
+import { ROOM_TTL_RENEWAL_MS, ROOM_TTL_SECONDS } from "../utils/schemas"
 import { GameRoomContext } from "./game-room-context"
 import { ScoresProvider } from "./scores-context"
 import { useRegistryContext } from "./registry-context"
@@ -134,62 +134,79 @@ export function GameRoom({
     playerId,
   ])
 
-  // Broadcast player count to registry when awareness changes
+  // Elect a single writer for registry updates (lowest playerId wins)
+  const [isRegistryWriter, setIsRegistryWriter] = useState(false)
   const lastCountRef = useRef(-1)
+
   useEffect(() => {
     const updatePlayerCount = () => {
-      const count = awareness.getStates().size
+      const states = awareness.getStates()
+      const count = states.size
+
+      // Election: collect all playerIds (always include self), sort, check if we're first
+      const playerIdSet = new Set<string>([playerId])
+      states.forEach((state) => {
+        if (state.playerId) playerIdSet.add(state.playerId as string)
+      })
+      const allPlayerIds = [...playerIdSet].sort()
+      const elected = allPlayerIds[0] === playerId
+      setIsRegistryWriter(elected)
+
+      if (!elected) {
+        lastCountRef.current = count
+        return
+      }
+
       if (count === lastCountRef.current) return
       lastCountRef.current = count
 
-      // Look up existing room metadata to preserve fields (especially expiresAt)
-      const rooms = registryDB.collections.rooms.toArray
-      const existing = rooms.find((r) => r.roomId === roomId)
-
+      const existing = registryDB.collections.rooms.toArray.find(
+        (r) => r.roomId === roomId
+      )
       if (existing) {
         try {
           registryDB.actions.addRoom({ ...existing, playerCount: count })
         } catch {
           /* best-effort */
         }
-      } else {
-        // Fallback: reconstruct metadata from roomId
-        const nameMatch = roomId.match(/^(.+?)__/)
-        const name = nameMatch ? nameMatch[1] : roomId
-        const sizeMatch = roomId.match(/__(\d+x\d+)/)
-        const speedMatch = roomId.match(/__\d+x\d+_(\d+)ms/)
-        const boardSize = sizeMatch ? sizeMatch[1] : `30x24`
-        const speedLabel = speedMatch
-          ? ({ "220": `Chill`, "180": `Normal`, "120": `Fast`, "80": `Insane` }[
-              speedMatch[1]
-            ] ?? ``)
-          : ``
-        const boardSizeDisplay = speedLabel
-          ? `${boardSize} · ${speedLabel}`
-          : boardSize
-        const now = Date.now()
+      }
+    }
+    awareness.on(`change`, updatePlayerCount)
+    const timeout = setTimeout(updatePlayerCount, 1000)
+    return () => {
+      awareness.off(`change`, updatePlayerCount)
+      clearTimeout(timeout)
+      // Delete room from registry when the last player leaves
+      if (awareness.getStates().size <= 1) {
         try {
-          registryDB.actions.addRoom({
-            roomId,
-            name,
-            boardSize: boardSizeDisplay,
-            createdAt: now,
-            expiresAt: now + ROOM_TTL_SECONDS * 1000,
-            playerCount: count,
-          })
+          registryDB.actions.deleteRoom(roomId)
         } catch {
           /* best-effort */
         }
       }
     }
-    awareness.on(`change`, updatePlayerCount)
-    // Initial broadcast after a short delay to let awareness sync
-    const timeout = setTimeout(updatePlayerCount, 1000)
-    return () => {
-      awareness.off(`change`, updatePlayerCount)
-      clearTimeout(timeout)
-    }
-  }, [awareness, registryDB, roomId])
+  }, [awareness, registryDB, roomId, playerId])
+
+  // Renew room TTL while this client is the elected registry writer
+  useEffect(() => {
+    if (!isRegistryWriter) return
+    const interval = setInterval(() => {
+      const existing = registryDB.collections.rooms.toArray.find(
+        (r) => r.roomId === roomId
+      )
+      if (existing) {
+        try {
+          registryDB.actions.addRoom({
+            ...existing,
+            expiresAt: Date.now() + ROOM_TTL_SECONDS * 1000,
+          })
+        } catch {
+          /* best-effort */
+        }
+      }
+    }, ROOM_TTL_RENEWAL_MS)
+    return () => clearInterval(interval)
+  }, [isRegistryWriter, registryDB, roomId])
 
   // Clean up doc on unmount
   useEffect(() => {
@@ -197,12 +214,6 @@ export function GameRoom({
       doc.destroy()
     }
   }, [doc])
-
-  // Get expiresAt from registry (or default to 10 min from now)
-  const roomEntry = registryDB.collections.rooms.toArray.find(
-    (r) => r.roomId === roomId
-  )
-  const expiresAt = roomEntry?.expiresAt ?? Date.now() + ROOM_TTL_SECONDS * 1000
 
   const value = useMemo<GameRoomContextValue>(
     () => ({
@@ -214,7 +225,6 @@ export function GameRoom({
       playerColor,
       isSynced,
       isLoading,
-      expiresAt,
     }),
     [
       doc,
@@ -225,7 +235,6 @@ export function GameRoom({
       playerColor,
       isSynced,
       isLoading,
-      expiresAt,
     ]
   )
 

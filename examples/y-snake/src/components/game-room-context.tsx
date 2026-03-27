@@ -11,7 +11,6 @@ export interface GameRoomContextValue {
   playerColor: string
   isSynced: boolean
   isLoading: boolean
-  expiresAt: number
 }
 
 export const GameRoomContext = createContext<GameRoomContextValue | null>(null)

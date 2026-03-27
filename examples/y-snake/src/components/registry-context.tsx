@@ -1,7 +1,7 @@
 import { createContext, useContext, useEffect, useState } from "react"
 import { DurableStream } from "@durable-streams/client"
 import { createStreamDB } from "@durable-streams/state"
-import { ROOM_TTL_SECONDS, registryStateSchema } from "../utils/schemas"
+import { REGISTRY_TTL_SECONDS, registryStateSchema } from "../utils/schemas"
 import { useServerEndpoint } from "./server-endpoint-context"
 import type { RoomMetadata } from "../utils/schemas"
 import type { ReactNode } from "react"
@@ -108,7 +108,7 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
             url: registryUrl,
             headers: dsHeaders,
             contentType: `application/json`,
-            ttlSeconds: ROOM_TTL_SECONDS,
+            ttlSeconds: REGISTRY_TTL_SECONDS,
           })
         }
 

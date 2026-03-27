@@ -14,6 +14,8 @@ export interface RoomMetadata {
 }
 
 export const ROOM_TTL_SECONDS = 600 // 10 minutes
+export const ROOM_TTL_RENEWAL_MS = (ROOM_TTL_SECONDS / 2) * 1000 // renew every 5 min
+export const REGISTRY_TTL_SECONDS = 60 * 60 * 24 // 1 day
 
 const roomMetadataSchema = {
   "~standard": {
