@@ -566,9 +566,10 @@ export class DurableStreamTestServer {
       STREAM_EXPIRES_AT_HEADER.toLowerCase()
     ] as string | undefined
 
-    // Parse Stream-Closed header
+    // Parse Stream-Closed header (case-insensitive per protocol §4.1)
     const closedHeader = req.headers[STREAM_CLOSED_HEADER.toLowerCase()]
-    const createClosed = closedHeader === `true`
+    const createClosed =
+      typeof closedHeader === `string` && closedHeader.toLowerCase() === `true`
 
     // Validate TTL and Expires-At headers
     if (ttlHeader && expiresAtHeader) {
@@ -1160,9 +1161,10 @@ export class DurableStreamTestServer {
       | string
       | undefined
 
-    // Parse Stream-Closed header
+    // Parse Stream-Closed header (case-insensitive per protocol §4.1)
     const closedHeader = req.headers[STREAM_CLOSED_HEADER.toLowerCase()]
-    const closeStream = closedHeader === `true`
+    const closeStream =
+      typeof closedHeader === `string` && closedHeader.toLowerCase() === `true`
 
     // Extract producer headers
     const producerId = req.headers[PRODUCER_ID_HEADER.toLowerCase()] as
