@@ -169,6 +169,24 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     return scores
   }, [cells])
 
+  // Find the leading player
+  const leader = useMemo(() => {
+    let maxCells = 0
+    let leaderId = ``
+    playerScores.forEach((count, id) => {
+      if (count > maxCells) {
+        maxCells = count
+        leaderId = id
+      }
+    })
+    if (!leaderId || maxCells === 0) return null
+    const leaderPct = Math.round((maxCells / totalCells) * 100)
+    // Find name
+    if (leaderId === playerId) return { name: playerName, pct: leaderPct }
+    const other = otherPlayers.get(leaderId)
+    return other ? { name: other.name, pct: leaderPct } : null
+  }, [playerScores, totalCells, playerId, playerName, otherPlayers])
+
   // Initialize player position
   useEffect(() => {
     const startX = Math.floor(Math.random() * cols)
@@ -644,8 +662,35 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
           {` `}
           <span style={{ color: PALETTE.dim }}>TERRITORY</span>
         </span>
-        <span style={{ color: PALETTE.dim }}>
-          WIN AT {Math.round(WIN_THRESHOLD * 100)}%
+        <span style={{ textAlign: `right` }}>
+          {leader && (
+            <span
+              style={{ color: PALETTE.dim, display: `block`, marginBottom: 4 }}
+            >
+              {leader.name}
+            </span>
+          )}
+          <span
+            style={{
+              color:
+                leader && leader.pct >= Math.round(WIN_THRESHOLD * 100) - 5
+                  ? `#FF3D71`
+                  : PALETTE.dim,
+            }}
+          >
+            WIN AT{` `}
+          </span>
+          <span
+            style={{
+              fontSize: FONT_SCORE,
+              color:
+                leader && leader.pct >= Math.round(WIN_THRESHOLD * 100) - 5
+                  ? `#FF3D71`
+                  : PALETTE.accent,
+            }}
+          >
+            {Math.round(WIN_THRESHOLD * 100)}%
+          </span>
         </span>
       </div>
 
