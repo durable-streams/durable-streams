@@ -408,21 +408,20 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     }
   }, [])
 
-  // Touch controls — single step per tap/swipe, no continuous movement
+  // Touch controls — rate-limited to MOVE_INTERVAL like keyboard
   const svgRef = useRef<SVGSVGElement>(null)
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
+  const lastTouchMoveRef = useRef(0)
   const SWIPE_THRESHOLD = 10
 
-  const onTouchStart = useCallback((e: React.TouchEvent) => {
-    e.preventDefault()
-    const t = e.touches[0]
-    touchStartRef.current = { x: t.clientX, y: t.clientY }
-    // Single step toward touch position (like click)
+  const touchMove = useCallback((clientX: number, clientY: number) => {
+    const now = Date.now()
+    if (now - lastTouchMoveRef.current < MOVE_INTERVAL) return
     const svg = svgRef.current
     if (!svg) return
     const pt = svg.createSVGPoint()
-    pt.x = t.clientX
-    pt.y = t.clientY
+    pt.x = clientX
+    pt.y = clientY
     const ctm = svg.getScreenCTM()
     if (!ctm) return
     const svgPt = pt.matrixTransform(ctm.inverse())
@@ -437,23 +436,33 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     } else {
       moveRef.current?.({ dx: 0, dy: dy > 0 ? 1 : -1 })
     }
+    lastTouchMoveRef.current = now
   }, [])
 
-  const onTouchMove = useCallback((e: React.TouchEvent) => {
-    e.preventDefault()
-    if (!touchStartRef.current) return
-    const t = e.touches[0]
-    const dx = t.clientX - touchStartRef.current.x
-    const dy = t.clientY - touchStartRef.current.y
-    if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) return
-    // Single step per swipe threshold
-    if (Math.abs(dx) > Math.abs(dy)) {
-      moveRef.current?.({ dx: dx > 0 ? 1 : -1, dy: 0 })
-    } else {
-      moveRef.current?.({ dx: 0, dy: dy > 0 ? 1 : -1 })
-    }
-    touchStartRef.current = { x: t.clientX, y: t.clientY }
-  }, [])
+  const onTouchStart = useCallback(
+    (e: React.TouchEvent) => {
+      e.preventDefault()
+      const t = e.touches[0]
+      touchStartRef.current = { x: t.clientX, y: t.clientY }
+      touchMove(t.clientX, t.clientY)
+    },
+    [touchMove]
+  )
+
+  const onTouchMove = useCallback(
+    (e: React.TouchEvent) => {
+      e.preventDefault()
+      if (!touchStartRef.current) return
+      const t = e.touches[0]
+      const dx = t.clientX - touchStartRef.current.x
+      const dy = t.clientY - touchStartRef.current.y
+      if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD)
+        return
+      touchMove(t.clientX, t.clientY)
+      touchStartRef.current = { x: t.clientX, y: t.clientY }
+    },
+    [touchMove]
+  )
 
   const onTouchEnd = useCallback(() => {
     touchStartRef.current = null
