@@ -55,7 +55,7 @@ export function Lobby({
 }: LobbyProps) {
   const { registryDB } = useRegistryContext()
   const [roomName, setRoomName] = useState(randomRoomName)
-  const [sizeIdx, setSizeIdx] = useState(1) // Medium
+  const sizeIdx = 1 // Medium (30x30)
   const [isCreating, setIsCreating] = useState(false)
   const [roomPage, setRoomPage] = useState(0)
   const [showJoinModal, setShowJoinModal] = useState(false)
@@ -137,22 +137,6 @@ export function Lobby({
           placeholder="room name"
           onKeyDown={(e) => e.key === `Enter` && createRoom()}
         />
-
-        <div style={{ display: `flex`, gap: 4, marginBottom: 10 }}>
-          {BOARD_SIZES.map((s, i) => (
-            <button
-              key={s.label}
-              className="lobby-btn"
-              style={{
-                ...styles.sizeBtn,
-                ...(i === sizeIdx ? styles.sizeBtnActive : {}),
-              }}
-              onClick={() => setSizeIdx(i)}
-            >
-              {s.label}
-            </button>
-          ))}
-        </div>
 
         <div style={{ display: `flex`, gap: 6 }}>
           <button
@@ -276,7 +260,12 @@ export function Lobby({
               <button
                 className="lobby-btn"
                 style={{
-                  ...styles.sizeBtn,
+                  fontFamily: `inherit`,
+                  fontSize: 6,
+                  background: PALETTE.bg,
+                  color: PALETTE.dim,
+                  border: `1px solid ${PALETTE.border}`,
+                  cursor: `pointer`,
                   width: 28,
                   padding: `4px 0`,
                   opacity: roomPage === 0 ? 0.3 : 1,
@@ -298,7 +287,12 @@ export function Lobby({
               <button
                 className="lobby-btn"
                 style={{
-                  ...styles.sizeBtn,
+                  fontFamily: `inherit`,
+                  fontSize: 6,
+                  background: PALETTE.bg,
+                  color: PALETTE.dim,
+                  border: `1px solid ${PALETTE.border}`,
+                  cursor: `pointer`,
                   width: 28,
                   padding: `4px 0`,
                   opacity:
@@ -359,9 +353,6 @@ function RoomItem({
           }}
         >
           {copied ? `COPIED` : room.name}
-        </span>
-        <span style={{ fontSize: 7, color: PALETTE.dim }}>
-          {room.boardSize}
         </span>
       </div>
       <button
@@ -430,21 +421,6 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 10,
     outline: `none`,
     boxSizing: `border-box`,
-  },
-  sizeBtn: {
-    flex: 1,
-    padding: `6px 4px`,
-    fontSize: 6,
-    fontFamily: `inherit`,
-    background: PALETTE.bg,
-    color: PALETTE.dim,
-    border: `1px solid ${PALETTE.border}`,
-    cursor: `pointer`,
-  },
-  sizeBtnActive: {
-    background: `rgba(208,188,255,0.1)`,
-    color: PALETTE.accent,
-    borderColor: PALETTE.accent,
   },
   createBtn: {
     width: `100%`,
