@@ -522,6 +522,13 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
       ref.y = ny
       setLocalPos({ x: nx, y: ny })
 
+      // Update awareness on move to keep presence fresh
+      awareness.setLocalState({
+        ...awareness.getLocalState(),
+        x: nx,
+        y: ny,
+      })
+
       const playersMap = getPlayersMap(doc)
       playersMap.set(playerId, {
         x: nx,
@@ -700,7 +707,7 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
           onClick={() => setShowPlayers((v) => !v)}
         >
           {connectedCount} PLAYERS
-          {showPlayers && otherPlayers.size > 0 && (
+          {showPlayers && (
             <div
               style={{
                 position: `absolute`,
@@ -714,12 +721,19 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
                 minWidth: 120,
               }}
             >
-              {Array.from(otherPlayers.entries()).map(([id, p]) => {
-                const pCells = playerScores.get(id) || 0
+              {[
+                { id: playerId, name: playerName, color: playerColor },
+                ...Array.from(otherPlayers.entries()).map(([id, p]) => ({
+                  id,
+                  name: p.name,
+                  color: p.color,
+                })),
+              ].map((p) => {
+                const pCells = playerScores.get(p.id) || 0
                 const pPct = Math.round((pCells / totalCells) * 100)
                 return (
                   <div
-                    key={id}
+                    key={p.id}
                     style={{
                       display: `flex`,
                       justifyContent: `space-between`,
@@ -728,11 +742,7 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
                     }}
                   >
                     <span
-                      style={{
-                        display: `flex`,
-                        alignItems: `center`,
-                        gap: 4,
-                      }}
+                      style={{ display: `flex`, alignItems: `center`, gap: 4 }}
                     >
                       <span
                         style={{

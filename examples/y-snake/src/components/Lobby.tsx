@@ -14,9 +14,9 @@ const PALETTE = {
 }
 
 const BOARD_SIZES = [
-  { label: `Small (20x16)`, cols: 20, rows: 16 },
-  { label: `Medium (30x24)`, cols: 30, rows: 24 },
-  { label: `Large (40x30)`, cols: 40, rows: 30 },
+  { label: `Small (20x20)`, cols: 20, rows: 20 },
+  { label: `Medium (30x30)`, cols: 30, rows: 30 },
+  { label: `Large (40x40)`, cols: 40, rows: 40 },
 ]
 
 const SPEED_OPTIONS = [
@@ -63,7 +63,7 @@ export function Lobby({
 }: LobbyProps) {
   const { registryDB } = useRegistryContext()
   const [roomName, setRoomName] = useState(randomRoomName)
-  const sizeIdx = 1 // Medium
+  const [sizeIdx, setSizeIdx] = useState(1) // Medium
   const speedIdx = 1 // Normal
   const [isCreating, setIsCreating] = useState(false)
   const [roomPage, setRoomPage] = useState(0)
@@ -147,6 +147,22 @@ export function Lobby({
           placeholder="room name"
           onKeyDown={(e) => e.key === `Enter` && createRoom()}
         />
+
+        <div style={{ display: `flex`, gap: 4, marginBottom: 10 }}>
+          {BOARD_SIZES.map((s, i) => (
+            <button
+              key={s.label}
+              className="lobby-btn"
+              style={{
+                ...styles.sizeBtn,
+                ...(i === sizeIdx ? styles.sizeBtnActive : {}),
+              }}
+              onClick={() => setSizeIdx(i)}
+            >
+              {s.label}
+            </button>
+          ))}
+        </div>
 
         <div style={{ display: `flex`, gap: 6 }}>
           <button
@@ -432,6 +448,21 @@ const styles: Record<string, React.CSSProperties> = {
     marginBottom: 10,
     outline: `none`,
     boxSizing: `border-box`,
+  },
+  sizeBtn: {
+    flex: 1,
+    padding: `6px 4px`,
+    fontSize: 6,
+    fontFamily: `inherit`,
+    background: PALETTE.bg,
+    color: PALETTE.dim,
+    border: `1px solid ${PALETTE.border}`,
+    cursor: `pointer`,
+  },
+  sizeBtnActive: {
+    background: `rgba(208,188,255,0.1)`,
+    color: PALETTE.accent,
+    borderColor: PALETTE.accent,
   },
   createBtn: {
     width: `100%`,
