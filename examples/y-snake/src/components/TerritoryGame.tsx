@@ -114,6 +114,79 @@ function countCellsForPlayer(
 }
 
 // ============================================================================
+// Territory fill: flood-fill to find enclosed empty regions
+// ============================================================================
+
+function findEnclosedCells(
+  ownerId: string,
+  cellsMap: Y.Map<TerritoryCell>,
+  cols: number,
+  rows: number
+): Array<{ x: number; y: number }> {
+  // Build sets for quick lookup
+  const ownerCells = new Set<string>()
+  const otherCells = new Set<string>()
+  cellsMap.forEach((cell, key) => {
+    if (cell.owner === ownerId) ownerCells.add(key)
+    else otherCells.add(key)
+  })
+
+  // Flood-fill from all edge cells, treating owner's cells as walls
+  const reachable = new Set<string>()
+  const queue: Array<{ x: number; y: number }> = []
+
+  for (let x = 0; x < cols; x++) {
+    for (const y of [0, rows - 1]) {
+      const k = `${x},${y}`
+      if (!ownerCells.has(k) && !reachable.has(k)) {
+        reachable.add(k)
+        queue.push({ x, y })
+      }
+    }
+  }
+  for (let y = 0; y < rows; y++) {
+    for (const x of [0, cols - 1]) {
+      const k = `${x},${y}`
+      if (!ownerCells.has(k) && !reachable.has(k)) {
+        reachable.add(k)
+        queue.push({ x, y })
+      }
+    }
+  }
+
+  while (queue.length > 0) {
+    const { x, y } = queue.pop()!
+    for (const [dx, dy] of [
+      [0, -1],
+      [0, 1],
+      [-1, 0],
+      [1, 0],
+    ]) {
+      const nx = x + dx
+      const ny = y + dy
+      if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue
+      const nk = `${nx},${ny}`
+      if (ownerCells.has(nk) || reachable.has(nk)) continue
+      reachable.add(nk)
+      queue.push({ x: nx, y: ny })
+    }
+  }
+
+  // Any cell not reachable and not owned by anyone = enclosed empty
+  // Only fill if the region has no other player's cells
+  const enclosed: Array<{ x: number; y: number }> = []
+  for (let y = 0; y < rows; y++) {
+    for (let x = 0; x < cols; x++) {
+      const k = `${x},${y}`
+      if (!reachable.has(k) && !ownerCells.has(k) && !otherCells.has(k)) {
+        enclosed.push({ x, y })
+      }
+    }
+  }
+  return enclosed
+}
+
+// ============================================================================
 // TerritoryGame component
 // ============================================================================
 
@@ -458,12 +531,26 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
       })
 
       const cellsMap = getCellsMap(doc)
+      const claimTime = Date.now()
       doc.transact(() => {
         cellsMap.set(`${nx},${ny}`, {
           owner: playerId,
-          claimedAt: Date.now(),
+          claimedAt: claimTime,
         })
       })
+
+      // Check for enclosed regions and fill them
+      const enclosed = findEnclosedCells(playerId, cellsMap, cols, rows)
+      if (enclosed.length > 0) {
+        doc.transact(() => {
+          for (const cell of enclosed) {
+            cellsMap.set(`${cell.x},${cell.y}`, {
+              owner: playerId,
+              claimedAt: claimTime,
+            })
+          }
+        })
+      }
     }
 
     // Expose for click handler

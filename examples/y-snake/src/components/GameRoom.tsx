@@ -209,9 +209,8 @@ export function GameRoom({
   if (isLoading) {
     return (
       <div style={styles.center}>
-        <div style={{ color: `rgba(235,235,245,0.68)`, fontSize: 8 }}>
-          CONNECTING...
-        </div>
+        <style>{`@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');`}</style>
+        <div style={{ color: `#d0bcff`, fontSize: 8 }}>CONNECTING...</div>
       </div>
     )
   }
