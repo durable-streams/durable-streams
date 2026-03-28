@@ -121,14 +121,20 @@ function findEnclosedCells(
   ownerId: string,
   cellsMap: Y.Map<TerritoryCell>,
   cols: number,
-  rows: number
+  rows: number,
+  activePlayers: Set<string>
 ): Array<{ x: number; y: number }> {
   // Build sets for quick lookup
   const ownerCells = new Set<string>()
-  const otherCells = new Set<string>()
+  const activeOtherCells = new Set<string>()
   cellsMap.forEach((cell, key) => {
-    if (cell.owner === ownerId) ownerCells.add(key)
-    else otherCells.add(key)
+    if (cell.owner === ownerId) {
+      ownerCells.add(key)
+    } else if (activePlayers.has(cell.owner)) {
+      // Only treat cells from active players as blocking
+      activeOtherCells.add(key)
+    }
+    // Cells from departed players are treated as empty (claimable)
   })
 
   // Flood-fill from all edge cells, treating owner's cells as walls
@@ -172,13 +178,12 @@ function findEnclosedCells(
     }
   }
 
-  // Any cell not reachable and not owned by anyone = enclosed empty
-  // Only fill if the region has no other player's cells
+  // Enclosed = not reachable, not ours, and no active other player's cell
   const enclosed: Array<{ x: number; y: number }> = []
   for (let y = 0; y < rows; y++) {
     for (let x = 0; x < cols; x++) {
       const k = `${x},${y}`
-      if (!reachable.has(k) && !ownerCells.has(k) && !otherCells.has(k)) {
+      if (!reachable.has(k) && !ownerCells.has(k) && !activeOtherCells.has(k)) {
         enclosed.push({ x, y })
       }
     }
@@ -331,20 +336,21 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     return () => playersMap.unobserve(handler)
   }, [doc, playerId])
 
-  // Observe awareness
+  // Observe awareness — de-duplicate by player name, clean up departed players
   useEffect(() => {
     const handler = () => {
       const activePlayerIds = new Set<string>()
-      let otherCount = 0
+      const uniqueNames = new Set<string>([playerName])
 
       awareness.getStates().forEach((state, clientId) => {
         if (clientId !== awareness.clientID) {
-          otherCount++
-          if (state.playerId) activePlayerIds.add(state.playerId)
+          if (state.playerId) activePlayerIds.add(state.playerId as string)
+          const name = state.user?.name as string | undefined
+          if (name) uniqueNames.add(name)
         }
       })
       setConnectedCount((prev) => {
-        const next = otherCount + 1
+        const next = uniqueNames.size
         return prev === next ? prev : next
       })
 
@@ -358,7 +364,7 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     awareness.on(`change`, handler)
     handler()
     return () => awareness.off(`change`, handler)
-  }, [awareness, doc, playerId])
+  }, [awareness, doc, playerId, playerName])
 
   // Keyboard input: track pressed keys
   useEffect(() => {
@@ -547,7 +553,16 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
       })
 
       // Check for enclosed regions and fill them
-      const enclosed = findEnclosedCells(playerId, cellsMap, cols, rows)
+      // Departed players' cells are treated as empty (claimable)
+      const activePlayers = new Set<string>([playerId])
+      readPlayers(doc, playerId).forEach((_, id) => activePlayers.add(id))
+      const enclosed = findEnclosedCells(
+        playerId,
+        cellsMap,
+        cols,
+        rows,
+        activePlayers
+      )
       if (enclosed.length > 0) {
         doc.transact(() => {
           for (const cell of enclosed) {
@@ -825,6 +840,8 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
           minHeight: 0,
           maxHeight: `calc(100dvh - 120px)`,
           objectFit: `contain`,
+          userSelect: `none`,
+          WebkitUserSelect: `none`,
         }}
       >
         {gridLines}
