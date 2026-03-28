@@ -159,7 +159,7 @@ export function Lobby({
             onClick={createRoom}
             disabled={isCreating}
           >
-            {isCreating ? `CREATING...` : `CREATE`}
+            {isCreating ? `STARTING...` : `START`}
           </button>
           <button
             className="lobby-btn"

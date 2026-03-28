@@ -196,11 +196,11 @@ export function GameRoom({
   if (error) {
     return (
       <div style={styles.center}>
-        <div style={{ color: `#FF3D71`, fontSize: 14 }}>
+        <div style={{ color: `#FF3D71`, fontSize: 8 }}>
           Connection error: {error.message}
         </div>
         <button onClick={onLeave} style={styles.btn}>
-          Back to Lobby
+          BACK
         </button>
       </div>
     )
@@ -209,8 +209,8 @@ export function GameRoom({
   if (isLoading) {
     return (
       <div style={styles.center}>
-        <div style={{ color: `#8892B0`, fontSize: 14 }}>
-          Connecting to room...
+        <div style={{ color: `rgba(235,235,245,0.68)`, fontSize: 8 }}>
+          CONNECTING...
         </div>
       </div>
     )
