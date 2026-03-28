@@ -13,11 +13,7 @@ const PALETTE = {
   dim: `rgba(235,235,245,0.38)`,
 }
 
-const BOARD_SIZES = [
-  { label: `Small (20x20)`, cols: 20, rows: 20 },
-  { label: `Medium (30x30)`, cols: 30, rows: 30 },
-  { label: `Large (40x40)`, cols: 40, rows: 40 },
-]
+const BOARD_SIZES = [{ label: `30x15`, cols: 30, rows: 15 }]
 
 function buildRoomId(
   name: string,
@@ -55,7 +51,7 @@ export function Lobby({
 }: LobbyProps) {
   const { registryDB } = useRegistryContext()
   const [roomName, setRoomName] = useState(randomRoomName)
-  const sizeIdx = 1 // Medium (30x30)
+  const sizeIdx = 0
   const [isCreating, setIsCreating] = useState(false)
   const [roomPage, setRoomPage] = useState(0)
   const [showJoinModal, setShowJoinModal] = useState(false)
