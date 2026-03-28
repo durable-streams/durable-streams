@@ -236,7 +236,7 @@ export function Lobby({
         <div style={styles.card}>
           <div style={styles.cardTitle}>ROOMS</div>
           <div style={{ display: `flex`, flexDirection: `column`, gap: 6 }}>
-            {sortedRooms.slice(roomPage * 5, roomPage * 5 + 5).map((room) => (
+            {sortedRooms.slice(roomPage * 3, roomPage * 3 + 3).map((room) => (
               <RoomItem
                 key={room.roomId}
                 room={room}
@@ -244,7 +244,7 @@ export function Lobby({
               />
             ))}
           </div>
-          {sortedRooms.length > 5 && (
+          {sortedRooms.length > 3 && (
             <div
               style={{
                 display: `flex`,
@@ -278,7 +278,7 @@ export function Lobby({
                   lineHeight: `24px`,
                 }}
               >
-                {roomPage + 1}/{Math.ceil(sortedRooms.length / 5)}
+                {roomPage + 1}/{Math.ceil(sortedRooms.length / 3)}
               </span>
               <button
                 className="lobby-btn"
@@ -292,9 +292,9 @@ export function Lobby({
                   width: 28,
                   padding: `4px 0`,
                   opacity:
-                    roomPage >= Math.ceil(sortedRooms.length / 5) - 1 ? 0.3 : 1,
+                    roomPage >= Math.ceil(sortedRooms.length / 3) - 1 ? 0.3 : 1,
                 }}
-                disabled={roomPage >= Math.ceil(sortedRooms.length / 5) - 1}
+                disabled={roomPage >= Math.ceil(sortedRooms.length / 3) - 1}
                 onClick={() => setRoomPage((p) => p + 1)}
               >
                 &gt;
