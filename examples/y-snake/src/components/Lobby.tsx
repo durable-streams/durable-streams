@@ -122,7 +122,7 @@ export function Lobby({
         .lobby-btn:active { opacity: 0.7; }
       `}</style>
 
-      <div style={styles.title}>DURABLE SNAKE</div>
+      <div style={styles.title}>TERRITORY WARS</div>
 
       {/* Player Name */}
       <div style={styles.card}>

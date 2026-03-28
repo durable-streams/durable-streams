@@ -146,13 +146,13 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
           alignItems: `center`,
           justifyContent: `center`,
           height: `100vh`,
-          fontFamily: `'JetBrains Mono', monospace`,
-          background: `#0B0E17`,
-          color: `#8892B0`,
-          fontSize: 14,
+          fontFamily: `'Press Start 2P', monospace`,
+          background: `#1b1b1f`,
+          color: `rgba(235,235,245,0.68)`,
+          fontSize: 8,
         }}
       >
-        Loading room registry...
+        LOADING...
       </div>
     )
   }
@@ -167,11 +167,11 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
           justifyContent: `center`,
           height: `100vh`,
           gap: 12,
-          fontFamily: `'JetBrains Mono', monospace`,
-          background: `#0B0E17`,
+          fontFamily: `'Press Start 2P', monospace`,
+          background: `#1b1b1f`,
         }}
       >
-        <div style={{ color: `#FF3D71`, fontSize: 14 }}>
+        <div style={{ color: `#FF3D71`, fontSize: 8 }}>
           Registry Error: {state.error?.message || `Failed to load`}
         </div>
       </div>
