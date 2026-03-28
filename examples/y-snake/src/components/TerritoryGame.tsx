@@ -408,7 +408,7 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     }
   }, [])
 
-  // Touch/swipe controls
+  // Touch controls — single step per tap/swipe, no continuous movement
   const svgRef = useRef<SVGSVGElement>(null)
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const SWIPE_THRESHOLD = 10
@@ -417,7 +417,7 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     e.preventDefault()
     const t = e.touches[0]
     touchStartRef.current = { x: t.clientX, y: t.clientY }
-    // Immediate move toward touch position (like click)
+    // Single step toward touch position (like click)
     const svg = svgRef.current
     if (!svg) return
     const pt = svg.createSVGPoint()
@@ -432,12 +432,11 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     const dx = cx - ref.x
     const dy = cy - ref.y
     if (dx === 0 && dy === 0) return
-    const dir =
-      Math.abs(dx) > Math.abs(dy)
-        ? { dx: dx > 0 ? 1 : -1, dy: 0 }
-        : { dx: 0, dy: dy > 0 ? 1 : -1 }
-    dirRef.current = dir
-    moveRef.current?.(dir)
+    if (Math.abs(dx) > Math.abs(dy)) {
+      moveRef.current?.({ dx: dx > 0 ? 1 : -1, dy: 0 })
+    } else {
+      moveRef.current?.({ dx: 0, dy: dy > 0 ? 1 : -1 })
+    }
   }, [])
 
   const onTouchMove = useCallback((e: React.TouchEvent) => {
@@ -447,17 +446,17 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     const dx = t.clientX - touchStartRef.current.x
     const dy = t.clientY - touchStartRef.current.y
     if (Math.abs(dx) < SWIPE_THRESHOLD && Math.abs(dy) < SWIPE_THRESHOLD) return
+    // Single step per swipe threshold
     if (Math.abs(dx) > Math.abs(dy)) {
-      dirRef.current = { dx: dx > 0 ? 1 : -1, dy: 0 }
+      moveRef.current?.({ dx: dx > 0 ? 1 : -1, dy: 0 })
     } else {
-      dirRef.current = { dx: 0, dy: dy > 0 ? 1 : -1 }
+      moveRef.current?.({ dx: 0, dy: dy > 0 ? 1 : -1 })
     }
     touchStartRef.current = { x: t.clientX, y: t.clientY }
   }, [])
 
   const onTouchEnd = useCallback(() => {
     touchStartRef.current = null
-    dirRef.current = null // stop on lift
   }, [])
 
   // Mouse click — click an adjacent cell to move there (one step)
