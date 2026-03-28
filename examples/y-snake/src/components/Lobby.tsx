@@ -19,19 +19,11 @@ const BOARD_SIZES = [
   { label: `Large (40x40)`, cols: 40, rows: 40 },
 ]
 
-const SPEED_OPTIONS = [
-  { label: `Chill`, tick: 220 },
-  { label: `Normal`, tick: 180 },
-  { label: `Fast`, tick: 120 },
-  { label: `Insane`, tick: 80 },
-]
-
 function buildRoomId(
   name: string,
-  size: { cols: number; rows: number },
-  speed: { tick: number }
+  size: { cols: number; rows: number }
 ): string {
-  return `${name}__${size.cols}x${size.rows}_${speed.tick}ms`
+  return `${name}__${size.cols}x${size.rows}`
 }
 
 function randomRoomName(): string {
@@ -64,7 +56,6 @@ export function Lobby({
   const { registryDB } = useRegistryContext()
   const [roomName, setRoomName] = useState(randomRoomName)
   const [sizeIdx, setSizeIdx] = useState(1) // Medium
-  const speedIdx = 1 // Normal
   const [isCreating, setIsCreating] = useState(false)
   const [roomPage, setRoomPage] = useState(0)
   const [showJoinModal, setShowJoinModal] = useState(false)
@@ -93,14 +84,13 @@ export function Lobby({
       const name =
         roomName.trim() || `room-${Math.random().toString(36).slice(2, 7)}`
       const size = BOARD_SIZES[sizeIdx]
-      const speed = SPEED_OPTIONS[speedIdx]
-      const roomId = buildRoomId(name, size, speed)
+      const roomId = buildRoomId(name, size)
 
       const createdAt = Date.now()
       const metadata: RoomMetadata = {
         roomId,
         name,
-        boardSize: `${size.cols}x${size.rows} · ${speed.label}`,
+        boardSize: `${size.cols}x${size.rows}`,
         createdAt,
         expiresAt: createdAt + ROOM_TTL_SECONDS * 1000,
       }
@@ -220,11 +210,7 @@ export function Lobby({
                   onJoinRoom(
                     existing
                       ? existing.roomId
-                      : buildRoomId(
-                          joinRoomName.trim(),
-                          BOARD_SIZES[sizeIdx],
-                          SPEED_OPTIONS[speedIdx]
-                        )
+                      : buildRoomId(joinRoomName.trim(), BOARD_SIZES[sizeIdx])
                   )
                 }
               }}
@@ -253,11 +239,7 @@ export function Lobby({
                     onJoinRoom(
                       existing
                         ? existing.roomId
-                        : buildRoomId(
-                            joinRoomName.trim(),
-                            BOARD_SIZES[sizeIdx],
-                            SPEED_OPTIONS[speedIdx]
-                          )
+                        : buildRoomId(joinRoomName.trim(), BOARD_SIZES[sizeIdx])
                     )
                   }
                 }}
@@ -364,20 +346,20 @@ function RoomItem({
       }}
       onClick={onJoin}
     >
-      <div style={{ display: `flex`, flexDirection: `column`, gap: 2 }}>
-        <div style={{ display: `flex`, alignItems: `center`, gap: 6 }}>
-          <span
-            style={{
-              fontSize: 8,
-              color: copied ? PALETTE.accent : PALETTE.text,
-              cursor: `pointer`,
-            }}
-            onClick={copyName}
-            title="Click to copy room name"
-          >
-            {copied ? `COPIED` : room.name}
-          </span>
-        </div>
+      <div
+        style={{ display: `flex`, alignItems: `center`, gap: 6 }}
+        onClick={copyName}
+        title="Click to copy room name"
+      >
+        <span
+          style={{
+            fontSize: 8,
+            color: copied ? PALETTE.accent : PALETTE.text,
+            cursor: `pointer`,
+          }}
+        >
+          {copied ? `COPIED` : room.name}
+        </span>
         <span style={{ fontSize: 7, color: PALETTE.dim }}>
           {room.boardSize}
         </span>
