@@ -384,7 +384,7 @@ const styles: Record<string, React.CSSProperties> = {
     flexDirection: `column`,
     alignItems: `center`,
     justifyContent: `center`,
-    minHeight: `100dvh`,
+    minHeight: `100vh`,
     fontFamily: `'Press Start 2P', monospace`,
     background: PALETTE.bg,
     color: PALETTE.text,
