@@ -8,7 +8,7 @@ import type * as Y from "yjs"
 
 const CELL = 14
 const DEFAULT_COLS = 30
-const DEFAULT_ROWS = 15
+const DEFAULT_ROWS = 25
 const MOVE_INTERVAL = 120
 const STUN_DURATION = 1500
 const WIN_THRESHOLD = 0.5

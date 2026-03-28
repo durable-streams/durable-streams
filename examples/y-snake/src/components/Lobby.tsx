@@ -13,7 +13,7 @@ const PALETTE = {
   dim: `rgba(235,235,245,0.38)`,
 }
 
-const BOARD_SIZES = [{ label: `30x15`, cols: 30, rows: 15 }]
+const BOARD_SIZES = [{ label: `30x25`, cols: 30, rows: 25 }]
 
 function buildRoomId(
   name: string,
