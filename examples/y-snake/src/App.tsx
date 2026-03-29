@@ -25,12 +25,8 @@ function randomName(): string {
   return `${adj} ${animal}`
 }
 
-function getOrCreateName(): string {
-  const stored = localStorage.getItem(`territory-player-name`)
-  if (stored) return stored
-  const name = randomName()
-  localStorage.setItem(`territory-player-name`, name)
-  return name
+function getInitialName(): string {
+  return localStorage.getItem(`territory-player-name`) || randomName()
 }
 
 function useHashRoute(): string | null {
@@ -54,10 +50,11 @@ function useHashRoute(): string | null {
 function AppInner() {
   const roomId = useHashRoute()
   const { yjsEndpoint, yjsHeaders } = useServerEndpoint()
-  const [playerName, setPlayerName] = useState(getOrCreateName)
+  const [playerName, setPlayerName] = useState(getInitialName)
 
   const handleNameChange = (name: string) => {
     setPlayerName(name)
+    // Only persist if the user manually changed it
     localStorage.setItem(`territory-player-name`, name)
   }
 
