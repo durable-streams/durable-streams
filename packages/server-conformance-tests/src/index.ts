@@ -8100,6 +8100,12 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(headRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBe(sourcePath)
       expect(headRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeDefined()
 
+      // GET on fork
+      const getRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      await getRes.text() // consume body
+      expect(getRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBe(sourcePath)
+      expect(getRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeTruthy()
+
       // HEAD on source should show ref count
       const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
         method: `HEAD`,
