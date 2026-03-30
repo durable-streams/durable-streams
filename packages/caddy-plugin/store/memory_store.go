@@ -215,6 +215,8 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 		} else {
 			contentType = "application/octet-stream"
 		}
+	} else if isFork && !strings.EqualFold(contentType, sourceContentType) {
+		return nil, false, ErrContentTypeMismatch
 	}
 
 	// Compute effective expiry

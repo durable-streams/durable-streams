@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
+	"strings"
 	"os"
 	"path/filepath"
 	"sync"
@@ -209,6 +210,8 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		} else {
 			contentType = "application/octet-stream"
 		}
+	} else if isFork && !strings.EqualFold(contentType, sourceContentType) {
+		return nil, false, ErrContentTypeMismatch
 	}
 
 	// Generate unique directory name

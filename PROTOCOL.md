@@ -140,14 +140,7 @@ The `Stream-Closed` header uses the value `true` (case-insensitive) to indicate 
 
 ### 4.2. Stream forking
 
-Stream forking creates a new stream that inherits data from a source stream up to a specified offset. The fork is a variant of stream creation — a `PUT` with additional headers.
-
-**Properties of stream forking:**
-
-- **O(1) metadata**: Fork stores only the source path and fork offset. No data is copied.
-- **Transparent reads**: Clients read a forked stream identically to a regular stream. The server stitches source and fork data transparently.
-- **Lifecycle independence**: Deleting a source does not affect forks. Forks hold a reference count on the source, preventing data cleanup until all forks are removed.
-- **Offset pass-through**: Forked streams use the same offset space as the source. No offset translation.
+Stream forking creates a new stream that contains the same data as a source stream up to a specified offset. The fork is a variant of stream creation — a `PUT` with additional headers. Once created, the fork behaves as an independent stream: it has its own URL, accepts appends, and can be closed or deleted without affecting the source. Reads on a fork return the inherited data followed by any data appended to the fork itself.
 
 #### Fork creation headers
 
@@ -156,7 +149,7 @@ These headers are used on `PUT` requests to create a forked stream:
 - `Stream-Forked-From: <source-path>`: The URL path of the source stream to fork from. When present, the `PUT` creates a fork rather than a new empty stream.
 - `Stream-Fork-Offset: <offset>`: The divergence point in the source stream. The fork inherits all data from the source up to (but not including) this offset. If omitted, defaults to the source stream's current tail offset.
 
-When forking, the `Content-Type` header is optional — if omitted, the fork inherits the source stream's content type. `Stream-TTL` and `Stream-Expires-At` are capped at the source stream's expiry time.
+When forking, the `Content-Type` header is optional — if omitted, the fork inherits the source stream's content type. If provided, it **MUST** match the source stream's content type; servers **MUST** return `409 Conflict` if it differs. `Stream-TTL` and `Stream-Expires-At` are capped at the source stream's expiry time.
 
 #### Fork response headers
 

@@ -762,6 +762,12 @@ export class FileBackedStreamStore {
       if (isFork) {
         contentType = sourceContentType
       }
+    } else if (
+      isFork &&
+      normalizeContentType(contentType) !==
+        normalizeContentType(sourceContentType)
+    ) {
+      throw new Error(`Content type mismatch with source stream`)
     }
 
     // Compute effective expiry for forks
