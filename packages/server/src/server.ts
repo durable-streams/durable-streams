@@ -981,6 +981,13 @@ export class DurableStreamTestServer {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
 
+    // Include fork headers if this is a forked stream
+    if (stream.forkedFrom) {
+      headers[STREAM_FORKED_FROM_HEADER] = stream.forkedFrom
+      headers[STREAM_FORK_OFFSET_HEADER] = stream.forkOffset!
+    }
+    headers[STREAM_REF_COUNT_HEADER] = String(stream.refCount)
+
     // Generate ETag: based on path, start offset, end offset, and closure status
     // The :c suffix ensures ETag changes when a stream is closed, even without new data
     const startOffset = offset ?? `-1`

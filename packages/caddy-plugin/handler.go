@@ -250,6 +250,9 @@ func (h *Handler) handleHead(w http.ResponseWriter, r *http.Request, path string
 		if errors.Is(err, store.ErrStreamNotFound) {
 			return newHTTPError(http.StatusNotFound, "stream not found")
 		}
+		if errors.Is(err, store.ErrStreamSoftDeleted) {
+			return newHTTPError(http.StatusGone, "stream has been deleted")
+		}
 		return err
 	}
 
@@ -287,6 +290,9 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	if err != nil {
 		if errors.Is(err, store.ErrStreamNotFound) {
 			return newHTTPError(http.StatusNotFound, "stream not found")
+		}
+		if errors.Is(err, store.ErrStreamSoftDeleted) {
+			return newHTTPError(http.StatusGone, "stream has been deleted")
 		}
 		return err
 	}
@@ -742,6 +748,9 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	if err != nil {
 		if errors.Is(err, store.ErrStreamNotFound) {
 			return newHTTPError(http.StatusNotFound, "stream not found")
+		}
+		if errors.Is(err, store.ErrStreamSoftDeleted) {
+			return newHTTPError(http.StatusGone, "stream has been deleted")
 		}
 		return err
 	}

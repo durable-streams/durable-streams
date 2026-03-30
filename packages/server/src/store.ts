@@ -209,12 +209,22 @@ export class StreamStore {
         const expiresMatches = options.expiresAt === existingRaw.expiresAt
         const closedMatches =
           (options.closed ?? false) === (existingRaw.closed ?? false)
+        const forkedFromMatches =
+          (options.forkedFrom ?? undefined) === existingRaw.forkedFrom
+        // Only compare forkOffset when explicitly provided; when omitted the
+        // server resolves a default at creation time, so a second PUT that
+        // also omits it should still be considered idempotent.
+        const forkOffsetMatches =
+          options.forkOffset === undefined ||
+          options.forkOffset === existingRaw.forkOffset
 
         if (
           contentTypeMatches &&
           ttlMatches &&
           expiresMatches &&
-          closedMatches
+          closedMatches &&
+          forkedFromMatches &&
+          forkOffsetMatches
         ) {
           // Idempotent success - return existing stream
           return existingRaw
