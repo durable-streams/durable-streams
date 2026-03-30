@@ -7594,8 +7594,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       })
       expect(forkRes.status).toBe(201)
-      expect(forkRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBe(sourcePath)
-      expect(forkRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBe(sourceOffset)
     })
 
     test(`should fork at a specific offset`, async () => {
@@ -7629,7 +7627,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       })
       expect(forkRes.status).toBe(201)
-      expect(forkRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBe(midOffset)
 
       // Read fork → should only see "first"
       const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
@@ -7661,7 +7658,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       })
       expect(forkRes.status).toBe(201)
-      expect(forkRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBe(zeroOffset)
 
       // Read fork → should be empty (no inherited data)
       const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
@@ -7883,7 +7879,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   describe(`Fork - Reading`, () => {
     const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
     const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
-    const STREAM_REF_COUNT_HEADER = `Stream-Ref-Count`
 
     const uniqueId = () =>
       `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -8070,7 +8065,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(body).toBe(`before`)
     })
 
-    test(`should include fork headers on HEAD/GET/PUT responses`, async () => {
+    test(`should NOT include fork headers on HEAD/GET/PUT responses (forks are transparent)`, async () => {
       const id = uniqueId()
       const sourcePath = `/v1/stream/fork-read-headers-src-${id}`
       const forkPath = `/v1/stream/fork-read-headers-fork-${id}`
@@ -8090,29 +8085,21 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           [STREAM_FORKED_FROM_HEADER]: sourcePath,
         },
       })
-      expect(putRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBe(sourcePath)
-      expect(putRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeDefined()
+      expect(putRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBeNull()
+      expect(putRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeNull()
 
       // HEAD on fork
       const headRes = await fetch(`${getBaseUrl()}${forkPath}`, {
         method: `HEAD`,
       })
-      expect(headRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBe(sourcePath)
-      expect(headRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeDefined()
+      expect(headRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBeNull()
+      expect(headRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeNull()
 
       // GET on fork
       const getRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
       await getRes.text() // consume body
-      expect(getRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBe(sourcePath)
-      expect(getRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeTruthy()
-
-      // HEAD on source should show ref count
-      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
-        method: `HEAD`,
-      })
-      const refCount = sourceHead.headers.get(STREAM_REF_COUNT_HEADER)
-      expect(refCount).toBeDefined()
-      expect(parseInt(refCount!)).toBeGreaterThanOrEqual(1)
+      expect(getRes.headers.get(STREAM_FORKED_FROM_HEADER)).toBeNull()
+      expect(getRes.headers.get(STREAM_FORK_OFFSET_HEADER)).toBeNull()
     })
   })
 
@@ -8778,7 +8765,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
   describe(`Fork - Deletion and Lifecycle`, () => {
     const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
-    const STREAM_REF_COUNT_HEADER = `Stream-Ref-Count`
 
     const uniqueId = () =>
       `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -9051,37 +9037,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(await l0Read.text()).toBe(`A`)
     })
 
-    test(`should never let refcount go below zero`, async () => {
-      const id = uniqueId()
-      const sourcePath = `/v1/stream/fork-del-refcount-src-${id}`
-      const forkPath = `/v1/stream/fork-del-refcount-fork-${id}`
-
-      // Create source and fork
-      await fetch(`${getBaseUrl()}${sourcePath}`, {
-        method: `PUT`,
-        headers: { "Content-Type": `text/plain` },
-        body: `data`,
-      })
-      await fetch(`${getBaseUrl()}${forkPath}`, {
-        method: `PUT`,
-        headers: {
-          "Content-Type": `text/plain`,
-          [STREAM_FORKED_FROM_HEADER]: sourcePath,
-        },
-      })
-
-      // Delete fork
-      await fetch(`${getBaseUrl()}${forkPath}`, { method: `DELETE` })
-
-      // Source should have refCount 0 (not negative)
-      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
-        method: `HEAD`,
-      })
-      expect(sourceHead.status).toBe(200)
-      const refCount = sourceHead.headers.get(STREAM_REF_COUNT_HEADER)
-      expect(parseInt(refCount!)).toBe(0)
-    })
-
     test(`should keep source alive when all forks are deleted`, async () => {
       const id = uniqueId()
       const sourcePath = `/v1/stream/fork-del-allgone-src-${id}`
@@ -9120,12 +9075,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(sourceRead.status).toBe(200)
       const body = await sourceRead.text()
       expect(body).toBe(`alive`)
-
-      // RefCount should be 0
-      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
-        method: `HEAD`,
-      })
-      expect(parseInt(sourceHead.headers.get(STREAM_REF_COUNT_HEADER)!)).toBe(0)
     })
   })
 
@@ -9424,7 +9373,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   describe(`Fork - Edge Cases`, () => {
     const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
     const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
-    const STREAM_REF_COUNT_HEADER = `Stream-Ref-Count`
 
     const uniqueId = () =>
       `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
@@ -9486,13 +9434,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         forkPaths.push(forkPath)
       }
 
-      // Verify source refcount
-      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
-        method: `HEAD`,
-      })
-      const refCount = sourceHead.headers.get(STREAM_REF_COUNT_HEADER)
-      expect(parseInt(refCount!)).toBe(10)
-
       // Each fork should read the same data
       for (const fp of forkPaths) {
         const readRes = await fetch(`${getBaseUrl()}${fp}?offset=-1`)
@@ -9505,14 +9446,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       for (const fp of forkPaths) {
         await fetch(`${getBaseUrl()}${fp}`, { method: `DELETE` })
       }
-
-      // Source refcount should be 0
-      const sourceHead2 = await fetch(`${getBaseUrl()}${sourcePath}`, {
-        method: `HEAD`,
-      })
-      expect(parseInt(sourceHead2.headers.get(STREAM_REF_COUNT_HEADER)!)).toBe(
-        0
-      )
     })
 
     test(`should fork at every offset position`, async () => {
@@ -9635,13 +9568,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       })
       expect(fork2.status).toBe(200)
-
-      // Source refcount should still be 1 (not incremented by idempotent PUT)
-      const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
-        method: `HEAD`,
-      })
-      const refCount = sourceHead.headers.get(STREAM_REF_COUNT_HEADER)
-      expect(parseInt(refCount!)).toBe(1)
     })
   })
 }

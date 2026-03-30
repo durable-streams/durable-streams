@@ -36,10 +36,9 @@ const SSE_CLOSED_FIELD = `streamClosed`
 // Stream closure header
 const STREAM_CLOSED_HEADER = `Stream-Closed`
 
-// Fork headers
+// Fork headers (request headers only — not set on responses)
 const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
 const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
-const STREAM_REF_COUNT_HEADER = `Stream-Ref-Count`
 
 // Query params
 const OFFSET_QUERY_PARAM = `offset`
@@ -436,7 +435,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Ref-Count, etag, content-type, content-encoding, vary`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
     )
 
     // Browser security headers (Protocol Section 10.7)
@@ -706,13 +705,6 @@ export class DurableStreamTestServer {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
 
-    // Include fork headers if this is a forked stream
-    if (stream.forkedFrom) {
-      headers[STREAM_FORKED_FROM_HEADER] = stream.forkedFrom
-      headers[STREAM_FORK_OFFSET_HEADER] = stream.forkOffset!
-    }
-    headers[STREAM_REF_COUNT_HEADER] = String(stream.refCount)
-
     res.writeHead(isNew ? 201 : 200, headers)
     res.end()
   }
@@ -749,13 +741,6 @@ export class DurableStreamTestServer {
     if (stream.closed) {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
-
-    // Include fork headers if this is a forked stream
-    if (stream.forkedFrom) {
-      headers[STREAM_FORKED_FROM_HEADER] = stream.forkedFrom
-      headers[STREAM_FORK_OFFSET_HEADER] = stream.forkOffset!
-    }
-    headers[STREAM_REF_COUNT_HEADER] = String(stream.refCount)
 
     // Generate ETag: {path}:-1:{offset}[:c] (includes closure status)
     // The :c suffix ensures ETag changes when a stream is closed, even without new data
@@ -985,13 +970,6 @@ export class DurableStreamTestServer {
     if (currentStream?.closed && clientAtTail && upToDate) {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
-
-    // Include fork headers if this is a forked stream
-    if (stream.forkedFrom) {
-      headers[STREAM_FORKED_FROM_HEADER] = stream.forkedFrom
-      headers[STREAM_FORK_OFFSET_HEADER] = stream.forkOffset!
-    }
-    headers[STREAM_REF_COUNT_HEADER] = String(stream.refCount)
 
     // Generate ETag: based on path, start offset, end offset, and closure status
     // The :c suffix ensures ETag changes when a stream is closed, even without new data

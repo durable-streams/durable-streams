@@ -37,11 +37,10 @@ const (
 	HeaderProducerReceivedSeq = "Producer-Received-Seq"
 )
 
-// Fork headers
+// Fork headers (request headers only — not set on responses)
 const (
 	HeaderStreamForkedFrom = "Stream-Forked-From"
 	HeaderStreamForkOffset = "Stream-Fork-Offset"
-	HeaderStreamRefCount   = "Stream-Ref-Count"
 )
 
 // sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
@@ -54,7 +53,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset")
-	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Ref-Count")
+	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
 	w.Header().Set("X-Content-Type-Options", "nosniff")
@@ -201,13 +200,6 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		w.Header().Set(HeaderStreamClosed, "true")
 	}
 
-	// Include fork headers if this is a forked stream
-	if meta.ForkedFrom != "" {
-		w.Header().Set(HeaderStreamForkedFrom, meta.ForkedFrom)
-		w.Header().Set(HeaderStreamForkOffset, meta.ForkOffset.String())
-	}
-	w.Header().Set(HeaderStreamRefCount, strconv.FormatInt(int64(meta.RefCount), 10))
-
 	if wasCreated {
 		// Build full URL for Location header
 		scheme := "http"
@@ -271,13 +263,6 @@ func (h *Handler) handleHead(w http.ResponseWriter, r *http.Request, path string
 	if meta.Closed {
 		w.Header().Set(HeaderStreamClosed, "true")
 	}
-
-	// Include fork headers if this is a forked stream
-	if meta.ForkedFrom != "" {
-		w.Header().Set(HeaderStreamForkedFrom, meta.ForkedFrom)
-		w.Header().Set(HeaderStreamForkOffset, meta.ForkOffset.String())
-	}
-	w.Header().Set(HeaderStreamRefCount, strconv.FormatInt(int64(meta.RefCount), 10))
 
 	w.WriteHeader(http.StatusOK)
 	return nil
@@ -495,13 +480,6 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 		responseCursor := generateResponseCursor(cursor)
 		w.Header().Set(HeaderStreamCursor, responseCursor)
 	}
-
-	// Include fork headers if this is a forked stream
-	if meta.ForkedFrom != "" {
-		w.Header().Set(HeaderStreamForkedFrom, meta.ForkedFrom)
-		w.Header().Set(HeaderStreamForkOffset, meta.ForkOffset.String())
-	}
-	w.Header().Set(HeaderStreamRefCount, strconv.FormatInt(int64(meta.RefCount), 10))
 
 	// Set ETag for caching
 	w.Header().Set("ETag", fmt.Sprintf(`"%s"`, nextOffset.String()))

@@ -151,19 +151,6 @@ These headers are used on `PUT` requests to create a forked stream:
 
 When forking, the `Content-Type` header is optional — if omitted, the fork inherits the source stream's content type. If provided, it **MUST** match the source stream's content type; servers **MUST** return `409 Conflict` if it differs. `Stream-TTL` and `Stream-Expires-At` are capped at the source stream's expiry time.
 
-#### Fork response headers
-
-The following headers are returned on `HEAD`, `GET`, and `PUT` (creation) responses for forked streams:
-
-- `Stream-Forked-From: <source-path>`: The source stream path. Present only for forked streams.
-- `Stream-Fork-Offset: <offset>`: The divergence point. Present only for forked streams.
-
-The following header is returned on `HEAD` and `GET` responses for all streams:
-
-- `Stream-Ref-Count: <integer>`: The number of forks referencing this stream. `0` if none.
-
-Non-forked streams do not include `Stream-Forked-From` or `Stream-Fork-Offset` headers.
-
 #### Fork creation errors
 
 | Condition                        | Status          | Description                                                       |
@@ -262,9 +249,6 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 - `Content-Type: <stream-content-type>`: The stream's content type
 - `Stream-Next-Offset: <offset>`: The tail offset after any initial content
 - `Stream-Closed: true`: Present when the stream was created in the closed state
-- `Stream-Forked-From`: Present only for forked streams. Echoes the source stream path.
-- `Stream-Fork-Offset`: Present only for forked streams. The divergence point.
-- `Stream-Ref-Count`: The number of forks referencing this stream. `0` if none.
 
 ### 5.2. Append to Stream
 
@@ -544,9 +528,6 @@ Where `{stream-url}` is the URL of the stream. Checks stream existence and retur
 - `Stream-TTL: <seconds>` (optional): Remaining time-to-live, if applicable
 - `Stream-Expires-At: <rfc3339>` (optional): Absolute expiry time, if applicable
 - `Stream-Closed: true` (optional): Present when the stream has been closed. Absence indicates the stream is still open.
-- `Stream-Forked-From`: Present only for forked streams.
-- `Stream-Fork-Offset`: Present only for forked streams.
-- `Stream-Ref-Count`: Number of forks referencing this stream.
 - `Cache-Control`: See Section 8
 
 #### Caching Guidance
@@ -600,9 +581,6 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
   - **SHOULD NOT** be present when returning partial data from a closed stream (when more data exists between the response and the final offset). In this case, `Stream-Closed: true` will be returned on a subsequent request that reaches the final offset.
   - **Timing note:** If a stream is closed **after** the final chunk was served (or cached), that chunk will not include `Stream-Closed: true`. Clients discover closure by requesting the next offset (`Stream-Next-Offset` from the previous response), which returns an empty body with `Stream-Closed: true`. This is the expected flow when closure occurs between chunk responses or when serving cached chunks.
   - Clients that need to know closure status before reaching the tail **SHOULD** use `HEAD` (see Section 5.5).
-- `Stream-Forked-From`: Present only for forked streams.
-- `Stream-Fork-Offset`: Present only for forked streams.
-- `Stream-Ref-Count`: Number of forks referencing this stream.
 
 #### Response Body
 
@@ -1107,7 +1085,6 @@ This document requests registration of the following HTTP headers in the "Perman
 | `Stream-Closed`      | permanent | This document |
 | `Stream-Forked-From` | permanent | This document |
 | `Stream-Fork-Offset` | permanent | This document |
-| `Stream-Ref-Count`   | permanent | This document |
 
 **Descriptions:**
 
@@ -1118,9 +1095,8 @@ This document requests registration of the following HTTP headers in the "Perman
 - `Stream-Next-Offset`: Next offset for subsequent reads (opaque string)
 - `Stream-Up-To-Date`: Indicates up-to-date response (presence header)
 - `Stream-Closed`: Indicates stream is closed / end-of-stream (presence header, value `true`)
-- `Stream-Forked-From`: Source stream path for forked streams (opaque string)
-- `Stream-Fork-Offset`: Divergence point offset for forked streams (opaque string)
-- `Stream-Ref-Count`: Number of forks referencing a stream (non-negative integer)
+- `Stream-Forked-From`: Source stream path for forked streams, used on `PUT` requests (opaque string)
+- `Stream-Fork-Offset`: Divergence point offset for forked streams, used on `PUT` requests (opaque string)
 
 ## 12. References
 
