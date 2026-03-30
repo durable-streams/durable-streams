@@ -958,21 +958,45 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
           >
             {WIN_THRESHOLD * 100}% TERRITORY CLAIMED
           </div>
-          <button
-            onClick={handleLeave}
-            style={{
-              fontFamily: `inherit`,
-              fontSize: FONT_SM,
-              padding: `10px 24px`,
-              background: PALETTE.accent,
-              color: `#000`,
-              border: `none`,
-              cursor: `pointer`,
-              letterSpacing: 2,
-            }}
-          >
-            EXIT
-          </button>
+          <div style={{ display: `flex`, gap: 8 }}>
+            <button
+              onClick={() => {
+                const cellsMap = getCellsMap(doc)
+                doc.transact(() => {
+                  const keys = Array.from(cellsMap.keys())
+                  keys.forEach((k) => cellsMap.delete(k))
+                })
+                setWinner(null)
+              }}
+              style={{
+                fontFamily: `inherit`,
+                fontSize: FONT_SM,
+                padding: `10px 24px`,
+                background: PALETTE.accent,
+                color: `#000`,
+                border: `none`,
+                cursor: `pointer`,
+                letterSpacing: 2,
+              }}
+            >
+              REMATCH
+            </button>
+            <button
+              onClick={handleLeave}
+              style={{
+                fontFamily: `inherit`,
+                fontSize: FONT_SM,
+                padding: `10px 24px`,
+                background: `transparent`,
+                color: PALETTE.accent,
+                border: `1px solid ${PALETTE.accent}`,
+                cursor: `pointer`,
+                letterSpacing: 2,
+              }}
+            >
+              EXIT
+            </button>
+          </div>
         </div>
       )}
     </div>
