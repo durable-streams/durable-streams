@@ -7,9 +7,9 @@ import (
 	"encoding/hex"
 	"fmt"
 	"net/url"
-	"strings"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
