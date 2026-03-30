@@ -73,6 +73,16 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 **Closed Stream**: A stream that has been explicitly closed by a writer. Once closed, a stream is in a terminal state: no further appends are permitted, and readers can observe the closure as an end-of-stream (EOF) signal. Closure is durable and monotonic — once closed, a stream remains closed.
 
+**Fork**: A stream created by referencing a source stream and a divergence offset. The fork inherits data from the source up to the fork offset without copying it. Reads on a fork transparently stitch source and fork data.
+
+**Fork Offset**: The divergence point in the source stream at which a fork branches. Data at offsets before the fork offset comes from the source; data at offsets at or after the fork offset comes from the fork's own storage.
+
+**Source Stream**: The stream from which a fork inherits data. A source stream may itself be a fork, forming a fork chain.
+
+**Reference Count**: The number of forks that reference a given stream as their source. Used to determine whether a stream can be fully deleted or must be soft-deleted.
+
+**Soft-Deleted Stream**: A stream that has been deleted by its owner but is retained because active forks still reference its data. A soft-deleted stream returns `410 Gone` for direct operations but its data remains available to fork readers.
+
 ## 3. Protocol Overview
 
 The Durable Streams Protocol is an HTTP-based protocol that operates on URLs. A stream is simply a URL; the protocol defines how to interact with that URL using standard HTTP methods, query parameters, and custom headers.
@@ -237,6 +247,9 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
     - `PUT /stream + Stream-Closed: true` (empty body): Creates an empty, immediately-closed stream (useful for "completed with no output" or error placeholders).
     - `PUT /stream + Stream-Closed: true + body`: Creates a single-shot stream with the body as its complete content (useful for cached responses, pre-computed results).
 
+- `Stream-Forked-From` (optional): When present, the `PUT` creates a fork rather than a new empty stream. The value is the URL path of the source stream. See Section 4.2 for fork semantics.
+- `Stream-Fork-Offset` (optional, requires `Stream-Forked-From`): The divergence point in the source stream. If omitted, defaults to the source stream's current tail offset. Servers **MUST** return `400 Bad Request` if the offset exceeds the source stream's tail.
+
 #### Request Body (Optional)
 
 - Initial stream bytes. If provided, these bytes form the first content of the stream.
@@ -247,6 +260,7 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 - `200 OK`: Stream already exists with matching configuration (idempotent success)
 - `409 Conflict`: Stream already exists with different configuration
 - `400 Bad Request`: Invalid headers or parameters (including conflicting TTL/expiry)
+- `404 Not Found`: Source stream specified by `Stream-Forked-From` does not exist (fork creation only)
 - `429 Too Many Requests`: Rate limit exceeded
 
 #### Response Headers (on 201 or 200)
@@ -255,6 +269,9 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 - `Content-Type: <stream-content-type>`: The stream's content type
 - `Stream-Next-Offset: <offset>`: The tail offset after any initial content
 - `Stream-Closed: true`: Present when the stream was created in the closed state
+- `Stream-Forked-From`: Present only for forked streams. Echoes the source stream path.
+- `Stream-Fork-Offset`: Present only for forked streams. The divergence point.
+- `Stream-Ref-Count`: The number of forks referencing this stream. `0` if none.
 
 ### 5.2. Append to Stream
 
@@ -302,6 +319,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
 - `409 Conflict`: Content type mismatch with stream's configured type, sequence regression (if `Stream-Seq` provided), or **stream is closed** (when attempting to append without `Stream-Closed: true`)
+- `410 Gone`: Stream is soft-deleted
 - `413 Payload Too Large`: Request body exceeds server limits
 - `429 Too Many Requests`: Rate limit exceeded
 
@@ -505,6 +523,10 @@ Deletes the stream and all its data. In-flight reads may terminate with a `404 N
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Delete not supported for this stream
 
+**Soft-delete:** When a stream has active forks (reference count > 0), the server **MUST** transition the stream to a soft-deleted state rather than fully removing it. A soft-deleted stream returns `410 Gone` for direct operations, blocks path re-creation via `PUT` (`409 Conflict`), and preserves data for fork readers. When the last fork referencing the stream is deleted, the stream's data is cleaned up via cascading garbage collection (see Section 4.2).
+
+Deleting an already soft-deleted stream **MUST** return `204 No Content` (idempotent).
+
 ### 5.5. Stream Metadata
 
 #### Request
@@ -519,6 +541,7 @@ Where `{stream-url}` is the URL of the stream. Checks stream existence and retur
 
 - `200 OK`: Stream exists
 - `404 Not Found`: Stream does not exist
+- `410 Gone`: Stream is soft-deleted
 - `429 Too Many Requests`: Rate limit exceeded
 
 #### Response Headers (on 200)
@@ -528,6 +551,9 @@ Where `{stream-url}` is the URL of the stream. Checks stream existence and retur
 - `Stream-TTL: <seconds>` (optional): Remaining time-to-live, if applicable
 - `Stream-Expires-At: <rfc3339>` (optional): Absolute expiry time, if applicable
 - `Stream-Closed: true` (optional): Present when the stream has been closed. Absence indicates the stream is still open.
+- `Stream-Forked-From`: Present only for forked streams.
+- `Stream-Fork-Offset`: Present only for forked streams.
+- `Stream-Ref-Count`: Number of forks referencing this stream.
 - `Cache-Control`: See Section 8
 
 #### Caching Guidance
@@ -554,7 +580,7 @@ Where `{stream-url}` is the URL of the stream. Returns bytes starting from the s
 - `200 OK`: Data available (or empty body if offset equals tail)
 - `400 Bad Request`: Malformed offset or invalid parameters
 - `404 Not Found`: Stream does not exist
-- `410 Gone`: Offset is before the earliest retained position (retention/compaction)
+- `410 Gone`: Offset is before the earliest retained position (retention/compaction), or stream is soft-deleted
 - `429 Too Many Requests`: Rate limit exceeded
 
 For non-live reads without data beyond the requested offset, servers **SHOULD** return `200 OK` with an empty body and `Stream-Next-Offset` equal to the requested offset. If the stream is closed, this response **MUST** also include `Stream-Closed: true` to signal EOF.
@@ -581,6 +607,9 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
   - **SHOULD NOT** be present when returning partial data from a closed stream (when more data exists between the response and the final offset). In this case, `Stream-Closed: true` will be returned on a subsequent request that reaches the final offset.
   - **Timing note:** If a stream is closed **after** the final chunk was served (or cached), that chunk will not include `Stream-Closed: true`. Clients discover closure by requesting the next offset (`Stream-Next-Offset` from the previous response), which returns an empty body with `Stream-Closed: true`. This is the expected flow when closure occurs between chunk responses or when serving cached chunks.
   - Clients that need to know closure status before reaching the tail **SHOULD** use `HEAD` (see Section 5.5).
+- `Stream-Forked-From`: Present only for forked streams.
+- `Stream-Fork-Offset`: Present only for forked streams.
+- `Stream-Ref-Count`: Number of forks referencing this stream.
 
 #### Response Body
 
@@ -654,6 +683,13 @@ This ensures clients observing a closed stream do not have hanging connections w
 #### Timeout Behavior
 
 The timeout for long-polling is implementation-defined. Servers **MAY** accept a `timeout` query parameter (in seconds) as a future extension, but this is not required by the base protocol.
+
+#### Long-poll on forked streams
+
+When long-polling a forked stream:
+
+- **Offset in inherited range** (before the fork offset): Data already exists in the source stream. Servers **MUST** return it immediately without waiting.
+- **Offset at the fork's tail**: Servers **MUST** wait only for the fork's own appends. Appends to the source stream after fork creation **MUST NOT** unblock waiters on the fork.
 
 ### 5.8. Read Stream - Live (SSE)
 
@@ -767,6 +803,10 @@ data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 - Client **MUST** reconnect using the last received `streamNextOffset` value from the control event
 - Client **MUST NOT** reconnect if the last control event included `streamClosed: true`
 
+#### SSE on forked streams
+
+SSE on a forked stream delivers inherited data from the source stream followed by the fork's own data, then waits for new fork appends. Source appends after the fork point are never delivered.
+
 ## 6. Offsets
 
 Offsets are opaque tokens that identify positions within a stream. They have the following properties:
@@ -822,6 +862,10 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 The opaque nature of offsets enables important server-side optimizations. For example, offsets may encode chunk file identifiers, allowing catch-up requests to be served directly from object storage without touching the main database.
 
 Clients **MUST** use the `Stream-Next-Offset` value returned in responses for subsequent read requests. They **SHOULD** persist offsets locally (e.g., in browser local storage or a database) to enable resumability after disconnection or restart.
+
+#### Offsets and forked streams
+
+Forked streams use the same offset space as their source stream — there is no offset translation. The fork offset is the divergence point: data at offsets before it comes from the source, data at or after it comes from the fork. A client reading a forked stream from `-1` sees offsets identical to the source up to the divergence point, then continues with offsets generated by the fork's own appends.
 
 ## 7. Content Types
 
@@ -882,6 +926,10 @@ Content-Type: application/json
 ```
 
 If no messages exist in the range, servers **MUST** return an empty JSON array `[]`.
+
+#### JSON mode and forked streams
+
+When a forked stream uses `application/json`, reads spanning the fork boundary (returning both inherited and fork messages) **MUST** wrap all messages in a single JSON array. The fork inherits the source stream's content type if none is specified at creation.
 
 ## 8. Caching and Collapsing
 
