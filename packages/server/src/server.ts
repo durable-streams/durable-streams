@@ -516,7 +516,12 @@ export class DurableStreamTestServer {
       }
     } catch (err) {
       if (err instanceof Error) {
-        if (err.message.includes(`soft-deleted`)) {
+        if (err.message.includes(`active forks`)) {
+          res.writeHead(409, { "content-type": `text/plain` })
+          res.end(
+            `stream was deleted but still has active forks — path cannot be reused until all forks are removed`
+          )
+        } else if (err.message.includes(`soft-deleted`)) {
           res.writeHead(410, { "content-type": `text/plain` })
           res.end(`Stream is gone`)
         } else if (err.message.includes(`not found`)) {
@@ -664,7 +669,7 @@ export class DurableStreamTestServer {
         }
         if (err.message.includes(`soft-deleted`)) {
           res.writeHead(409, { "content-type": `text/plain` })
-          res.end(`Stream is soft-deleted, path cannot be reused`)
+          res.end(`source stream was deleted but still has active forks`)
           return
         }
       }

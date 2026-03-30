@@ -671,7 +671,7 @@ export class FileBackedStreamStore {
       } else if (existingRaw.softDeleted) {
         // Soft-deleted streams block new creation
         throw new Error(
-          `Stream already exists with different configuration: ${streamPath}`
+          `Stream has active forks — path cannot be reused until all forks are removed: ${streamPath}`
         )
       } else {
         // Check if config matches (idempotent create)

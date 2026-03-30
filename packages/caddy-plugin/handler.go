@@ -174,7 +174,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 			return newHTTPError(http.StatusBadRequest, "fork offset beyond source stream length")
 		}
 		if errors.Is(err, store.ErrStreamSoftDeleted) {
-			return newHTTPError(http.StatusConflict, "stream is soft-deleted, path cannot be reused")
+			return newHTTPError(http.StatusConflict, "source stream was deleted but still has active forks")
 		}
 		if errors.Is(err, store.ErrStreamExists) {
 			return newHTTPError(http.StatusConflict, "stream already exists")
@@ -188,7 +188,7 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	// Check for soft-deleted existing stream
 	if meta != nil && meta.SoftDeleted {
 		w.WriteHeader(http.StatusConflict)
-		w.Write([]byte("stream is soft-deleted, path cannot be reused"))
+		w.Write([]byte("stream was deleted but still has active forks — path cannot be reused until all forks are removed"))
 		return nil
 	}
 
