@@ -364,14 +364,23 @@ export function merge(options: MergeOptions): void {
   })
   rewrittenLines.push(mergeContextMessage)
 
-  // Write JSONL
+  // Write JSONL — first clean up any intermediate sessions created by
+  // the claude -p calls (summaries, conflict resolution) that ran in this cwd
   const mergeProjectDir = path.join(
     os.homedir(),
     `.claude`,
     `projects`,
     encodeCwd(mergePath)
   )
-  fs.mkdirSync(mergeProjectDir, { recursive: true })
+  if (fs.existsSync(mergeProjectDir)) {
+    for (const file of fs.readdirSync(mergeProjectDir)) {
+      if (file.endsWith(`.jsonl`)) {
+        fs.unlinkSync(path.join(mergeProjectDir, file))
+      }
+    }
+  } else {
+    fs.mkdirSync(mergeProjectDir, { recursive: true })
+  }
 
   const jsonlPath = path.join(mergeProjectDir, `${mergedSessionId}.jsonl`)
   const jsonlContent =
