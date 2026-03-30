@@ -109,6 +109,18 @@ export function Lobby({
       `}</style>
 
       <div style={styles.title}>TERRITORY WARS</div>
+      <div
+        style={{
+          fontSize: 7,
+          color: PALETTE.dim,
+          marginBottom: 20,
+          textAlign: `center`,
+          maxWidth: 340,
+          lineHeight: 1.6,
+        }}
+      >
+        Occupy 50% of the territory to win.
+      </div>
 
       {/* Player Name */}
       <div style={styles.card}>
@@ -390,7 +402,7 @@ const styles: Record<string, React.CSSProperties> = {
     fontSize: 16,
     letterSpacing: 4,
     color: PALETTE.accent,
-    marginBottom: 24,
+    marginBottom: 6,
   },
   card: {
     background: PALETTE.card,
