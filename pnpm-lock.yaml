@@ -4,9 +4,6 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
-overrides:
-  yjs: ^13.6.30
-
 importers:
 
   .:
@@ -385,7 +382,7 @@ importers:
         specifier: ^1.0.6
         version: 1.0.7(yjs@13.6.30)
       yjs:
-        specifier: ^13.6.30
+        specifier: ^13.6.24
         version: 13.6.30
     devDependencies:
       '@types/react':
@@ -434,10 +431,10 @@ importers:
         specifier: ^19.2.1
         version: 19.2.3(react@19.2.3)
       y-protocols:
-        specifier: ^1.0.7
+        specifier: ^1.0.6
         version: 1.0.7(yjs@13.6.30)
       yjs:
-        specifier: ^13.6.30
+        specifier: ^13.6.24
         version: 13.6.30
     devDependencies:
       '@types/react':
@@ -698,7 +695,7 @@ importers:
         specifier: ^1.0.6
         version: 1.0.7(yjs@13.6.30)
       yjs:
-        specifier: ^13.6.30
+        specifier: ^13.6.24
         version: 13.6.30
     devDependencies:
       '@durable-streams/server':
@@ -6226,13 +6223,13 @@ packages:
     peerDependencies:
       '@codemirror/state': ^6.0.0
       '@codemirror/view': ^6.0.0
-      yjs: ^13.6.30
+      yjs: ^13.5.6
 
   y-protocols@1.0.7:
     resolution: {integrity: sha512-YSVsLoXxO67J6eE/nV4AtFtT3QEotZf5sK5BHxFBXso7VDUT3Tx07IfA6hsu5Q5OmBdMkQVmFZ9QOA7fikWvnw==}
     engines: {node: '>=16.0.0', npm: '>=8.0.0'}
     peerDependencies:
-      yjs: ^13.6.30
+      yjs: ^13.0.0
 
   y18n@5.0.8:
     resolution: {integrity: sha512-0pfFzegeDWJHJIAmTLRP2DwHjdF5s7jo9tuztdQxAhINCdvS+3nGINqPd00AphqJR/0LhANUS6/+7SCb98YOfA==}
