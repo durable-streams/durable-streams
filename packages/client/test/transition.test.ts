@@ -1,10 +1,10 @@
 /**
- * Test to verify the automatic transition from catch-up to live polling.
+ * Test to verify the automatic transition from catch-up to live SSE.
  * This specifically tests the stream() with live: true behavior.
  *
- * Default mode always uses long-poll after catch-up (SSE is only used when
- * explicitly requested with live: "sse") because SSE is harder to scale
- * with HTTP proxies.
+ * When live: true is used, the client defaults to SSE for subsequent
+ * requests after catch-up, since the server supports SSE for all content
+ * types (binary gets base64-encoded).
  */
 
 import { describe, expect, vi } from "vitest"
@@ -12,9 +12,9 @@ import { DurableStream } from "../src"
 import { testWithStream, testWithTextStream } from "./support/test-context"
 import { decode, encode } from "./support/test-helpers"
 
-describe(`Catchup to Live Polling Transition`, () => {
+describe(`Catchup to Live SSE Transition`, () => {
   testWithStream(
-    `should automatically transition from catchup to long-poll for binary streams`,
+    `should automatically transition from catchup to SSE for binary streams`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       const capturedUrls: Array<string> = []
 
@@ -35,7 +35,7 @@ describe(`Catchup to Live Polling Transition`, () => {
 
       const receivedData: Array<string> = []
 
-      // Start reading with live: true mode (auto transition to long-poll)
+      // Start reading with live: true mode (auto transition to SSE)
       const readPromise = (async () => {
         const response = await handle.stream({
           signal: aborter.signal,
@@ -64,10 +64,7 @@ describe(`Catchup to Live Polling Transition`, () => {
         expect(capturedUrls.length).toBeGreaterThanOrEqual(1)
       )
 
-      // Verify first request was catch-up (no live param or auto mode)
-      // The new API sends live=auto in the query params
-
-      // Append data while client should be in live polling mode
+      // Append data while client should be in SSE mode
       store.append(streamPath, encode(`live-data-1`))
 
       // Wait for first live data to be received
@@ -85,7 +82,7 @@ describe(`Catchup to Live Polling Transition`, () => {
   )
 
   testWithTextStream(
-    `should automatically transition from catchup to long-poll for text streams (not SSE)`,
+    `should automatically transition from catchup to SSE for text streams`,
     async ({ streamUrl, store, streamPath, aborter }) => {
       const capturedUrls: Array<string> = []
 
@@ -135,7 +132,7 @@ describe(`Catchup to Live Polling Transition`, () => {
         expect(capturedUrls.length).toBeGreaterThanOrEqual(1)
       )
 
-      // Append data while client should be in long-poll mode
+      // Append data while client should be in SSE mode
       store.append(streamPath, encode(`live-data-1`))
 
       await readPromise
@@ -143,9 +140,9 @@ describe(`Catchup to Live Polling Transition`, () => {
       // Verify we received the live data
       expect(receivedData).toContain(`live-data-1`)
 
-      // Verify we didn't see SSE requests - SSE is only used when explicitly requested
+      // Verify SSE requests ARE made - live: true now defaults to SSE
       const sawSSERequest = capturedUrls.some((url) => url.includes(`live=sse`))
-      expect(sawSSERequest).toBe(false)
+      expect(sawSSERequest).toBe(true)
     }
   )
 })
