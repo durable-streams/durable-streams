@@ -6,8 +6,8 @@ import { AIPlayer } from "./ai-player"
 import { HaikuClient } from "./haiku-client"
 import type { RoomMetadata } from "../utils/schemas"
 
-const POLL_INTERVAL = 5_000
 const NUM_BOTS = 3
+const EXPIRY_CHECK_INTERVAL = 30_000
 
 interface RoomEntry {
   roomId: string
@@ -21,13 +21,17 @@ export class AgentServer {
   /** All room IDs we have ever seen — never join these again */
   private knownRoomIds = new Set<string>()
 
+  /** Whether initial state has been received (skip those rooms) */
+  private initialized = false
+
   private haikuClient: HaikuClient
   private yjsBaseUrl: string
   private yjsHeaders: Record<string, string>
   private dsUrl: string
   private dsHeaders: Record<string, string>
-  private pollTimer: ReturnType<typeof setInterval> | null = null
+  private expiryTimer: ReturnType<typeof setInterval> | null = null
   private db: Awaited<ReturnType<typeof createStreamDB>> | null = null
+  private unsubscribe: (() => void) | null = null
 
   constructor(config: {
     yjsBaseUrl: string
@@ -64,7 +68,7 @@ export class AgentServer {
       })
     }
 
-    // Create StreamDB and preload
+    // Create StreamDB and preload to materialize state
     this.db = await createStreamDB({
       streamOptions: {
         url: registryUrl,
@@ -111,73 +115,95 @@ export class AgentServer {
     })
     await this.db.preload()
 
-    // Mark all existing rooms as known so we don't join old rooms on startup
-    const allRooms = this.db.collections.rooms
-      .toArray as unknown as Array<RoomMetadata>
-    for (const room of allRooms) {
-      this.knownRoomIds.add(room.roomId)
-      console.log(`[AgentServer] Skipping existing room: ${room.roomId}`)
-    }
+    // Subscribe to room changes via live materialized view
+    const subscription = this.db.collections.rooms.subscribeChanges(
+      (changes) => {
+        for (const change of changes) {
+          const room = change.value as unknown as RoomMetadata | undefined
+          if (change.type === `insert` && room) {
+            this.onRoomInserted(room)
+          } else if (change.type === `delete`) {
+            const roomId = change.key as string
+            this.onRoomDeleted(roomId)
+          }
+        }
+      },
+      { includeInitialState: true }
+    )
+    this.unsubscribe = () => subscription.unsubscribe()
 
-    // Delete any already-expired rooms from the registry
-    this.deleteExpiredRooms()
+    // Mark initial state as loaded — all rooms seen during initial state
+    // are pre-existing and should not be joined
+    this.initialized = true
 
     console.log(
-      `[AgentServer] Registry loaded (${this.knownRoomIds.size} existing rooms skipped), watching for new rooms...`
+      `[AgentServer] Registry materialized (${this.knownRoomIds.size} existing rooms skipped), watching for new rooms...`
     )
 
-    // Poll for room changes
-    this.pollTimer = setInterval(() => {
-      this.syncRooms()
-    }, POLL_INTERVAL)
+    // Periodically check for expired rooms and clean them up
+    this.expiryTimer = setInterval(() => {
+      this.cleanupExpiredRooms()
+    }, EXPIRY_CHECK_INTERVAL)
   }
 
-  private getAllRooms(): Array<RoomMetadata> {
-    if (!this.db) return []
-    return this.db.collections.rooms.toArray as unknown as Array<RoomMetadata>
-  }
-
-  private syncRooms(): void {
+  private onRoomInserted(room: RoomMetadata): void {
     const now = Date.now()
-    const allRooms = this.getAllRooms()
 
-    // Spawn bots for genuinely new rooms (never seen before, not expired)
-    for (const room of allRooms) {
-      if (!this.knownRoomIds.has(room.roomId) && room.expiresAt > now) {
-        this.knownRoomIds.add(room.roomId)
-        this.spawnBotsForRoom(room.roomId)
-      }
+    if (this.knownRoomIds.has(room.roomId)) {
+      // Already seen (could be a TTL renewal update) — skip
+      return
     }
 
-    // Destroy bots for rooms that have expired
+    this.knownRoomIds.add(room.roomId)
+
+    if (!this.initialized) {
+      // Initial state from preload — don't join old rooms
+      console.log(`[AgentServer] Skipping pre-existing room: ${room.roomId}`)
+      return
+    }
+
+    if (room.expiresAt <= now) {
+      console.log(`[AgentServer] Skipping expired room: ${room.roomId}`)
+      return
+    }
+
+    this.spawnBotsForRoom(room.roomId)
+  }
+
+  private onRoomDeleted(roomId: string): void {
+    this.destroyBotsForRoom(roomId)
+  }
+
+  private cleanupExpiredRooms(): void {
+    if (!this.db) return
+    const now = Date.now()
+
+    // Destroy bots for expired rooms
     for (const [roomId] of this.activeRooms) {
+      const allRooms = this.db.collections.rooms
+        .toArray as unknown as Array<RoomMetadata>
       const room = allRooms.find((r) => r.roomId === roomId)
       if (!room || room.expiresAt <= now) {
         this.destroyBotsForRoom(roomId)
-      }
-    }
-
-    // Clean up expired rooms from registry
-    this.deleteExpiredRooms()
-  }
-
-  private deleteExpiredRooms(): void {
-    if (!this.db) return
-
-    const now = Date.now()
-    const allRooms = this.getAllRooms()
-
-    for (const room of allRooms) {
-      if (room.expiresAt <= now) {
-        console.log(
-          `[AgentServer] Deleting expired room from registry: ${room.roomId}`
-        )
-        void this.db.actions.deleteRoom(room.roomId)
+        // Delete from registry so it doesn't persist
+        if (room) {
+          console.log(
+            `[AgentServer] Deleting expired room from registry: ${roomId}`
+          )
+          void this.db.actions.deleteRoom(roomId)
+        }
       }
     }
   }
 
   private spawnBotsForRoom(roomId: string): void {
+    if (this.activeRooms.has(roomId)) {
+      console.log(
+        `[AgentServer] Bots already active for room ${roomId}, skipping`
+      )
+      return
+    }
+
     console.log(`[AgentServer] Spawning ${NUM_BOTS} bots for room: ${roomId}`)
 
     const players: Array<AIPlayer> = []
@@ -208,7 +234,8 @@ export class AgentServer {
   }
 
   stop(): void {
-    if (this.pollTimer) clearInterval(this.pollTimer)
+    if (this.expiryTimer) clearInterval(this.expiryTimer)
+    if (this.unsubscribe) this.unsubscribe()
 
     for (const [roomId] of this.activeRooms) {
       this.destroyBotsForRoom(roomId)
