@@ -207,6 +207,131 @@ export function findEnclosedCells(
 }
 
 // ============================================================================
+// Movement validation
+// ============================================================================
+
+/** Returns true if newPos is exactly one step (cardinal) from oldPos */
+export function isAdjacentMove(
+  oldPos: { x: number; y: number },
+  newPos: { x: number; y: number }
+): boolean {
+  const dx = Math.abs(newPos.x - oldPos.x)
+  const dy = Math.abs(newPos.y - oldPos.y)
+  return (dx === 1 && dy === 0) || (dx === 0 && dy === 1)
+}
+
+export interface MoveResult {
+  moved: boolean
+  stunned: boolean
+}
+
+/**
+ * Validated move: enforces adjacent-only movement, collision detection,
+ * cell claiming, and enclosure fill. Used by both browser and server.
+ */
+export function executeMove(
+  doc: Y.Doc,
+  playerId: string,
+  playerName: string,
+  playerColor: string,
+  currentPos: { x: number; y: number },
+  dir: { dx: number; dy: number },
+  cols: number,
+  rows: number,
+  stunnedUntil: number
+): MoveResult & { x: number; y: number; stunnedUntil: number } {
+  const now = Date.now()
+
+  if (stunnedUntil && now < stunnedUntil) {
+    return { moved: false, stunned: true, ...currentPos, stunnedUntil }
+  }
+
+  // Enforce direction magnitude
+  const clampedDx = Math.max(-1, Math.min(1, Math.round(dir.dx)))
+  const clampedDy = Math.max(-1, Math.min(1, Math.round(dir.dy)))
+  if (clampedDx === 0 && clampedDy === 0) {
+    return { moved: false, stunned: false, ...currentPos, stunnedUntil }
+  }
+
+  const nx = Math.max(0, Math.min(cols - 1, currentPos.x + clampedDx))
+  const ny = Math.max(0, Math.min(rows - 1, currentPos.y + clampedDy))
+
+  // Reject if not actually adjacent (e.g. clamped at boundary)
+  if (nx === currentPos.x && ny === currentPos.y) {
+    return { moved: false, stunned: false, ...currentPos, stunnedUntil }
+  }
+  if (!isAdjacentMove(currentPos, { x: nx, y: ny })) {
+    return { moved: false, stunned: false, ...currentPos, stunnedUntil }
+  }
+
+  // Collision check
+  const others = readPlayers(doc, playerId)
+  const collidedWith = Array.from(others.entries()).find(
+    ([, p]) => p.x === nx && p.y === ny
+  )
+
+  if (collidedWith) {
+    const [otherId, otherPlayer] = collidedWith
+    const stunUntil = now + STUN_DURATION
+    const playersMap = getPlayersMap(doc)
+    playersMap.set(otherId, { ...otherPlayer, stunnedUntil: stunUntil })
+    playersMap.set(playerId, {
+      x: currentPos.x,
+      y: currentPos.y,
+      name: playerName,
+      color: playerColor,
+      stunnedUntil: stunUntil,
+    })
+    return {
+      moved: false,
+      stunned: true,
+      x: currentPos.x,
+      y: currentPos.y,
+      stunnedUntil: stunUntil,
+    }
+  }
+
+  // Move is valid — update position
+  const playersMap = getPlayersMap(doc)
+  playersMap.set(playerId, {
+    x: nx,
+    y: ny,
+    name: playerName,
+    color: playerColor,
+  })
+
+  // Claim cell
+  const cellsMap = getCellsMap(doc)
+  const claimTime = Date.now()
+  doc.transact(() => {
+    cellsMap.set(`${nx},${ny}`, { owner: playerId, claimedAt: claimTime })
+  })
+
+  // Check enclosure
+  const activePlayers = new Set<string>([playerId])
+  readPlayers(doc, playerId).forEach((_, id) => activePlayers.add(id))
+  const enclosed = findEnclosedCells(
+    playerId,
+    cellsMap,
+    cols,
+    rows,
+    activePlayers
+  )
+  if (enclosed.length > 0) {
+    doc.transact(() => {
+      for (const cell of enclosed) {
+        cellsMap.set(`${cell.x},${cell.y}`, {
+          owner: playerId,
+          claimedAt: claimTime,
+        })
+      }
+    })
+  }
+
+  return { moved: true, stunned: false, x: nx, y: ny, stunnedUntil: 0 }
+}
+
+// ============================================================================
 // Color helper
 // ============================================================================
 

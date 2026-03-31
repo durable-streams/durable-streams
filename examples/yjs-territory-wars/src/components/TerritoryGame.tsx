@@ -2,10 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import {
   GAME_DURATION_MS,
   MOVE_INTERVAL,
-  STUN_DURATION,
   WIN_THRESHOLD,
   countCellsForPlayer,
-  findEnclosedCells,
+  executeMove,
   findLeaderByScore,
   findWinner,
   getCellsMap,
@@ -394,80 +393,27 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
       if (getGameEndedAt(doc) !== null) return
 
       const ref = localRef.current
-      const now = Date.now()
-
-      if (ref.stunnedUntil && now < ref.stunnedUntil) return
-
-      const nx = Math.max(0, Math.min(cols - 1, ref.x + dir.dx))
-      const ny = Math.max(0, Math.min(rows - 1, ref.y + dir.dy))
-      if (nx === ref.x && ny === ref.y) return
-
-      const others = readPlayers(doc, playerId)
-      const collidedWith = Array.from(others.entries()).find(
-        ([, p]) => p.x === nx && p.y === ny
-      )
-
-      if (collidedWith) {
-        const [otherId, otherPlayer] = collidedWith
-        const stunUntil = now + STUN_DURATION
-        ref.stunnedUntil = stunUntil
-
-        const playersMap = getPlayersMap(doc)
-        playersMap.set(otherId, { ...otherPlayer, stunnedUntil: stunUntil })
-        playersMap.set(playerId, {
-          x: ref.x,
-          y: ref.y,
-          name: playerName,
-          color: playerColor,
-          stunnedUntil: stunUntil,
-        })
-        return
-      }
-
-      ref.x = nx
-      ref.y = ny
-      setLocalPos({ x: nx, y: ny })
-
-      awareness.setLocalState({
-        ...awareness.getLocalState(),
-        x: nx,
-        y: ny,
-      })
-
-      const playersMap = getPlayersMap(doc)
-      playersMap.set(playerId, {
-        x: nx,
-        y: ny,
-        name: playerName,
-        color: playerColor,
-      })
-
-      const cellsMap = getCellsMap(doc)
-      const claimTime = Date.now()
-      doc.transact(() => {
-        cellsMap.set(`${nx},${ny}`, {
-          owner: playerId,
-          claimedAt: claimTime,
-        })
-      })
-
-      const activePlayers = new Set<string>([playerId])
-      readPlayers(doc, playerId).forEach((_, id) => activePlayers.add(id))
-      const enclosed = findEnclosedCells(
+      const result = executeMove(
+        doc,
         playerId,
-        cellsMap,
+        playerName,
+        playerColor,
+        { x: ref.x, y: ref.y },
+        dir,
         cols,
         rows,
-        activePlayers
+        ref.stunnedUntil
       )
-      if (enclosed.length > 0) {
-        doc.transact(() => {
-          for (const cell of enclosed) {
-            cellsMap.set(`${cell.x},${cell.y}`, {
-              owner: playerId,
-              claimedAt: claimTime,
-            })
-          }
+
+      ref.stunnedUntil = result.stunnedUntil
+      if (result.moved) {
+        ref.x = result.x
+        ref.y = result.y
+        setLocalPos({ x: result.x, y: result.y })
+        awareness.setLocalState({
+          ...awareness.getLocalState(),
+          x: result.x,
+          y: result.y,
         })
       }
     }

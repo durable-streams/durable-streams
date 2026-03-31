@@ -4,8 +4,7 @@ import { YjsProvider } from "@durable-streams/y-durable-streams"
 import {
   GAME_DURATION_MS,
   MOVE_INTERVAL,
-  STUN_DURATION,
-  findEnclosedCells,
+  executeMove,
   findLeaderByScore,
   findWinner,
   getCellsMap,
@@ -165,10 +164,6 @@ export class AIPlayer {
   private doMove(): void {
     if (this.destroyed) return
     if (getGameEndedAt(this.doc) !== null) return
-
-    const now = Date.now()
-    if (this.stunnedUntil && now < this.stunnedUntil) return
-
     if (!this.target) return
 
     const others = readPlayers(this.doc, this.playerId)
@@ -182,93 +177,39 @@ export class AIPlayer {
 
     if (dir.dx === 0 && dir.dy === 0) return
 
-    const nx = Math.max(0, Math.min(this.cols - 1, this.x + dir.dx))
-    const ny = Math.max(0, Math.min(this.rows - 1, this.y + dir.dy))
-    if (nx === this.x && ny === this.y) return
-
-    // Check collision
-    const collidedWith = Array.from(others.entries()).find(
-      ([, p]) => p.x === nx && p.y === ny
-    )
-
-    if (collidedWith) {
-      const [otherId, otherPlayer] = collidedWith
-      const stunUntil = now + STUN_DURATION
-      this.stunnedUntil = stunUntil
-
-      const playersMap = getPlayersMap(this.doc)
-      playersMap.set(otherId, { ...otherPlayer, stunnedUntil: stunUntil })
-      playersMap.set(this.playerId, {
-        x: this.x,
-        y: this.y,
-        name: this.playerName,
-        color: this.playerColor,
-        stunnedUntil: stunUntil,
-      })
-      return
-    }
-
-    this.x = nx
-    this.y = ny
-
-    // Update awareness
-    this.awareness.setLocalState({
-      ...this.awareness.getLocalState(),
-      x: nx,
-      y: ny,
-    })
-
-    // Update players map
-    const playersMap = getPlayersMap(this.doc)
-    playersMap.set(this.playerId, {
-      x: nx,
-      y: ny,
-      name: this.playerName,
-      color: this.playerColor,
-    })
-
-    // Claim cell
-    const cellsMap = getCellsMap(this.doc)
-    const claimTime = Date.now()
-    this.doc.transact(() => {
-      cellsMap.set(`${nx},${ny}`, {
-        owner: this.playerId,
-        claimedAt: claimTime,
-      })
-    })
-
-    // Check enclosure
-    const activePlayers = new Set<string>([this.playerId])
-    readPlayers(this.doc, this.playerId).forEach((_, id) =>
-      activePlayers.add(id)
-    )
-    const enclosed = findEnclosedCells(
+    const result = executeMove(
+      this.doc,
       this.playerId,
-      cellsMap,
+      this.playerName,
+      this.playerColor,
+      { x: this.x, y: this.y },
+      dir,
       this.cols,
       this.rows,
-      activePlayers
+      this.stunnedUntil
     )
-    if (enclosed.length > 0) {
-      this.doc.transact(() => {
-        for (const cell of enclosed) {
-          cellsMap.set(`${cell.x},${cell.y}`, {
-            owner: this.playerId,
-            claimedAt: claimTime,
-          })
-        }
+
+    this.stunnedUntil = result.stunnedUntil
+    if (result.moved) {
+      this.x = result.x
+      this.y = result.y
+
+      this.awareness.setLocalState({
+        ...this.awareness.getLocalState(),
+        x: result.x,
+        y: result.y,
       })
-      console.log(`[${this.playerName}] Enclosed ${enclosed.length} cells!`)
     }
 
     // Check win condition
     if (getGameEndedAt(this.doc) === null) {
       const cells = readCells(this.doc)
       const totalCells = this.cols * this.rows
-      const result = findWinner(cells, totalCells, playersMap)
-      if (result) {
+      const playersMap = getPlayersMap(this.doc)
+      const winner = findWinner(cells, totalCells, playersMap)
+      if (winner) {
         console.log(
-          `[${this.playerName}] ${result.name} wins with ${result.pct}%!`
+          `[${this.playerName}] ${winner.name} wins with ${winner.pct}%!`
         )
         setGameEnded(this.doc)
       }
