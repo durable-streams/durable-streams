@@ -7,7 +7,6 @@ import { HaikuClient } from "./haiku-client"
 import type { RoomMetadata } from "../utils/schemas"
 
 const POLL_INTERVAL = 5_000
-const EXPIRY_CHECK_INTERVAL = 30_000
 const NUM_BOTS = 3
 
 interface RoomEntry {
@@ -16,14 +15,18 @@ interface RoomEntry {
 }
 
 export class AgentServer {
-  private rooms = new Map<string, RoomEntry>()
+  /** Currently active rooms with live bot players */
+  private activeRooms = new Map<string, RoomEntry>()
+
+  /** All room IDs we have ever seen — never join these again */
+  private knownRoomIds = new Set<string>()
+
   private haikuClient: HaikuClient
   private yjsBaseUrl: string
   private yjsHeaders: Record<string, string>
   private dsUrl: string
   private dsHeaders: Record<string, string>
   private pollTimer: ReturnType<typeof setInterval> | null = null
-  private expiryTimer: ReturnType<typeof setInterval> | null = null
   private db: Awaited<ReturnType<typeof createStreamDB>> | null = null
 
   constructor(config: {
@@ -108,46 +111,68 @@ export class AgentServer {
     })
     await this.db.preload()
 
-    console.log(`[AgentServer] Registry loaded, watching for rooms...`)
+    // Mark all existing rooms as known so we don't join old rooms on startup
+    const allRooms = this.db.collections.rooms
+      .toArray as unknown as Array<RoomMetadata>
+    for (const room of allRooms) {
+      this.knownRoomIds.add(room.roomId)
+      console.log(`[AgentServer] Skipping existing room: ${room.roomId}`)
+    }
 
-    // Initial sync
-    this.syncRooms()
+    // Delete any already-expired rooms from the registry
+    this.deleteExpiredRooms()
+
+    console.log(
+      `[AgentServer] Registry loaded (${this.knownRoomIds.size} existing rooms skipped), watching for new rooms...`
+    )
 
     // Poll for room changes
     this.pollTimer = setInterval(() => {
       this.syncRooms()
     }, POLL_INTERVAL)
-
-    // Periodically check for expired rooms
-    this.expiryTimer = setInterval(() => {
-      this.syncRooms()
-    }, EXPIRY_CHECK_INTERVAL)
   }
 
-  private getActiveRooms(): Array<RoomMetadata> {
+  private getAllRooms(): Array<RoomMetadata> {
     if (!this.db) return []
-
-    const now = Date.now()
-    const allRooms = this.db.collections.rooms
-      .toArray as unknown as Array<RoomMetadata>
-    return allRooms.filter((r) => r.expiresAt > now)
+    return this.db.collections.rooms.toArray as unknown as Array<RoomMetadata>
   }
 
   private syncRooms(): void {
-    const activeRooms = this.getActiveRooms()
+    const now = Date.now()
+    const allRooms = this.getAllRooms()
 
-    // Spawn bots for new rooms
-    for (const room of activeRooms) {
-      if (!this.rooms.has(room.roomId)) {
+    // Spawn bots for genuinely new rooms (never seen before, not expired)
+    for (const room of allRooms) {
+      if (!this.knownRoomIds.has(room.roomId) && room.expiresAt > now) {
+        this.knownRoomIds.add(room.roomId)
         this.spawnBotsForRoom(room.roomId)
       }
     }
 
-    // Clean up rooms that no longer exist
-    const activeRoomIds = new Set(activeRooms.map((r) => r.roomId))
-    for (const [roomId] of this.rooms) {
-      if (!activeRoomIds.has(roomId)) {
+    // Destroy bots for rooms that have expired
+    for (const [roomId] of this.activeRooms) {
+      const room = allRooms.find((r) => r.roomId === roomId)
+      if (!room || room.expiresAt <= now) {
         this.destroyBotsForRoom(roomId)
+      }
+    }
+
+    // Clean up expired rooms from registry
+    this.deleteExpiredRooms()
+  }
+
+  private deleteExpiredRooms(): void {
+    if (!this.db) return
+
+    const now = Date.now()
+    const allRooms = this.getAllRooms()
+
+    for (const room of allRooms) {
+      if (room.expiresAt <= now) {
+        console.log(
+          `[AgentServer] Deleting expired room from registry: ${room.roomId}`
+        )
+        void this.db.actions.deleteRoom(room.roomId)
       }
     }
   }
@@ -168,25 +193,24 @@ export class AgentServer {
       players.push(player)
     }
 
-    this.rooms.set(roomId, { roomId, players })
+    this.activeRooms.set(roomId, { roomId, players })
   }
 
   private destroyBotsForRoom(roomId: string): void {
-    const entry = this.rooms.get(roomId)
+    const entry = this.activeRooms.get(roomId)
     if (!entry) return
 
     console.log(`[AgentServer] Destroying bots for room: ${roomId}`)
     for (const player of entry.players) {
       player.destroy()
     }
-    this.rooms.delete(roomId)
+    this.activeRooms.delete(roomId)
   }
 
   stop(): void {
     if (this.pollTimer) clearInterval(this.pollTimer)
-    if (this.expiryTimer) clearInterval(this.expiryTimer)
 
-    for (const [roomId] of this.rooms) {
+    for (const [roomId] of this.activeRooms) {
       this.destroyBotsForRoom(roomId)
     }
 
