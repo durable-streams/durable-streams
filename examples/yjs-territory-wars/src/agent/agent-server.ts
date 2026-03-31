@@ -5,7 +5,7 @@ import { AIPlayer } from "./ai-player"
 import { HaikuClient } from "./haiku-client"
 import type { RoomMetadata } from "../utils/schemas"
 
-const NUM_BOTS = 1
+const NUM_BOTS = 4
 
 interface RoomEntry {
   roomId: string
