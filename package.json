@@ -55,5 +55,9 @@
       "prettier --write"
     ]
   },
-  "pnpm": {}
+  "pnpm": {
+    "overrides": {
+      "yjs": "^13.6.30"
+    }
+  }
 }
