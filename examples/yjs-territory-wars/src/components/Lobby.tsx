@@ -13,7 +13,7 @@ const PALETTE = {
   dim: `rgba(235,235,245,0.38)`,
 }
 
-const BOARD_SIZES = [{ label: `30x25`, cols: 30, rows: 25 }]
+const BOARD_SIZES = [{ label: `512x512`, cols: 512, rows: 512 }]
 
 function buildRoomId(
   name: string,
@@ -119,7 +119,7 @@ export function Lobby({
           lineHeight: 1.6,
         }}
       >
-        Occupy 50% of the territory to win.
+        Claim 20% territory or lead when time runs out.
       </div>
 
       {/* Player Name */}

@@ -3,44 +3,13 @@ import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 import { YjsProvider } from "@durable-streams/y-durable-streams"
 import { ROOM_TTL_RENEWAL_MS, ROOM_TTL_SECONDS } from "../utils/schemas"
+import { getColor, hashName } from "../utils/game-logic"
 import { GameRoomContext } from "./game-room-context"
 import { ScoresProvider } from "./scores-context"
 import { useRegistryContext } from "./registry-context"
 import { TerritoryGame } from "./TerritoryGame"
 import type { YjsProviderStatus } from "@durable-streams/y-durable-streams"
 import type { GameRoomContextValue } from "./game-room-context"
-
-// ============================================================================
-// Player colors
-// ============================================================================
-
-// Avoid #FF6B35 (obstacle solid) and #FFD93D (obstacle warning)
-const PLAYER_COLORS = [
-  `#00E5FF`,
-  `#FF3D71`,
-  `#6eeb83`,
-  `#ffbc42`,
-  `#ee6352`,
-  `#9ac2c9`,
-  `#8acb88`,
-  `#1be7ff`,
-  `#C77DFF`,
-  `#72EFDD`,
-  `#F72585`,
-  `#4ECDC4`,
-]
-
-function getColor(index: number): string {
-  return PLAYER_COLORS[index % PLAYER_COLORS.length]
-}
-
-function hashName(name: string): number {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash * 31 + name.charCodeAt(i)) | 0
-  }
-  return Math.abs(hash)
-}
 
 // ============================================================================
 // GameRoom component

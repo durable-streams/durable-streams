@@ -5,11 +5,12 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "dev:server": "tsx server.ts",
+    "dev:server": "tsx --env-file=.env server.ts",
     "build": "tsc && vite build",
     "preview": "vite preview"
   },
   "devDependencies": {
+    "@types/node": "^25.5.0",
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
@@ -19,10 +20,12 @@
     "vite": "^7.2.4"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0",
     "@durable-streams/client": "workspace:^",
     "@durable-streams/state": "workspace:^",
     "@durable-streams/y-durable-streams": "workspace:^",
     "@tanstack/react-db": "latest",
+    "dotenv": "^16.5.0",
     "lib0": "^0.2.117",
     "react": "^19.2.1",
     "react-dom": "^19.2.1",
