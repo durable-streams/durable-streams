@@ -90,7 +90,12 @@ export class AIPlayer {
     this.provider.connect()
   }
 
+  private started = false
+
   private onSynced(): void {
+    if (this.started) return
+    this.started = true
+
     // Pick a start position spread across the board
     this.x = Math.floor(Math.random() * this.cols)
     this.y = Math.floor(Math.random() * this.rows)

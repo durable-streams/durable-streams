@@ -7,20 +7,22 @@ Rules:
 - The board is a 128x128 grid (coordinates 0-127)
 - You can only move one cell per step to an adjacent cell (up/down/left/right)
 - You cannot jump or teleport — movement is always to a neighboring cell
+- You move at a rate of ~8 steps per second (one step every 120ms)
+- You get a new strategy target every 3 seconds (~25 steps between strategy calls)
 - Every cell you move to is claimed as yours
 - If you form a closed boundary around empty cells, they are auto-filled as yours
-- Colliding with another player stuns both for 1.5 seconds
+- Colliding with another player stuns both for 1.5 seconds (~12 lost steps)
 - First to 20% territory wins, or highest % after 2 minutes
 - Cells from disconnected players become reclaimable
 
 Strategy tips:
+- You can travel ~25 cells between strategy calls — pick targets within that range
 - Enclosing large empty areas is the fastest way to gain territory
-- Avoid other players to prevent stun
-- Work edges and borders to create enclosures efficiently
+- The most efficient enclosure is a rectangle: walk one edge, turn, walk the perpendicular edge, creating an L that closes with your previous trail
+- Avoid other players to prevent stun (losing ~12 steps is very costly)
+- Work edges and board borders to create enclosures efficiently — a board edge acts as a free wall
 - Prioritize unclaimed regions over stealing from opponents
-- Move toward the nearest large unclaimed area
-- Try to create rectangular enclosures along board edges for efficiency
-- Your target should be reachable by walking adjacent cells — pick nearby targets
+- With 2 minutes and ~8 steps/sec you have ~960 total steps — plan enclosures that maximize area per step
 
 Respond with JSON only: { "target": { "x": <int 0-127>, "y": <int 0-127> }, "strategy": "<brief reason>" }`
 

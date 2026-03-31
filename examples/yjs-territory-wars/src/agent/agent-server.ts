@@ -1,27 +1,35 @@
 import { DurableStream } from "@durable-streams/client"
-import { createStreamDB } from "@durable-streams/state"
-import { REGISTRY_TTL_SECONDS, registryStateSchema } from "../utils/schemas"
+import { REGISTRY_TTL_SECONDS } from "../utils/schemas"
 import { BOT_NAMES } from "../utils/game-logic"
 import { AIPlayer } from "./ai-player"
 import { HaikuClient } from "./haiku-client"
 import type { RoomMetadata } from "../utils/schemas"
 
-const NUM_BOTS = 3
-const EXPIRY_CHECK_INTERVAL = 30_000
+const NUM_BOTS = 1
 
 interface RoomEntry {
   roomId: string
   players: Array<AIPlayer>
 }
 
+interface StreamEvent {
+  type: string
+  key: string
+  value?: RoomMetadata
+  headers: Record<string, string>
+}
+
 export class AgentServer {
   /** Currently active rooms with live bot players */
   private activeRooms = new Map<string, RoomEntry>()
 
-  /** All room IDs we have ever seen — never join these again */
-  private knownRoomIds = new Set<string>()
+  /** Materialized room state from the stream */
+  private rooms = new Map<string, RoomMetadata>()
 
-  /** Whether initial state has been received (skip those rooms) */
+  /** All room IDs known at startup — never join these */
+  private startupRoomIds = new Set<string>()
+
+  /** Whether initial stream load is done */
   private initialized = false
 
   private haikuClient: HaikuClient
@@ -29,9 +37,8 @@ export class AgentServer {
   private yjsHeaders: Record<string, string>
   private dsUrl: string
   private dsHeaders: Record<string, string>
+  private abortController: AbortController | null = null
   private expiryTimer: ReturnType<typeof setInterval> | null = null
-  private db: Awaited<ReturnType<typeof createStreamDB>> | null = null
-  private unsubscribe: (() => void) | null = null
 
   constructor(config: {
     yjsBaseUrl: string
@@ -68,143 +75,106 @@ export class AgentServer {
       })
     }
 
-    // Create StreamDB and preload to materialize state
-    this.db = await createStreamDB({
-      streamOptions: {
-        url: registryUrl,
-        headers: this.dsHeaders,
-        contentType: `application/json`,
-      },
-      state: registryStateSchema,
-      actions: ({ db, stream }) => ({
-        addRoom: {
-          onMutate: (metadata: RoomMetadata) => {
-            db.collections.rooms.insert(metadata)
-          },
-          mutationFn: async (metadata: RoomMetadata) => {
-            const txid = crypto.randomUUID()
-            await stream.append(
-              JSON.stringify(
-                registryStateSchema.rooms.insert({
-                  value: metadata,
-                  headers: { txid },
-                })
-              )
-            )
-            await db.utils.awaitTxId(txid)
-          },
-        },
-        deleteRoom: {
-          onMutate: (roomId: string) => {
-            db.collections.rooms.delete(roomId)
-          },
-          mutationFn: async (roomId: string) => {
-            const txid = crypto.randomUUID()
-            await stream.append(
-              JSON.stringify(
-                registryStateSchema.rooms.delete({
-                  key: roomId,
-                  headers: { txid },
-                })
-              )
-            )
-            await db.utils.awaitTxId(txid)
-          },
-        },
-      }),
+    // Subscribe to raw stream — no TanStack DB needed
+    this.abortController = new AbortController()
+    const streamResponse = await registryStream.stream<StreamEvent>({
+      live: true,
+      signal: this.abortController.signal,
     })
-    await this.db.preload()
 
-    // Subscribe to room changes via live materialized view
-    const subscription = this.db.collections.rooms.subscribeChanges(
-      (changes) => {
-        for (const change of changes) {
-          const room = change.value as unknown as RoomMetadata | undefined
-          if (change.type === `insert` && room) {
-            this.onRoomInserted(room)
-          } else if (change.type === `delete`) {
-            const roomId = change.key as string
-            this.onRoomDeleted(roomId)
-          }
+    // Process stream events
+    streamResponse.subscribeJson((batch) => {
+      for (const event of batch.items) {
+        this.handleStreamEvent(event)
+      }
+
+      // After first up-to-date, mark initialized
+      if (batch.upToDate && !this.initialized) {
+        this.initialized = true
+        // All rooms seen so far are pre-existing
+        for (const roomId of this.rooms.keys()) {
+          this.startupRoomIds.add(roomId)
         }
-      },
-      { includeInitialState: true }
-    )
-    this.unsubscribe = () => subscription.unsubscribe()
+        console.log(
+          `[AgentServer] Ready. ${this.startupRoomIds.size} existing rooms skipped. Watching for new rooms...`
+        )
+      }
 
-    // Mark initial state as loaded — all rooms seen during initial state
-    // are pre-existing and should not be joined
-    this.initialized = true
+      return Promise.resolve()
+    })
 
-    console.log(
-      `[AgentServer] Registry materialized (${this.knownRoomIds.size} existing rooms skipped), watching for new rooms...`
-    )
+    // Wait for initial sync
+    await new Promise<void>((resolve) => {
+      const check = setInterval(() => {
+        if (this.initialized) {
+          clearInterval(check)
+          resolve()
+        }
+      }, 100)
+    })
 
-    // Periodically check for expired rooms and clean them up
+    // Periodic expiry cleanup
     this.expiryTimer = setInterval(() => {
       this.cleanupExpiredRooms()
-    }, EXPIRY_CHECK_INTERVAL)
+    }, 30_000)
   }
 
-  private onRoomInserted(room: RoomMetadata): void {
-    const now = Date.now()
+  private handleStreamEvent(event: StreamEvent): void {
+    // The rooms collection uses type="stream" per the schema definition
+    if (event.type !== `stream`) return
 
-    if (this.knownRoomIds.has(room.roomId)) {
-      // Already seen (could be a TTL renewal update) — skip
-      return
+    const operation = event.headers.operation
+    const roomId = event.key
+
+    if (
+      operation === `insert` ||
+      operation === `upsert` ||
+      operation === `update`
+    ) {
+      const room = event.value
+      if (!room) return
+
+      // Ensure roomId is set
+      const metadata: RoomMetadata = { ...room, roomId }
+
+      const isNew = !this.rooms.has(roomId)
+      this.rooms.set(roomId, metadata)
+
+      if (isNew && this.initialized && !this.startupRoomIds.has(roomId)) {
+        const now = Date.now()
+        if (metadata.expiresAt > now) {
+          console.log(`[AgentServer] New room detected: ${roomId}`)
+          this.spawnBotsForRoom(roomId)
+        } else {
+          console.log(`[AgentServer] New room already expired: ${roomId}`)
+        }
+      }
+    } else if (operation === `delete`) {
+      this.rooms.delete(roomId)
+      if (this.activeRooms.has(roomId)) {
+        console.log(`[AgentServer] Room deleted: ${roomId}`)
+        this.destroyBotsForRoom(roomId)
+      }
     }
-
-    this.knownRoomIds.add(room.roomId)
-
-    if (!this.initialized) {
-      // Initial state from preload — don't join old rooms
-      console.log(`[AgentServer] Skipping pre-existing room: ${room.roomId}`)
-      return
-    }
-
-    if (room.expiresAt <= now) {
-      console.log(`[AgentServer] Skipping expired room: ${room.roomId}`)
-      return
-    }
-
-    this.spawnBotsForRoom(room.roomId)
-  }
-
-  private onRoomDeleted(roomId: string): void {
-    this.destroyBotsForRoom(roomId)
   }
 
   private cleanupExpiredRooms(): void {
-    if (!this.db) return
     const now = Date.now()
-
-    // Destroy bots for expired rooms
-    for (const [roomId] of this.activeRooms) {
-      const allRooms = this.db.collections.rooms
-        .toArray as unknown as Array<RoomMetadata>
-      const room = allRooms.find((r) => r.roomId === roomId)
-      if (!room || room.expiresAt <= now) {
+    for (const [roomId, room] of this.rooms) {
+      if (room.expiresAt <= now && this.activeRooms.has(roomId)) {
+        console.log(`[AgentServer] Room expired: ${roomId}`)
         this.destroyBotsForRoom(roomId)
-        // Delete from registry so it doesn't persist
-        if (room) {
-          console.log(
-            `[AgentServer] Deleting expired room from registry: ${roomId}`
-          )
-          void this.db.actions.deleteRoom(roomId)
-        }
       }
     }
   }
 
   private spawnBotsForRoom(roomId: string): void {
     if (this.activeRooms.has(roomId)) {
-      console.log(
-        `[AgentServer] Bots already active for room ${roomId}, skipping`
-      )
+      console.log(`[AgentServer] Bots already active for ${roomId}, skipping`)
       return
     }
 
-    console.log(`[AgentServer] Spawning ${NUM_BOTS} bots for room: ${roomId}`)
+    console.log(`[AgentServer] Spawning ${NUM_BOTS} bot(s) for: ${roomId}`)
 
     const players: Array<AIPlayer> = []
     for (let i = 0; i < NUM_BOTS; i++) {
@@ -226,7 +196,7 @@ export class AgentServer {
     const entry = this.activeRooms.get(roomId)
     if (!entry) return
 
-    console.log(`[AgentServer] Destroying bots for room: ${roomId}`)
+    console.log(`[AgentServer] Destroying bots for: ${roomId}`)
     for (const player of entry.players) {
       player.destroy()
     }
@@ -235,14 +205,10 @@ export class AgentServer {
 
   stop(): void {
     if (this.expiryTimer) clearInterval(this.expiryTimer)
-    if (this.unsubscribe) this.unsubscribe()
+    if (this.abortController) this.abortController.abort()
 
     for (const [roomId] of this.activeRooms) {
       this.destroyBotsForRoom(roomId)
-    }
-
-    if (this.db) {
-      this.db.close()
     }
 
     console.log(`[AgentServer] Stopped`)
