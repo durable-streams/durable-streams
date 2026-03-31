@@ -57,7 +57,8 @@ const DIR_MAP: Record<string, { dx: number; dy: number }> = {
 }
 
 function computeCellSize(cols: number, rows: number): number {
-  if (cols > 100 || rows > 100) return 2
+  if (cols > 256 || rows > 256) return 2
+  if (cols > 64 || rows > 64) return 4
   return 14
 }
 
@@ -738,15 +739,13 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
         onTouchEnd={onTouchEnd}
         onClick={onBoardClick}
         style={{
-          width: `100%`,
+          width: `min(100%, calc(100dvh - 140px))`,
           maxWidth: W,
           height: `auto`,
+          aspectRatio: `${cols} / ${rows}`,
           background: PALETTE.grid,
           border: `1px solid ${PALETTE.border}`,
-          flex: `1 1 auto`,
-          minHeight: 0,
-          maxHeight: `calc(100dvh - 120px)`,
-          objectFit: `contain`,
+          flexShrink: 0,
           userSelect: `none`,
           WebkitUserSelect: `none`,
         }}
