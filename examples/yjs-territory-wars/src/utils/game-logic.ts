@@ -21,8 +21,8 @@ export interface TerritoryPlayer {
 // Constants
 // ============================================================================
 
-export const DEFAULT_COLS = 512
-export const DEFAULT_ROWS = 512
+export const DEFAULT_COLS = 128
+export const DEFAULT_ROWS = 128
 export const MOVE_INTERVAL = 120
 export const STUN_DURATION = 1500
 export const WIN_THRESHOLD = 0.2

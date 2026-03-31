@@ -4,7 +4,9 @@ import type { TerritoryCell, TerritoryPlayer } from "../utils/game-logic"
 const SYSTEM_PROMPT = `You are an AI player in Territory Wars, a multiplayer grid-based territory capture game.
 
 Rules:
-- You move one cell per step (up/down/left/right) on a 512x512 grid
+- The board is a 128x128 grid (coordinates 0-127)
+- You can only move one cell per step to an adjacent cell (up/down/left/right)
+- You cannot jump or teleport — movement is always to a neighboring cell
 - Every cell you move to is claimed as yours
 - If you form a closed boundary around empty cells, they are auto-filled as yours
 - Colliding with another player stuns both for 1.5 seconds
@@ -18,8 +20,9 @@ Strategy tips:
 - Prioritize unclaimed regions over stealing from opponents
 - Move toward the nearest large unclaimed area
 - Try to create rectangular enclosures along board edges for efficiency
+- Your target should be reachable by walking adjacent cells — pick nearby targets
 
-Respond with JSON only: { "target": { "x": <int 0-511>, "y": <int 0-511> }, "strategy": "<brief reason>" }`
+Respond with JSON only: { "target": { "x": <int 0-127>, "y": <int 0-127> }, "strategy": "<brief reason>" }`
 
 interface StrategyResponse {
   target: { x: number; y: number }
@@ -48,8 +51,8 @@ interface BoardSummary {
   }>
 }
 
-const SECTOR_SIZE = 64
-const SECTOR_GRID = 8 // 512 / 64
+const SECTOR_SIZE = 32
+const SECTOR_GRID = 4 // 128 / 32
 
 export function buildBoardSummary(
   myPosition: { x: number; y: number },
@@ -75,7 +78,7 @@ export function buildBoardSummary(
   const rank =
     sortedScores.findIndex(([id]) => id === myId) + 1 || sortedScores.length + 1
 
-  // Sector analysis
+  // Sector analysis (4x4 grid, each sector 32x32 cells)
   const sectorCellCount = SECTOR_SIZE * SECTOR_SIZE
   const sectors: BoardSummary[`sectors`] = []
 
@@ -156,7 +159,7 @@ function formatSummary(summary: BoardSummary): string {
   lines.push(``)
 
   if (summary.sectors.length > 0) {
-    lines.push(`Sector map (8x8 grid, each sector is 64x64 cells):`)
+    lines.push(`Sector map (4x4 grid, each sector is 32x32 cells):`)
     for (const s of summary.sectors) {
       lines.push(
         `  [${s.row},${s.col}]: unclaimed=${s.unclaimed}% mine=${s.mine}% opponent=${s.opponent}%`
@@ -204,9 +207,9 @@ export class HaikuClient {
         typeof parsed.target.x === `number` &&
         typeof parsed.target.y === `number` &&
         parsed.target.x >= 0 &&
-        parsed.target.x < 512 &&
+        parsed.target.x < 128 &&
         parsed.target.y >= 0 &&
-        parsed.target.y < 512
+        parsed.target.y < 128
       ) {
         return parsed
       }
@@ -217,8 +220,8 @@ export class HaikuClient {
     // Fallback: pick a random position
     return {
       target: {
-        x: Math.floor(Math.random() * 512),
-        y: Math.floor(Math.random() * 512),
+        x: Math.floor(Math.random() * 128),
+        y: Math.floor(Math.random() * 128),
       },
       strategy: `random fallback`,
     }

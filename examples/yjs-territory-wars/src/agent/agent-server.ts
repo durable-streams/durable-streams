@@ -8,7 +8,7 @@ import type { RoomMetadata } from "../utils/schemas"
 
 const POLL_INTERVAL = 5_000
 const EXPIRY_CHECK_INTERVAL = 30_000
-const NUM_BOTS = 10
+const NUM_BOTS = 3
 
 interface RoomEntry {
   roomId: string

@@ -56,24 +56,24 @@ In a separate terminal:
 npm run dev:server
 ```
 
-The agent server watches for new rooms and automatically spawns **10 AI bot players** into each room. Each bot uses Claude Haiku to decide strategy every 3 seconds and moves using greedy pathfinding between API calls.
+The agent server watches for new rooms and automatically spawns **3 AI bot players** into each room. Each bot uses Claude Haiku to decide strategy every 3 seconds and moves using greedy pathfinding between API calls. Bots can only move to adjacent cells (up/down/left/right), one step at a time — no jumping.
 
-Bot names: Bot-Alpha, Bot-Bravo, Bot-Charlie, Bot-Delta, Bot-Echo, Bot-Foxtrot, Bot-Golf, Bot-Hotel, Bot-India, Bot-Juliet.
+Bot names: Bot-Alpha, Bot-Bravo, Bot-Charlie.
 
 ### Playing
 
 1. Start the game client (`npm run dev`)
 2. Start the AI agent server (`npm run dev:server`)
 3. Open `http://localhost:3002` in your browser
-4. Create a room — 10 AI bots will automatically join
+4. Create a room — 3 AI bots will automatically join
 5. Compete! Claim 20% territory or have the most when time runs out
 
 ## How it works
 
-- **512x512 board** — 262,144 cells on a large grid
+- **128x128 board** — 16,384 cells on a grid
 - **Cells** are stored in a [Yjs Y.Map](https://docs.yjs.dev/api/shared-types/y.map) — each key is a grid coordinate, each value records the owner. When two players claim the same cell, Yjs LWW resolves the conflict.
 - **Territory fill** — when your cells form a closed boundary around empty space, the enclosed area is automatically claimed.
-- **AI agents** — each bot connects as a real Yjs client. Every 3 seconds it sends a board summary to Claude Haiku which returns a strategic target. Between calls, the bot moves toward the target using greedy pathfinding.
+- **AI agents** — each bot connects as a real Yjs client. Every 3 seconds it sends a board summary to Claude Haiku which returns a strategic target. Between calls, the bot moves one adjacent cell at a time toward the target using greedy pathfinding (no jumping).
 - **Game timer** — 2 minutes per round. First to 20% wins immediately; otherwise highest territory % when time runs out.
 - **Room registry** and **presence** use [StreamDB](https://electric-sql.com/docs/api/durable-streams/stream-db) on Durable Streams.
 - **No WebSockets** — all sync happens over plain HTTP via the [Yjs Durable Streams Protocol](https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/YJS-PROTOCOL.md).
