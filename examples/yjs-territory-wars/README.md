@@ -4,16 +4,6 @@ Multiplayer territory game built with [Yjs](https://yjs.dev) CRDTs on [Durable S
 
 Built with React, TypeScript, and [Electric Cloud](https://electric-sql.com/cloud).
 
-## Prerequisites
-
-This project depends on the `@durable-streams` packages. Clone the [durable-streams](https://github.com/durable-streams/durable-streams) repo as a sibling directory:
-
-```
-parent/
-├── durable-streams/   # git clone https://github.com/durable-streams/durable-streams
-└── territory-wars/    # this repo
-```
-
 ## Setup
 
 1. Copy `.env.example` to `.env`:
@@ -35,7 +25,7 @@ cp .env.example .env
 3. Install dependencies:
 
 ```sh
-npm install
+pnpm install
 ```
 
 ## Running
@@ -43,7 +33,7 @@ npm install
 ### Game client (browser)
 
 ```sh
-npm run dev
+pnpm dev
 ```
 
 Opens the game UI at `http://localhost:3002`.
@@ -53,30 +43,30 @@ Opens the game UI at `http://localhost:3002`.
 In a separate terminal:
 
 ```sh
-npm run dev:server
+pnpm dev:server
 ```
 
-The agent server watches for new rooms and automatically spawns **3 AI bot players** into each room. Each bot uses Claude Haiku to decide strategy every 3 seconds and moves using greedy pathfinding between API calls. Bots can only move to adjacent cells (up/down/left/right), one step at a time — no jumping.
-
-Bot names: Bot-Alpha, Bot-Bravo, Bot-Charlie.
+The agent server watches the room registry stream for new rooms and automatically spawns **4 AI bot players** into each one. Each bot uses Claude Haiku to decide strategy every 3 seconds and moves using greedy pathfinding between API calls. Bots can only move to adjacent cells (up/down/left/right), one step at a time.
 
 ### Playing
 
-1. Start the game client (`npm run dev`)
-2. Start the AI agent server (`npm run dev:server`)
+1. Start the game client (`pnpm dev`)
+2. Start the AI agent server (`pnpm dev:server`)
 3. Open `http://localhost:3002` in your browser
-4. Create a room — 3 AI bots will automatically join
-5. Compete! Claim 20% territory or have the most when time runs out
+4. Choose a board size (32x32, 64x64, or 128x128) and create a room
+5. 4 AI bots will automatically join
+6. Compete! Claim 20% territory or have the most when the 2-minute timer runs out
 
 ## How it works
 
-- **128x128 board** — 16,384 cells on a grid
+- **Board sizes** — 32x32, 64x64 (default), or 128x128. AI agents adapt their strategy to the board dimensions.
 - **Cells** are stored in a [Yjs Y.Map](https://docs.yjs.dev/api/shared-types/y.map) — each key is a grid coordinate, each value records the owner. When two players claim the same cell, Yjs LWW resolves the conflict.
 - **Territory fill** — when your cells form a closed boundary around empty space, the enclosed area is automatically claimed.
-- **AI agents** — each bot connects as a real Yjs client. Every 3 seconds it sends a board summary to Claude Haiku which returns a strategic target. Between calls, the bot moves one adjacent cell at a time toward the target using greedy pathfinding (no jumping).
+- **AI agents** — the server subscribes to the room registry Durable Stream. When a new room appears, it spawns 4 bots that each connect as a Yjs client. Every 3 seconds, each bot sends a board summary to Claude Haiku which returns a strategic target. Between calls, the bot moves one adjacent cell at a time toward the target using greedy pathfinding.
+- **Movement validation** — all moves (human and bot) go through a shared `executeMove()` function that enforces adjacent-only movement, collision detection, stun, and enclosure fill.
 - **Game timer** — 2 minutes per round. First to 20% wins immediately; otherwise highest territory % when time runs out.
-- **Room registry** and **presence** use [StreamDB](https://electric-sql.com/docs/api/durable-streams/stream-db) on Durable Streams.
-- **No WebSockets** — all sync happens over plain HTTP via the [Yjs Durable Streams Protocol](https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/YJS-PROTOCOL.md).
+- **Room registry** and **presence** use Durable Streams. The agent server watches the raw stream for insert/delete events to manage bot lifecycle.
+- **No WebSockets** — all sync happens over plain HTTP.
 
 ## Controls
 
