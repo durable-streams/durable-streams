@@ -66,10 +66,10 @@ Every message on the stream is a JSON envelope containing the raw protocol messa
 
 For agent messages, `raw` is the exact NDJSON object (Claude) or JSON-RPC message (Codex) from the agent's output. For user messages, `raw` is **client intent**, not guaranteed-delivered traffic. Clients append directly to the stream; the bridge decides what to forward to the agent (e.g., dropping duplicate responses, queuing prompts). The stream records all client intent for observability, but the bridge is the authority on what the agent actually receives.
 
-All writes to the stream (bridge and client) must use `IdempotentProducer` from `@durable-streams/client` for exactly-once semantics. Both use `autoClaim: true` so the server handles epoch fencing automatically.
+All writes to the stream (bridge and client) must use `IdempotentProducer` from `@durable-streams/client` for exactly-once semantics. Both use `autoClaim: true` so the server handles epoch fencing automatically. The durability guarantees differ:
 
-- **Bridge**: producer ID `bridge-{sessionId}`. Only one bridge per session. On resume in a new sandbox, autoClaim fences out the zombie bridge from the previous sandbox.
-- **Client**: random producer ID per instance (e.g., `client-{crypto.randomUUID()}`). Each browser tab or device is an independent writer. No cross-tab coordination needed.
+- **Bridge**: producer ID `bridge-{sessionId}`. Restart-safe across sandbox replacement. On resume in a new sandbox, autoClaim fences out the zombie bridge from the previous sandbox. The bridge is a long-lived writer that survives across sandbox lifecycles.
+- **Client**: random producer ID per instance (e.g., `client-{crypto.randomUUID()}`). Ephemeral: the producer identity is per browser tab/device instance, not per user, and does not survive tab closure. Each tab or device is an independent writer with no cross-tab coordination.
 
 `IdempotentProducer.append()` is fire-and-forget, which is the right default for both bridge and client writes. The only durability requirement is at shutdown: `client.close()` and bridge `close()` must call `producer.close()` (which flushes pending writes) before exiting. Consumers should block teardown (e.g., `beforeunload`) until close completes.
 
