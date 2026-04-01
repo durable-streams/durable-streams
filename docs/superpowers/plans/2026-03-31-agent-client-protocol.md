@@ -299,6 +299,7 @@ export interface StreamClientOptions {
 
 export interface StreamClient {
   prompt(text: string): Promise<void>
+  respond(requestId: number | string, result: unknown): Promise<void>
   cancel(): Promise<void>
   close(): Promise<void>
 }
@@ -951,9 +952,10 @@ export async function startBridge(options: {
     })
   }
 
-  // Read existing history
+  // Read existing history and note current stream position
   const historyResponse = await stream.stream<StreamMessage>({ json: true })
   const history = await historyResponse.json()
+  const { offset: currentOffset } = await stream.head()
 
   // Spawn agent process
   const agent = spawnAgent(agentOption)
@@ -989,24 +991,70 @@ export async function startBridge(options: {
     processQueue()
   })
 
-  // Handle agent-initiated requests (permission, fs, terminal)
+  // Handle agent-initiated requests (permission, fs, terminal).
+  // The bridge runs in the sandbox alongside the agent, so it
+  // handles these locally rather than forwarding to a remote client.
+  const pendingRequestIds = new Set<number | string>()
+
   agent.onRequest((id, method, params) => {
-    // Write to stream so clients can see/respond
+    // Write to stream so clients can observe
     const event: AgentEvent = {
       direction: "agent",
       timestamp: Date.now(),
-      payload: {
-        jsonrpc: "2.0",
-        id,
-        method,
-        params,
-      } as JsonRpcMessage,
+      payload: { jsonrpc: "2.0", id, method, params } as JsonRpcMessage,
     }
     stream.append(JSON.stringify(event))
-    // TODO: for unattended sessions, auto-approve permissions
-    // For now, the request is written to the stream and a client
-    // must send a response back through the stream
+
+    pendingRequestIds.add(id)
+    handleAgentRequest(id, method, params)
   })
+
+  async function handleAgentRequest(
+    id: number | string,
+    method: string,
+    params: unknown
+  ): Promise<void> {
+    const p = params as Record<string, unknown> | undefined
+    try {
+      let result: unknown
+      if (method === "client/requestPermission") {
+        result = { outcome: "approved" }
+      } else if (method === "fs/readTextFile") {
+        const fs = await import("node:fs/promises")
+        const content = await fs.readFile(p?.path as string, "utf-8")
+        result = { content }
+      } else if (method === "fs/writeTextFile") {
+        const fs = await import("node:fs/promises")
+        await fs.writeFile(p?.path as string, p?.content as string, "utf-8")
+        result = {}
+      } else if (method === "terminal/create") {
+        const { execFile } = await import("node:child_process")
+        const { promisify } = await import("node:util")
+        const execFileAsync = promisify(execFile)
+        const { stdout } = await execFileAsync(
+          p?.command as string,
+          (p?.args as string[]) ?? [],
+          { cwd: (p?.cwd as string) ?? cwd, timeout: 30000 }
+        )
+        result = { terminalId: `t-${id}`, output: stdout, exitCode: 0 }
+      } else {
+        agent.sendResponse(id, {})
+        pendingRequestIds.delete(id)
+        return
+      }
+      agent.sendResponse(id, result)
+    } catch (e: unknown) {
+      const err = e as Error
+      agent.process.stdin!.write(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id,
+          error: { code: -32000, message: err.message },
+        }) + "\n"
+      )
+    }
+    pendingRequestIds.delete(id)
+  }
 
   // Prompt queue — serializes turns so overlapping prompts don't collide
   let turnInProgress = false
@@ -1043,9 +1091,10 @@ export async function startBridge(options: {
     }
   }
 
-  // Live-tail stream for user messages → forward to agent
+  // Live-tail stream from current position (after history)
   const abortController = new AbortController()
   const liveStream = await stream.stream<StreamMessage>({
+    offset: currentOffset,
     live: "sse",
     json: true,
     signal: abortController.signal,
@@ -1064,6 +1113,11 @@ export async function startBridge(options: {
           promptQueue.push({ params })
           processQueue()
         } else if (method === "session/cancel") {
+          // Reject any pending permission requests with cancelled outcome
+          for (const reqId of pendingRequestIds) {
+            agent.sendResponse(reqId, { outcome: "cancelled" })
+          }
+          pendingRequestIds.clear()
           agent.sendNotification("session/cancel", { sessionId })
         }
       }
@@ -1225,6 +1279,25 @@ describe("createStreamClient", () => {
     })
   })
 
+  describe("respond", () => {
+    it("should append a JSON-RPC response to the stream", async () => {
+      const client = createStreamClient({
+        streamOptions: { url: "https://example.com/stream/test" },
+        user,
+      })
+
+      await client.respond(42, { outcome: "approved" })
+
+      expect(mockAppend).toHaveBeenCalledOnce()
+      const written = JSON.parse(mockAppend.mock.calls[0]![0] as string)
+      expect(written.direction).toBe("user")
+      expect(written.user).toEqual(user)
+      expect(written.payload.id).toBe(42)
+      expect(written.payload.result).toEqual({ outcome: "approved" })
+      expect(written.payload).not.toHaveProperty("method")
+    })
+  })
+
   describe("cancel", () => {
     it("should append a cancel notification to the stream", async () => {
       const client = createStreamClient({
@@ -1288,6 +1361,20 @@ export function createStreamClient(options: StreamClientOptions): StreamClient {
           params: {
             prompt: [{ type: "text", text }],
           },
+        } as JsonRpcMessage,
+      }
+      await stream.append(JSON.stringify(message))
+    },
+
+    async respond(requestId: number | string, result: unknown): Promise<void> {
+      const message: UserPrompt = {
+        direction: "user",
+        timestamp: Date.now(),
+        user,
+        payload: {
+          jsonrpc: "2.0",
+          id: requestId,
+          result,
         } as JsonRpcMessage,
       }
       await stream.append(JSON.stringify(message))
