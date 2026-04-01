@@ -47,14 +47,18 @@ export class AIPlayer {
   private cols: number
   private rows: number
   private haiku: HaikuClient
+  private onNoHumans: (() => void) | null = null
+  private hadHumans = false
 
   constructor(
     name: string,
     roomId: string,
     yjsBaseUrl: string,
     yjsHeaders: Record<string, string>,
-    haikuClient: HaikuClient
+    haikuClient: HaikuClient,
+    onNoHumans?: () => void
   ) {
+    this.onNoHumans = onNoHumans ?? null
     this.playerName = `Bot-${name}`
     this.playerId = `bot-${name.toLowerCase()}-${Math.random().toString(36).slice(2, 8)}`
     this.playerColor = `` // assigned on sync when we can see other players
@@ -69,6 +73,7 @@ export class AIPlayer {
     this.awareness.setLocalState({
       user: { name: this.playerName, color: this.playerColor },
       playerId: this.playerId,
+      type: `bot`,
     })
 
     this.provider = new YjsProvider({
@@ -132,10 +137,32 @@ export class AIPlayer {
     // Check timer expiry
     this.timerCheckTimer = setInterval(() => this.checkTimerExpiry(), 1000)
 
+    // Monitor awareness for human players leaving
+    this.awareness.on(`change`, () => this.checkHumansPresent())
+
     // Do an initial strategy call
     void this.updateStrategy()
 
     console.log(`[${this.playerName}] joined at (${this.x}, ${this.y})`)
+  }
+
+  private checkHumansPresent(): void {
+    if (this.destroyed) return
+
+    let humanCount = 0
+    this.awareness.getStates().forEach((state, clientId) => {
+      if (clientId === this.awareness.clientID) return
+      if (state.type === `human`) humanCount++
+    })
+
+    if (humanCount > 0) {
+      this.hadHumans = true
+    } else if (this.hadHumans && humanCount === 0) {
+      console.log(
+        `[${this.playerName}] All humans left the room — triggering shutdown`
+      )
+      this.onNoHumans?.()
+    }
   }
 
   private checkTimerExpiry(): void {

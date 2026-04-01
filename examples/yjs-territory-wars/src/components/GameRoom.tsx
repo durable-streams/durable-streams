@@ -40,6 +40,7 @@ export function GameRoom({
     a.setLocalState({
       user: { name: playerName, color },
       playerId: id,
+      type: `human`,
     })
     return { playerId: id, playerColor: color, doc: d, awareness: a }
   })
@@ -90,6 +91,7 @@ export function GameRoom({
       awareness.setLocalState({
         user: { name: playerName, color: playerColor },
         playerId,
+        type: `human`,
       })
     }
 

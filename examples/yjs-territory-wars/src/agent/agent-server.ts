@@ -176,6 +176,14 @@ export class AgentServer {
 
     console.log(`[AgentServer] Spawning ${NUM_BOTS} bot(s) for: ${roomId}`)
 
+    // Only the first bot monitors for humans leaving — one callback is enough
+    const onNoHumans = () => {
+      console.log(
+        `[AgentServer] All humans left room ${roomId} — destroying bots`
+      )
+      this.destroyBotsForRoom(roomId)
+    }
+
     const players: Array<AIPlayer> = []
     for (let i = 0; i < NUM_BOTS; i++) {
       const name = BOT_NAMES[i]
@@ -184,7 +192,8 @@ export class AgentServer {
         roomId,
         this.yjsBaseUrl,
         this.yjsHeaders,
-        this.haikuClient
+        this.haikuClient,
+        i === 0 ? onNoHumans : undefined
       )
       players.push(player)
     }
