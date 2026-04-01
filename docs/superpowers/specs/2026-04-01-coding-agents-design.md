@@ -52,7 +52,7 @@ Every message on the stream is a JSON envelope containing the raw protocol messa
   direction: "user",
   timestamp: number,
   user: { name: string, email: string },
-  raw: object  // message sent to the agent (prompt, permission response, cancel)
+  raw: object  // client intent: prompt, permission response, or cancel
 }
 
 // Bridge control events
@@ -64,7 +64,9 @@ Every message on the stream is a JSON envelope containing the raw protocol messa
 }
 ```
 
-For agent messages, `raw` is the exact NDJSON object (Claude) or JSON-RPC message (Codex) from the agent's output. For user messages, `raw` is the message the bridge sent to the agent (prompt, permission response, cancel). No normalization, no filtering. Everything gets recorded.
+For agent messages, `raw` is the exact NDJSON object (Claude) or JSON-RPC message (Codex) from the agent's output. For user messages, `raw` is **client intent**, not guaranteed-delivered traffic. Clients append directly to the stream; the bridge decides what to forward to the agent (e.g., dropping duplicate responses, queuing prompts). The stream records all client intent for observability, but the bridge is the authority on what the agent actually receives.
+
+All writes to the stream (bridge and client) must use `IdempotentProducer` from `@durable-streams/client` for exactly-once semantics. The bridge and each client get their own producer ID. This prevents duplicate messages on bridge restart or client reconnection.
 
 ## Bridge
 
@@ -104,6 +106,7 @@ interface AgentAdapter {
     type: "request" | "response" | "notification"
     id?: string | number
   }
+  isTurnComplete(raw: object): boolean
   prepareResume(
     history: StreamEnvelope[],
     options: ResumeOptions
@@ -111,7 +114,7 @@ interface AgentAdapter {
 }
 ```
 
-`parseDirection` lets the bridge track pending request IDs without understanding protocol internals. `prepareResume` reconstructs local session files from stream history before spawning with resume flags.
+`parseDirection` lets the bridge track pending request IDs without understanding protocol internals. `isTurnComplete` returns true when a message signals the end of a prompt turn (Claude: `result` message; Codex: JSON-RPC response to the prompt request). The bridge uses this to dequeue the next prompt. `prepareResume` reconstructs local session files from stream history before spawning with resume flags.
 
 ### 3. Stream relay
 
@@ -210,12 +213,25 @@ Configuration via `DURABLE_STREAMS_URL` environment variable for the base URL. T
 When the bridge starts with a stream that has existing history:
 
 1. Read all messages from the stream, capture `historyResponse.offset`
-2. Adapter's `prepareResume` reconstructs local session files:
+2. Adapter's `prepareResume` reconciles stream history into local session files:
    - **Claude**: write raw messages as JSONL to `~/.claude/projects/<project>/<sessionId>.jsonl`, apply path rewriting (string replacement for changed sandbox mount paths)
    - **Codex**: equivalent reconstruction for Codex's local state format
 3. Spawn agent with resume flag (e.g., `--resume <sessionId>` for Claude)
 4. Write `session_resumed` control event to stream
 5. Begin live-tailing from `historyResponse.offset`
+
+### Resume reconciliation
+
+The stream contains client intent, not delivered traffic. `prepareResume` must reconcile, not just reconstruct:
+
+- **Prompts**: include all prompts in the reconstructed session (they were delivered sequentially by the bridge).
+- **Permission responses**: if multiple clients responded to the same request ID, include only the first (the one the bridge would have forwarded). Determine "first" by stream order.
+- **Cancel-synthesized responses**: the bridge writes cancellation response envelopes to the stream. These should be included in the reconstruction since the agent received them.
+- **Queued-but-not-forwarded prompts**: prompts that were queued when the session ended (bridge died mid-turn) should be re-queued on resume, not included in the reconstructed session file. The bridge detects these by checking whether a prompt was followed by a turn-complete signal.
+
+The adapter receives the full stream history and applies these rules during reconstruction.
+
+### Path rewriting
 
 Path rewriting handles sandbox remounting:
 
@@ -299,7 +315,7 @@ packages/coding-agents/
 
 **Dependencies:**
 
-- `@durable-streams/client` (stream read/write)
+- `@durable-streams/client` (`DurableStream`, `IdempotentProducer`, `StreamResponse`)
 - `ws` (WebSocket server for Claude adapter)
 
 ## What this does NOT do
