@@ -357,6 +357,27 @@ export function getColor(index: number): string {
   return PLAYER_COLORS[index % PLAYER_COLORS.length]
 }
 
+/**
+ * Pick the first color from PLAYER_COLORS not already used by existing players.
+ * Falls back to hashName-based color if all colors are taken.
+ */
+export function pickUniqueColor(playerName: string, doc: Y.Doc): string {
+  const playersMap = getPlayersMap(doc)
+  const usedColors = new Set<string>()
+  playersMap.forEach((p) => {
+    usedColors.add(p.color)
+  })
+
+  for (const color of PLAYER_COLORS) {
+    if (!usedColors.has(color)) {
+      return color
+    }
+  }
+
+  // All colors taken — fall back to hash
+  return getColor(hashName(playerName))
+}
+
 // ============================================================================
 // Game state helpers
 // ============================================================================

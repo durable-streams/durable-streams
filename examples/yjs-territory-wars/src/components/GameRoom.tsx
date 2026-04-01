@@ -3,7 +3,7 @@ import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 import { YjsProvider } from "@durable-streams/y-durable-streams"
 import { ROOM_TTL_RENEWAL_MS, ROOM_TTL_SECONDS } from "../utils/schemas"
-import { getColor, hashName } from "../utils/game-logic"
+import { getColor, hashName, pickUniqueColor } from "../utils/game-logic"
 import { GameRoomContext } from "./game-room-context"
 import { ScoresProvider } from "./scores-context"
 import { useRegistryContext } from "./registry-context"
@@ -32,17 +32,20 @@ export function GameRoom({
 }: GameRoomProps) {
   const { registryDB } = useRegistryContext()
 
-  const [{ playerId, playerColor }] = useState(() => {
-    const id = `player-${Math.random().toString(36).slice(2, 10)}`
-    const colorIdx = hashName(playerName)
-    return { playerId: id, playerColor: getColor(colorIdx) }
-  })
+  const [{ playerId }] = useState(() => ({
+    playerId: `player-${Math.random().toString(36).slice(2, 10)}`,
+  }))
+
+  // Temporary color until synced — will be replaced with a unique one
+  const [playerColor, setPlayerColor] = useState(() =>
+    getColor(hashName(playerName))
+  )
 
   const [{ doc, awareness }] = useState(() => {
     const d = new Y.Doc()
     const a = new Awareness(d)
     a.setLocalState({
-      user: { name: playerName, color: playerColor },
+      user: { name: playerName, color: getColor(hashName(playerName)) },
       playerId,
     })
     return { doc: d, awareness: a }
@@ -65,7 +68,16 @@ export function GameRoom({
 
     provider.on(`synced`, (synced: boolean) => {
       setIsSynced(synced)
-      if (synced) setIsLoading(false)
+      if (synced) {
+        setIsLoading(false)
+        // Pick a color not used by any other player
+        const uniqueColor = pickUniqueColor(playerName, doc)
+        setPlayerColor(uniqueColor)
+        awareness.setLocalState({
+          ...awareness.getLocalState(),
+          user: { name: playerName, color: uniqueColor },
+        })
+      }
     })
 
     provider.on(`status`, (status: YjsProviderStatus) => {

@@ -8,13 +8,12 @@ import {
   findLeaderByScore,
   findWinner,
   getCellsMap,
-  getColor,
   getGameEndedAt,
   getGameStartedAt,
   getPlayersMap,
-  hashName,
   initGameTimer,
   parseRoomConfig,
+  pickUniqueColor,
   readAllPlayers,
   readCells,
   readPlayers,
@@ -29,7 +28,7 @@ const STRATEGY_INTERVAL = 3000
 export class AIPlayer {
   readonly playerId: string
   readonly playerName: string
-  readonly playerColor: string
+  playerColor: string
 
   private doc: Y.Doc
   private awareness: Awareness
@@ -58,7 +57,7 @@ export class AIPlayer {
   ) {
     this.playerName = `Bot-${name}`
     this.playerId = `bot-${name.toLowerCase()}-${Math.random().toString(36).slice(2, 8)}`
-    this.playerColor = getColor(hashName(this.playerName))
+    this.playerColor = `` // assigned on sync when we can see other players
     this.haiku = haikuClient
 
     const config = parseRoomConfig(roomId)
@@ -95,6 +94,9 @@ export class AIPlayer {
   private onSynced(): void {
     if (this.started) return
     this.started = true
+
+    // Pick a unique color not used by other players
+    this.playerColor = pickUniqueColor(this.playerName, this.doc)
 
     // Pick a start position spread across the board
     this.x = Math.floor(Math.random() * this.cols)
