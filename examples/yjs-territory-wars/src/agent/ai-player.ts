@@ -20,7 +20,7 @@ import {
 } from "../utils/game-logic"
 import { nextStep } from "./pathfinder"
 import { buildBoardSummary } from "./haiku-client"
-import type { HaikuClient } from "./haiku-client"
+import type { AgentPersonality, HaikuClient } from "./haiku-client"
 
 const STRATEGY_INTERVAL = 3000
 
@@ -47,6 +47,7 @@ export class AIPlayer {
   private cols: number
   private rows: number
   private haiku: HaikuClient
+  private personality: AgentPersonality
 
   constructor(
     name: string,
@@ -54,8 +55,10 @@ export class AIPlayer {
     yjsBaseUrl: string,
     yjsHeaders: Record<string, string>,
     haikuClient: HaikuClient,
-    color: string
+    color: string,
+    personality: AgentPersonality = `balanced`
   ) {
+    this.personality = personality
     this.playerName = `Haiku-${name}`
     this.playerId = `bot-${name.toLowerCase()}-${Math.random().toString(36).slice(2, 8)}`
     this.playerColor = color
@@ -195,6 +198,31 @@ export class AIPlayer {
     void this.updateStrategy()
   }
 
+  private clampTarget(target: { x: number; y: number }): {
+    x: number
+    y: number
+  } {
+    const maxDist = Math.max(6, Math.floor(Math.min(this.cols, this.rows) / 5))
+    const dx = target.x - this.x
+    const dy = target.y - this.y
+    const dist = Math.abs(dx) + Math.abs(dy)
+    if (dist <= maxDist) {
+      console.log(
+        `[${this.playerName}] Target: (${target.x},${target.y}) | pos: (${this.x},${this.y}) | dist: ${dist}`
+      )
+      return target
+    }
+    const ratio = maxDist / dist
+    const clamped = {
+      x: Math.max(0, Math.min(this.cols - 1, Math.round(this.x + dx * ratio))),
+      y: Math.max(0, Math.min(this.rows - 1, Math.round(this.y + dy * ratio))),
+    }
+    console.log(
+      `[${this.playerName}] Clamped: (${target.x},${target.y})→(${clamped.x},${clamped.y}) | pos: (${this.x},${this.y}) | ${dist}→${maxDist}`
+    )
+    return clamped
+  }
+
   private pickNearbyUnclaimedTarget(): { x: number; y: number } {
     const cells = readCells(this.doc)
     const range = 8
@@ -313,15 +341,14 @@ export class AIPlayer {
         timeRemainingMs
       )
 
-      const result = await this.haiku.getStrategy(summary, this.playerName)
-      this.target = result.target
-
-      console.log(
-        `[${this.playerName}] Target: (${result.target.x}, ${result.target.y}) | pos: (${this.x}, ${this.y}) | dist: ${Math.abs(result.target.x - this.x) + Math.abs(result.target.y - this.y)}`
+      const result = await this.haiku.getStrategy(
+        summary,
+        this.playerName,
+        this.personality
       )
+      this.target = this.clampTarget(result.target)
     } catch (err) {
       console.error(`[${this.playerName}] Strategy error:`, err)
-      // Keep current target or pick random
       if (!this.target) {
         this.target = this.pickNearbyUnclaimedTarget()
       }

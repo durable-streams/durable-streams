@@ -3,9 +3,16 @@ import { REGISTRY_TTL_SECONDS } from "../utils/schemas"
 import { BOT_NAMES, PLAYER_COLORS } from "../utils/game-logic"
 import { AIPlayer } from "./ai-player"
 import { HaikuClient } from "./haiku-client"
+import type { AgentPersonality } from "./haiku-client"
 import type { RoomMetadata } from "../utils/schemas"
 
 const NUM_BOTS = 4
+const BOT_PERSONALITIES: Array<AgentPersonality> = [
+  `destroyer`,
+  `explorer`,
+  `greedy`,
+  `balanced`,
+]
 
 interface RoomEntry {
   roomId: string
@@ -180,13 +187,15 @@ export class AgentServer {
     for (let i = 0; i < NUM_BOTS; i++) {
       const name = BOT_NAMES[i]
       const color = PLAYER_COLORS[PLAYER_COLORS.length - 1 - i]
+      const personality = BOT_PERSONALITIES[i % BOT_PERSONALITIES.length]
       const player = new AIPlayer(
         name,
         roomId,
         this.yjsBaseUrl,
         this.yjsHeaders,
         this.haikuClient,
-        color
+        color,
+        personality
       )
       players.push(player)
     }

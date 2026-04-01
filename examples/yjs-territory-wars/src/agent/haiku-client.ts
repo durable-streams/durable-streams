@@ -1,21 +1,38 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { TerritoryCell, TerritoryPlayer } from "../utils/game-logic"
 
-function buildSystemPrompt(cols: number, rows: number): string {
+export type AgentPersonality = `destroyer` | `explorer` | `greedy` | `balanced`
+
+function buildSystemPrompt(
+  cols: number,
+  rows: number,
+  personality: AgentPersonality
+): string {
   const maxX = cols - 1
   const maxY = rows - 1
-  const enclosureSize = Math.max(3, Math.floor(Math.min(cols, rows) / 10))
-  return `Territory Wars: ${cols}x${rows} grid (0-${maxX}, 0-${maxY}). Move one cell/step, ~8 steps/sec, ~25 steps between calls. Claim cells by moving. Closing a boundary around an area captures ALL cells inside — including opponent cells (they lose points, you gain them). First to 30% wins, or highest after 2min. Collisions stun both ~12 steps.
+  const enc = Math.max(3, Math.floor(Math.min(cols, rows) / 10))
+  const maxDist = enc * 2
 
-Pick a target coordinate. Strategy:
-- Close small ${enclosureSize}x${enclosureSize} to ${enclosureSize * 2}x${enclosureSize * 2} areas — each enclosure scores you ALL the cells inside, not just the boundary
-- Prefer straight lines along one axis, then turn — avoid diagonal paths
-- ALWAYS expand from your existing territory edge, stay within ~${enclosureSize * 2} cells of your M cells
-- Use edges and your own territory as free walls
-- Enclosing opponent (O) cells is very valuable — you take all their points inside
-- Avoid players (X). Avoid walking over your own cells
+  const base = `Territory Wars: ${cols}x${rows} grid. Claim cells by moving. Closing a boundary captures ALL cells inside (steals opponents'). First to 30% wins. Stun on collision ~12 steps.`
 
-JSON only: { "target": { "x": <0-${maxX}>, "y": <0-${maxY}> }, "strategy": "<reason>" }`
+  const strategies: Record<AgentPersonality, string> = {
+    destroyer: `PRIORITY: Destroy opponents' territory. Target areas dense with O cells. Route your boundary around their clusters to steal maximum cells. Enclosing even a few opponent cells is worth more than claiming empty space. Hunt the leader.`,
+
+    explorer: `PRIORITY: Claim large unclaimed areas quickly. Push into empty (.) regions of the map, especially corners and edges. Take risks — go for bigger ${enc * 2}x${enc * 2} enclosures in open space. Speed over safety.`,
+
+    greedy: `PRIORITY: Maximize cells per move. Only make tiny ${enc}x${enc} rectangles that you can close in one turn. Use edges and your own territory as walls. Never go far from your M cells. Efficiency over ambition.`,
+
+    balanced: `PRIORITY: Expand steadily from your territory. Close small ${enc}x${enc} to ${enc * 2}x${enc * 2} rectangles. Steal O cells when nearby, but prefer unclaimed areas. Stay close to your M cells.`,
+  }
+
+  return `${base}
+
+${strategies[personality]}
+
+RULES: Target within ${maxDist} cells of @. Expand from M cells. Avoid X players and your own M cells.
+
+RESPOND WITH ONLY THIS JSON, NO OTHER TEXT:
+{"target":{"x":<0-${maxX}>,"y":<0-${maxY}>},"strategy":"<reason>"}`
 }
 
 interface StrategyResponse {
@@ -184,10 +201,15 @@ export class HaikuClient {
 
   async getStrategy(
     summary: BoardSummary,
-    playerName?: string
+    playerName?: string,
+    personality: AgentPersonality = `balanced`
   ): Promise<StrategyResponse> {
     const userMessage = formatSummary(summary)
-    const systemPrompt = buildSystemPrompt(summary.cols, summary.rows)
+    const systemPrompt = buildSystemPrompt(
+      summary.cols,
+      summary.rows,
+      personality
+    )
 
     const tag = playerName ?? `Haiku`
     console.log(`[${tag}] Board sent to LLM:\n${userMessage}`)
@@ -204,7 +226,11 @@ export class HaikuClient {
     console.log(`[${tag}] LLM response: ${text}`)
 
     try {
-      const parsed = JSON.parse(text) as StrategyResponse
+      // Extract JSON from response (model may add reasoning text before it)
+      const jsonMatch = text.match(/\{[\s\S]*\}/)
+      const parsed = JSON.parse(
+        jsonMatch ? jsonMatch[0] : text
+      ) as StrategyResponse
       if (
         typeof parsed.target.x === `number` &&
         typeof parsed.target.y === `number` &&
@@ -213,6 +239,29 @@ export class HaikuClient {
         parsed.target.y >= 0 &&
         parsed.target.y < summary.rows
       ) {
+        // Clamp target distance to maxDist from current position
+        const enclosureSize = Math.max(
+          3,
+          Math.floor(Math.min(summary.cols, summary.rows) / 10)
+        )
+        const maxDist = enclosureSize * 2
+        const dx = parsed.target.x - summary.position.x
+        const dy = parsed.target.y - summary.position.y
+        const dist = Math.abs(dx) + Math.abs(dy)
+        if (dist > maxDist) {
+          const ratio = maxDist / dist
+          parsed.target.x = Math.round(summary.position.x + dx * ratio)
+          parsed.target.y = Math.round(summary.position.y + dy * ratio)
+          parsed.target.x = Math.max(
+            0,
+            Math.min(summary.cols - 1, parsed.target.x)
+          )
+          parsed.target.y = Math.max(
+            0,
+            Math.min(summary.rows - 1, parsed.target.y)
+          )
+          console.log(`[${tag}] Clamped target from dist ${dist} to ${maxDist}`)
+        }
         return parsed
       }
     } catch {
