@@ -269,11 +269,7 @@ export type JsonRpcMessage =
 // Configuration types
 
 export interface ReplayOptions {
-  /** Max session/update events to consider for replay. Default: 200 */
-  maxEvents?: number
-  /** Max characters in the synthesized replay text. Default: 12000 */
-  maxChars?: number
-  /** Path rewrites applied to replay text (old path -> new path) */
+  /** Path rewrites applied to replay events (old path -> new path) */
   rewritePaths?: Record<string, string>
 }
 
@@ -372,169 +368,165 @@ describe("rewritePaths", () => {
 })
 
 describe("buildReplayText", () => {
-  function makeAgentNotification(
-    sessionUpdate: string,
-    content: { type: string; text: string }
-  ): StreamMessage {
+  function makeAgentEvent(payload: Record<string, unknown>): StreamMessage {
     return {
       direction: "agent",
-      timestamp: Date.now(),
-      payload: {
+      timestamp: 1000,
+      payload: payload as StreamMessage["payload"],
+    }
+  }
+
+  function makeUserEvent(payload: Record<string, unknown>): StreamMessage {
+    return {
+      direction: "user",
+      timestamp: 1000,
+      user: { name: "Kyle", email: "kyle@example.com" },
+      payload: payload as StreamMessage["payload"],
+    }
+  }
+
+  it("should serialize all events as JSON-RPC envelopes", () => {
+    const messages: StreamMessage[] = [
+      makeAgentEvent({
         jsonrpc: "2.0",
         method: "session/update",
         params: {
-          sessionId: "sess-1",
-          update: { sessionUpdate, content },
-        },
-      },
-    }
-  }
-
-  function makeSessionNewResponse(sessionId: string): StreamMessage {
-    return {
-      direction: "agent",
-      timestamp: Date.now(),
-      payload: {
-        jsonrpc: "2.0",
-        id: 2,
-        result: { sessionId },
-      },
-    }
-  }
-
-  it("should build transcript from user and agent chunks", () => {
-    const messages: StreamMessage[] = [
-      makeSessionNewResponse("sess-1"),
-      makeAgentNotification("user_message_chunk", {
-        type: "text",
-        text: "Hello",
-      }),
-      makeAgentNotification("agent_message_chunk", {
-        type: "text",
-        text: "Hi there",
-      }),
-    ]
-
-    const { text, sessionId } = buildReplayText(messages)
-    expect(sessionId).toBe("sess-1")
-    expect(text).toContain("[user]")
-    expect(text).toContain("Hello")
-    expect(text).toContain("[assistant]")
-    expect(text).toContain("Hi there")
-  })
-
-  it("should concatenate consecutive chunks of the same role", () => {
-    const messages: StreamMessage[] = [
-      makeAgentNotification("user_message_chunk", {
-        type: "text",
-        text: "part1",
-      }),
-      makeAgentNotification("user_message_chunk", {
-        type: "text",
-        text: "part2",
-      }),
-    ]
-
-    const { text } = buildReplayText(messages)
-    expect(text).toBe("[user]\npart1part2")
-  })
-
-  it("should apply path rewriting to replay text", () => {
-    const messages: StreamMessage[] = [
-      makeAgentNotification("agent_message_chunk", {
-        type: "text",
-        text: "edited /old/sandbox/file.ts",
-      }),
-    ]
-
-    const { text } = buildReplayText(messages, {
-      rewritePaths: { "/old/sandbox": "/workspace" },
-    })
-    expect(text).toContain("/workspace/file.ts")
-    expect(text).not.toContain("/old/sandbox")
-  })
-
-  it("should truncate to maxChars from the end", () => {
-    const longText = "x".repeat(500)
-    const messages: StreamMessage[] = [
-      makeAgentNotification("user_message_chunk", {
-        type: "text",
-        text: longText,
-      }),
-      makeAgentNotification("agent_message_chunk", {
-        type: "text",
-        text: "recent response",
-      }),
-    ]
-
-    const { text } = buildReplayText(messages, { maxChars: 100 })
-    expect(text.length).toBeLessThanOrEqual(100)
-    expect(text).toContain("recent response")
-  })
-
-  it("should return empty text for empty message list", () => {
-    const { text, sessionId } = buildReplayText([])
-    expect(text).toBe("")
-    expect(sessionId).toBeUndefined()
-  })
-
-  it("should skip non-agent messages", () => {
-    const messages: StreamMessage[] = [
-      {
-        direction: "user",
-        timestamp: Date.now(),
-        user: { name: "Kyle", email: "kyle@example.com" },
-        payload: {
-          jsonrpc: "2.0",
-          id: 1,
-          method: "session/prompt",
-          params: {},
-        },
-      },
-      makeAgentNotification("agent_message_chunk", {
-        type: "text",
-        text: "response",
-      }),
-    ]
-
-    const { text } = buildReplayText(messages)
-    expect(text).toBe("[assistant]\nresponse")
-  })
-
-  it("should ignore tool_call and other non-content updates", () => {
-    const messages: StreamMessage[] = [
-      makeAgentNotification("user_message_chunk", {
-        type: "text",
-        text: "question",
-      }),
-      {
-        direction: "agent",
-        timestamp: Date.now(),
-        payload: {
-          jsonrpc: "2.0",
-          method: "session/update",
-          params: {
-            sessionId: "sess-1",
-            update: {
-              sessionUpdate: "tool_call",
-              toolCallId: "tc-1",
-              title: "read file",
-              status: "running",
-            },
+          sessionId: "s1",
+          update: {
+            sessionUpdate: "user_message_chunk",
+            content: { type: "text", text: "Hello" },
           },
         },
-      },
-      makeAgentNotification("agent_message_chunk", {
-        type: "text",
-        text: "answer",
+      }),
+      makeAgentEvent({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s1",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tc-1",
+            title: "read_file",
+          },
+        },
+      }),
+      makeAgentEvent({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s1",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "Done" },
+          },
+        },
       }),
     ]
 
-    const { text } = buildReplayText(messages)
-    expect(text).not.toContain("tool_call")
-    expect(text).not.toContain("read file")
-    expect(text).toContain("[user]\nquestion")
-    expect(text).toContain("[assistant]\nanswer")
+    const result = buildReplayText(messages)
+    const lines = result.split("\n").filter(Boolean)
+
+    // All events are included — tool_call is NOT filtered out
+    expect(lines.length).toBeGreaterThanOrEqual(4) // prefix + 3 events
+    expect(result).toContain("tool_call")
+    expect(result).toContain("read_file")
+    expect(result).toContain("Hello")
+    expect(result).toContain("Done")
+  })
+
+  it("should include both user and agent direction events", () => {
+    const messages: StreamMessage[] = [
+      makeUserEvent({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "session/prompt",
+        params: { prompt: [{ type: "text", text: "Do something" }] },
+      }),
+      makeAgentEvent({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s1",
+          update: {
+            sessionUpdate: "agent_message_chunk",
+            content: { type: "text", text: "OK" },
+          },
+        },
+      }),
+    ]
+
+    const result = buildReplayText(messages)
+    expect(result).toContain('"direction":"user"')
+    expect(result).toContain('"direction":"agent"')
+    expect(result).toContain("Do something")
+    expect(result).toContain("OK")
+  })
+
+  it("should serialize each event as a JSON line with direction, timestamp, payload", () => {
+    const messages: StreamMessage[] = [
+      makeAgentEvent({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "s1", update: { sessionUpdate: "plan" } },
+      }),
+    ]
+
+    const result = buildReplayText(messages)
+    const lines = result.split("\n").filter(Boolean)
+    // First line is the prefix
+    const eventLine = lines[1]!
+    const parsed = JSON.parse(eventLine)
+    expect(parsed).toHaveProperty("direction", "agent")
+    expect(parsed).toHaveProperty("timestamp", 1000)
+    expect(parsed).toHaveProperty("payload")
+    expect(parsed.payload.method).toBe("session/update")
+  })
+
+  it("should apply path rewriting across serialized JSON", () => {
+    const messages: StreamMessage[] = [
+      makeAgentEvent({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: {
+          sessionId: "s1",
+          update: {
+            sessionUpdate: "tool_call",
+            toolCallId: "tc-1",
+            rawInput: "read /old/sandbox/src/main.ts",
+          },
+        },
+      }),
+    ]
+
+    const result = buildReplayText(messages, {
+      rewritePaths: { "/old/sandbox": "/workspace" },
+    })
+    expect(result).toContain("/workspace/src/main.ts")
+    expect(result).not.toContain("/old/sandbox")
+  })
+
+  it("should return empty string for empty message list", () => {
+    const result = buildReplayText([])
+    expect(result).toBe("")
+  })
+
+  it("should skip control events (session_resumed, session_ended)", () => {
+    const messages: StreamMessage[] = [
+      {
+        direction: "agent",
+        timestamp: 1000,
+        type: "session_resumed",
+      } as StreamMessage,
+      makeAgentEvent({
+        jsonrpc: "2.0",
+        method: "session/update",
+        params: { sessionId: "s1", update: { sessionUpdate: "plan" } },
+      }),
+    ]
+
+    const result = buildReplayText(messages)
+    expect(result).not.toContain("session_resumed")
+    expect(result).toContain("plan")
   })
 })
 ```
@@ -554,6 +546,9 @@ Expected: FAIL — `rewritePaths` and `buildReplayText` are not exported.
 ```typescript
 import type { StreamMessage, ReplayOptions } from "./types.js"
 
+const REPLAY_PREFIX =
+  "Previous session history is replayed below as JSON-RPC envelopes. Use it as context before responding to the latest user prompt.\n"
+
 export function rewritePaths(
   text: string,
   pathMap: Record<string, string>
@@ -568,93 +563,35 @@ export function rewritePaths(
 export function buildReplayText(
   messages: StreamMessage[],
   options: ReplayOptions = {}
-): { text: string; sessionId: string | undefined } {
-  const { maxChars = 12000, maxEvents = 200, rewritePaths: pathMap } = options
+): string {
+  if (messages.length === 0) return ""
 
-  let sessionId: string | undefined
-  const chunks: Array<{ role: "user" | "assistant"; text: string }> = []
-  let eventCount = 0
+  const { rewritePaths: pathMap } = options
+
+  let text = REPLAY_PREFIX
 
   for (const msg of messages) {
-    if (msg.direction !== "agent" || !("payload" in msg) || !msg.payload) {
-      continue
-    }
-
-    const payload = msg.payload as Record<string, unknown>
-
-    // Extract sessionId from session/new response
-    if (!sessionId) {
-      const result = payload.result as Record<string, unknown> | undefined
-      if (result?.sessionId) {
-        sessionId = result.sessionId as string
-      }
-    }
-
-    // Extract content from session/update notifications
-    if (payload.method !== "session/update") continue
-
-    const params = payload.params as Record<string, unknown> | undefined
-    const update = params?.update as Record<string, unknown> | undefined
-    if (!update) continue
-
-    const updateType = update.sessionUpdate as string
+    // Skip control events (session_resumed, session_ended)
     if (
-      updateType !== "user_message_chunk" &&
-      updateType !== "agent_message_chunk"
+      "type" in msg &&
+      (msg.type === "session_resumed" || msg.type === "session_ended")
     ) {
       continue
     }
 
-    if (++eventCount > maxEvents) break
-
-    const role: "user" | "assistant" =
-      updateType === "user_message_chunk" ? "user" : "assistant"
-    const contentText = extractText(update.content)
-    appendChunk(chunks, role, contentText)
+    const line = JSON.stringify({
+      direction: msg.direction,
+      timestamp: msg.timestamp,
+      payload: msg.payload,
+    })
+    text += `${line}\n`
   }
 
-  // Serialize as human-readable transcript
-  let text = chunks.map((c) => `[${c.role}]\n${c.text}`).join("\n\n")
-
-  // Apply path rewriting
   if (pathMap) {
     text = rewritePaths(text, pathMap)
   }
 
-  // Truncate from the beginning to preserve recent context
-  if (text.length > maxChars) {
-    text = text.slice(-maxChars)
-    const idx = text.indexOf("\n[")
-    if (idx !== -1) {
-      text = text.slice(idx + 1)
-    }
-  }
-
-  return { text, sessionId }
-}
-
-function appendChunk(
-  chunks: Array<{ role: "user" | "assistant"; text: string }>,
-  role: "user" | "assistant",
-  text: string
-): void {
-  if (!text) return
-  const last = chunks[chunks.length - 1]
-  if (last && last.role === role) {
-    last.text += text
-  } else {
-    chunks.push({ role, text })
-  }
-}
-
-function extractText(content: unknown): string {
-  if (!content) return ""
-  if (typeof content === "string") return content
-  if (typeof content === "object" && content !== null) {
-    if ("text" in content) return (content as { text: string }).text ?? ""
-    if (Array.isArray(content)) return content.map(extractText).join("")
-  }
-  return ""
+  return text
 }
 ```
 
@@ -672,7 +609,7 @@ Expected: All tests PASS.
 
 ```bash
 git add packages/agent-client-protocol/src/replay.ts packages/agent-client-protocol/test/replay.test.ts
-git commit -m "feat(agent-client-protocol): add replay module with path rewriting"
+git commit -m "feat(agent-client-protocol): add replay module with full-fidelity event serialization"
 ```
 
 ---
@@ -1001,16 +938,11 @@ export async function startBridge(options: {
 
   // Handle resume if history exists
   if (history.length > 0) {
-    const { text } = buildReplayText(history, replayOptions)
-    if (text) {
+    const replayText = buildReplayText(history, replayOptions)
+    if (replayText) {
       await agent.sendRequest("session/prompt", {
         sessionId,
-        prompt: [
-          {
-            type: "text",
-            text: `[Previous conversation context]\n${text}\n\n[Resuming session]`,
-          },
-        ],
+        prompt: [{ type: "text", text: replayText }],
       })
 
       const controlEvent: ControlEvent = {

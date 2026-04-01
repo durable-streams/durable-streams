@@ -75,8 +75,6 @@ const session = await createAgentStream({
   cwd: "/workspace/my-project",
   mcpServers: [],
   replayOptions: {
-    maxEvents: 200,
-    maxChars: 12000,
     rewritePaths: {
       "/old/sandbox/path": "/workspace/my-project",
     },
@@ -131,17 +129,15 @@ When the bridge starts, it reads the stream from offset `"-1"` (beginning):
 **Existing stream with history (resume):**
 
 1. Read all existing messages
-2. Extract `sessionId` from original `session/new` response
-3. Collect `user_message_chunk` and `agent_message_chunk` events
-4. Build synthesized replay text:
-   - Serialize conversation as human-readable transcript
-   - Apply path rewriting (simple string replacement)
-   - Truncate to `maxChars` from the end (preserve recent context)
-5. Send `initialize` to agent
-6. Send `session/new` (fresh agent session)
-7. Send `session/prompt` with replay prepended
-8. Write `session_resumed` control event to stream
-9. Resume normal forwarding
+2. Serialize each event as a JSON-RPC envelope (`{timestamp, sender, payload}`)
+3. Apply path rewriting (string replacement across the serialized JSON)
+4. Send `initialize` to agent
+5. Send `session/new` (fresh agent session)
+6. Send `session/prompt` with full replay prepended
+7. Write `session_resumed` control event to stream
+8. Resume normal forwarding
+
+The replay sends the complete event history at full fidelity. No truncation by default. If the history exceeds the agent's context window, the request will fail and the caller can filter events before passing them.
 
 ### Path rewriting
 
