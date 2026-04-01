@@ -2433,6 +2433,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         type: `session_ended`,
       }
       producer.append(JSON.stringify(endEvent))
+      await producer.flush()
       await producer.detach()
 
       connection.kill()
@@ -2473,6 +2474,7 @@ git commit -m "feat(coding-agents): add bridge relay"
 import { describe, expect, it, vi, beforeEach } from "vitest"
 
 const mockAppend = vi.fn()
+const mockFlush = vi.fn().mockResolvedValue(undefined)
 const mockDetach = vi.fn().mockResolvedValue(undefined)
 
 vi.mock(`@durable-streams/client`, () => ({
@@ -2485,6 +2487,7 @@ vi.mock(`@durable-streams/client`, () => ({
   })),
   IdempotentProducer: vi.fn().mockImplementation(() => ({
     append: mockAppend,
+    flush: mockFlush,
     detach: mockDetach,
   })),
 }))
@@ -2496,6 +2499,7 @@ describe(`createClient`, () => {
 
   beforeEach(() => {
     mockAppend.mockClear()
+    mockFlush.mockClear()
     mockDetach.mockClear()
   })
 
@@ -2557,7 +2561,7 @@ describe(`createClient`, () => {
   })
 
   describe(`close`, () => {
-    it(`should detach the producer`, async () => {
+    it(`should flush and detach the producer`, async () => {
       const client = createClient({
         agent: `claude`,
         streamUrl: `https://example.com/v1/stream/test`,
@@ -2565,6 +2569,7 @@ describe(`createClient`, () => {
       })
 
       await client.close()
+      expect(mockFlush).toHaveBeenCalledOnce()
       expect(mockDetach).toHaveBeenCalledOnce()
     })
   })
@@ -2642,6 +2647,7 @@ export function createClient(options: ClientOptions): StreamClient {
     },
 
     async close(): Promise<void> {
+      await producer.flush()
       await producer.detach()
     },
   }

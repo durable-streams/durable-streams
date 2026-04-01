@@ -86,7 +86,7 @@ All writes to the stream (bridge and client) must use `IdempotentProducer` from 
 - **Bridge**: producer ID `bridge-{sessionId}`. Restart-safe across sandbox replacement. On resume in a new sandbox, autoClaim fences out the zombie bridge from the previous sandbox. The bridge is a long-lived writer that survives across sandbox lifecycles.
 - **Client**: random producer ID per instance (e.g., `client-{crypto.randomUUID()}`). Ephemeral: the producer identity is per browser tab/device instance, not per user, and does not survive tab closure. Each tab or device is an independent writer with no cross-tab coordination.
 
-`IdempotentProducer.append()` is fire-and-forget, which is the right default for both bridge and client writes. The only durability requirement is at shutdown: `client.close()` and bridge `close()` must call `producer.detach()` (which flushes pending writes and retires the producer without closing the stream). `producer.close()` permanently closes the underlying stream, which would break resume/shareability. Consumers should block teardown (e.g., `beforeunload`) until detach completes.
+`IdempotentProducer.append()` is fire-and-forget, which is the right default for both bridge and client writes. At shutdown, call `await producer.flush()` as the checked durability barrier (ensures all pending writes have landed), then `producer.detach()` to retire the producer without closing the stream. `producer.close()` permanently closes the underlying stream, which would break resume/shareability. Note: `detach()` swallows flush errors internally, so it is not a durability guarantee on its own. Consumers should block teardown (e.g., `beforeunload`) until flush completes.
 
 ## Bridge
 
@@ -131,11 +131,11 @@ interface AgentAdapter {
   prepareResume(
     history: StreamEnvelope[],
     options: ResumeOptions
-  ): Promise<void>
+  ): Promise<{ resumeId: string }>
 }
 ```
 
-`parseDirection` lets the bridge track pending request IDs without understanding protocol internals. `isTurnComplete` returns true when a message signals the end of a prompt turn (Claude: `result` message; Codex: JSON-RPC response to the prompt request). The bridge uses this to dequeue the next prompt. `translateClientIntent` converts generic client intent (`user_message`, `control_response`, `interrupt`) into the agent's native wire format. Claude's adapter passes through unchanged; Codex's adapter maps to JSON-RPC. `prepareResume` reconstructs local session files from stream history before spawning with resume flags.
+`parseDirection` lets the bridge track pending request IDs without understanding protocol internals. `isTurnComplete` returns true when a message signals the end of a prompt turn (Claude: `result` message; Codex: see open questions). The bridge uses this to dequeue the next prompt. `translateClientIntent` converts generic client intent (`user_message`, `control_response`, `interrupt`) into the agent's native wire format. Claude's adapter passes through unchanged; Codex's adapter maps to JSON-RPC. `prepareResume` reconstructs local session files from stream history before spawning with resume flags, and returns the agent-native resume identifier (e.g., Claude session ID) for the bridge to pass to `spawn()`.
 
 ### 3. Stream relay
 
@@ -176,6 +176,7 @@ const session = await createSession({
 - Starting the WebSocket server (for Claude) or stdio pipes (for Codex)
 - Bidirectional relay between agent and stream
 - Writing `session_started` control event
+- Writing `session_ended` control event on agent exit (graceful or crash)
 
 ### Client (browser-safe)
 
