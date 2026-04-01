@@ -994,6 +994,9 @@ export async function startBridge(options: {
   // Forward agent-initiated requests → stream.
   // The bridge does NOT handle these locally — clients respond
   // through the stream and the bridge relays responses back.
+  // Track pending IDs for cancel handling and duplicate guarding.
+  const pendingAgentRequestIds = new Set<number | string>()
+
   agent.onRequest((id, method, params) => {
     const event: AgentEvent = {
       direction: "agent",
@@ -1001,6 +1004,7 @@ export async function startBridge(options: {
       payload: { jsonrpc: "2.0", id, method, params } as JsonRpcMessage,
     }
     stream.append(JSON.stringify(event))
+    pendingAgentRequestIds.add(id)
   })
 
   // Prompt queue — serializes turns so overlapping prompts don't collide
@@ -1061,9 +1065,18 @@ export async function startBridge(options: {
           promptQueue.push({ params })
           processQueue()
         } else if (method === "session/cancel") {
+          // ACP requires pending requests to receive cancelled responses
+          for (const reqId of pendingAgentRequestIds) {
+            agent.sendResponse(reqId, {
+              outcome: { outcome: "cancelled" },
+            })
+          }
+          pendingAgentRequestIds.clear()
           agent.sendNotification("session/cancel", { sessionId })
         } else if (id != null && !method) {
-          // Client JSON-RPC response (result or error) — forward to agent
+          // Client JSON-RPC response — only forward the first per request ID
+          if (!pendingAgentRequestIds.has(id)) continue
+          pendingAgentRequestIds.delete(id)
           if ("error" in payload) {
             agent.process.stdin!.write(
               JSON.stringify({
