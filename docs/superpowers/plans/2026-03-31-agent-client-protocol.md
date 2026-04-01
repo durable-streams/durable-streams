@@ -283,13 +283,8 @@ export interface AgentStreamOptions {
   agent: string | { command: string; args?: string[] }
   streamOptions: StreamOptions
   cwd: string
-  mcpServers?: McpServer[]
+  mcpServers?: unknown[]
   replayOptions?: ReplayOptions
-}
-
-export interface McpServer {
-  name: string
-  uri: string
 }
 
 export interface AgentStreamSession {
@@ -683,11 +678,19 @@ const KNOWN_AGENTS: Record<string, { command: string; args: string[] }> = {
   codex: { command: "codex-acp", args: [] },
 }
 
+export type RequestHandler = (
+  id: number | string,
+  method: string,
+  params: unknown
+) => void
+
 export interface AgentProcess {
   process: ChildProcess
   sendRequest(method: string, params?: unknown): Promise<JsonRpcResponse>
+  sendResponse(id: number | string, result: unknown): void
   sendNotification(method: string, params?: unknown): void
   onNotification(handler: (method: string, params: unknown) => void): void
+  onRequest(handler: RequestHandler): void
   onResponse(handler: (response: JsonRpcResponse) => void): void
   kill(): void
 }
@@ -729,6 +732,7 @@ export function spawnAgent(
   let notificationHandler:
     | ((method: string, params: unknown) => void)
     | undefined
+  let requestHandler: RequestHandler | undefined
   let responseHandler: ((response: JsonRpcResponse) => void) | undefined
 
   // Line-buffered stdout reader
@@ -741,7 +745,21 @@ export function spawnAgent(
       if (!line.trim()) continue
       try {
         const msg = JSON.parse(line)
-        if ("id" in msg && msg.id !== undefined && msg.id !== null) {
+        const hasId = "id" in msg && msg.id !== undefined && msg.id !== null
+        const hasMethod = "method" in msg
+
+        if (hasMethod && hasId) {
+          // Agent-initiated request (has both id and method)
+          requestHandler?.(
+            msg.id as number | string,
+            msg.method as string,
+            msg.params
+          )
+        } else if (hasMethod) {
+          // Notification (method only)
+          notificationHandler?.(msg.method as string, msg.params)
+        } else if (hasId) {
+          // Response to one of our requests (id only)
           const response = msg as JsonRpcResponse
           responseHandler?.(response)
           const p = pending.get(msg.id as number | string)
@@ -749,8 +767,6 @@ export function spawnAgent(
             pending.delete(msg.id as number | string)
             p.resolve(response)
           }
-        } else if ("method" in msg) {
-          notificationHandler?.(msg.method as string, msg.params)
         }
       } catch {
         // Skip non-JSON lines (agent debug output on stdout)
@@ -789,6 +805,11 @@ export function spawnAgent(
       })
     },
 
+    sendResponse(id: number | string, result: unknown): void {
+      const response = { jsonrpc: "2.0" as const, id, result }
+      child.stdin!.write(JSON.stringify(response) + "\n")
+    },
+
     sendNotification(method: string, params?: unknown): void {
       const notification = {
         jsonrpc: "2.0" as const,
@@ -800,6 +821,10 @@ export function spawnAgent(
 
     onNotification(handler) {
       notificationHandler = handler
+    },
+
+    onRequest(handler) {
+      requestHandler = handler
     },
 
     onResponse(handler) {
@@ -815,7 +840,7 @@ export function spawnAgent(
 export async function initializeAgent(
   agent: AgentProcess,
   cwd: string,
-  mcpServers: Array<{ name: string; uri: string }> = []
+  mcpServers: unknown[] = []
 ): Promise<{ sessionId: string }> {
   const initResponse = await agent.sendRequest("initialize", {
     protocolVersion: 1,
@@ -882,9 +907,8 @@ import type {
   ControlEvent,
   ReplayOptions,
   JsonRpcMessage,
-  McpServer,
 } from "./types.js"
-import { spawnAgent, initializeAgent, type AgentProcess } from "./agent.js"
+import { spawnAgent, initializeAgent } from "./agent.js"
 import { buildReplayText } from "./replay.js"
 
 export interface BridgeSession {
@@ -896,7 +920,7 @@ export async function startBridge(options: {
   agent: string | { command: string; args?: string[] }
   streamOptions: StreamOptions
   cwd: string
-  mcpServers?: McpServer[]
+  mcpServers?: unknown[]
   replayOptions?: ReplayOptions
 }): Promise<BridgeSession> {
   const {
@@ -907,12 +931,14 @@ export async function startBridge(options: {
     replayOptions = {},
   } = options
 
+  const contentType = streamOptions.contentType ?? "application/json"
+
   // Connect to or create stream
   let stream: DurableStream
   try {
     stream = await DurableStream.create({
       url: streamOptions.url,
-      contentType: streamOptions.contentType ?? "application/json",
+      contentType,
       headers: streamOptions.headers,
     })
   } catch (e: unknown) {
@@ -920,39 +946,21 @@ export async function startBridge(options: {
     if (err.code !== "CONFLICT_EXISTS") throw e
     stream = new DurableStream({
       url: streamOptions.url,
+      contentType,
       headers: streamOptions.headers,
     })
   }
 
   // Read existing history
-  const batches = await stream.read<StreamMessage>({ json: true })
-  const history: StreamMessage[] = batches.flatMap((b) => [...b.items])
-  const lastOffset =
-    batches.length > 0 ? batches[batches.length - 1]!.offset : "-1"
+  const historyResponse = await stream.stream<StreamMessage>({ json: true })
+  const history = await historyResponse.json()
 
   // Spawn agent process
   const agent = spawnAgent(agentOption)
 
-  // Initialize and create session
-  const { sessionId } = await initializeAgent(agent, cwd, mcpServers)
-
-  // Handle resume if history exists
-  if (history.length > 0) {
-    const replayText = buildReplayText(history, replayOptions)
-    if (replayText) {
-      await agent.sendRequest("session/prompt", {
-        sessionId,
-        prompt: [{ type: "text", text: replayText }],
-      })
-
-      const controlEvent: ControlEvent = {
-        direction: "agent",
-        timestamp: Date.now(),
-        type: "session_resumed",
-      }
-      await stream.append(JSON.stringify(controlEvent))
-    }
-  }
+  // Register ALL handlers BEFORE sending any messages to the agent.
+  // ACP prompt turns emit session/update notifications before the
+  // final response — handlers must be in place to capture them.
 
   // Forward agent notifications → stream
   agent.onNotification((method, params) => {
@@ -976,12 +984,68 @@ export async function startBridge(options: {
       payload: response as JsonRpcMessage,
     }
     stream.append(JSON.stringify(event))
+    // A response to session/prompt marks the end of a turn
+    turnInProgress = false
+    processQueue()
   })
+
+  // Handle agent-initiated requests (permission, fs, terminal)
+  agent.onRequest((id, method, params) => {
+    // Write to stream so clients can see/respond
+    const event: AgentEvent = {
+      direction: "agent",
+      timestamp: Date.now(),
+      payload: {
+        jsonrpc: "2.0",
+        id,
+        method,
+        params,
+      } as JsonRpcMessage,
+    }
+    stream.append(JSON.stringify(event))
+    // TODO: for unattended sessions, auto-approve permissions
+    // For now, the request is written to the stream and a client
+    // must send a response back through the stream
+  })
+
+  // Prompt queue — serializes turns so overlapping prompts don't collide
+  let turnInProgress = false
+  const promptQueue: Array<{
+    params: Record<string, unknown>
+  }> = []
+
+  function processQueue(): void {
+    if (turnInProgress || promptQueue.length === 0) return
+    turnInProgress = true
+    const { params } = promptQueue.shift()!
+    agent.sendRequest("session/prompt", { ...params, sessionId })
+  }
+
+  // Initialize and create session
+  const { sessionId } = await initializeAgent(agent, cwd, mcpServers)
+
+  // Handle resume if history exists
+  if (history.length > 0) {
+    const replayText = buildReplayText(history, replayOptions)
+    if (replayText) {
+      turnInProgress = true
+      agent.sendRequest("session/prompt", {
+        sessionId,
+        prompt: [{ type: "text", text: replayText }],
+      })
+
+      const controlEvent: ControlEvent = {
+        direction: "agent",
+        timestamp: Date.now(),
+        type: "session_resumed",
+      }
+      await stream.append(JSON.stringify(controlEvent))
+    }
+  }
 
   // Live-tail stream for user messages → forward to agent
   const abortController = new AbortController()
   const liveStream = await stream.stream<StreamMessage>({
-    offset: lastOffset,
     live: "sse",
     json: true,
     signal: abortController.signal,
@@ -996,11 +1060,9 @@ export async function startBridge(options: {
         const method = payload.method as string | undefined
 
         if (method === "session/prompt") {
-          const params = payload.params as Record<string, unknown> | undefined
-          agent.sendRequest("session/prompt", {
-            ...params,
-            sessionId,
-          })
+          const params = (payload.params as Record<string, unknown>) ?? {}
+          promptQueue.push({ params })
+          processQueue()
         } else if (method === "session/cancel") {
           agent.sendNotification("session/cancel", { sessionId })
         }
@@ -1069,7 +1131,6 @@ export type {
   ControlEvent,
   ReplayOptions,
   StreamOptions,
-  McpServer,
   JsonRpcMessage,
   JsonRpcRequest,
   JsonRpcResponse,
@@ -1208,6 +1269,7 @@ export function createStreamClient(options: StreamClientOptions): StreamClient {
   const { streamOptions, user } = options
   const stream = new DurableStream({
     url: streamOptions.url,
+    contentType: streamOptions.contentType ?? "application/json",
     headers: streamOptions.headers,
   })
 
