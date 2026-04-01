@@ -133,8 +133,7 @@ Pending request tracking:
 
 - Bridge tracks IDs of agent-initiated requests using `parseDirection`
 - Duplicate client responses for the same ID are dropped (only the first is forwarded)
-- Cancel writes cancellation response envelopes to the stream for all pending IDs, then the relay path forwards them
-- The bridge never responds to the agent directly, except by relaying what it reads from the stream
+- Cancel is the one exception to pure relay: for each pending request ID, the bridge appends a cancellation response envelope to the stream (for resume reconstruction), then sends it directly to the agent. Direct send is required because the relay loop would drop responses for IDs cleared during cancel. After resolving pending requests, the bridge sends the translated cancel signal to the agent. The agent's turn-complete response triggers the next queued prompt through the normal path.
 
 ## Public API
 

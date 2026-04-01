@@ -2366,9 +2366,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
                 response: {},
               },
             }
-            // Send directly to agent (bridge-synthesized, not client relay)
-            connection.send(adapter.translateClientIntent(cancelRaw))
-            // Record on stream for resume reconstruction
+            // Record on stream first for resume reconstruction
             const cancelEnvelope: UserEnvelope = {
               agent: adapter.agentType,
               direction: `user`,
@@ -2377,6 +2375,8 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
               raw: cancelRaw,
             }
             producer.append(JSON.stringify(cancelEnvelope))
+            // Then send to agent directly (bridge-synthesized, not relay)
+            connection.send(adapter.translateClientIntent(cancelRaw))
           }
           pendingAgentRequestIds.clear()
           // Send cancel to agent to stop the running turn
