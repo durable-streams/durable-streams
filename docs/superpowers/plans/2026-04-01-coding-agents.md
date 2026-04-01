@@ -324,7 +324,6 @@ export type BridgeEventType =
   | "session_started"
   | "session_resumed"
   | "session_ended"
-  | "prompt_sent"
 
 export interface BridgeEnvelope {
   agent: AgentType
@@ -361,6 +360,7 @@ export interface Session {
 // ============================================================================
 
 export interface ClientOptions {
+  agent: AgentType
   streamUrl: string
   user: User
   contentType?: string
@@ -2295,16 +2295,6 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
     if (turnInProgress || promptQueue.length === 0) return
     turnInProgress = true
     const prompt = promptQueue.shift()!
-
-    // Write prompt_sent control event
-    const promptSent: BridgeEnvelope = {
-      agent: adapter.agentType,
-      direction: `bridge`,
-      timestamp: Date.now(),
-      type: `prompt_sent`,
-    }
-    producer.append(JSON.stringify(promptSent))
-
     connection.send(prompt)
   }
 
@@ -2358,28 +2348,28 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         const userEnvelope = envelope as UserEnvelope
         const raw = userEnvelope.raw as Record<string, unknown>
 
-        // Handle cancel: synthesize cancellation responses for pending IDs
+        // Handle cancel: write cancellation response envelopes to stream
+        // for each pending request ID. The relay loop below will forward
+        // them to the agent when it reads them back from the stream.
         if (raw.type === `interrupt`) {
           for (const pendingId of pendingAgentRequestIds) {
-            const cancelEnvelope: AgentEnvelope = {
+            const cancelRaw = {
+              type: `control_response`,
+              response: {
+                request_id: pendingId,
+                subtype: `cancelled`,
+                response: {},
+              },
+            }
+            const cancelEnvelope: UserEnvelope = {
               agent: adapter.agentType,
-              direction: `agent`,
+              direction: `user`,
               timestamp: Date.now(),
-              raw: adapter.translateClientIntent({
-                type: `control_response`,
-                response: {
-                  request_id: pendingId,
-                  subtype: `cancelled`,
-                  response: {},
-                },
-              }),
+              user: userEnvelope.user,
+              raw: cancelRaw,
             }
             producer.append(JSON.stringify(cancelEnvelope))
-            connection.send(cancelEnvelope.raw)
           }
-          pendingAgentRequestIds.clear()
-          turnInProgress = false
-          processQueue()
           continue
         }
 
@@ -2492,6 +2482,7 @@ describe(`createClient`, () => {
   describe(`prompt`, () => {
     it(`should append a user prompt envelope to the stream`, () => {
       const client = createClient({
+        agent: `claude`,
         streamUrl: `https://example.com/v1/stream/test`,
         user,
       })
@@ -2511,6 +2502,7 @@ describe(`createClient`, () => {
   describe(`respond`, () => {
     it(`should append a response envelope to the stream`, () => {
       const client = createClient({
+        agent: `claude`,
         streamUrl: `https://example.com/v1/stream/test`,
         user,
       })
@@ -2530,6 +2522,7 @@ describe(`createClient`, () => {
   describe(`cancel`, () => {
     it(`should append a cancel envelope to the stream`, () => {
       const client = createClient({
+        agent: `claude`,
         streamUrl: `https://example.com/v1/stream/test`,
         user,
       })
@@ -2546,6 +2539,7 @@ describe(`createClient`, () => {
   describe(`close`, () => {
     it(`should flush the producer`, async () => {
       const client = createClient({
+        agent: `claude`,
         streamUrl: `https://example.com/v1/stream/test`,
         user,
       })
@@ -2577,7 +2571,7 @@ import type {
 } from "./types.js"
 
 export function createClient(options: ClientOptions): StreamClient {
-  const { streamUrl, user, contentType = `application/json` } = options
+  const { agent, streamUrl, user, contentType = `application/json` } = options
 
   const stream = new DurableStream({ url: streamUrl, contentType })
   const producerId = `client-${crypto.randomUUID()}`
@@ -2587,7 +2581,7 @@ export function createClient(options: ClientOptions): StreamClient {
 
   function writeUserEnvelope(raw: object): void {
     const envelope: UserEnvelope = {
-      agent: `claude`, // will be overridden by stream context
+      agent,
       direction: `user`,
       timestamp: Date.now(),
       user,

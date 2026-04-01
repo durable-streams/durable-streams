@@ -60,7 +60,7 @@ Every message on the stream is a JSON envelope containing the raw protocol messa
   agent: "claude" | "codex",
   direction: "bridge",
   timestamp: number,
-  type: "session_started" | "session_resumed" | "session_ended" | "prompt_sent",
+  type: "session_started" | "session_resumed" | "session_ended",
 }
 ```
 
@@ -169,18 +169,19 @@ const session = await createSession({
 import { createClient } from "@durable-streams/coding-agents/client"
 
 const client = createClient({
+  agent: "claude",
   streamUrl: "https://streams.example.com/v1/stream/my-session",
   user: { name: "Kyle", email: "kyle@example.com" },
 })
 
 // Send a prompt
-await client.prompt("Refactor the auth module")
+client.prompt("Refactor the auth module")
 
 // Respond to a permission request
-await client.respond(requestId, { behavior: "allow" })
+client.respond(requestId, { behavior: "allow" })
 
 // Cancel current turn
-await client.cancel()
+client.cancel()
 
 // Read normalized events
 for await (const event of client.events()) {
@@ -228,15 +229,9 @@ When the bridge starts with a stream that has existing history:
 
 ### Resume reconciliation
 
-The stream contains client intent, not delivered traffic. `prepareResume` must reconcile, not just reconstruct.
+Resume reconstruction includes all user prompts from stream history, regardless of whether they were forwarded before the bridge died. The agent will see them as part of its history and work through them on resume.
 
-The bridge writes a `prompt_sent` control event to the stream each time it dequeues and actually forwards a prompt to the agent. This marker distinguishes three prompt states:
-
-- **Completed**: prompt has `prompt_sent` + a subsequent turn-complete signal. Include in reconstructed session.
-- **Sent but interrupted**: prompt has `prompt_sent` but no turn-complete (bridge died mid-turn). Include in reconstructed session (the agent received it).
-- **Never sent**: prompt has no `prompt_sent` marker (was queued but the bridge died before forwarding). Re-queue on resume, do not include in reconstructed session.
-
-Other reconciliation rules:
+Reconciliation rules:
 
 - **Permission responses**: if multiple clients responded to the same request ID, include only the first by stream order (the one the bridge would have forwarded).
 - **Cancel-synthesized responses**: the bridge writes cancellation response envelopes to the stream. Include these in the reconstruction since the agent received them.
