@@ -68,7 +68,7 @@ For agent messages, `raw` is the exact NDJSON object (Claude) or JSON-RPC messag
 
 All writes to the stream (bridge and client) must use `IdempotentProducer` from `@durable-streams/client` for exactly-once semantics. Producer IDs must be stable per logical entity, not regenerated per process start (e.g., `bridge-{sessionId}` for the bridge, `client-{userId}` for clients). This ensures restart/reconnect safety.
 
-`IdempotentProducer.append()` is fire-and-forget. Client methods (`prompt()`, `respond()`, `cancel()`) must flush the producer before the returned Promise resolves, so callers know the message is durably written. Bridge shutdown (`close()`) must flush its producer before exiting.
+`IdempotentProducer.append()` is fire-and-forget, which is the right default for both bridge and client writes. The only durability requirement is at shutdown: `client.close()` and bridge `close()` must call `producer.close()` (which flushes pending writes) before exiting. Consumers should block teardown (e.g., `beforeunload`) until close completes.
 
 ## Bridge
 
