@@ -1,15 +1,17 @@
-import type { TerritoryPlayer } from "../utils/game-logic"
+import type { TerritoryCell, TerritoryPlayer } from "../utils/game-logic"
 
 /**
  * Greedy pathfinder: returns a single {dx, dy} step toward the target,
- * avoiding cells occupied by other players.
+ * avoiding cells occupied by other players and preferring unclaimed cells.
  */
 export function nextStep(
   current: { x: number; y: number },
   target: { x: number; y: number },
   others: Map<string, TerritoryPlayer>,
   cols: number,
-  rows: number
+  rows: number,
+  cells?: Map<string, TerritoryCell>,
+  myId?: string
 ): { dx: number; dy: number } {
   const diffX = target.x - current.x
   const diffY = target.y - current.y
@@ -55,14 +57,26 @@ export function nextStep(
     }
   }
 
-  for (const dir of candidates) {
+  // Filter valid moves (in bounds, not occupied by another player)
+  const valid = candidates.filter((dir) => {
     const nx = current.x + dir.dx
     const ny = current.y + dir.dy
-    if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) continue
-    if (occupied.has(`${nx},${ny}`)) continue
-    return dir
+    if (nx < 0 || nx >= cols || ny < 0 || ny >= rows) return false
+    if (occupied.has(`${nx},${ny}`)) return false
+    return true
+  })
+
+  if (valid.length === 0) return { dx: 0, dy: 0 }
+
+  // If we have cell data, prefer unclaimed cells over our own
+  if (cells && myId) {
+    const unclaimed = valid.filter((dir) => {
+      const key = `${current.x + dir.dx},${current.y + dir.dy}`
+      const cell = cells.get(key)
+      return !cell || cell.owner !== myId
+    })
+    if (unclaimed.length > 0) return unclaimed[0]
   }
 
-  // All blocked — stay put
-  return { dx: 0, dy: 0 }
+  return valid[0]
 }

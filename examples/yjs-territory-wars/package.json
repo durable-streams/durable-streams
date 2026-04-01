@@ -7,6 +7,8 @@
     "dev": "vite",
     "dev:server": "tsx --env-file=.env server.ts",
     "build": "tsc && vite build",
+    "build:server": "esbuild server.ts --bundle --platform=node --target=node22 --format=esm --outfile=dist/server.mjs",
+    "deploy": "pnpm build:server && fly deploy",
     "preview": "vite preview"
   },
   "devDependencies": {
@@ -15,6 +17,7 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^5.1.1",
     "playwright": "^1.58.2",
+    "esbuild": "^0.25.0",
     "tsx": "^4.21.0",
     "typescript": "~5.9.3",
     "vite": "^7.2.4"

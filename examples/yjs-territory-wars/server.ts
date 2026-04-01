@@ -1,4 +1,3 @@
-import "dotenv/config"
 import { AgentServer } from "./src/agent/agent-server"
 
 function required(name: string): string {

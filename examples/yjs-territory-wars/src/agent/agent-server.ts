@@ -1,6 +1,6 @@
 import { DurableStream } from "@durable-streams/client"
 import { REGISTRY_TTL_SECONDS } from "../utils/schemas"
-import { BOT_NAMES } from "../utils/game-logic"
+import { BOT_NAMES, PLAYER_COLORS } from "../utils/game-logic"
 import { AIPlayer } from "./ai-player"
 import { HaikuClient } from "./haiku-client"
 import type { RoomMetadata } from "../utils/schemas"
@@ -145,7 +145,7 @@ export class AgentServer {
         if (metadata.expiresAt > now) {
           console.log(`[AgentServer] New room detected: ${roomId}`)
           this.spawnBotsForRoom(roomId)
-        } else {
+        } else if (metadata.expiresAt <= now) {
           console.log(`[AgentServer] New room already expired: ${roomId}`)
         }
       }
@@ -176,24 +176,17 @@ export class AgentServer {
 
     console.log(`[AgentServer] Spawning ${NUM_BOTS} bot(s) for: ${roomId}`)
 
-    // Only the first bot monitors for humans leaving — one callback is enough
-    const onNoHumans = () => {
-      console.log(
-        `[AgentServer] All humans left room ${roomId} — destroying bots`
-      )
-      this.destroyBotsForRoom(roomId)
-    }
-
     const players: Array<AIPlayer> = []
     for (let i = 0; i < NUM_BOTS; i++) {
       const name = BOT_NAMES[i]
+      const color = PLAYER_COLORS[PLAYER_COLORS.length - 1 - i]
       const player = new AIPlayer(
         name,
         roomId,
         this.yjsBaseUrl,
         this.yjsHeaders,
         this.haikuClient,
-        i === 0 ? onNoHumans : undefined
+        color
       )
       players.push(player)
     }

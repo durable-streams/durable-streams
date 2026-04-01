@@ -58,8 +58,7 @@ export function Lobby({
   const [sizeIdx, setSizeIdx] = useState(1)
   const [isCreating, setIsCreating] = useState(false)
   const [roomPage, setRoomPage] = useState(0)
-  const [showJoinModal, setShowJoinModal] = useState(false)
-  const [joinRoomName, setJoinRoomName] = useState(``)
+  const [joinRoomId, setJoinRoomId] = useState(``)
 
   // Tick every second so countdowns update
   const [, setTick] = useState(0)
@@ -123,7 +122,7 @@ export function Lobby({
           lineHeight: 1.6,
         }}
       >
-        Claim 20% territory or lead when time runs out.
+        Claim 30% territory or lead when time runs out.
       </div>
 
       {/* Player Name */}
@@ -174,175 +173,156 @@ export function Lobby({
           ))}
         </div>
 
-        <div style={{ display: `flex`, gap: 6 }}>
-          <button
-            className="lobby-btn"
-            style={{
-              ...styles.createBtn,
-              flex: 1,
-              opacity: isCreating ? 0.6 : 1,
-            }}
-            onClick={createRoom}
-            disabled={isCreating}
-          >
-            {isCreating ? `STARTING...` : `START`}
-          </button>
-          <button
-            className="lobby-btn"
-            style={{ ...styles.joinBtn, flex: 1 }}
-            onClick={() => setShowJoinModal(true)}
-          >
-            JOIN
-          </button>
-        </div>
+        <button
+          className="lobby-btn"
+          style={{
+            ...styles.createBtn,
+            opacity: isCreating ? 0.6 : 1,
+          }}
+          onClick={createRoom}
+          disabled={isCreating}
+        >
+          {isCreating ? `STARTING...` : `START`}
+        </button>
       </div>
 
-      {/* Join modal */}
-      {showJoinModal && (
-        <div
-          style={{
-            position: `fixed`,
-            inset: 0,
-            background: `rgba(27,27,31,0.85)`,
-            display: `flex`,
-            alignItems: `center`,
-            justifyContent: `center`,
-            zIndex: 10,
-          }}
-          onClick={() => setShowJoinModal(false)}
-        >
+      {/* Rooms */}
+      <div style={styles.card}>
+        <div style={styles.cardTitle}>ROOMS</div>
+        <div style={{ display: `flex`, flexDirection: `column`, gap: 6 }}>
+          {sortedRooms.slice(roomPage * 3, roomPage * 3 + 3).map((room) => (
+            <RoomItem
+              key={room.roomId}
+              room={room}
+              onJoin={() => onJoinRoom(room.roomId)}
+            />
+          ))}
+          {/* Join by room ID — last row, same style as RoomItem */}
           <div
-            style={{ ...styles.card, marginBottom: 0 }}
-            onClick={(e) => e.stopPropagation()}
+            style={{
+              display: `flex`,
+              alignItems: `center`,
+              justifyContent: `space-between`,
+              background: PALETTE.bg,
+              border: `1px solid ${PALETTE.border}`,
+              padding: `8px 12px`,
+            }}
           >
-            <div style={styles.cardTitle}>JOIN ROOM</div>
             <input
-              style={styles.input}
-              value={joinRoomName}
-              onChange={(e) => setJoinRoomName(e.target.value)}
-              placeholder="enter room name"
-              autoFocus
+              style={{
+                fontSize: 8,
+                color: PALETTE.text,
+                fontFamily: `inherit`,
+                background: `transparent`,
+                border: `none`,
+                outline: `none`,
+                flex: 1,
+                padding: 0,
+              }}
+              value={joinRoomId}
+              onChange={(e) => setJoinRoomId(e.target.value)}
+              placeholder="room-id"
               onKeyDown={(e) => {
-                if (e.key === `Enter` && joinRoomName.trim()) {
+                if (e.key === `Enter` && joinRoomId.trim()) {
                   const existing = sortedRooms.find(
-                    (r) => r.name === joinRoomName.trim()
+                    (r) => r.name === joinRoomId.trim()
                   )
                   onJoinRoom(
                     existing
                       ? existing.roomId
-                      : buildRoomId(joinRoomName.trim(), BOARD_SIZES[sizeIdx])
+                      : buildRoomId(joinRoomId.trim(), BOARD_SIZES[sizeIdx])
                   )
                 }
               }}
             />
-            <div style={{ display: `flex`, gap: 6 }}>
-              <button
-                className="lobby-btn"
-                style={{ ...styles.joinBtn, flex: 1 }}
-                onClick={() => setShowJoinModal(false)}
-              >
-                CANCEL
-              </button>
+            {joinRoomId.trim() && (
               <button
                 className="lobby-btn"
                 style={{
-                  ...styles.createBtn,
-                  flex: 1,
-                  opacity: joinRoomName.trim() ? 1 : 0.4,
+                  background: PALETTE.accent,
+                  color: `#000`,
+                  border: `none`,
+                  fontFamily: `inherit`,
+                  fontSize: 7,
+                  padding: `4px 12px`,
+                  cursor: `pointer`,
+                  letterSpacing: 1,
+                  flexShrink: 0,
                 }}
-                disabled={!joinRoomName.trim()}
                 onClick={() => {
-                  if (joinRoomName.trim()) {
-                    const existing = sortedRooms.find(
-                      (r) => r.name === joinRoomName.trim()
-                    )
-                    onJoinRoom(
-                      existing
-                        ? existing.roomId
-                        : buildRoomId(joinRoomName.trim(), BOARD_SIZES[sizeIdx])
-                    )
-                  }
+                  const existing = sortedRooms.find(
+                    (r) => r.name === joinRoomId.trim()
+                  )
+                  onJoinRoom(
+                    existing
+                      ? existing.roomId
+                      : buildRoomId(joinRoomId.trim(), BOARD_SIZES[sizeIdx])
+                  )
                 }}
               >
                 JOIN
               </button>
-            </div>
+            )}
           </div>
         </div>
-      )}
-
-      {/* Active Rooms */}
-      {sortedRooms.length > 0 && (
-        <div style={styles.card}>
-          <div style={styles.cardTitle}>ROOMS</div>
-          <div style={{ display: `flex`, flexDirection: `column`, gap: 6 }}>
-            {sortedRooms.slice(roomPage * 3, roomPage * 3 + 3).map((room) => (
-              <RoomItem
-                key={room.roomId}
-                room={room}
-                onJoin={() => onJoinRoom(room.roomId)}
-              />
-            ))}
-          </div>
-          {sortedRooms.length > 3 && (
-            <div
+        {sortedRooms.length > 3 && (
+          <div
+            style={{
+              display: `flex`,
+              justifyContent: `center`,
+              gap: 8,
+              marginTop: 10,
+            }}
+          >
+            <button
+              className="lobby-btn"
               style={{
-                display: `flex`,
-                justifyContent: `center`,
-                gap: 8,
-                marginTop: 10,
+                fontFamily: `inherit`,
+                fontSize: 6,
+                background: PALETTE.bg,
+                color: PALETTE.dim,
+                border: `1px solid ${PALETTE.border}`,
+                cursor: `pointer`,
+                width: 28,
+                padding: `4px 0`,
+                opacity: roomPage === 0 ? 0.3 : 1,
+              }}
+              disabled={roomPage === 0}
+              onClick={() => setRoomPage((p) => p - 1)}
+            >
+              &lt;
+            </button>
+            <span
+              style={{
+                fontSize: 7,
+                color: PALETTE.dim,
+                lineHeight: `24px`,
               }}
             >
-              <button
-                className="lobby-btn"
-                style={{
-                  fontFamily: `inherit`,
-                  fontSize: 6,
-                  background: PALETTE.bg,
-                  color: PALETTE.dim,
-                  border: `1px solid ${PALETTE.border}`,
-                  cursor: `pointer`,
-                  width: 28,
-                  padding: `4px 0`,
-                  opacity: roomPage === 0 ? 0.3 : 1,
-                }}
-                disabled={roomPage === 0}
-                onClick={() => setRoomPage((p) => p - 1)}
-              >
-                &lt;
-              </button>
-              <span
-                style={{
-                  fontSize: 7,
-                  color: PALETTE.dim,
-                  lineHeight: `24px`,
-                }}
-              >
-                {roomPage + 1}/{Math.ceil(sortedRooms.length / 3)}
-              </span>
-              <button
-                className="lobby-btn"
-                style={{
-                  fontFamily: `inherit`,
-                  fontSize: 6,
-                  background: PALETTE.bg,
-                  color: PALETTE.dim,
-                  border: `1px solid ${PALETTE.border}`,
-                  cursor: `pointer`,
-                  width: 28,
-                  padding: `4px 0`,
-                  opacity:
-                    roomPage >= Math.ceil(sortedRooms.length / 3) - 1 ? 0.3 : 1,
-                }}
-                disabled={roomPage >= Math.ceil(sortedRooms.length / 3) - 1}
-                onClick={() => setRoomPage((p) => p + 1)}
-              >
-                &gt;
-              </button>
-            </div>
-          )}
-        </div>
-      )}
+              {roomPage + 1}/{Math.ceil(sortedRooms.length / 3)}
+            </span>
+            <button
+              className="lobby-btn"
+              style={{
+                fontFamily: `inherit`,
+                fontSize: 6,
+                background: PALETTE.bg,
+                color: PALETTE.dim,
+                border: `1px solid ${PALETTE.border}`,
+                cursor: `pointer`,
+                width: 28,
+                padding: `4px 0`,
+                opacity:
+                  roomPage >= Math.ceil(sortedRooms.length / 3) - 1 ? 0.3 : 1,
+              }}
+              disabled={roomPage >= Math.ceil(sortedRooms.length / 3) - 1}
+              onClick={() => setRoomPage((p) => p + 1)}
+            >
+              &gt;
+            </button>
+          </div>
+        )}
+      </div>
     </div>
   )
 }
@@ -466,17 +446,6 @@ const styles: Record<string, React.CSSProperties> = {
     background: PALETTE.accent,
     color: `#000`,
     border: `none`,
-    cursor: `pointer`,
-    letterSpacing: 2,
-  },
-  joinBtn: {
-    width: `100%`,
-    padding: `10px 0`,
-    fontSize: 8,
-    fontFamily: `inherit`,
-    background: `transparent`,
-    color: PALETTE.accent,
-    border: `1px solid ${PALETTE.accent}`,
     cursor: `pointer`,
     letterSpacing: 2,
   },

@@ -13,7 +13,6 @@ import {
   getPlayersMap,
   initGameTimer,
   parseRoomConfig,
-  pickUniqueColor,
   readAllPlayers,
   readCells,
   readPlayers,
@@ -43,12 +42,11 @@ export class AIPlayer {
   private strategyTimer: ReturnType<typeof setInterval> | null = null
   private timerCheckTimer: ReturnType<typeof setInterval> | null = null
   private destroyed = false
+  private gameWasOver = false
 
   private cols: number
   private rows: number
   private haiku: HaikuClient
-  private onNoHumans: (() => void) | null = null
-  private hadHumans = false
 
   constructor(
     name: string,
@@ -56,12 +54,11 @@ export class AIPlayer {
     yjsBaseUrl: string,
     yjsHeaders: Record<string, string>,
     haikuClient: HaikuClient,
-    onNoHumans?: () => void
+    color: string
   ) {
-    this.onNoHumans = onNoHumans ?? null
-    this.playerName = `Bot-${name}`
+    this.playerName = `Haiku-${name}`
     this.playerId = `bot-${name.toLowerCase()}-${Math.random().toString(36).slice(2, 8)}`
-    this.playerColor = `` // assigned on sync when we can see other players
+    this.playerColor = color
     this.haiku = haikuClient
 
     const config = parseRoomConfig(roomId)
@@ -100,9 +97,6 @@ export class AIPlayer {
     if (this.started) return
     this.started = true
 
-    // Pick a unique color not used by other players
-    this.playerColor = pickUniqueColor(this.playerName, this.doc)
-
     // Pick a start position spread across the board
     this.x = Math.floor(Math.random() * this.cols)
     this.y = Math.floor(Math.random() * this.rows)
@@ -113,7 +107,6 @@ export class AIPlayer {
       x: this.x,
       y: this.y,
       name: this.playerName,
-      color: this.playerColor,
     })
 
     // Claim starting cell
@@ -137,32 +130,10 @@ export class AIPlayer {
     // Check timer expiry
     this.timerCheckTimer = setInterval(() => this.checkTimerExpiry(), 1000)
 
-    // Monitor awareness for human players leaving
-    this.awareness.on(`change`, () => this.checkHumansPresent())
-
     // Do an initial strategy call
     void this.updateStrategy()
 
     console.log(`[${this.playerName}] joined at (${this.x}, ${this.y})`)
-  }
-
-  private checkHumansPresent(): void {
-    if (this.destroyed) return
-
-    let humanCount = 0
-    this.awareness.getStates().forEach((state, clientId) => {
-      if (clientId === this.awareness.clientID) return
-      if (state.type === `human`) humanCount++
-    })
-
-    if (humanCount > 0) {
-      this.hadHumans = true
-    } else if (this.hadHumans && humanCount === 0) {
-      console.log(
-        `[${this.playerName}] All humans left the room — triggering shutdown`
-      )
-      this.onNoHumans?.()
-    }
   }
 
   private checkTimerExpiry(): void {
@@ -195,27 +166,97 @@ export class AIPlayer {
     }
   }
 
+  private resetForRematch(): void {
+    console.log(`[${this.playerName}] Rematch detected — resetting`)
+    this.gameWasOver = false
+    this.stunnedUntil = 0
+    this.target = null
+
+    // Pick a new random starting position
+    this.x = Math.floor(Math.random() * this.cols)
+    this.y = Math.floor(Math.random() * this.rows)
+
+    // Re-register in players map and claim starting cell
+    const playersMap = getPlayersMap(this.doc)
+    playersMap.set(this.playerId, {
+      x: this.x,
+      y: this.y,
+      name: this.playerName,
+    })
+    const cellsMap = getCellsMap(this.doc)
+    this.doc.transact(() => {
+      cellsMap.set(`${this.x},${this.y}`, {
+        owner: this.playerId,
+        claimedAt: Date.now(),
+      })
+    })
+
+    initGameTimer(this.doc)
+    void this.updateStrategy()
+  }
+
+  private pickNearbyUnclaimedTarget(): { x: number; y: number } {
+    const cells = readCells(this.doc)
+    const range = 8
+    const candidates: Array<{ x: number; y: number }> = []
+    for (let dy = -range; dy <= range; dy++) {
+      for (let dx = -range; dx <= range; dx++) {
+        const x = this.x + dx
+        const y = this.y + dy
+        if (x < 0 || x >= this.cols || y < 0 || y >= this.rows) continue
+        const cell = cells.get(`${x},${y}`)
+        if (!cell || cell.owner !== this.playerId) {
+          candidates.push({ x, y })
+        }
+      }
+    }
+    if (candidates.length > 0) {
+      return candidates[Math.floor(Math.random() * candidates.length)]
+    }
+    // Fallback: random position
+    return {
+      x: Math.floor(Math.random() * this.cols),
+      y: Math.floor(Math.random() * this.rows),
+    }
+  }
+
   private doMove(): void {
     if (this.destroyed) return
-    if (getGameEndedAt(this.doc) !== null) return
-    if (!this.target) return
+    const gameEnded = getGameEndedAt(this.doc) !== null
+    if (gameEnded) {
+      this.gameWasOver = true
+      return
+    }
+    if (this.gameWasOver) {
+      this.resetForRematch()
+      return
+    }
+    if (!this.target) {
+      this.target = this.pickNearbyUnclaimedTarget()
+    }
 
     const others = readPlayers(this.doc, this.playerId)
+    const cells = readCells(this.doc)
     const dir = nextStep(
       { x: this.x, y: this.y },
       this.target,
       others,
       this.cols,
-      this.rows
+      this.rows,
+      cells,
+      this.playerId
     )
 
-    if (dir.dx === 0 && dir.dy === 0) return
+    if (dir.dx === 0 && dir.dy === 0) {
+      // Reached target — pick a nearby unclaimed cell to keep moving
+      this.target = this.pickNearbyUnclaimedTarget()
+      return
+    }
 
     const result = executeMove(
       this.doc,
       this.playerId,
       this.playerName,
-      this.playerColor,
       { x: this.x, y: this.y },
       dir,
       this.cols,
@@ -237,10 +278,10 @@ export class AIPlayer {
 
     // Check win condition
     if (getGameEndedAt(this.doc) === null) {
-      const cells = readCells(this.doc)
+      const currentCells = readCells(this.doc)
       const totalCells = this.cols * this.rows
       const playersMap = getPlayersMap(this.doc)
-      const winner = findWinner(cells, totalCells, playersMap)
+      const winner = findWinner(currentCells, totalCells, playersMap)
       if (winner) {
         console.log(
           `[${this.playerName}] ${winner.name} wins with ${winner.pct}%!`
@@ -272,20 +313,17 @@ export class AIPlayer {
         timeRemainingMs
       )
 
-      const result = await this.haiku.getStrategy(summary)
+      const result = await this.haiku.getStrategy(summary, this.playerName)
       this.target = result.target
 
       console.log(
-        `[${this.playerName}] Strategy: ${result.strategy} → (${result.target.x}, ${result.target.y})`
+        `[${this.playerName}] Target: (${result.target.x}, ${result.target.y}) | pos: (${this.x}, ${this.y}) | dist: ${Math.abs(result.target.x - this.x) + Math.abs(result.target.y - this.y)}`
       )
     } catch (err) {
       console.error(`[${this.playerName}] Strategy error:`, err)
       // Keep current target or pick random
       if (!this.target) {
-        this.target = {
-          x: Math.floor(Math.random() * this.cols),
-          y: Math.floor(Math.random() * this.rows),
-        }
+        this.target = this.pickNearbyUnclaimedTarget()
       }
     }
   }

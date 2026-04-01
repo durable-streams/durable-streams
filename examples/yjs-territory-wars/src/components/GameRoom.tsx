@@ -3,7 +3,7 @@ import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 import { YjsProvider } from "@durable-streams/y-durable-streams"
 import { ROOM_TTL_RENEWAL_MS, ROOM_TTL_SECONDS } from "../utils/schemas"
-import { getColor, hashName, pickUniqueColor } from "../utils/game-logic"
+import { HUMAN_PLAYER_COLOR } from "../utils/game-logic"
 import { GameRoomContext } from "./game-room-context"
 import { ScoresProvider } from "./scores-context"
 import { useRegistryContext } from "./registry-context"
@@ -32,19 +32,19 @@ export function GameRoom({
 }: GameRoomProps) {
   const { registryDB } = useRegistryContext()
 
-  const [{ playerId, playerColor, doc, awareness }] = useState(() => {
+  const [{ playerId, doc, awareness }] = useState(() => {
     const id = `player-${Math.random().toString(36).slice(2, 10)}`
-    const color = getColor(hashName(playerName))
     const d = new Y.Doc()
     const a = new Awareness(d)
     a.setLocalState({
-      user: { name: playerName, color },
+      user: { name: playerName },
       playerId: id,
       type: `human`,
     })
-    return { playerId: id, playerColor: color, doc: d, awareness: a }
+    return { playerId: id, doc: d, awareness: a }
   })
 
+  const playerColor = HUMAN_PLAYER_COLOR
   const [isLoading, setIsLoading] = useState(true)
   const [isSynced, setIsSynced] = useState(false)
   const [error, setError] = useState<Error | null>(null)
@@ -60,21 +60,9 @@ export function GameRoom({
       connect: false,
     })
 
-    let colorAssigned = false
     provider.on(`synced`, (synced: boolean) => {
       setIsSynced(synced)
-      if (synced) {
-        setIsLoading(false)
-        // Assign unique color once on first sync (cosmetic awareness update only)
-        if (!colorAssigned) {
-          colorAssigned = true
-          const uniqueColor = pickUniqueColor(playerName, doc)
-          awareness.setLocalState({
-            ...awareness.getLocalState(),
-            user: { name: playerName, color: uniqueColor },
-          })
-        }
-      }
+      if (synced) setIsLoading(false)
     })
 
     provider.on(`status`, (status: YjsProviderStatus) => {
@@ -89,7 +77,7 @@ export function GameRoom({
     // Re-set awareness in case React Strict Mode cleared it
     if (awareness.getLocalState() === null) {
       awareness.setLocalState({
-        user: { name: playerName, color: playerColor },
+        user: { name: playerName },
         playerId,
         type: `human`,
       })
@@ -102,16 +90,7 @@ export function GameRoom({
       provider.destroy()
       providerRef.current = null
     }
-  }, [
-    roomId,
-    doc,
-    awareness,
-    yjsBaseUrl,
-    yjsHeaders,
-    playerName,
-    playerColor,
-    playerId,
-  ])
+  }, [roomId, doc, awareness, yjsBaseUrl, yjsHeaders, playerName, playerId])
 
   // Renew room TTL periodically so active rooms don't expire.
   // Only the elected writer (lowest playerId) performs the renewal.
