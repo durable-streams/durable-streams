@@ -21,39 +21,49 @@ export interface TerritoryPlayer {
 // Constants
 // ============================================================================
 
-export const DEFAULT_COLS = 128
-export const DEFAULT_ROWS = 128
+export const DEFAULT_COLS = 64
+export const DEFAULT_ROWS = 64
 export const MOVE_INTERVAL = 120
 export const STUN_DURATION = 1500
 export const WIN_THRESHOLD = 0.2
 export const GAME_DURATION_MS = 120_000 // 2 minutes
 
 export const PLAYER_COLORS = [
-  `#00E5FF`,
-  `#FF3D71`,
-  `#6eeb83`,
-  `#ffbc42`,
-  `#ee6352`,
-  `#9ac2c9`,
-  `#8acb88`,
-  `#1be7ff`,
-  `#C77DFF`,
-  `#72EFDD`,
-  `#F72585`,
-  `#4ECDC4`,
+  `#FF0055`,
+  `#00FF88`,
+  `#FFEE00`,
+  `#00CCFF`,
+  `#FF6600`,
+  `#AA00FF`,
+  `#00FFCC`,
+  `#FF2299`,
+  `#33FF00`,
+  `#FF00AA`,
+  `#00AAFF`,
+  `#FFAA00`,
+  `#CC00FF`,
+  `#00FF55`,
+  `#FF4400`,
+  `#0066FF`,
 ]
 
 export const BOT_NAMES = [
-  `Alpha`,
-  `Bravo`,
-  `Charlie`,
-  `Delta`,
-  `Echo`,
-  `Foxtrot`,
-  `Golf`,
-  `Hotel`,
-  `India`,
-  `Juliet`,
+  `Blaze`,
+  `Viper`,
+  `Nova`,
+  `Storm`,
+  `Fang`,
+  `Rogue`,
+  `Pulse`,
+  `Neon`,
+  `Drift`,
+  `Apex`,
+  `Phantom`,
+  `Bolt`,
+  `Cipher`,
+  `Havoc`,
+  `Spark`,
+  `Turbo`,
 ]
 
 // ============================================================================

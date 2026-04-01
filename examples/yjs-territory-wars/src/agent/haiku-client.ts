@@ -4,7 +4,7 @@ import type { TerritoryCell, TerritoryPlayer } from "../utils/game-logic"
 const SYSTEM_PROMPT = `You are an AI player in Territory Wars, a multiplayer grid-based territory capture game.
 
 Rules:
-- The board is a 128x128 grid (coordinates 0-127)
+- The board is a 64x64 grid (coordinates 0-63)
 - You can only move one cell per step to an adjacent cell (up/down/left/right)
 - You cannot jump or teleport — movement is always to a neighboring cell
 - You move at a rate of ~8 steps per second (one step every 120ms)
@@ -15,16 +15,17 @@ Rules:
 - First to 20% territory wins, or highest % after 2 minutes
 - Cells from disconnected players become reclaimable
 
-Strategy tips:
+Strategy — IMPORTANT, focus on small enclosures:
 - You can travel ~25 cells between strategy calls — pick targets within that range
-- Enclosing large empty areas is the fastest way to gain territory
-- The most efficient enclosure is a rectangle: walk one edge, turn, walk the perpendicular edge, creating an L that closes with your previous trail
+- Close SMALL areas (5x5 to 10x10 rectangles) rather than large ones — small enclosures are faster to complete and less likely to be interrupted
+- Walk along a board edge or your own trail, then turn perpendicular to close a rectangle
+- A board edge acts as a free wall — use corners and edges to minimize steps needed
 - Avoid other players to prevent stun (losing ~12 steps is very costly)
-- Work edges and board borders to create enclosures efficiently — a board edge acts as a free wall
-- Prioritize unclaimed regions over stealing from opponents
-- With 2 minutes and ~8 steps/sec you have ~960 total steps — plan enclosures that maximize area per step
+- After completing one enclosure, pick an adjacent unclaimed area and repeat
+- Prioritize unclaimed regions near your existing territory to expand outward
+- With 2 minutes and ~8 steps/sec you have ~960 total steps — many small enclosures beat one large attempt
 
-Respond with JSON only: { "target": { "x": <int 0-127>, "y": <int 0-127> }, "strategy": "<brief reason>" }`
+Respond with JSON only: { "target": { "x": <int 0-63>, "y": <int 0-63> }, "strategy": "<brief reason>" }`
 
 interface StrategyResponse {
   target: { x: number; y: number }
@@ -53,8 +54,8 @@ interface BoardSummary {
   }>
 }
 
-const SECTOR_SIZE = 32
-const SECTOR_GRID = 4 // 128 / 32
+const SECTOR_SIZE = 16
+const SECTOR_GRID = 4 // 64 / 16
 
 export function buildBoardSummary(
   myPosition: { x: number; y: number },
@@ -161,7 +162,7 @@ function formatSummary(summary: BoardSummary): string {
   lines.push(``)
 
   if (summary.sectors.length > 0) {
-    lines.push(`Sector map (4x4 grid, each sector is 32x32 cells):`)
+    lines.push(`Sector map (4x4 grid, each sector is 16x16 cells):`)
     for (const s of summary.sectors) {
       lines.push(
         `  [${s.row},${s.col}]: unclaimed=${s.unclaimed}% mine=${s.mine}% opponent=${s.opponent}%`
@@ -209,9 +210,9 @@ export class HaikuClient {
         typeof parsed.target.x === `number` &&
         typeof parsed.target.y === `number` &&
         parsed.target.x >= 0 &&
-        parsed.target.x < 128 &&
+        parsed.target.x < 64 &&
         parsed.target.y >= 0 &&
-        parsed.target.y < 128
+        parsed.target.y < 64
       ) {
         return parsed
       }
@@ -222,8 +223,8 @@ export class HaikuClient {
     // Fallback: pick a random position
     return {
       target: {
-        x: Math.floor(Math.random() * 128),
-        y: Math.floor(Math.random() * 128),
+        x: Math.floor(Math.random() * 64),
+        y: Math.floor(Math.random() * 64),
       },
       strategy: `random fallback`,
     }
