@@ -2351,9 +2351,11 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         const userEnvelope = envelope as UserEnvelope
         const raw = userEnvelope.raw as Record<string, unknown>
 
-        // Handle cancel: synthesize cancellation responses for pending
-        // permission requests, then send the cancel to the agent to stop
-        // the running turn.
+        // Handle cancel: resolve pending permission requests directly
+        // to the agent, record them on the stream for resume, then send
+        // the cancel signal. Do NOT call processQueue() — the agent will
+        // emit a turn-complete after processing the cancel, which triggers
+        // the next prompt through the normal onMessage path.
         if (raw.type === `interrupt`) {
           for (const pendingId of pendingAgentRequestIds) {
             const cancelRaw = {
@@ -2364,6 +2366,9 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
                 response: {},
               },
             }
+            // Send directly to agent (bridge-synthesized, not client relay)
+            connection.send(adapter.translateClientIntent(cancelRaw))
+            // Record on stream for resume reconstruction
             const cancelEnvelope: UserEnvelope = {
               agent: adapter.agentType,
               direction: `user`,
@@ -2376,8 +2381,6 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
           pendingAgentRequestIds.clear()
           // Send cancel to agent to stop the running turn
           connection.send(adapter.translateClientIntent(raw))
-          turnInProgress = false
-          processQueue()
           continue
         }
 
