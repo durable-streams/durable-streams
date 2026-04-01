@@ -1858,17 +1858,20 @@ export class CodexAdapter implements AgentAdapter {
     for (const envelope of history) {
       if (envelope.direction === `bridge`) continue
 
+      // For user envelopes, translate generic intent to native Codex JSON-RPC
+      let raw = envelope.raw
       if (envelope.direction === `user`) {
-        const raw = envelope.raw as Record<string, unknown>
-        if (raw.type === `control_response`) {
-          const response = raw.response as Record<string, unknown>
+        const r = raw as Record<string, unknown>
+        if (r.type === `control_response`) {
+          const response = r.response as Record<string, unknown>
           const requestId = response?.request_id as string | number
           if (respondedRequestIds.has(requestId)) continue
           respondedRequestIds.add(requestId)
         }
+        raw = this.translateClientIntent(raw)
       }
 
-      let rawStr = JSON.stringify(envelope.raw)
+      let rawStr = JSON.stringify(raw)
 
       if (options.rewritePaths) {
         for (const [from, to] of Object.entries(options.rewritePaths)) {
@@ -2348,9 +2351,9 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         const userEnvelope = envelope as UserEnvelope
         const raw = userEnvelope.raw as Record<string, unknown>
 
-        // Handle cancel: write cancellation response envelopes to stream
-        // for each pending request ID. The relay loop below will forward
-        // them to the agent when it reads them back from the stream.
+        // Handle cancel: synthesize cancellation responses for pending
+        // permission requests, then send the cancel to the agent to stop
+        // the running turn.
         if (raw.type === `interrupt`) {
           for (const pendingId of pendingAgentRequestIds) {
             const cancelRaw = {
@@ -2370,6 +2373,11 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
             }
             producer.append(JSON.stringify(cancelEnvelope))
           }
+          pendingAgentRequestIds.clear()
+          // Send cancel to agent to stop the running turn
+          connection.send(adapter.translateClientIntent(raw))
+          turnInProgress = false
+          processQueue()
           continue
         }
 
