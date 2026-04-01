@@ -32,23 +32,16 @@ export function GameRoom({
 }: GameRoomProps) {
   const { registryDB } = useRegistryContext()
 
-  const [{ playerId }] = useState(() => ({
-    playerId: `player-${Math.random().toString(36).slice(2, 10)}`,
-  }))
-
-  // Temporary color until synced — will be replaced with a unique one
-  const [playerColor, setPlayerColor] = useState(() =>
-    getColor(hashName(playerName))
-  )
-
-  const [{ doc, awareness }] = useState(() => {
+  const [{ playerId, playerColor, doc, awareness }] = useState(() => {
+    const id = `player-${Math.random().toString(36).slice(2, 10)}`
+    const color = getColor(hashName(playerName))
     const d = new Y.Doc()
     const a = new Awareness(d)
     a.setLocalState({
-      user: { name: playerName, color: getColor(hashName(playerName)) },
-      playerId,
+      user: { name: playerName, color },
+      playerId: id,
     })
-    return { doc: d, awareness: a }
+    return { playerId: id, playerColor: color, doc: d, awareness: a }
   })
 
   const [isLoading, setIsLoading] = useState(true)
@@ -66,17 +59,20 @@ export function GameRoom({
       connect: false,
     })
 
+    let colorAssigned = false
     provider.on(`synced`, (synced: boolean) => {
       setIsSynced(synced)
       if (synced) {
         setIsLoading(false)
-        // Pick a color not used by any other player
-        const uniqueColor = pickUniqueColor(playerName, doc)
-        setPlayerColor(uniqueColor)
-        awareness.setLocalState({
-          ...awareness.getLocalState(),
-          user: { name: playerName, color: uniqueColor },
-        })
+        // Assign unique color once on first sync (cosmetic awareness update only)
+        if (!colorAssigned) {
+          colorAssigned = true
+          const uniqueColor = pickUniqueColor(playerName, doc)
+          awareness.setLocalState({
+            ...awareness.getLocalState(),
+            user: { name: playerName, color: uniqueColor },
+          })
+        }
       }
     })
 
