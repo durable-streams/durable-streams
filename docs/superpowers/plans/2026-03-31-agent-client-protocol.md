@@ -846,10 +846,6 @@ export async function initializeAgent(
   const initResponse = await agent.sendRequest("initialize", {
     protocolVersion: 1,
     capabilities: {},
-    clientCapabilities: {
-      fs: { readTextFile: true, writeTextFile: true },
-      terminal: true,
-    },
     clientInfo: { name: "durable-streams-bridge", version: "0.1.0" },
   })
 
@@ -995,79 +991,17 @@ export async function startBridge(options: {
     processQueue()
   })
 
-  // Handle agent-initiated requests (permission, fs, terminal).
-  // The bridge runs in the sandbox alongside the agent, so it
-  // handles these locally rather than forwarding to a remote client.
-  const pendingPermissionIds = new Set<number | string>()
-  const respondedIds = new Set<number | string>()
-
+  // Forward agent-initiated requests → stream.
+  // The bridge does NOT handle these locally — clients respond
+  // through the stream and the bridge relays responses back.
   agent.onRequest((id, method, params) => {
-    // Write to stream so clients can observe
     const event: AgentEvent = {
       direction: "agent",
       timestamp: Date.now(),
       payload: { jsonrpc: "2.0", id, method, params } as JsonRpcMessage,
     }
     stream.append(JSON.stringify(event))
-
-    if (method === "session/request_permission") {
-      pendingPermissionIds.add(id)
-    }
-    handleAgentRequest(id, method, params)
   })
-
-  async function handleAgentRequest(
-    id: number | string,
-    method: string,
-    params: unknown
-  ): Promise<void> {
-    if (respondedIds.has(id)) return
-    const p = params as Record<string, unknown> | undefined
-    try {
-      let result: unknown
-      if (method === "session/request_permission") {
-        const options = (p?.options as Array<{ id: string }>) ?? []
-        const firstOptionId = options[0]?.id ?? "allow"
-        result = { outcome: { outcome: "selected", optionId: firstOptionId } }
-      } else if (method === "fs/read_text_file") {
-        const fs = await import("node:fs/promises")
-        const content = await fs.readFile(p?.path as string, "utf-8")
-        result = { content }
-      } else if (method === "fs/write_text_file") {
-        const fs = await import("node:fs/promises")
-        await fs.writeFile(p?.path as string, p?.content as string, "utf-8")
-        result = {}
-      } else if (method === "terminal/create") {
-        const { execFile } = await import("node:child_process")
-        const { promisify } = await import("node:util")
-        const execFileAsync = promisify(execFile)
-        const { stdout } = await execFileAsync(
-          p?.command as string,
-          (p?.args as string[]) ?? [],
-          { cwd: (p?.cwd as string) ?? cwd, timeout: 30000 }
-        )
-        result = { terminalId: `t-${id}`, output: stdout, exitCode: 0 }
-      } else {
-        agent.sendResponse(id, {})
-        respondedIds.add(id)
-        pendingPermissionIds.delete(id)
-        return
-      }
-      agent.sendResponse(id, result)
-      respondedIds.add(id)
-    } catch (e: unknown) {
-      const err = e as Error
-      agent.process.stdin!.write(
-        JSON.stringify({
-          jsonrpc: "2.0",
-          id,
-          error: { code: -32000, message: err.message },
-        }) + "\n"
-      )
-      respondedIds.add(id)
-    }
-    pendingPermissionIds.delete(id)
-  }
 
   // Prompt queue — serializes turns so overlapping prompts don't collide
   let turnInProgress = false
@@ -1127,20 +1061,20 @@ export async function startBridge(options: {
           promptQueue.push({ params })
           processQueue()
         } else if (method === "session/cancel") {
-          // Cancel pending permission requests with proper nested outcome
-          for (const reqId of pendingPermissionIds) {
-            if (!respondedIds.has(reqId)) {
-              agent.sendResponse(reqId, {
-                outcome: { outcome: "cancelled" },
-              })
-              respondedIds.add(reqId)
-            }
-          }
-          pendingPermissionIds.clear()
           agent.sendNotification("session/cancel", { sessionId })
-        } else if (id != null && !method && "result" in payload) {
-          // Client JSON-RPC response — forward to agent
-          agent.sendResponse(id, payload.result)
+        } else if (id != null && !method) {
+          // Client JSON-RPC response (result or error) — forward to agent
+          if ("error" in payload) {
+            agent.process.stdin!.write(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id,
+                error: payload.error,
+              }) + "\n"
+            )
+          } else {
+            agent.sendResponse(id, payload.result)
+          }
         }
       }
     } catch (e: unknown) {
@@ -1308,14 +1242,18 @@ describe("createStreamClient", () => {
         user,
       })
 
-      await client.respond(42, { outcome: "approved" })
+      await client.respond(42, {
+        outcome: { outcome: "selected", optionId: "allow" },
+      })
 
       expect(mockAppend).toHaveBeenCalledOnce()
       const written = JSON.parse(mockAppend.mock.calls[0]![0] as string)
       expect(written.direction).toBe("user")
       expect(written.user).toEqual(user)
       expect(written.payload.id).toBe(42)
-      expect(written.payload.result).toEqual({ outcome: "approved" })
+      expect(written.payload.result).toEqual({
+        outcome: { outcome: "selected", optionId: "allow" },
+      })
       expect(written.payload).not.toHaveProperty("method")
     })
   })
