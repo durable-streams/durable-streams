@@ -60,13 +60,15 @@ Every message on the stream is a JSON envelope containing the raw protocol messa
   agent: "claude" | "codex",
   direction: "bridge",
   timestamp: number,
-  type: "session_started" | "session_resumed" | "session_ended",
+  type: "session_started" | "session_resumed" | "session_ended" | "prompt_sent",
 }
 ```
 
 For agent messages, `raw` is the exact NDJSON object (Claude) or JSON-RPC message (Codex) from the agent's output. For user messages, `raw` is **client intent**, not guaranteed-delivered traffic. Clients append directly to the stream; the bridge decides what to forward to the agent (e.g., dropping duplicate responses, queuing prompts). The stream records all client intent for observability, but the bridge is the authority on what the agent actually receives.
 
-All writes to the stream (bridge and client) must use `IdempotentProducer` from `@durable-streams/client` for exactly-once semantics. The bridge and each client get their own producer ID. This prevents duplicate messages on bridge restart or client reconnection.
+All writes to the stream (bridge and client) must use `IdempotentProducer` from `@durable-streams/client` for exactly-once semantics. Producer IDs must be stable per logical entity, not regenerated per process start (e.g., `bridge-{sessionId}` for the bridge, `client-{userId}` for clients). This ensures restart/reconnect safety.
+
+`IdempotentProducer.append()` is fire-and-forget. Client methods (`prompt()`, `respond()`, `cancel()`) must flush the producer before the returned Promise resolves, so callers know the message is durably written. Bridge shutdown (`close()`) must flush its producer before exiting.
 
 ## Bridge
 
@@ -222,12 +224,18 @@ When the bridge starts with a stream that has existing history:
 
 ### Resume reconciliation
 
-The stream contains client intent, not delivered traffic. `prepareResume` must reconcile, not just reconstruct:
+The stream contains client intent, not delivered traffic. `prepareResume` must reconcile, not just reconstruct.
 
-- **Prompts**: include all prompts in the reconstructed session (they were delivered sequentially by the bridge).
-- **Permission responses**: if multiple clients responded to the same request ID, include only the first (the one the bridge would have forwarded). Determine "first" by stream order.
-- **Cancel-synthesized responses**: the bridge writes cancellation response envelopes to the stream. These should be included in the reconstruction since the agent received them.
-- **Queued-but-not-forwarded prompts**: prompts that were queued when the session ended (bridge died mid-turn) should be re-queued on resume, not included in the reconstructed session file. The bridge detects these by checking whether a prompt was followed by a turn-complete signal.
+The bridge writes a `prompt_sent` control event to the stream each time it dequeues and actually forwards a prompt to the agent. This marker distinguishes three prompt states:
+
+- **Completed**: prompt has `prompt_sent` + a subsequent turn-complete signal. Include in reconstructed session.
+- **Sent but interrupted**: prompt has `prompt_sent` but no turn-complete (bridge died mid-turn). Include in reconstructed session (the agent received it).
+- **Never sent**: prompt has no `prompt_sent` marker (was queued but the bridge died before forwarding). Re-queue on resume, do not include in reconstructed session.
+
+Other reconciliation rules:
+
+- **Permission responses**: if multiple clients responded to the same request ID, include only the first by stream order (the one the bridge would have forwarded).
+- **Cancel-synthesized responses**: the bridge writes cancellation response envelopes to the stream. Include these in the reconstruction since the agent received them.
 
 The adapter receives the full stream history and applies these rules during reconstruction.
 
