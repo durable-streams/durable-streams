@@ -905,6 +905,7 @@ import type {
   StreamOptions,
   StreamMessage,
   AgentEvent,
+  UserPrompt,
   ControlEvent,
   ReplayOptions,
   JsonRpcMessage,
@@ -1065,13 +1066,21 @@ export async function startBridge(options: {
           promptQueue.push({ params })
           processQueue()
         } else if (method === "session/cancel") {
-          // ACP requires pending requests to receive cancelled responses
+          // Write cancellation responses to stream for each pending request.
+          // The relay path below will forward them to the agent.
           for (const reqId of pendingAgentRequestIds) {
-            agent.sendResponse(reqId, {
-              outcome: { outcome: "cancelled" },
-            })
+            const cancelResponse: UserPrompt = {
+              direction: "user",
+              timestamp: Date.now(),
+              user: { name: "bridge", email: "" },
+              payload: {
+                jsonrpc: "2.0",
+                id: reqId,
+                result: { outcome: { outcome: "cancelled" } },
+              } as JsonRpcMessage,
+            }
+            stream.append(JSON.stringify(cancelResponse))
           }
-          pendingAgentRequestIds.clear()
           agent.sendNotification("session/cancel", { sessionId })
         } else if (id != null && !method) {
           // Client JSON-RPC response — only forward the first per request ID
