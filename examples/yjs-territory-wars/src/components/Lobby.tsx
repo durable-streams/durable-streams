@@ -14,9 +14,9 @@ const PALETTE = {
 }
 
 const BOARD_SIZES = [
-  { label: `Small`, cols: 32, rows: 32 },
-  { label: `Medium`, cols: 64, rows: 64 },
-  { label: `Large`, cols: 128, rows: 128 },
+  { label: `32x32`, cols: 32, rows: 32 },
+  { label: `64x64`, cols: 64, rows: 64 },
+  { label: `128x128`, cols: 128, rows: 128 },
 ]
 
 function buildRoomId(
@@ -150,7 +150,7 @@ export function Lobby({
           onKeyDown={(e) => e.key === `Enter` && createRoom()}
         />
 
-        <div style={styles.cardTitle}>SIZE</div>
+        <div style={styles.cardTitle}>BOARD SIZE</div>
         <div style={{ display: `flex`, gap: 6, marginBottom: 10 }}>
           {BOARD_SIZES.map((size, i) => (
             <button
