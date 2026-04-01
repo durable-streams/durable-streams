@@ -2266,8 +2266,8 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
 
   const isResume = history.length > 0
 
-  // Derive a stable session ID from the stream URL for producer fencing
-  const streamSlug = streamUrl.split(`/`).pop() ?? `default`
+  // Derive a stable session ID from the stream URL path for producer fencing
+  const streamSlug = new URL(streamUrl).pathname.split(`/`).pop() ?? `default`
   const sessionId = streamSlug
   const producer = new IdempotentProducer(stream, `bridge-${sessionId}`, {
     autoClaim: true,
@@ -2366,7 +2366,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
                 response: {},
               },
             }
-            // Record on stream first for resume reconstruction
+            // Enqueue on stream before direct send for best-effort resume fidelity
             const cancelEnvelope: UserEnvelope = {
               agent: adapter.agentType,
               direction: `user`,
