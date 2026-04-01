@@ -846,6 +846,10 @@ export async function initializeAgent(
   const initResponse = await agent.sendRequest("initialize", {
     protocolVersion: 1,
     capabilities: {},
+    clientCapabilities: {
+      fs: { readTextFile: true, writeTextFile: true },
+      terminal: true,
+    },
     clientInfo: { name: "durable-streams-bridge", version: "0.1.0" },
   })
 
@@ -952,10 +956,10 @@ export async function startBridge(options: {
     })
   }
 
-  // Read existing history and note current stream position
+  // Read existing history — offset tracks position after consumed data
   const historyResponse = await stream.stream<StreamMessage>({ json: true })
   const history = await historyResponse.json()
-  const { offset: currentOffset } = await stream.head()
+  const resumeOffset = historyResponse.offset
 
   // Spawn agent process
   const agent = spawnAgent(agentOption)
@@ -994,7 +998,8 @@ export async function startBridge(options: {
   // Handle agent-initiated requests (permission, fs, terminal).
   // The bridge runs in the sandbox alongside the agent, so it
   // handles these locally rather than forwarding to a remote client.
-  const pendingRequestIds = new Set<number | string>()
+  const pendingPermissionIds = new Set<number | string>()
+  const respondedIds = new Set<number | string>()
 
   agent.onRequest((id, method, params) => {
     // Write to stream so clients can observe
@@ -1005,7 +1010,9 @@ export async function startBridge(options: {
     }
     stream.append(JSON.stringify(event))
 
-    pendingRequestIds.add(id)
+    if (method === "session/request_permission") {
+      pendingPermissionIds.add(id)
+    }
     handleAgentRequest(id, method, params)
   })
 
@@ -1014,16 +1021,19 @@ export async function startBridge(options: {
     method: string,
     params: unknown
   ): Promise<void> {
+    if (respondedIds.has(id)) return
     const p = params as Record<string, unknown> | undefined
     try {
       let result: unknown
-      if (method === "client/requestPermission") {
-        result = { outcome: "approved" }
-      } else if (method === "fs/readTextFile") {
+      if (method === "session/request_permission") {
+        const options = (p?.options as Array<{ id: string }>) ?? []
+        const firstOptionId = options[0]?.id ?? "allow"
+        result = { outcome: { outcome: "selected", optionId: firstOptionId } }
+      } else if (method === "fs/read_text_file") {
         const fs = await import("node:fs/promises")
         const content = await fs.readFile(p?.path as string, "utf-8")
         result = { content }
-      } else if (method === "fs/writeTextFile") {
+      } else if (method === "fs/write_text_file") {
         const fs = await import("node:fs/promises")
         await fs.writeFile(p?.path as string, p?.content as string, "utf-8")
         result = {}
@@ -1039,10 +1049,12 @@ export async function startBridge(options: {
         result = { terminalId: `t-${id}`, output: stdout, exitCode: 0 }
       } else {
         agent.sendResponse(id, {})
-        pendingRequestIds.delete(id)
+        respondedIds.add(id)
+        pendingPermissionIds.delete(id)
         return
       }
       agent.sendResponse(id, result)
+      respondedIds.add(id)
     } catch (e: unknown) {
       const err = e as Error
       agent.process.stdin!.write(
@@ -1052,8 +1064,9 @@ export async function startBridge(options: {
           error: { code: -32000, message: err.message },
         }) + "\n"
       )
+      respondedIds.add(id)
     }
-    pendingRequestIds.delete(id)
+    pendingPermissionIds.delete(id)
   }
 
   // Prompt queue — serializes turns so overlapping prompts don't collide
@@ -1094,7 +1107,7 @@ export async function startBridge(options: {
   // Live-tail stream from current position (after history)
   const abortController = new AbortController()
   const liveStream = await stream.stream<StreamMessage>({
-    offset: currentOffset,
+    offset: resumeOffset,
     live: "sse",
     json: true,
     signal: abortController.signal,
@@ -1107,18 +1120,27 @@ export async function startBridge(options: {
 
         const payload = item.payload as Record<string, unknown>
         const method = payload.method as string | undefined
+        const id = payload.id as number | string | undefined
 
         if (method === "session/prompt") {
           const params = (payload.params as Record<string, unknown>) ?? {}
           promptQueue.push({ params })
           processQueue()
         } else if (method === "session/cancel") {
-          // Reject any pending permission requests with cancelled outcome
-          for (const reqId of pendingRequestIds) {
-            agent.sendResponse(reqId, { outcome: "cancelled" })
+          // Cancel pending permission requests with proper nested outcome
+          for (const reqId of pendingPermissionIds) {
+            if (!respondedIds.has(reqId)) {
+              agent.sendResponse(reqId, {
+                outcome: { outcome: "cancelled" },
+              })
+              respondedIds.add(reqId)
+            }
           }
-          pendingRequestIds.clear()
+          pendingPermissionIds.clear()
           agent.sendNotification("session/cancel", { sessionId })
+        } else if (id != null && !method && "result" in payload) {
+          // Client JSON-RPC response — forward to agent
+          agent.sendResponse(id, payload.result)
         }
       }
     } catch (e: unknown) {
