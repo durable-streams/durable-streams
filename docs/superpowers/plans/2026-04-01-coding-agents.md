@@ -442,6 +442,8 @@ export interface AgentAdapter {
 
   isTurnComplete(raw: object): boolean
 
+  translateClientIntent(raw: object): object
+
   prepareResume(
     history: StreamEnvelope[],
     options: ResumeOptions
@@ -1269,6 +1271,13 @@ describe(`ClaudeAdapter`, () => {
       expect(adapter.isTurnComplete({ type: `control_request` })).toBe(false)
     })
   })
+
+  describe(`translateClientIntent`, () => {
+    it(`should pass through raw messages unchanged`, () => {
+      const raw = { type: `user_message`, text: `hello` }
+      expect(adapter.translateClientIntent(raw)).toBe(raw)
+    })
+  })
 })
 ```
 
@@ -1418,6 +1427,10 @@ export class ClaudeAdapter implements AgentAdapter {
     return r.type === `result`
   }
 
+  translateClientIntent(raw: object): object {
+    return raw
+  }
+
   async prepareResume(
     history: StreamEnvelope[],
     options: ResumeOptions
@@ -1442,7 +1455,7 @@ export class ClaudeAdapter implements AgentAdapter {
       claudeSessionId = `resume-${Date.now()}`
     }
 
-    // Reconstruct JSONL session file
+    // Reconstruct JSONL session file with reconciliation
     const projectDir = path.join(
       os.homedir(),
       `.claude`,
@@ -1454,11 +1467,25 @@ export class ClaudeAdapter implements AgentAdapter {
     const sessionFile = path.join(projectDir, `${claudeSessionId}.jsonl`)
     const lines: string[] = []
 
+    // Dedup: track which request IDs have already been responded to
+    const respondedRequestIds = new Set<string | number>()
+
     for (const envelope of history) {
       if (envelope.direction === `bridge`) continue
+
+      if (envelope.direction === `user`) {
+        const raw = envelope.raw as Record<string, unknown>
+        // Dedup permission responses: only include the first per request ID
+        if (raw.type === `control_response`) {
+          const response = raw.response as Record<string, unknown>
+          const requestId = response?.request_id as string | number
+          if (respondedRequestIds.has(requestId)) continue
+          respondedRequestIds.add(requestId)
+        }
+      }
+
       let rawStr = JSON.stringify(envelope.raw)
 
-      // Apply path rewriting
       if (options.rewritePaths) {
         for (const [from, to] of Object.entries(options.rewritePaths)) {
           rawStr = rawStr.replaceAll(from, to)
@@ -1613,6 +1640,44 @@ describe(`CodexAdapter`, () => {
       expect(adapter.isTurnComplete({ type: `item`, item: {} })).toBe(false)
     })
   })
+
+  describe(`translateClientIntent`, () => {
+    it(`should translate a user_message to JSON-RPC`, () => {
+      const result = adapter.translateClientIntent({
+        type: `user_message`,
+        text: `Fix the bug`,
+      })
+      expect(result).toEqual({
+        jsonrpc: `2.0`,
+        method: `codex/prompt`,
+        params: { text: `Fix the bug` },
+      })
+    })
+
+    it(`should translate a control_response to JSON-RPC response`, () => {
+      const result = adapter.translateClientIntent({
+        type: `control_response`,
+        response: {
+          request_id: 42,
+          subtype: `success`,
+          response: { behavior: `allow` },
+        },
+      })
+      expect(result).toEqual({
+        jsonrpc: `2.0`,
+        id: 42,
+        result: { behavior: `allow` },
+      })
+    })
+
+    it(`should translate an interrupt to JSON-RPC cancel`, () => {
+      const result = adapter.translateClientIntent({ type: `interrupt` })
+      expect(result).toEqual({
+        jsonrpc: `2.0`,
+        method: `codex/cancel`,
+      })
+    })
+  })
 })
 ```
 
@@ -1741,6 +1806,37 @@ export class CodexAdapter implements AgentAdapter {
     )
   }
 
+  translateClientIntent(raw: object): object {
+    const r = raw as Record<string, unknown>
+    const type = r.type as string
+
+    if (type === `user_message`) {
+      return {
+        jsonrpc: `2.0`,
+        method: `codex/prompt`,
+        params: { text: r.text },
+      }
+    }
+
+    if (type === `control_response`) {
+      const response = r.response as Record<string, unknown>
+      return {
+        jsonrpc: `2.0`,
+        id: response.request_id,
+        result: response.response,
+      }
+    }
+
+    if (type === `interrupt`) {
+      return {
+        jsonrpc: `2.0`,
+        method: `codex/cancel`,
+      }
+    }
+
+    return raw
+  }
+
   async prepareResume(
     history: StreamEnvelope[],
     options: ResumeOptions
@@ -1756,8 +1852,22 @@ export class CodexAdapter implements AgentAdapter {
     const sessionFile = path.join(resumeDir, `${resumeId}.jsonl`)
     const lines: string[] = []
 
+    // Dedup: track which request IDs have already been responded to
+    const respondedRequestIds = new Set<string | number>()
+
     for (const envelope of history) {
       if (envelope.direction === `bridge`) continue
+
+      if (envelope.direction === `user`) {
+        const raw = envelope.raw as Record<string, unknown>
+        if (raw.type === `control_response`) {
+          const response = raw.response as Record<string, unknown>
+          const requestId = response?.request_id as string | number
+          if (respondedRequestIds.has(requestId)) continue
+          respondedRequestIds.add(requestId)
+        }
+      }
+
       let rawStr = JSON.stringify(envelope.raw)
 
       if (options.rewritePaths) {
@@ -1876,6 +1986,9 @@ function createMockAdapter(): {
     },
     isTurnComplete(raw: object) {
       return (raw as Record<string, unknown>).type === `result`
+    },
+    translateClientIntent(raw: object) {
+      return raw
     },
     async prepareResume() {
       return { resumeId: `mock-resume` }
@@ -2150,8 +2263,9 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
 
   const isResume = history.length > 0
 
-  // Set up producer for bridge writes
-  const sessionId = `session-${Date.now()}`
+  // Derive a stable session ID from the stream URL for producer fencing
+  const streamSlug = streamUrl.split(`/`).pop() ?? `default`
+  const sessionId = streamSlug
   const producer = new IdempotentProducer(stream, `bridge-${sessionId}`, {
     autoClaim: true,
   })
@@ -2244,12 +2358,37 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         const userEnvelope = envelope as UserEnvelope
         const raw = userEnvelope.raw as Record<string, unknown>
 
+        // Handle cancel: synthesize cancellation responses for pending IDs
+        if (raw.type === `interrupt`) {
+          for (const pendingId of pendingAgentRequestIds) {
+            const cancelEnvelope: AgentEnvelope = {
+              agent: adapter.agentType,
+              direction: `agent`,
+              timestamp: Date.now(),
+              raw: adapter.translateClientIntent({
+                type: `control_response`,
+                response: {
+                  request_id: pendingId,
+                  subtype: `cancelled`,
+                  response: {},
+                },
+              }),
+            }
+            producer.append(JSON.stringify(cancelEnvelope))
+            connection.send(cancelEnvelope.raw)
+          }
+          pendingAgentRequestIds.clear()
+          turnInProgress = false
+          processQueue()
+          continue
+        }
+
         // Classify the user message
         const classification = adapter.parseDirection(raw)
 
         if (classification.type === `notification`) {
-          // Treat as a prompt — queue it
-          promptQueue.push(raw)
+          // Treat as a prompt — queue it (translated to native format)
+          promptQueue.push(adapter.translateClientIntent(raw))
           processQueue()
         } else if (
           classification.type === `response` &&
@@ -2258,7 +2397,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
           // Only forward the first response per request ID
           if (!pendingAgentRequestIds.has(classification.id)) continue
           pendingAgentRequestIds.delete(classification.id)
-          connection.send(raw)
+          connection.send(adapter.translateClientIntent(raw))
         }
       }
     } catch (e: unknown) {
@@ -2282,7 +2421,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         type: `session_ended`,
       }
       producer.append(JSON.stringify(endEvent))
-      await producer.close()
+      await producer.flush()
 
       connection.kill()
     },
@@ -2405,14 +2544,14 @@ describe(`createClient`, () => {
   })
 
   describe(`close`, () => {
-    it(`should close the producer`, async () => {
+    it(`should flush the producer`, async () => {
       const client = createClient({
         streamUrl: `https://example.com/v1/stream/test`,
         user,
       })
 
       await client.close()
-      expect(mockClose).toHaveBeenCalledOnce()
+      expect(mockFlush).toHaveBeenCalledOnce()
     })
   })
 })
@@ -2489,7 +2628,7 @@ export function createClient(options: ClientOptions): StreamClient {
     },
 
     async close(): Promise<void> {
-      await producer.close()
+      await producer.flush()
     },
   }
 }

@@ -71,7 +71,7 @@ All writes to the stream (bridge and client) must use `IdempotentProducer` from 
 - **Bridge**: producer ID `bridge-{sessionId}`. Restart-safe across sandbox replacement. On resume in a new sandbox, autoClaim fences out the zombie bridge from the previous sandbox. The bridge is a long-lived writer that survives across sandbox lifecycles.
 - **Client**: random producer ID per instance (e.g., `client-{crypto.randomUUID()}`). Ephemeral: the producer identity is per browser tab/device instance, not per user, and does not survive tab closure. Each tab or device is an independent writer with no cross-tab coordination.
 
-`IdempotentProducer.append()` is fire-and-forget, which is the right default for both bridge and client writes. The only durability requirement is at shutdown: `client.close()` and bridge `close()` must call `producer.close()` (which flushes pending writes) before exiting. Consumers should block teardown (e.g., `beforeunload`) until close completes.
+`IdempotentProducer.append()` is fire-and-forget, which is the right default for both bridge and client writes. The only durability requirement is at shutdown: `client.close()` and bridge `close()` must call `producer.flush()` (which flushes pending writes) before exiting. Note: `producer.close()` permanently closes the underlying stream, which would break resume/shareability. Normal teardown uses `flush()` only. Consumers should block teardown (e.g., `beforeunload`) until flush completes.
 
 ## Bridge
 
@@ -112,6 +112,7 @@ interface AgentAdapter {
     id?: string | number
   }
   isTurnComplete(raw: object): boolean
+  translateClientIntent(raw: object): object
   prepareResume(
     history: StreamEnvelope[],
     options: ResumeOptions
@@ -119,14 +120,14 @@ interface AgentAdapter {
 }
 ```
 
-`parseDirection` lets the bridge track pending request IDs without understanding protocol internals. `isTurnComplete` returns true when a message signals the end of a prompt turn (Claude: `result` message; Codex: JSON-RPC response to the prompt request). The bridge uses this to dequeue the next prompt. `prepareResume` reconstructs local session files from stream history before spawning with resume flags.
+`parseDirection` lets the bridge track pending request IDs without understanding protocol internals. `isTurnComplete` returns true when a message signals the end of a prompt turn (Claude: `result` message; Codex: JSON-RPC response to the prompt request). The bridge uses this to dequeue the next prompt. `translateClientIntent` converts generic client intent (`user_message`, `control_response`, `interrupt`) into the agent's native wire format. Claude's adapter passes through unchanged; Codex's adapter maps to JSON-RPC. `prepareResume` reconstructs local session files from stream history before spawning with resume flags.
 
 ### 3. Stream relay
 
 The bridge is a pure relay. It does not interpret, approve, or handle message content. All it does:
 
 - Agent message received → wrap in envelope → append to stream
-- Client message read from stream → unwrap → send to agent via `connection.send()`
+- Client message read from stream → unwrap → translate via `adapter.translateClientIntent()` → send to agent via `connection.send()`
 
 Pending request tracking:
 
