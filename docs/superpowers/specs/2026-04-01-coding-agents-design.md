@@ -66,12 +66,27 @@ Every message on the stream is a JSON envelope containing the raw protocol messa
 
 For agent messages, `raw` is the exact NDJSON object (Claude) or JSON-RPC message (Codex) from the agent's output. For user messages, `raw` is **client intent**, not guaranteed-delivered traffic. Clients append directly to the stream; the bridge decides what to forward to the agent (e.g., dropping duplicate responses, queuing prompts). The stream records all client intent for observability, but the bridge is the authority on what the agent actually receives.
 
+### Client intent schema
+
+User envelope `raw` follows a generic intent format. The bridge translates these to agent-native wire format via `adapter.translateClientIntent()` before forwarding.
+
+```typescript
+// Prompt
+{ type: "user_message", text: string }
+
+// Permission response
+{ type: "control_response", response: { request_id: string | number, subtype: "success" | "cancelled", response: object } }
+
+// Cancel current turn
+{ type: "interrupt" }
+```
+
 All writes to the stream (bridge and client) must use `IdempotentProducer` from `@durable-streams/client` for exactly-once semantics. Both use `autoClaim: true` so the server handles epoch fencing automatically. The durability guarantees differ:
 
 - **Bridge**: producer ID `bridge-{sessionId}`. Restart-safe across sandbox replacement. On resume in a new sandbox, autoClaim fences out the zombie bridge from the previous sandbox. The bridge is a long-lived writer that survives across sandbox lifecycles.
 - **Client**: random producer ID per instance (e.g., `client-{crypto.randomUUID()}`). Ephemeral: the producer identity is per browser tab/device instance, not per user, and does not survive tab closure. Each tab or device is an independent writer with no cross-tab coordination.
 
-`IdempotentProducer.append()` is fire-and-forget, which is the right default for both bridge and client writes. The only durability requirement is at shutdown: `client.close()` and bridge `close()` must call `producer.flush()` (which flushes pending writes) before exiting. Note: `producer.close()` permanently closes the underlying stream, which would break resume/shareability. Normal teardown uses `flush()` only. Consumers should block teardown (e.g., `beforeunload`) until flush completes.
+`IdempotentProducer.append()` is fire-and-forget, which is the right default for both bridge and client writes. The only durability requirement is at shutdown: `client.close()` and bridge `close()` must call `producer.detach()` (which flushes pending writes and retires the producer without closing the stream). `producer.close()` permanently closes the underlying stream, which would break resume/shareability. Consumers should block teardown (e.g., `beforeunload`) until detach completes.
 
 ## Bridge
 
@@ -341,3 +356,7 @@ Targets:
 - Codex via stdio JSON-RPC protocol
 
 Both protocols are reverse-engineered from The Companion (MIT licensed). The protocols are stable in practice since breaking changes would affect all existing SDK integrations.
+
+## Open questions
+
+- **Codex prompt ID tracking**: `isTurnComplete` for Codex is defined as "JSON-RPC response to the prompt request", but the bridge does not currently track which JSON-RPC request ID corresponds to a prompt vs other traffic. `translateClientIntent` manufactures the native JSON-RPC request, but the generated ID is not surfaced back to the bridge. This may cause the prompt queue to unblock on the wrong JSON-RPC response. Needs investigation with a real Codex process.
