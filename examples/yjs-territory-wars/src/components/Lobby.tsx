@@ -13,7 +13,11 @@ const PALETTE = {
   dim: `rgba(235,235,245,0.38)`,
 }
 
-const BOARD_SIZES = [{ label: `64x64`, cols: 64, rows: 64 }]
+const BOARD_SIZES = [
+  { label: `Small`, cols: 32, rows: 32 },
+  { label: `Medium`, cols: 64, rows: 64 },
+  { label: `Large`, cols: 128, rows: 128 },
+]
 
 function buildRoomId(
   name: string,
@@ -51,7 +55,7 @@ export function Lobby({
 }: LobbyProps) {
   const { registryDB } = useRegistryContext()
   const [roomName, setRoomName] = useState(randomRoomName)
-  const sizeIdx = 0
+  const [sizeIdx, setSizeIdx] = useState(1)
   const [isCreating, setIsCreating] = useState(false)
   const [roomPage, setRoomPage] = useState(0)
   const [showJoinModal, setShowJoinModal] = useState(false)
@@ -145,6 +149,30 @@ export function Lobby({
           placeholder="room name"
           onKeyDown={(e) => e.key === `Enter` && createRoom()}
         />
+
+        <div style={styles.cardTitle}>SIZE</div>
+        <div style={{ display: `flex`, gap: 6, marginBottom: 10 }}>
+          {BOARD_SIZES.map((size, i) => (
+            <button
+              key={size.label}
+              className="lobby-btn"
+              style={{
+                flex: 1,
+                padding: `6px 0`,
+                fontSize: 7,
+                fontFamily: `inherit`,
+                background: i === sizeIdx ? PALETTE.accent : `transparent`,
+                color: i === sizeIdx ? `#000` : PALETTE.accent,
+                border: `1px solid ${PALETTE.accent}`,
+                cursor: `pointer`,
+                letterSpacing: 1,
+              }}
+              onClick={() => setSizeIdx(i)}
+            >
+              {size.label}
+            </button>
+          ))}
+        </div>
 
         <div style={{ display: `flex`, gap: 6 }}>
           <button
