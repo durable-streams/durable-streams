@@ -66,7 +66,15 @@ export function nextStep(
     return true
   })
 
-  if (valid.length === 0) return { dx: 0, dy: 0 }
+  if (valid.length === 0) {
+    // Completely blocked by other players — pick any in-bounds direction
+    for (const dir of candidates) {
+      const nx = current.x + dir.dx
+      const ny = current.y + dir.dy
+      if (nx >= 0 && nx < cols && ny >= 0 && ny < rows) return dir
+    }
+    return { dx: 0, dy: 0 }
+  }
 
   // If we have cell data, prefer unclaimed cells over our own
   if (cells && myId) {
@@ -78,5 +86,6 @@ export function nextStep(
     if (unclaimed.length > 0) return unclaimed[0]
   }
 
+  // Always move — even over own cells — rather than freezing
   return valid[0]
 }

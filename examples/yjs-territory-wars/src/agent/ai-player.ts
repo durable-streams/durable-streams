@@ -43,11 +43,13 @@ export class AIPlayer {
   private timerCheckTimer: ReturnType<typeof setInterval> | null = null
   private destroyed = false
   private gameWasOver = false
+  private lastStrategy: string | null = null
 
   private cols: number
   private rows: number
   private haiku: HaikuClient
   private personality: AgentPersonality
+  private spawnCorner: number
 
   constructor(
     name: string,
@@ -56,9 +58,11 @@ export class AIPlayer {
     yjsHeaders: Record<string, string>,
     haikuClient: HaikuClient,
     color: string,
-    personality: AgentPersonality = `balanced`
+    personality: AgentPersonality = `balanced`,
+    spawnCorner: number = 0
   ) {
     this.personality = personality
+    this.spawnCorner = spawnCorner
     this.playerName = `Haiku-${name}`
     this.playerId = `bot-${name.toLowerCase()}-${Math.random().toString(36).slice(2, 8)}`
     this.playerColor = color
@@ -100,9 +104,18 @@ export class AIPlayer {
     if (this.started) return
     this.started = true
 
-    // Pick a start position spread across the board
-    this.x = Math.floor(Math.random() * this.cols)
-    this.y = Math.floor(Math.random() * this.rows)
+    // Spawn near assigned corner with small random offset
+    const margin = Math.floor(Math.min(this.cols, this.rows) / 6)
+    const jitter = () => Math.floor(Math.random() * margin)
+    const corners = [
+      { x: jitter(), y: jitter() }, // top-left
+      { x: this.cols - 1 - jitter(), y: jitter() }, // top-right
+      { x: jitter(), y: this.rows - 1 - jitter() }, // bottom-left
+      { x: this.cols - 1 - jitter(), y: this.rows - 1 - jitter() }, // bottom-right
+    ]
+    const corner = corners[this.spawnCorner % corners.length]
+    this.x = corner.x
+    this.y = corner.y
 
     // Register in players map
     const playersMap = getPlayersMap(this.doc)
@@ -130,8 +143,11 @@ export class AIPlayer {
       () => void this.updateStrategy(),
       STRATEGY_INTERVAL
     )
-    // Check timer expiry
-    this.timerCheckTimer = setInterval(() => this.checkTimerExpiry(), 1000)
+    // Check timer expiry and enclosure threats
+    this.timerCheckTimer = setInterval(() => {
+      this.checkTimerExpiry()
+      this.checkEnclosureThreat()
+    }, 1000)
 
     // Do an initial strategy call
     void this.updateStrategy()
@@ -169,15 +185,97 @@ export class AIPlayer {
     }
   }
 
+  private checkEnclosureThreat(): void {
+    if (this.destroyed) return
+    if (getGameEndedAt(this.doc) !== null) return
+
+    // Flood fill from current position through non-opponent cells
+    // If reachable area is small, we're being enclosed — break out
+    const cells = readCells(this.doc)
+    const visited = new Set<string>()
+    const queue: Array<{ x: number; y: number }> = [{ x: this.x, y: this.y }]
+    visited.add(`${this.x},${this.y}`)
+
+    const opponentBoundary: Array<{ x: number; y: number }> = []
+    const maxCheck = 300
+    let checked = 0
+    let reachedEdge = false
+
+    while (queue.length > 0 && checked < maxCheck) {
+      const pos = queue.shift()!
+      checked++
+
+      // If we reached the board edge, we're not enclosed
+      if (
+        pos.x === 0 ||
+        pos.x === this.cols - 1 ||
+        pos.y === 0 ||
+        pos.y === this.rows - 1
+      ) {
+        reachedEdge = true
+      }
+
+      for (const [dx, dy] of [
+        [0, -1],
+        [0, 1],
+        [-1, 0],
+        [1, 0],
+      ]) {
+        const nx = pos.x + dx
+        const ny = pos.y + dy
+        const key = `${nx},${ny}`
+
+        if (nx < 0 || nx >= this.cols || ny < 0 || ny >= this.rows) continue
+        if (visited.has(key)) continue
+        visited.add(key)
+
+        const cell = cells.get(key)
+        if (cell && cell.owner !== this.playerId) {
+          opponentBoundary.push({ x: nx, y: ny })
+          continue // don't flood through opponent cells
+        }
+
+        queue.push({ x: nx, y: ny })
+      }
+    }
+
+    // If flood fill completed (didn't hit maxCheck) and didn't reach edge,
+    // we're being enclosed. Rush to break the nearest boundary cell.
+    if (!reachedEdge && checked < maxCheck && opponentBoundary.length > 0) {
+      let nearest = opponentBoundary[0]
+      let minDist = Infinity
+      for (const b of opponentBoundary) {
+        const d = Math.abs(b.x - this.x) + Math.abs(b.y - this.y)
+        if (d < minDist) {
+          minDist = d
+          nearest = b
+        }
+      }
+      console.log(
+        `[${this.playerName}] ENCLOSED! Breaking out toward (${nearest.x},${nearest.y}) dist=${minDist}`
+      )
+      this.target = nearest
+    }
+  }
+
   private resetForRematch(): void {
     console.log(`[${this.playerName}] Rematch detected — resetting`)
     this.gameWasOver = false
     this.stunnedUntil = 0
     this.target = null
 
-    // Pick a new random starting position
-    this.x = Math.floor(Math.random() * this.cols)
-    this.y = Math.floor(Math.random() * this.rows)
+    // Respawn near assigned corner
+    const margin = Math.floor(Math.min(this.cols, this.rows) / 6)
+    const jitter = () => Math.floor(Math.random() * margin)
+    const corners = [
+      { x: jitter(), y: jitter() },
+      { x: this.cols - 1 - jitter(), y: jitter() },
+      { x: jitter(), y: this.rows - 1 - jitter() },
+      { x: this.cols - 1 - jitter(), y: this.rows - 1 - jitter() },
+    ]
+    const corner = corners[this.spawnCorner % corners.length]
+    this.x = corner.x
+    this.y = corner.y
 
     // Re-register in players map and claim starting cell
     const playersMap = getPlayersMap(this.doc)
@@ -202,7 +300,12 @@ export class AIPlayer {
     x: number
     y: number
   } {
-    const maxDist = Math.max(6, Math.floor(Math.min(this.cols, this.rows) / 5))
+    // Destroyer gets more range to cross the map and break threats
+    const baseDist = Math.floor(Math.min(this.cols, this.rows) / 5)
+    const maxDist =
+      this.personality === `destroyer`
+        ? Math.max(12, baseDist * 2)
+        : Math.max(6, baseDist)
     const dx = target.x - this.x
     const dy = target.y - this.y
     const dist = Math.abs(dx) + Math.abs(dy)
@@ -344,9 +447,11 @@ export class AIPlayer {
       const result = await this.haiku.getStrategy(
         summary,
         this.playerName,
-        this.personality
+        this.personality,
+        this.lastStrategy
       )
       this.target = this.clampTarget(result.target)
+      this.lastStrategy = result.strategy
     } catch (err) {
       console.error(`[${this.playerName}] Strategy error:`, err)
       if (!this.target) {

@@ -16,23 +16,23 @@ function buildSystemPrompt(
   const base = `Territory Wars: ${cols}x${rows} grid. Claim cells by moving. Closing a boundary captures ALL cells inside (steals opponents'). First to 30% wins. Stun on collision ~12 steps.`
 
   const strategies: Record<AgentPersonality, string> = {
-    destroyer: `PRIORITY: Destroy opponents' territory. Target areas dense with O cells. Route your boundary around their clusters to steal maximum cells. Enclosing even a few opponent cells is worth more than claiming empty space. Hunt the leader.`,
+    destroyer: `PRIORITY: Systematically dismantle the largest opponent territory. Find the biggest cluster of O cells on the map and work to enclose it. Build your boundary around one side of their cluster at a time. Continue your previous plan if you were already building a boundary — don't restart. Each turn should extend the enclosure wall. Once closed, all their cells become yours.`,
 
-    explorer: `PRIORITY: Claim large unclaimed areas quickly. Push into empty (.) regions of the map, especially corners and edges. Take risks — go for bigger ${enc * 2}x${enc * 2} enclosures in open space. Speed over safety.`,
+    explorer: `PRIORITY: Occupy large empty areas. Find the biggest cluster of . cells on the map and move there. Enclose wide empty rectangles to claim maximum territory per turn. Corners and edges are free walls — use them. Go for ${enc * 2}x${enc * 2} enclosures in open space. Continue expanding in the same direction as your previous plan.`,
 
-    greedy: `PRIORITY: Maximize cells per move. Only make tiny ${enc}x${enc} rectangles that you can close in one turn. Use edges and your own territory as walls. Never go far from your M cells. Efficiency over ambition.`,
+    greedy: `PRIORITY: Maximize cells per move. Only make tiny ${enc}x${enc} rectangles that you can close in one turn. Use edges and your own territory as walls. Never go far from your M cells. Finish your current rectangle before starting a new one.`,
 
-    balanced: `PRIORITY: Expand steadily from your territory. Close small ${enc}x${enc} to ${enc * 2}x${enc * 2} rectangles. Steal O cells when nearby, but prefer unclaimed areas. Stay close to your M cells.`,
+    balanced: `PRIORITY: Expand steadily from your territory. Close small ${enc}x${enc} to ${enc * 2}x${enc * 2} rectangles. Steal O cells when nearby, but prefer unclaimed areas. Stay close to your M cells. Continue your previous enclosure if not finished.`,
   }
 
   return `${base}
 
 ${strategies[personality]}
 
-RULES: Target within ${maxDist} cells of @. Expand from M cells. Avoid X players and your own M cells.
+RULES: Target within ${maxDist} cells of @. Expand from M cells. Avoid X players and your own M cells. If "Previous plan" is given, continue it unless the board changed significantly.
 
 RESPOND WITH ONLY THIS JSON, NO OTHER TEXT:
-{"target":{"x":<0-${maxX}>,"y":<0-${maxY}>},"strategy":"<reason>"}`
+{"target":{"x":<0-${maxX}>,"y":<0-${maxY}>},"strategy":"<what you are doing and next step>"}`
 }
 
 interface StrategyResponse {
@@ -49,6 +49,7 @@ interface BoardSummary {
   cols: number
   rows: number
   asciiMap: string
+  threats: string
   nearbyPlayers: Array<{
     name: string
     x: number
@@ -58,8 +59,8 @@ interface BoardSummary {
   }>
 }
 
-// Target ~32 chars wide max for the ASCII map
-const MAX_ASCII_SIZE = 32
+// Full resolution for boards ≤64, downsample larger ones
+const MAX_ASCII_SIZE = 64
 
 export function buildBoardSummary(
   myPosition: { x: number; y: number },
@@ -153,6 +154,58 @@ export function buildBoardSummary(
   })
   nearbyPlayers.sort((a, b) => a.distance - b.distance)
 
+  // Detect threats: find each opponent's territory bounding box and %
+  const opponentRegions = new Map<
+    string,
+    {
+      minX: number
+      maxX: number
+      minY: number
+      maxY: number
+      count: number
+      name: string
+    }
+  >()
+  cells.forEach((cell, key) => {
+    if (cell.owner === myId) return
+    let region = opponentRegions.get(cell.owner)
+    if (!region) {
+      const p = players.get(cell.owner)
+      region = {
+        minX: cols,
+        maxX: 0,
+        minY: rows,
+        maxY: 0,
+        count: 0,
+        name: p?.name ?? `unknown`,
+      }
+      opponentRegions.set(cell.owner, region)
+    }
+    const [cx, cy] = key.split(`,`).map(Number)
+    region.minX = Math.min(region.minX, cx)
+    region.maxX = Math.max(region.maxX, cx)
+    region.minY = Math.min(region.minY, cy)
+    region.maxY = Math.max(region.maxY, cy)
+    region.count++
+  })
+
+  const threatLines: Array<string> = []
+  const sortedRegions = [...opponentRegions.values()]
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 3)
+  for (const r of sortedRegions) {
+    const pct = Math.round((r.count / totalCells) * 100)
+    if (pct >= 3) {
+      const w = r.maxX - r.minX
+      const h = r.maxY - r.minY
+      threatLines.push(
+        `${r.name}: ${pct}% spanning (${r.minX},${r.minY})-(${r.maxX},${r.maxY}) ${w}x${h}`
+      )
+    }
+  }
+  const threats =
+    threatLines.length > 0 ? threatLines.join(`\n`) : `No major threats`
+
   return {
     position: myPosition,
     myTerritory,
@@ -162,6 +215,7 @@ export function buildBoardSummary(
     cols,
     rows,
     asciiMap,
+    threats,
     nearbyPlayers: nearbyPlayers.slice(0, 5),
   }
 }
@@ -180,6 +234,10 @@ function formatSummary(summary: BoardSummary): string {
     `Map (1 char = ${scale}x${scale} cells): .=empty M=mine O=opponent ~=mixed @=me X=player`
   )
   lines.push(summary.asciiMap)
+
+  lines.push(``)
+  lines.push(`Opponent territories:`)
+  lines.push(summary.threats)
 
   if (summary.nearbyPlayers.length > 0) {
     lines.push(``)
@@ -202,9 +260,13 @@ export class HaikuClient {
   async getStrategy(
     summary: BoardSummary,
     playerName?: string,
-    personality: AgentPersonality = `balanced`
+    personality: AgentPersonality = `balanced`,
+    lastStrategy?: string | null
   ): Promise<StrategyResponse> {
-    const userMessage = formatSummary(summary)
+    let userMessage = formatSummary(summary)
+    if (lastStrategy) {
+      userMessage = `Previous plan: ${lastStrategy}\n\n${userMessage}`
+    }
     const systemPrompt = buildSystemPrompt(
       summary.cols,
       summary.rows,

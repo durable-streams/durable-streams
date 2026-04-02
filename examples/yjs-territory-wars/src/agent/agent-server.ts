@@ -195,7 +195,8 @@ export class AgentServer {
         this.yjsHeaders,
         this.haikuClient,
         color,
-        personality
+        personality,
+        i
       )
       players.push(player)
     }
