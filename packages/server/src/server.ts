@@ -9,7 +9,14 @@ import { FileBackedStreamStore } from "./file-store"
 import { generateResponseCursor } from "./cursor"
 import type { CursorOptions } from "./cursor"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
-import type { StreamLifecycleEvent, TestServerOptions } from "./types"
+import type {
+  CheckpointRule,
+  StreamLifecycleEvent,
+  TestServerOptions,
+} from "./types"
+
+/** Pattern for valid checkpoint names: lowercase letter, then lowercase alphanumeric or hyphens, 1-64 chars */
+const CHECKPOINT_NAME_PATTERN = /^[a-z][a-z0-9-]*$/
 
 // Protocol headers (aligned with PROTOCOL.md)
 const STREAM_OFFSET_HEADER = `Stream-Next-Offset`
@@ -155,6 +162,7 @@ export class DurableStreamTestServer {
       | `onStreamCreated`
       | `onStreamDeleted`
       | `compression`
+      | `checkpointRules`
       | `cursorIntervalSeconds`
       | `cursorEpoch`
     >
@@ -171,14 +179,21 @@ export class DurableStreamTestServer {
   /** Injected faults for testing retry/resilience */
   private injectedFaults = new Map<string, InjectedFault>()
 
+  private checkpointRules: Array<CheckpointRule>
+
   constructor(options: TestServerOptions = {}) {
+    this.checkpointRules = options.checkpointRules ?? []
+
     // Choose store based on dataDir option
     if (options.dataDir) {
       this.store = new FileBackedStreamStore({
         dataDir: options.dataDir,
+        checkpointRules: this.checkpointRules,
       })
     } else {
-      this.store = new StreamStore()
+      this.store = new StreamStore({
+        checkpointRules: this.checkpointRules,
+      })
     }
 
     this.options = {
@@ -726,6 +741,32 @@ export class DurableStreamTestServer {
       if (allOffsets.length > 1) {
         res.writeHead(400, { "content-type": `text/plain` })
         res.end(`Multiple offset parameters not allowed`)
+        return
+      }
+
+      // Check for checkpoint name resolution (before offset format validation)
+      // Only resolve checkpoints if checkpoint rules are configured — otherwise
+      // any lowercase string would be redirected to -1 instead of returning 400.
+      if (
+        this.checkpointRules.length > 0 &&
+        offset !== `-1` &&
+        offset !== `now` &&
+        CHECKPOINT_NAME_PATTERN.test(offset) &&
+        offset.length <= 64
+      ) {
+        // Resolve checkpoint to an offset
+        const checkpointOffset = this.store.getCheckpoint(path, offset)
+        const resolvedOffset = checkpointOffset ?? `-1`
+
+        // Build redirect URL preserving all other query params
+        const redirectUrl = new URL(url.toString())
+        redirectUrl.searchParams.set(OFFSET_QUERY_PARAM, resolvedOffset)
+
+        res.writeHead(307, {
+          location: `${redirectUrl.pathname}${redirectUrl.search}`,
+          "cache-control": `no-store`,
+        })
+        res.end()
         return
       }
 
