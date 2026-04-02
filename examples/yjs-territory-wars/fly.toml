@@ -1,0 +1,12 @@
+app = "territory-wars-agent"
+primary_region = "ams"
+
+[build]
+
+[env]
+  NODE_ENV = "production"
+
+[[vm]]
+  memory = "256mb"
+  cpu_kind = "shared"
+  cpus = 1
