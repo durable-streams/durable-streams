@@ -20,7 +20,7 @@ function git(command: string, cwd: string): string {
 }
 
 async function main() {
-  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), `ds-cc-phase2-`))
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), `cods-phase2-`))
   const bareRepo = path.join(tmpBase, `remote.git`)
   const workRepo = path.join(tmpBase, `work`)
   const cloneDir = path.join(tmpBase, `cloner`)

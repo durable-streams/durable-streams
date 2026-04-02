@@ -1,8 +1,8 @@
 /**
- * ds-cc merge: merge two local CC sessions.
+ * cods merge: merge two local CC sessions.
  *
  * Both sessions must exist locally (JSONL + git branch).
- * Remote sessions should be cloned first via `ds-cc clone`.
+ * Remote sessions should be cloned first via `cods clone`.
  */
 
 import * as fs from "node:fs"
@@ -65,7 +65,7 @@ function claude(prompt: string, cwd: string): string {
 function claudeAgent(prompt: string, cwd: string): void {
   // Write prompt to a temp file to avoid shell escaping issues.
   // Can't use stdin pipe here because stdio is 'inherit' for interactive output.
-  const tmpFile = path.join(os.tmpdir(), `ds-cc-merge-prompt-${Date.now()}.txt`)
+  const tmpFile = path.join(os.tmpdir(), `cods-merge-prompt-${Date.now()}.txt`)
   fs.writeFileSync(tmpFile, prompt)
   try {
     execSync(`cat ${tmpFile} | claude -p --dangerously-skip-permissions`, {

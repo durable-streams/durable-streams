@@ -162,6 +162,7 @@ export class DurableStreamTestServer {
       | `onStreamCreated`
       | `onStreamDeleted`
       | `compression`
+      | `checkpointRules`
       | `cursorIntervalSeconds`
       | `cursorEpoch`
     >
@@ -744,8 +745,10 @@ export class DurableStreamTestServer {
       }
 
       // Check for checkpoint name resolution (before offset format validation)
-      // Checkpoint names match [a-z][a-z0-9-]* and are distinct from sentinels (-1, now) and real offsets (digits_digits)
+      // Only resolve checkpoints if checkpoint rules are configured — otherwise
+      // any lowercase string would be redirected to -1 instead of returning 400.
       if (
+        this.checkpointRules.length > 0 &&
         offset !== `-1` &&
         offset !== `now` &&
         CHECKPOINT_NAME_PATTERN.test(offset) &&

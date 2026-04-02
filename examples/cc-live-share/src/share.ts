@@ -1,5 +1,5 @@
 /**
- * ds-cc share: tail a CC session's JSONL file and append to a Durable Stream.
+ * cods share: tail a CC session's JSONL file and append to a Durable Stream.
  */
 
 import * as fs from "node:fs"

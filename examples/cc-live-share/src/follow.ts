@@ -1,5 +1,5 @@
 /**
- * ds-cc follow: read a shared CC session from a Durable Stream and render it.
+ * cods follow: read a shared CC session from a Durable Stream and render it.
  */
 
 import { renderEntry } from "./render.js"

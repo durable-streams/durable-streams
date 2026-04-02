@@ -1,4 +1,4 @@
-# ds-cc: Claude Code session sharing via Durable Streams
+# cods: Claude Code session sharing via Durable Streams
 
 A CLI tool for sharing, following, forking, and cloning Claude Code sessions using Durable Streams.
 

@@ -1,5 +1,5 @@
 /**
- * ds-cc clone: import a forked CC session from DS + set up code + create local session.
+ * cods clone: import a forked CC session from DS + set up code + create local session.
  *
  * Two modes:
  * - Default: uses `claude -c --fork-session` to let CC handle session creation.

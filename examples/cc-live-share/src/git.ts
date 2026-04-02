@@ -71,7 +71,7 @@ export function exportBranch(
   branchName: string,
   remote = `origin`
 ): void {
-  const tmpIndex = `/tmp/ds-cc-export-index-${Date.now()}`
+  const tmpIndex = `/tmp/cods-export-index-${Date.now()}`
   const env = { GIT_INDEX_FILE: tmpIndex }
 
   try {
