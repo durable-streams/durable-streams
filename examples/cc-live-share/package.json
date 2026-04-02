@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "type": "module",
   "bin": {
-    "ds-cc": "./dist/cli.js"
+    "cods": "./dist/cli.js"
   },
   "scripts": {
     "build": "tsdown src/cli.ts --format esm",

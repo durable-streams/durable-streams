@@ -25,7 +25,7 @@ function encodeCwd(cwd: string): string {
 }
 
 async function main() {
-  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), `ds-cc-phase3-`))
+  const tmpBase = fs.mkdtempSync(path.join(os.tmpdir(), `cods-phase3-`))
   const repo = path.join(tmpBase, `repo`)
   const cleanupDirs: Array<string> = []
 

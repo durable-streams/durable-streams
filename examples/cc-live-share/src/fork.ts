@@ -1,5 +1,5 @@
 /**
- * ds-cc fork: export a CC session to DS + push git branch with working state.
+ * cods fork: export a CC session to DS + push git branch with working state.
  */
 
 import * as fs from "node:fs"
@@ -163,5 +163,5 @@ export async function fork(options: ForkOptions): Promise<void> {
   const forkUrl = `${options.server}/cc/${sessionId}/${epoch}`
   console.log(`\nFork URL: ${forkUrl}`)
   console.log(`\nShare this URL. Others can clone it with:`)
-  console.log(`  ds-cc clone ${forkUrl}`)
+  console.log(`  cods clone ${forkUrl}`)
 }
