@@ -6,18 +6,43 @@ Sessions are tracked in a `.sesh/` directory in your repo, persisted to Durable 
 
 ## Quick start
 
-### 1. Start a DS server
+### 1. Set up a Durable Streams server
+
+You need a DS server that's reachable by all machines. Options:
+
+**Option A: Electric Cloud (hosted)**
+
+Use a hosted DS server on Electric Cloud. No setup needed — just use the URL provided.
+
+**Option B: Self-hosted with ngrok (for testing)**
+
+Start a local dev server and expose it:
 
 ```bash
-# Local dev server (from the durable-streams repo)
+# Terminal 1: start the DS server
 cd examples/cc-live-share && npx tsx server.ts
+
+# Terminal 2: expose it
+ngrok http 4437
+# Note the https://xxx.ngrok.io URL
 ```
+
+**Option C: Local only (single machine)**
+
+If you only need sessions on one machine:
+
+```bash
+cd examples/cc-live-share && npx tsx server.ts
+# Use http://127.0.0.1:4437
+```
+
+Note: sessions stored with a local URL won't be accessible from other machines. You can change the server URL later with `sesh init --server <new-url>` and re-push.
 
 ### 2. Initialize sesh in your repo
 
 ```bash
 cd /path/to/your/repo
-sesh init --server http://127.0.0.1:4437
+sesh init --server <your-ds-server-url>
 git add .sesh/
 git commit -m "init sesh"
 ```
@@ -31,12 +56,23 @@ sesh checkin                          # auto-detects active session
 sesh checkin --session <session-id>   # or specify explicitly
 ```
 
-### 4. Push to DS
+### 4. Push and commit
+
+With the pre-commit hook (recommended):
+
+```bash
+sesh install-hooks                    # one-time setup
+git add .
+git commit -m "my changes"           # hook auto-pushes sessions to DS
+git push
+```
+
+Or manually:
 
 ```bash
 sesh push
 git add .sesh/
-git commit -m "push session"
+git commit -m "my changes"
 git push
 ```
 
@@ -49,6 +85,8 @@ sesh list                                  # see available sessions
 sesh resume <session-id-or-name>           # fork and restore the session
 claude --resume <new-session-id>           # start CC with the restored session
 ```
+
+The config in `.sesh/config.json` tells sesh where the DS server is. Resume always uses this URL, so if you need to point to a different server (e.g., ngrok URL changed), just update the config locally.
 
 ## Commands
 
@@ -99,7 +137,7 @@ Merge two local sessions. Uses git merge for code and agent-assisted conflict re
 
 ### `sesh install-hooks`
 
-Install a git pre-commit hook that runs `sesh push` automatically on every commit. Session offsets are recorded at each commit point.
+Install a git pre-commit hook that runs `sesh push` automatically on every commit. Session offsets are recorded at each commit point, enabling time travel.
 
 ### `sesh install-skills [--global]`
 
@@ -171,32 +209,6 @@ Since the session file at that commit has the offset from that point in time, re
 - **Explicit opt-in** — only checked-in sessions are tracked
 - **Delta push** — only new entries are pushed on each commit, tracked via UUID
 - **Config server URL** — resume always uses the current config, not the stored URL (so sessions work across different environments)
-
-## Remote testing
-
-To test across machines, make the DS server reachable:
-
-```bash
-# On the machine running the DS server
-ngrok http 4437
-```
-
-Update the config in the repo to use the ngrok URL:
-
-```bash
-sesh init --server https://your-ngrok-url.ngrok.io
-sesh push
-git add .sesh/ && git commit -m "update DS server URL" && git push
-```
-
-On the remote machine:
-
-```bash
-git pull
-sesh list
-sesh resume <session-id>
-claude --resume <new-session-id>
-```
 
 ## Running tests
 
