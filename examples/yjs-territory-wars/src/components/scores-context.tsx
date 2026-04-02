@@ -1,26 +1,16 @@
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useState,
-} from "react"
-import { DurableStream } from "@durable-streams/client"
-import { createStreamDB } from "@durable-streams/state"
+import { createContext, useCallback, useContext } from "react"
 import { scoresStateSchema } from "../utils/schemas"
+import { useStreamDB } from "../hooks/use-stream-db"
 import { useServerEndpoint } from "./server-endpoint-context"
+import type { createStreamDB } from "@durable-streams/state"
 import type { ScoreEntry } from "../utils/schemas"
 import type { ReactNode } from "react"
 
-function createScoresDB(url: string, headers: Record<string, string>) {
-  return createStreamDB({
-    streamOptions: {
-      url,
-      headers,
-      contentType: `application/json`,
-    },
+function scoresDBOptions(url: string, headers: Record<string, string>) {
+  return {
+    streamOptions: { url, headers, contentType: `application/json` as const },
     state: scoresStateSchema,
-    actions: ({ db, stream }) => ({
+    actions: ({ db, stream }: any) => ({
       submitScore: {
         onMutate: (entry: ScoreEntry) => {
           db.collections.scores.insert(entry)
@@ -39,10 +29,18 @@ function createScoresDB(url: string, headers: Record<string, string>) {
         },
       },
     }),
-  })
+  }
 }
 
-type ScoresDB = Awaited<ReturnType<typeof createScoresDB>>
+type ScoresDBOptions = ReturnType<typeof scoresDBOptions>
+type ScoresDB = Awaited<
+  ReturnType<
+    typeof createStreamDB<
+      ScoresDBOptions[`state`],
+      ReturnType<ScoresDBOptions[`actions`]>
+    >
+  >
+>
 
 interface ScoresContextValue {
   scoresDB: ScoresDB
@@ -65,71 +63,22 @@ interface ScoresProviderProps {
 
 export function ScoresProvider({ roomId, children }: ScoresProviderProps) {
   const { dsEndpoint, dsHeaders } = useServerEndpoint()
-  const [scoresDB, setScoresDB] = useState<ScoresDB | null>(null)
-  const [error, setError] = useState<Error | null>(null)
+  const { db, error } = useStreamDB(
+    scoresDBOptions(
+      `${dsEndpoint}/__snake_scores_${encodeURIComponent(roomId)}`,
+      dsHeaders
+    )
+  )
 
-  useEffect(() => {
-    let db: ScoresDB | null = null
-    let cancelled = false
-    const isCancelled = () => cancelled
-
-    const init = async () => {
-      try {
-        const scoresUrl = `${dsEndpoint}/__snake_scores_${encodeURIComponent(roomId)}`
-
-        const stream = new DurableStream({
-          url: scoresUrl,
-          headers: dsHeaders,
-          contentType: `application/json`,
-        })
-
-        const headResult = await stream.head()
-        if (isCancelled()) return
-
-        if (!headResult.exists) {
-          await DurableStream.create({
-            url: scoresUrl,
-            headers: dsHeaders,
-            contentType: `application/json`,
-          })
-        }
-
-        db = await createScoresDB(scoresUrl, dsHeaders)
-        await db.preload()
-
-        if (isCancelled()) return
-        setScoresDB(db)
-      } catch (err) {
-        if (isCancelled()) return
-        console.error(`[Scores] Failed to initialize:`, err)
-        setError(err instanceof Error ? err : new Error(String(err)))
-      }
-    }
-
-    void init()
-
-    return () => {
-      cancelled = true
-      if (db) db.close()
-    }
-  }, [roomId, dsEndpoint, dsHeaders])
-
-  // Render children even while scores are loading — game shouldn't be blocked
-  // ScoresContext will be null until ready, consumers handle that
   if (error) {
     console.warn(`[Scores] Error loading scores:`, error.message)
   }
 
-  if (!scoresDB) {
-    return (
-      <ScoresContext.Provider value={null as any}>
-        {children}
-      </ScoresContext.Provider>
-    )
-  }
-
+  // Render children even while scores are loading — game shouldn't be blocked
   return (
-    <ScoresContext.Provider value={{ scoresDB }}>
+    <ScoresContext.Provider
+      value={db ? { scoresDB: db as ScoresDB } : (null as any)}
+    >
       {children}
     </ScoresContext.Provider>
   )
@@ -147,7 +96,6 @@ export function useRoomScores() {
     async (playerName: string, score: number) => {
       if (!scoresDB || score <= 0) return
 
-      // Check current best for this player
       const currentScores = scoresDB.collections.scores.toArray
       const existing = currentScores.find((s) => s.playerName === playerName)
 

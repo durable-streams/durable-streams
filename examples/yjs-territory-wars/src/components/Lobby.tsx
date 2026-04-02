@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react"
 import { useLiveQuery } from "@tanstack/react-db"
+import { gt } from "@durable-streams/state"
 import { ROOM_TTL_SECONDS } from "../utils/schemas"
 import { useRegistryContext } from "./registry-context"
 import type { RoomMetadata } from "../utils/schemas"
@@ -67,14 +68,15 @@ export function Lobby({
     return () => clearInterval(interval)
   }, [])
 
-  const { data: rooms = [] } = useLiveQuery((q) =>
-    q.from({ rooms: registryDB.collections.rooms })
-  )
-
-  // Filter out expired rooms and sort by creation time
+  // Tick drives `now` so the query re-evaluates expiry each second
   const now = Date.now()
-  const activeRooms = rooms.filter((r) => r.expiresAt > now)
-  const sortedRooms = [...activeRooms].sort((a, b) => b.createdAt - a.createdAt)
+
+  const { data: sortedRooms = [] } = useLiveQuery((q) =>
+    q
+      .from({ rooms: registryDB.collections.rooms })
+      .where(({ rooms }) => gt(rooms.expiresAt, now))
+      .orderBy(({ rooms }) => rooms.createdAt, `desc`)
+  )
 
   const createRoom = async () => {
     if (isCreating) return

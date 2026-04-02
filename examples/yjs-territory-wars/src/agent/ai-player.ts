@@ -22,7 +22,7 @@ import { nextStep } from "./pathfinder"
 import { buildBoardSummary } from "./haiku-client"
 import type { AgentPersonality, HaikuClient } from "./haiku-client"
 
-const STRATEGY_INTERVAL = 3000
+const STRATEGY_INTERVAL = 15000
 
 export class AIPlayer {
   readonly playerId: string
@@ -37,6 +37,7 @@ export class AIPlayer {
   private y = 0
   private stunnedUntil = 0
   private target: { x: number; y: number } | null = null
+  private waypoints: Array<{ x: number; y: number }> = []
 
   private moveTimer: ReturnType<typeof setInterval> | null = null
   private strategyTimer: ReturnType<typeof setInterval> | null = null
@@ -104,18 +105,10 @@ export class AIPlayer {
     if (this.started) return
     this.started = true
 
-    // Spawn near assigned corner with small random offset
-    const margin = Math.floor(Math.min(this.cols, this.rows) / 6)
-    const jitter = () => Math.floor(Math.random() * margin)
-    const corners = [
-      { x: jitter(), y: jitter() }, // top-left
-      { x: this.cols - 1 - jitter(), y: jitter() }, // top-right
-      { x: jitter(), y: this.rows - 1 - jitter() }, // bottom-left
-      { x: this.cols - 1 - jitter(), y: this.rows - 1 - jitter() }, // bottom-right
-    ]
-    const corner = corners[this.spawnCorner % corners.length]
-    this.x = corner.x
-    this.y = corner.y
+    // Distribute spawn points across the board
+    const spawn = this.getSpawnPosition()
+    this.x = spawn.x
+    this.y = spawn.y
 
     // Register in players map
     const playersMap = getPlayersMap(this.doc)
@@ -137,12 +130,15 @@ export class AIPlayer {
     // Init game timer
     initGameTimer(this.doc)
 
-    // Start loops
+    // Start loops — stagger strategy calls so bots don't all hit the LLM at once
+    const stagger = this.spawnCorner * 500
     this.moveTimer = setInterval(() => this.doMove(), MOVE_INTERVAL)
-    this.strategyTimer = setInterval(
-      () => void this.updateStrategy(),
-      STRATEGY_INTERVAL
-    )
+    setTimeout(() => {
+      this.strategyTimer = setInterval(
+        () => void this.updateStrategy(),
+        STRATEGY_INTERVAL
+      )
+    }, stagger)
     // Check timer expiry and enclosure threats
     this.timerCheckTimer = setInterval(() => {
       this.checkTimerExpiry()
@@ -263,19 +259,12 @@ export class AIPlayer {
     this.gameWasOver = false
     this.stunnedUntil = 0
     this.target = null
+    this.waypoints = []
 
-    // Respawn near assigned corner
-    const margin = Math.floor(Math.min(this.cols, this.rows) / 6)
-    const jitter = () => Math.floor(Math.random() * margin)
-    const corners = [
-      { x: jitter(), y: jitter() },
-      { x: this.cols - 1 - jitter(), y: jitter() },
-      { x: jitter(), y: this.rows - 1 - jitter() },
-      { x: this.cols - 1 - jitter(), y: this.rows - 1 - jitter() },
-    ]
-    const corner = corners[this.spawnCorner % corners.length]
-    this.x = corner.x
-    this.y = corner.y
+    // Respawn at assigned position
+    const spawn = this.getSpawnPosition()
+    this.x = spawn.x
+    this.y = spawn.y
 
     // Re-register in players map and claim starting cell
     const playersMap = getPlayersMap(this.doc)
@@ -294,6 +283,34 @@ export class AIPlayer {
 
     initGameTimer(this.doc)
     void this.updateStrategy()
+  }
+
+  private advanceWaypoint(): void {
+    if (this.waypoints.length > 0) {
+      this.target = this.clampTarget(this.waypoints.shift()!)
+    } else {
+      this.target = this.pickNearbyUnclaimedTarget()
+    }
+  }
+
+  private getSpawnPosition(): { x: number; y: number } {
+    const margin = Math.floor(Math.min(this.cols, this.rows) / 8)
+    const jitter = () => Math.floor(Math.random() * margin)
+    const cx = Math.floor(this.cols / 2)
+    const cy = Math.floor(this.rows / 2)
+
+    // 0-3: corners, 4+: distributed along edges and center
+    const positions = [
+      { x: jitter(), y: jitter() }, // 0: top-left
+      { x: this.cols - 1 - jitter(), y: jitter() }, // 1: top-right
+      { x: jitter(), y: this.rows - 1 - jitter() }, // 2: bottom-left
+      { x: this.cols - 1 - jitter(), y: this.rows - 1 - jitter() }, // 3: bottom-right
+      { x: cx + jitter(), y: cy + jitter() }, // 4: center
+      { x: cx + jitter(), y: jitter() }, // 5: top-center
+      { x: cx + jitter(), y: this.rows - 1 - jitter() }, // 6: bottom-center
+    ]
+
+    return positions[this.spawnCorner % positions.length]
   }
 
   private clampTarget(target: { x: number; y: number }): {
@@ -363,7 +380,7 @@ export class AIPlayer {
       return
     }
     if (!this.target) {
-      this.target = this.pickNearbyUnclaimedTarget()
+      this.advanceWaypoint()
     }
 
     const others = readPlayers(this.doc, this.playerId)
@@ -379,8 +396,8 @@ export class AIPlayer {
     )
 
     if (dir.dx === 0 && dir.dy === 0) {
-      // Reached target — pick a nearby unclaimed cell to keep moving
-      this.target = this.pickNearbyUnclaimedTarget()
+      // Reached target — advance to next waypoint or pick random
+      this.advanceWaypoint()
       return
     }
 
@@ -450,7 +467,10 @@ export class AIPlayer {
         this.personality,
         this.lastStrategy
       )
-      this.target = this.clampTarget(result.target)
+      this.waypoints = result.waypoints.slice(1) // rest after first
+      this.target = this.clampTarget(
+        result.waypoints[0] ?? this.pickNearbyUnclaimedTarget()
+      )
       this.lastStrategy = result.strategy
     } catch (err) {
       console.error(`[${this.playerName}] Strategy error:`, err)

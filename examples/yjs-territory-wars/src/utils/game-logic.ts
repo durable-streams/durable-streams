@@ -151,8 +151,7 @@ export function findEnclosedCells(
   ownerId: string,
   cellsMap: Y.Map<TerritoryCell>,
   cols: number,
-  rows: number,
-  _activePlayers: Set<string>
+  rows: number
 ): Array<{ x: number; y: number }> {
   const ownerCells = new Set<string>()
   cellsMap.forEach((cell, key) => {
@@ -218,7 +217,7 @@ export function findEnclosedCells(
 // ============================================================================
 
 /** Returns true if newPos is exactly one step (cardinal) from oldPos */
-export function isAdjacentMove(
+function isAdjacentMove(
   oldPos: { x: number; y: number },
   newPos: { x: number; y: number }
 ): boolean {
@@ -312,15 +311,7 @@ export function executeMove(
   })
 
   // Check enclosure
-  const activePlayers = new Set<string>([playerId])
-  readPlayers(doc, playerId).forEach((_, id) => activePlayers.add(id))
-  const enclosed = findEnclosedCells(
-    playerId,
-    cellsMap,
-    cols,
-    rows,
-    activePlayers
-  )
+  const enclosed = findEnclosedCells(playerId, cellsMap, cols, rows)
   if (enclosed.length > 0) {
     doc.transact(() => {
       for (const cell of enclosed) {
@@ -339,22 +330,6 @@ export function executeMove(
 // Color helper
 // ============================================================================
 
-export function hashName(name: string): number {
-  let hash = 0
-  for (let i = 0; i < name.length; i++) {
-    hash = (hash * 31 + name.charCodeAt(i)) | 0
-  }
-  return Math.abs(hash)
-}
-
-export function getColor(index: number): string {
-  return PLAYER_COLORS[index % PLAYER_COLORS.length]
-}
-
-/**
- * Pick the first color from PLAYER_COLORS not already used by existing players.
- * Falls back to hashName-based color if all colors are taken.
- */
 // ============================================================================
 // Game state helpers
 // ============================================================================

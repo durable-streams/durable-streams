@@ -1,7 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk"
 import type { TerritoryCell, TerritoryPlayer } from "../utils/game-logic"
 
-export type AgentPersonality = `destroyer` | `explorer` | `greedy` | `balanced`
+export type AgentPersonality =
+  | `destroyer`
+  | `explorer`
+  | `greedy`
+  | `balanced`
+  | `wall-builder`
+  | `opportunist`
+  | `edge-runner`
 
 function buildSystemPrompt(
   cols: number,
@@ -23,20 +30,27 @@ function buildSystemPrompt(
     greedy: `PRIORITY: Maximize cells per move. Only make tiny ${enc}x${enc} rectangles that you can close in one turn. Use edges and your own territory as walls. Never go far from your M cells. Finish your current rectangle before starting a new one.`,
 
     balanced: `PRIORITY: Expand steadily from your territory. Close small ${enc}x${enc} to ${enc * 2}x${enc * 2} rectangles. Steal O cells when nearby, but prefer unclaimed areas. Stay close to your M cells. Continue your previous enclosure if not finished.`,
+
+    "wall-builder": `PRIORITY: Build long walls along board edges and through the center to divide the map. Claim entire rows or columns by running straight lines. Use these walls as boundaries for enclosures later. Prefer horizontal or vertical paths that span many cells. You are creating infrastructure for future captures.`,
+
+    opportunist: `PRIORITY: React to what other players are doing. If an opponent is building a boundary, race to break it by claiming cells in their path. If someone left a gap in their enclosure, rush there. If the leader has a thin boundary, cut through it. Always target the most impactful move — disrupt others' plans rather than building your own.`,
+
+    "edge-runner": `PRIORITY: Claim the board perimeter first. Run along the edges (x=0, x=${maxX}, y=0, y=${maxY}) to build a frame. Once you own the edges, make enclosures inward — every rectangle touching an edge needs only 3 walls. Start from your nearest corner and work around the board.`,
   }
 
   return `${base}
 
 ${strategies[personality]}
 
-RULES: Target within ${maxDist} cells of @. Expand from M cells. Avoid X players and your own M cells. If "Previous plan" is given, continue it unless the board changed significantly.
+RULES: Each waypoint within ${maxDist} cells of the previous one. Expand from M cells. Avoid X players and your own M cells. If "Previous plan" is given, continue it unless the board changed significantly.
 
 RESPOND WITH ONLY THIS JSON, NO OTHER TEXT:
-{"target":{"x":<0-${maxX}>,"y":<0-${maxY}>},"strategy":"<what you are doing and next step>"}`
+{"waypoints":[{"x":<int>,"y":<int>},{"x":<int>,"y":<int>},...],"strategy":"<plan description>"}
+Give 5-8 waypoints that trace a path forming rectangles or enclosures. You have ~120 steps (15 seconds). Move ~${maxDist} cells per waypoint.`
 }
 
 interface StrategyResponse {
-  target: { x: number; y: number }
+  waypoints: Array<{ x: number; y: number }>
   strategy: string
 }
 
@@ -59,8 +73,8 @@ interface BoardSummary {
   }>
 }
 
-// Full resolution for boards ≤64, downsample larger ones
-const MAX_ASCII_SIZE = 64
+// Cap ASCII map to keep LLM context manageable
+const MAX_ASCII_SIZE = 32
 
 export function buildBoardSummary(
   myPosition: { x: number; y: number },
@@ -278,7 +292,7 @@ export class HaikuClient {
 
     const response = await this.client.messages.create({
       model: `claude-haiku-4-5-20251001`,
-      max_tokens: 150,
+      max_tokens: 500,
       system: systemPrompt,
       messages: [{ role: `user`, content: userMessage }],
     })
@@ -288,53 +302,44 @@ export class HaikuClient {
     console.log(`[${tag}] LLM response: ${text}`)
 
     try {
-      // Extract JSON from response (model may add reasoning text before it)
       const jsonMatch = text.match(/\{[\s\S]*\}/)
-      const parsed = JSON.parse(
-        jsonMatch ? jsonMatch[0] : text
-      ) as StrategyResponse
-      if (
-        typeof parsed.target.x === `number` &&
-        typeof parsed.target.y === `number` &&
-        parsed.target.x >= 0 &&
-        parsed.target.x < summary.cols &&
-        parsed.target.y >= 0 &&
-        parsed.target.y < summary.rows
-      ) {
-        // Clamp target distance to maxDist from current position
-        const enclosureSize = Math.max(
-          3,
-          Math.floor(Math.min(summary.cols, summary.rows) / 10)
+      const parsed = JSON.parse(jsonMatch ? jsonMatch[0] : text)
+
+      // Support both waypoints format and legacy single-target
+      let waypoints: Array<{ x: number; y: number }> = []
+      if (Array.isArray(parsed.waypoints)) {
+        waypoints = parsed.waypoints.filter(
+          (w: any) =>
+            typeof w.x === `number` &&
+            typeof w.y === `number` &&
+            w.x >= 0 &&
+            w.x < summary.cols &&
+            w.y >= 0 &&
+            w.y < summary.rows
         )
-        const maxDist = enclosureSize * 2
-        const dx = parsed.target.x - summary.position.x
-        const dy = parsed.target.y - summary.position.y
-        const dist = Math.abs(dx) + Math.abs(dy)
-        if (dist > maxDist) {
-          const ratio = maxDist / dist
-          parsed.target.x = Math.round(summary.position.x + dx * ratio)
-          parsed.target.y = Math.round(summary.position.y + dy * ratio)
-          parsed.target.x = Math.max(
-            0,
-            Math.min(summary.cols - 1, parsed.target.x)
-          )
-          parsed.target.y = Math.max(
-            0,
-            Math.min(summary.rows - 1, parsed.target.y)
-          )
-          console.log(`[${tag}] Clamped target from dist ${dist} to ${maxDist}`)
-        }
-        return parsed
+      } else if (parsed.target?.x != null && parsed.target?.y != null) {
+        waypoints = [parsed.target]
+      }
+
+      if (waypoints.length > 0) {
+        const strategy =
+          typeof parsed.strategy === `string` ? parsed.strategy : ``
+        console.log(
+          `[${tag}] Plan: ${waypoints.length} waypoints — ${strategy}`
+        )
+        return { waypoints, strategy }
       }
     } catch {
       // Fall through to fallback
     }
 
     return {
-      target: {
-        x: Math.floor(Math.random() * summary.cols),
-        y: Math.floor(Math.random() * summary.rows),
-      },
+      waypoints: [
+        {
+          x: Math.floor(Math.random() * summary.cols),
+          y: Math.floor(Math.random() * summary.rows),
+        },
+      ],
       strategy: `random fallback`,
     }
   }

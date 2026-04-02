@@ -140,3 +140,30 @@ The docs site uses VitePress. When writing or editing docs content:
 - Use TypeScript strict mode
 - Format with Prettier (runs on commit via lint-staged)
 - Lint with ESLint
+
+<!-- intent-skills:start -->
+
+# Skill mappings - when working in these areas, load the linked skill file into context.
+
+skills:
+
+- task: "Reading or subscribing to durable streams (live mode, SSE, long-poll, offsets)"
+  load: "packages/client/skills/reading-streams/SKILL.md"
+- task: "Writing, appending, or producing data to durable streams"
+  load: "packages/client/skills/writing-data/SKILL.md"
+- task: "First-time setup of durable streams client"
+  load: "packages/client/skills/getting-started/SKILL.md"
+- task: "Deploying durable streams to production (Caddy, CDN, TLS)"
+  load: "packages/client/skills/go-to-production/SKILL.md"
+- task: "Running dev or test servers for durable streams"
+  load: "packages/client/skills/server-deployment/SKILL.md"
+- task: "Defining state schemas, typed collections, or change events"
+  load: "packages/state/skills/state-schema/SKILL.md"
+- task: "Using StreamDB reactive database with optimistic actions"
+  load: "packages/state/skills/stream-db/SKILL.md"
+- task: "Yjs collaborative editing over durable streams"
+  load: "packages/y-durable-streams/skills/yjs-sync/SKILL.md"
+- task: "Using TanStack DB collections, live queries, or mutations"
+  # To load this skill, run: npx @tanstack/intent@latest list | grep db-core
+- task: "Using useLiveQuery or React bindings for TanStack DB" # To load this skill, run: npx @tanstack/intent@latest list | grep react-db
+<!-- intent-skills:end -->

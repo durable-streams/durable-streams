@@ -1,20 +1,17 @@
-import { createContext, useContext, useEffect, useState } from "react"
-import { DurableStream } from "@durable-streams/client"
-import { createStreamDB } from "@durable-streams/state"
+import { createContext, useContext } from "react"
 import { REGISTRY_TTL_SECONDS, registryStateSchema } from "../utils/schemas"
+import { useStreamDB } from "../hooks/use-stream-db"
 import { useServerEndpoint } from "./server-endpoint-context"
+import type { createStreamDB } from "@durable-streams/state"
 import type { RoomMetadata } from "../utils/schemas"
 import type { ReactNode } from "react"
 
-function createRegistryDB(url: string, headers: Record<string, string>) {
-  return createStreamDB({
-    streamOptions: {
-      url,
-      headers,
-      contentType: `application/json`,
-    },
+function registryDBOptions(url: string, headers: Record<string, string>) {
+  return {
+    streamOptions: { url, headers, contentType: `application/json` as const },
     state: registryStateSchema,
-    actions: ({ db, stream }) => ({
+    ttlSeconds: REGISTRY_TTL_SECONDS,
+    actions: ({ db, stream }: any) => ({
       addRoom: {
         onMutate: (metadata: RoomMetadata) => {
           db.collections.rooms.insert(metadata)
@@ -50,10 +47,19 @@ function createRegistryDB(url: string, headers: Record<string, string>) {
         },
       },
     }),
-  })
+  }
 }
 
-export type RegistryDB = Awaited<ReturnType<typeof createRegistryDB>>
+// Keep the concrete type from createStreamDB so consumers get typed collections/actions
+type RegistryDBOptions = ReturnType<typeof registryDBOptions>
+export type RegistryDB = Awaited<
+  ReturnType<
+    typeof createStreamDB<
+      RegistryDBOptions[`state`],
+      ReturnType<RegistryDBOptions[`actions`]>
+    >
+  >
+>
 
 interface RegistryContextValue {
   registryDB: RegistryDB
@@ -69,103 +75,40 @@ export function useRegistryContext() {
   return context
 }
 
-interface RegistryState {
-  registryDB: RegistryDB | null
-  error: Error | null
-  isLoading: boolean
-}
-
 export function RegistryProvider({ children }: { children: ReactNode }) {
   const { dsEndpoint, dsHeaders } = useServerEndpoint()
-  const [state, setState] = useState<RegistryState>({
-    registryDB: null,
-    error: null,
-    isLoading: true,
-  })
+  const { db, isLoading, error } = useStreamDB(
+    registryDBOptions(`${dsEndpoint}/__snake_rooms`, dsHeaders)
+  )
 
-  useEffect(() => {
-    let registryDB: RegistryDB | null = null
-    let cancelled = false
-    const isCancelled = () => cancelled
-
-    const initDB = async () => {
-      setState({ registryDB: null, error: null, isLoading: true })
-
-      try {
-        const registryUrl = `${dsEndpoint}/__snake_rooms`
-
-        const registryStream = new DurableStream({
-          url: registryUrl,
-          headers: dsHeaders,
-          contentType: `application/json`,
-        })
-
-        const headResult = await registryStream.head()
-        if (isCancelled()) return
-
-        if (!headResult.exists) {
-          await DurableStream.create({
-            url: registryUrl,
-            headers: dsHeaders,
-            contentType: `application/json`,
-            ttlSeconds: REGISTRY_TTL_SECONDS,
-          })
-        }
-
-        registryDB = await createRegistryDB(registryUrl, dsHeaders)
-        await registryDB.preload()
-
-        if (isCancelled()) return
-        setState({ registryDB, error: null, isLoading: false })
-      } catch (err) {
-        if (isCancelled()) return
-        console.error(`[Registry] Failed to initialize:`, err)
-        setState({
-          registryDB: null,
-          error: err instanceof Error ? err : new Error(String(err)),
-          isLoading: false,
-        })
-      }
-    }
-
-    void initDB()
-
-    return () => {
-      cancelled = true
-      if (registryDB) {
-        registryDB.close()
-      }
-    }
-  }, [dsEndpoint, dsHeaders])
-
-  if (state.isLoading) {
+  if (isLoading) {
     return (
-      <div style={screenStyles.center}>
+      <div style={styles.center}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');`}</style>
         <div style={{ color: `#d0bcff`, fontSize: 8 }}>LOADING...</div>
       </div>
     )
   }
 
-  if (state.error || !state.registryDB) {
+  if (error || !db) {
     return (
-      <div style={screenStyles.center}>
+      <div style={styles.center}>
         <style>{`@import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&display=swap');`}</style>
         <div style={{ color: `#FF3D71`, fontSize: 8 }}>
-          Registry Error: {state.error?.message || `Failed to load`}
+          Registry Error: {error?.message || `Failed to load`}
         </div>
       </div>
     )
   }
 
   return (
-    <RegistryContext.Provider value={{ registryDB: state.registryDB }}>
+    <RegistryContext.Provider value={{ registryDB: db as RegistryDB }}>
       {children}
     </RegistryContext.Provider>
   )
 }
 
-const screenStyles = {
+const styles = {
   center: {
     display: `flex`,
     flexDirection: `column` as const,

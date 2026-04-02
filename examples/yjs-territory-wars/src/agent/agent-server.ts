@@ -6,12 +6,37 @@ import { HaikuClient } from "./haiku-client"
 import type { AgentPersonality } from "./haiku-client"
 import type { RoomMetadata } from "../utils/schemas"
 
-const NUM_BOTS = 4
-const BOT_PERSONALITIES: Array<AgentPersonality> = [
+// Bot configurations per board size tier
+// 32x32: 5 bots (4 corners + 1 center)
+// 64x64: 5 bots (4 corners + 1 center)
+// 128x128: 7 bots (4 corners + 3 spread)
+const SMALL_BOARD = 48 // ≤48 in either dimension
+const LARGE_BOARD = 96 // >96 in either dimension
+
+const PERSONALITIES_SMALL: Array<AgentPersonality> = [
   `destroyer`,
   `explorer`,
   `greedy`,
   `balanced`,
+  `edge-runner`,
+]
+
+const PERSONALITIES_MEDIUM: Array<AgentPersonality> = [
+  `destroyer`,
+  `explorer`,
+  `greedy`,
+  `balanced`,
+  `opportunist`,
+]
+
+const PERSONALITIES_LARGE: Array<AgentPersonality> = [
+  `destroyer`,
+  `explorer`,
+  `greedy`,
+  `balanced`,
+  `wall-builder`,
+  `opportunist`,
+  `edge-runner`,
 ]
 
 interface RoomEntry {
@@ -181,13 +206,34 @@ export class AgentServer {
       return
     }
 
-    console.log(`[AgentServer] Spawning ${NUM_BOTS} bot(s) for: ${roomId}`)
+    // Parse board size to determine bot count and personalities
+    const match = roomId.match(/__(\d+)x(\d+)/)
+    const cols = match ? parseInt(match[1]) : 64
+    const rows = match ? parseInt(match[2]) : 64
+    const maxDim = Math.max(cols, rows)
+
+    let personalities: Array<AgentPersonality>
+    if (maxDim <= SMALL_BOARD) {
+      personalities = PERSONALITIES_SMALL
+    } else if (maxDim <= LARGE_BOARD) {
+      personalities = PERSONALITIES_MEDIUM
+    } else {
+      personalities = PERSONALITIES_LARGE
+    }
+
+    // Spawn points: 4 corners + evenly distributed extras
+    // spawnCorner 0-3 = corners, 4+ = distributed along edges/center
+    const numBots = personalities.length
+
+    console.log(
+      `[AgentServer] Spawning ${numBots} bot(s) for ${roomId} (${cols}x${rows})`
+    )
 
     const players: Array<AIPlayer> = []
-    for (let i = 0; i < NUM_BOTS; i++) {
-      const name = BOT_NAMES[i]
+    for (let i = 0; i < numBots; i++) {
+      const name = BOT_NAMES[i % BOT_NAMES.length]
       const color = PLAYER_COLORS[PLAYER_COLORS.length - 1 - i]
-      const personality = BOT_PERSONALITIES[i % BOT_PERSONALITIES.length]
+      const personality = personalities[i]
       const player = new AIPlayer(
         name,
         roomId,
