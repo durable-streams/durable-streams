@@ -8,10 +8,9 @@
    - Includes synthesized cancellation ordering checks when approval requests are pending
    - Includes queued prompt continuation checks after interruption
 
-3. [ ] Real deny/cancel approval variants for both agents
-   - Trigger a real tool approval
-   - Send explicit deny and cancel responses
-   - Assert the bridge forwards exactly one effective response and the agent stops or recovers correctly
+3. [x] Real deny/cancel approval variants for both agents
+   - Live deny/cancel coverage is in place for Claude and Codex
+   - Scenarios assert the bridge forwards exactly one response and side effects are blocked
 
 4. [ ] Real resume after bridge restart
    - Start a session, produce output, kill the bridge, resume in a new process

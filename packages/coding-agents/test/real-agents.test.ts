@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm } from "node:fs/promises"
+import { access, mkdir, mkdtemp, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { REAL_AGENT_TIMEOUT_MS, scenario } from "./scenario-dsl.js"
@@ -8,6 +8,15 @@ import type { PermissionRequestEvent } from "../src/normalize/types.js"
 const maybeIt = process.env.CODING_AGENTS_RUN_REAL === `1` ? it : it.skip
 const codexApprovalMatcher = (event: PermissionRequestEvent): boolean =>
   event.tool === `terminal` || event.tool === `file_change`
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await access(path)
+    return true
+  } catch {
+    return false
+  }
+}
 
 async function withWorkspaceTempCwd<T>(
   prefix: string,
@@ -214,6 +223,175 @@ describe(`real agent smoke scenarios`, () => {
           )
         }
       )
+    },
+    180_000
+  )
+
+  maybeIt(
+    `Claude deny approval blocks side effects`,
+    async () => {
+      await withWorkspaceTempCwd(`coding-agents-claude-deny-`, async (cwd) => {
+        const fileName = `approval-claude-deny.txt`
+        const filePath = join(cwd, fileName)
+
+        await scenario(`real claude approval deny`)
+          .agent(`claude`, {
+            cwd,
+            permissionMode: `default`,
+          })
+          .client(`kyle`)
+          .prompt(
+            `Use Bash to run: printf 'hello\\n' > ${fileName}. Then tell me what happened.`
+          )
+          .waitForPermissionRequest(`Bash`, REAL_AGENT_TIMEOUT_MS)
+          .respondToLatestPermissionRequest(
+            { behavior: `deny` },
+            {
+              matcher: `Bash`,
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            }
+          )
+          .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+          .expectPermissionRequest(`Bash`, {
+            timeoutMs: REAL_AGENT_TIMEOUT_MS,
+          })
+          .expectForwardedCount(
+            (event) => event.source === `client_response`,
+            1,
+            {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            }
+          )
+          .run()
+
+        expect(await pathExists(filePath)).toBe(false)
+      })
+    },
+    180_000
+  )
+
+  maybeIt(
+    `Claude cancel approval blocks side effects`,
+    async () => {
+      await withWorkspaceTempCwd(
+        `coding-agents-claude-cancel-`,
+        async (cwd) => {
+          const fileName = `approval-claude-cancel.txt`
+          const filePath = join(cwd, fileName)
+
+          await scenario(`real claude approval cancel`)
+            .agent(`claude`, {
+              cwd,
+              permissionMode: `default`,
+            })
+            .client(`kyle`)
+            .prompt(
+              `Use Bash to run: printf 'hello\\n' > ${fileName}. Then tell me what happened.`
+            )
+            .waitForPermissionRequest(`Bash`, REAL_AGENT_TIMEOUT_MS)
+            .cancelLatestPermissionRequest({
+              matcher: `Bash`,
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+            .expectPermissionRequest(`Bash`, {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .expectForwardedCount(
+              (event) => event.source === `client_response`,
+              1,
+              {
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .run()
+
+          expect(await pathExists(filePath)).toBe(false)
+        }
+      )
+    },
+    180_000
+  )
+
+  maybeIt(
+    `Codex deny approval blocks side effects`,
+    async () => {
+      await withWorkspaceTempCwd(`coding-agents-codex-deny-`, async (cwd) => {
+        const fileName = `approval-codex-deny.txt`
+        const filePath = join(cwd, fileName)
+
+        await scenario(`real codex approval deny`)
+          .agent(`codex`, {
+            cwd,
+            permissionMode: `untrusted`,
+          })
+          .client(`kyle`)
+          .prompt(
+            `Create a file named ${fileName} in the current directory containing hello, then tell me you did it.`
+          )
+          .waitForPermissionRequest(codexApprovalMatcher, REAL_AGENT_TIMEOUT_MS)
+          .respondToLatestPermissionRequest(
+            { behavior: `deny` },
+            {
+              matcher: codexApprovalMatcher,
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            }
+          )
+          .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+          .expectPermissionRequest(codexApprovalMatcher, {
+            timeoutMs: REAL_AGENT_TIMEOUT_MS,
+          })
+          .expectForwardedCount(
+            (event) => event.source === `client_response`,
+            1,
+            {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            }
+          )
+          .run()
+
+        expect(await pathExists(filePath)).toBe(false)
+      })
+    },
+    180_000
+  )
+
+  maybeIt(
+    `Codex cancel approval blocks side effects`,
+    async () => {
+      await withWorkspaceTempCwd(`coding-agents-codex-cancel-`, async (cwd) => {
+        const fileName = `approval-codex-cancel.txt`
+        const filePath = join(cwd, fileName)
+
+        await scenario(`real codex approval cancel`)
+          .agent(`codex`, {
+            cwd,
+            permissionMode: `untrusted`,
+          })
+          .client(`kyle`)
+          .prompt(
+            `Create a file named ${fileName} in the current directory containing hello, then tell me you did it.`
+          )
+          .waitForPermissionRequest(codexApprovalMatcher, REAL_AGENT_TIMEOUT_MS)
+          .cancelLatestPermissionRequest({
+            matcher: codexApprovalMatcher,
+            timeoutMs: REAL_AGENT_TIMEOUT_MS,
+          })
+          .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+          .expectPermissionRequest(codexApprovalMatcher, {
+            timeoutMs: REAL_AGENT_TIMEOUT_MS,
+          })
+          .expectForwardedCount(
+            (event) => event.source === `client_response`,
+            1,
+            {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            }
+          )
+          .run()
+
+        expect(await pathExists(filePath)).toBe(false)
+      })
     },
     180_000
   )
