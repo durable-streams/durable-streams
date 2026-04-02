@@ -1,5 +1,11 @@
 # @durable-streams/aisdk-transport
 
+## 0.0.3
+
+### Patch Changes
+
+- Move "ai" package from dependency to peer dependency (^6.0.0) ([#303](https://github.com/durable-streams/durable-streams/pull/303))
+
 ## 0.0.2
 
 ### Patch Changes
