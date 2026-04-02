@@ -102,7 +102,7 @@ The session is added to `.sesh/sessions/<session-id>.json` and will be persisted
 
 ### `sesh push`
 
-Push all checked-in sessions to DS. For each session:
+Push new changes from checked-in CC sessions to the Durable Stream. This reads the local JSONL files for each checked-in session and writes any new entries (since the last push) to the DS stream. For each session:
 
 1. Finds the local JSONL file
 2. Determines what's new (scans backwards for the last pushed UUID or a compaction boundary)
