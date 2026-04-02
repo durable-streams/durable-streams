@@ -86,6 +86,52 @@ function createMockAdapter(): {
   }
 }
 
+function createResumeFailingAdapter(): {
+  adapter: AgentAdapter
+  connection: {
+    sentMessages: Array<object>
+  }
+} {
+  const sentMessages: Array<object> = []
+  let spawnCount = 0
+
+  return {
+    adapter: {
+      agentType: `claude`,
+      async spawn(options) {
+        spawnCount += 1
+        if (spawnCount === 1 && options.resume) {
+          throw new Error(`resume failed`)
+        }
+
+        return {
+          onMessage() {},
+          send(raw) {
+            sentMessages.push(raw)
+          },
+          kill() {},
+          on() {},
+        }
+      },
+      parseDirection() {
+        return { type: `notification` }
+      },
+      isTurnComplete(raw: object) {
+        return (raw as Record<string, unknown>).type === `result`
+      },
+      translateClientIntent(raw: ClientIntent) {
+        return raw
+      },
+      prepareResume() {
+        return Promise.resolve({ resumeId: `resume-id` })
+      },
+    },
+    connection: {
+      sentMessages,
+    },
+  }
+}
+
 describe(`startBridge`, () => {
   let server: DurableStreamTestServer
   let baseUrl: string
@@ -272,6 +318,96 @@ describe(`startBridge`, () => {
     )
 
     expect(bridgeEvents[0]?.type).toBe(`session_started`)
+
+    await session.close()
+  })
+
+  it(`should replay an unfinished prompt after resume`, async () => {
+    const streamUrl = `${baseUrl}/v1/stream/bridge-replay-prompt-${Date.now()}`
+    await DurableStream.create({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+
+    const seedStream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+    const seedProducer = new IdempotentProducer(seedStream, `seed-prompt`, {
+      autoClaim: true,
+    })
+
+    seedProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now(),
+        user: { name: `Test`, email: `test@test.com` },
+        raw: { type: `user_message`, text: `Replay me` },
+      })
+    )
+    await seedProducer.flush()
+    await seedProducer.detach()
+
+    const { adapter, connection } = createMockAdapter()
+    const session = await startBridge({
+      adapter,
+      streamUrl,
+      cwd: `/tmp`,
+      resume: true,
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(connection.sentMessages).toContainEqual({
+      type: `user_message`,
+      text: `Replay me`,
+    })
+
+    await session.close()
+  })
+
+  it(`should fall back to a fresh spawn and replay unfinished prompts when resume fails`, async () => {
+    const streamUrl = `${baseUrl}/v1/stream/bridge-replay-fallback-${Date.now()}`
+    await DurableStream.create({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+
+    const seedStream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+    const seedProducer = new IdempotentProducer(seedStream, `seed-fallback`, {
+      autoClaim: true,
+    })
+
+    seedProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now(),
+        user: { name: `Test`, email: `test@test.com` },
+        raw: { type: `user_message`, text: `Fallback replay` },
+      })
+    )
+    await seedProducer.flush()
+    await seedProducer.detach()
+
+    const { adapter, connection } = createResumeFailingAdapter()
+    const session = await startBridge({
+      adapter,
+      streamUrl,
+      cwd: `/tmp`,
+      resume: true,
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(connection.sentMessages).toContainEqual({
+      type: `user_message`,
+      text: `Fallback replay`,
+    })
 
     await session.close()
   })

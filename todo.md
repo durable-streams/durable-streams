@@ -16,9 +16,9 @@
    - Live restart/resume coverage is in place for Claude and Codex
    - Scenarios assert resumed bridge lifecycle events and successful post-resume turns
 
-5. [ ] Real approval + resume together
-   - Stop the bridge while an approval is pending or just after one client responds
-   - Resume and verify reconciliation only includes the effective response
+5. [x] Real prompt replay after restart before turn completion
+   - Live mid-turn prompt replay coverage is in place for Claude and Codex
+   - Scenarios verify a durably written in-flight prompt still produces the expected turn output after restart
 
 6. [ ] Multi-client duplicate response races against a live agent
    - Have two clients answer the same approval nearly simultaneously

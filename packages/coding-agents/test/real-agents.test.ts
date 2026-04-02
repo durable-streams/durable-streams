@@ -622,4 +622,80 @@ describe(`real agent smoke scenarios`, () => {
     },
     240_000
   )
+
+  maybeIt(
+    `Claude can resume after restart before turn completion`,
+    async () => {
+      const token = `CLAUDE_REPLAY_AFTER_RESTART`
+
+      const result = await scenario(`real claude replay after restart`)
+        .agent(`claude`, {
+          permissionMode: `plan`,
+        })
+        .client(`kyle`)
+        .prompt(`Reply with exactly ${token} and nothing else.`)
+        .restart()
+        .waitForAssistantMessage(
+          new RegExp(`\\b${token}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+        .expectBridgeEvent(`session_started`, {
+          count: 1,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectBridgeEvent(`session_resumed`, {
+          count: 1,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectBridgeEvent(`session_ended`, {
+          count: 2,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .run()
+
+      expect(assistantTexts(result).some((text) => text.includes(token))).toBe(
+        true
+      )
+    },
+    240_000
+  )
+
+  maybeIt(
+    `Codex can resume after restart before turn completion`,
+    async () => {
+      const token = `CODEX_REPLAY_AFTER_RESTART`
+
+      const result = await scenario(`real codex replay after restart`)
+        .agent(`codex`, {
+          permissionMode: `plan`,
+        })
+        .client(`kyle`)
+        .prompt(`Reply with exactly ${token} and nothing else.`)
+        .restart()
+        .waitForAssistantMessage(
+          new RegExp(`\\b${token}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+        .expectBridgeEvent(`session_started`, {
+          count: 1,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectBridgeEvent(`session_resumed`, {
+          count: 1,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectBridgeEvent(`session_ended`, {
+          count: 2,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .run()
+
+      expect(assistantTexts(result).some((text) => text.includes(token))).toBe(
+        true
+      )
+    },
+    240_000
+  )
 })

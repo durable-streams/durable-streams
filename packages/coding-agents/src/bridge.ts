@@ -86,6 +86,30 @@ async function createOrConnectStream(
   }
 }
 
+function buildPendingPromptIntents(
+  history: Array<StreamEnvelope>,
+  adapter: AgentAdapter
+): Array<Extract<ClientIntent, { type: `user_message` }>> {
+  const pendingPrompts: Array<Extract<ClientIntent, { type: `user_message` }>> =
+    []
+
+  for (const envelope of history) {
+    if (envelope.direction === `user` && envelope.raw.type === `user_message`) {
+      pendingPrompts.push(envelope.raw)
+      continue
+    }
+
+    if (
+      envelope.direction === `agent` &&
+      adapter.isTurnComplete(envelope.raw)
+    ) {
+      pendingPrompts.shift()
+    }
+  }
+
+  return pendingPrompts
+}
+
 export async function startBridge(options: BridgeOptions): Promise<Session> {
   const {
     adapter,
@@ -108,6 +132,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
   const history = await historyResponse.json()
   const resumeOffset = historyResponse.offset
   const hasHistory = history.length > 0
+  const pendingPromptIntents = buildPendingPromptIntents(history, adapter)
 
   if (resume && !hasHistory) {
     throw new Error(`Cannot resume an empty session stream: ${streamUrl}`)
@@ -129,18 +154,26 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
     resumeId = prepared.resumeId
   }
 
-  let connection
-  try {
-    connection = await adapter.spawn({
+  const openConnection = async (resumeValue?: string) => {
+    return await adapter.spawn({
       cwd,
       model,
       permissionMode,
       verbose,
-      resume: resumeId,
+      resume: resumeValue,
     })
+  }
+
+  let connection
+  try {
+    connection = await openConnection(resumeId)
   } catch (error) {
-    await producer.detach()
-    throw error
+    if (!resumeId || pendingPromptIntents.length === 0) {
+      await producer.detach()
+      throw error
+    }
+
+    connection = await openConnection(undefined)
   }
 
   const pendingAgentRequestIds = new Set<string | number>()
@@ -210,6 +243,11 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
   })
 
   writeJson(createBridgeEnvelope(adapter.agentType, controlEventType))
+
+  for (const prompt of pendingPromptIntents) {
+    promptQueue.push(adapter.translateClientIntent(prompt))
+  }
+  processQueue()
 
   const liveRelayPromise = (async () => {
     try {
