@@ -20,9 +20,9 @@
    - Live mid-turn prompt replay coverage is in place for Claude and Codex
    - Scenarios verify a durably written in-flight prompt still produces the expected turn output after restart
 
-6. [ ] Multi-client duplicate response races against a live agent
-   - Have two clients answer the same approval nearly simultaneously
-   - Assert `first_response_wins` with a real agent process
+6. [x] Multi-client duplicate response races against a live agent
+   - Live two-client approval race coverage is in place for Claude and Codex
+   - Scenarios assert `first_response_wins` and verify the winning response determines the observed outcome
 
 7. [ ] Multiple queued prompts against live agents
    - Send prompt A and B quickly

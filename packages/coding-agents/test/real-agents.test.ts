@@ -698,4 +698,140 @@ describe(`real agent smoke scenarios`, () => {
     },
     240_000
   )
+
+  maybeIt(
+    `Claude keeps only the first live approval response across clients`,
+    async () => {
+      await withWorkspaceTempCwd(
+        `coding-agents-claude-response-race-`,
+        async (cwd) => {
+          const fileName = `claude-race.txt`
+          const filePath = join(cwd, fileName)
+
+          const result = await scenario(`real claude duplicate approval race`)
+            .agent(`claude`, {
+              cwd,
+              permissionMode: `default`,
+            })
+            .client(`alice`)
+            .client(`bob`)
+            .useClient(`alice`)
+            .prompt(
+              `Use Bash to run: printf 'hello\\n' > ${fileName}. Then tell me what happened.`
+            )
+            .waitForPermissionRequest(`Bash`, REAL_AGENT_TIMEOUT_MS)
+            .useClient(`alice`)
+            .respondToLatestPermissionRequest(
+              { behavior: `deny` },
+              {
+                matcher: `Bash`,
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .useClient(`bob`)
+            .respondToLatestPermissionRequest(
+              { behavior: `allow` },
+              {
+                matcher: `Bash`,
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .sleep(2_000)
+            .expectForwardedCount(
+              (event) => event.source === `client_response`,
+              1,
+              {
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .expectInvariant(`first_response_wins`, {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .run()
+
+          expect(await pathExists(filePath)).toBe(false)
+          expect(result.forwardedMessages).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                source: `client_response`,
+                raw: expect.objectContaining({
+                  response: expect.objectContaining({
+                    response: { behavior: `deny` },
+                  }),
+                }),
+              }),
+            ])
+          )
+        }
+      )
+    },
+    240_000
+  )
+
+  maybeIt(
+    `Codex keeps only the first live approval response across clients`,
+    async () => {
+      await withWorkspaceTempCwd(
+        `coding-agents-codex-response-race-`,
+        async (cwd) => {
+          const fileName = `codex-race.txt`
+          const filePath = join(cwd, fileName)
+
+          const result = await scenario(`real codex duplicate approval race`)
+            .agent(`codex`, {
+              cwd,
+              permissionMode: `untrusted`,
+            })
+            .client(`alice`)
+            .client(`bob`)
+            .useClient(`alice`)
+            .prompt(
+              `Create a file named ${fileName} in the current directory containing hello, then tell me you did it.`
+            )
+            .waitForPermissionRequest(
+              codexApprovalMatcher,
+              REAL_AGENT_TIMEOUT_MS
+            )
+            .useClient(`alice`)
+            .respondToLatestPermissionRequest(
+              { behavior: `deny` },
+              {
+                matcher: codexApprovalMatcher,
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .useClient(`bob`)
+            .respondToLatestPermissionRequest(
+              { behavior: `allow` },
+              {
+                matcher: codexApprovalMatcher,
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+            .expectForwardedCount(
+              (event) => event.source === `client_response`,
+              1,
+              {
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .expectInvariant(`first_response_wins`, {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .run()
+
+          expect(await pathExists(filePath)).toBe(false)
+          expect(result.forwardedMessages).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                source: `client_response`,
+              }),
+            ])
+          )
+        }
+      )
+    },
+    240_000
+  )
 })
