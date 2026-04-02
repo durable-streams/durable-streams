@@ -157,6 +157,33 @@ export function getSessionSlug(sessionId: string, cwd: string): string | null {
 }
 
 /**
+ * Find the cwd of a session by reading its JSONL file.
+ * Searches all CC project directories for the session ID.
+ */
+export function getCwdFromJsonl(sessionId: string): string | null {
+  const projectsDir = path.join(os.homedir(), `.claude`, `projects`)
+  if (!fs.existsSync(projectsDir)) return null
+
+  for (const dir of fs.readdirSync(projectsDir)) {
+    const jsonlPath = path.join(projectsDir, dir, `${sessionId}.jsonl`)
+    if (!fs.existsSync(jsonlPath)) continue
+
+    const content = fs.readFileSync(jsonlPath, `utf-8`)
+    for (const line of content.split(`\n`)) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>
+        if (typeof entry.cwd === `string`) return entry.cwd
+      } catch {
+        continue
+      }
+    }
+  }
+
+  return null
+}
+
+/**
  * Get the current git user name.
  */
 export function getGitUser(): string {

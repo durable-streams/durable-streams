@@ -10,6 +10,7 @@ import * as path from "node:path"
 import { findRepoRoot, readConfig, saveToken, writeConfig } from "./config.js"
 import {
   findActiveSessions,
+  getCwdFromJsonl,
   getGitUser,
   getSessionSlug,
   listSessionFiles,
@@ -118,10 +119,15 @@ async function main(): Promise<void> {
       sessionId = sessions[0].sessionId
       cwd = sessions[0].cwd
     } else {
-      // Find cwd from active sessions or use current dir
+      // Find cwd from active sessions, or read from JSONL, or fall back to current dir
       const all = findActiveSessions()
       const match = all.find((s) => s.sessionId === sessionId)
-      cwd = match?.cwd ?? process.cwd()
+      if (match) {
+        cwd = match.cwd
+      } else {
+        // Session might not be active — read cwd from its JSONL file
+        cwd = getCwdFromJsonl(sessionId) ?? process.cwd()
+      }
     }
 
     // Make cwd relative to repo root (handle symlinks via realpath)
