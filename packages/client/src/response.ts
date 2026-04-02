@@ -10,6 +10,7 @@ import {
   STREAM_CLOSED_HEADER,
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
+  STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
 import { DurableStreamError } from "./error"
@@ -478,6 +479,12 @@ export class StreamResponseImpl<
       this.#requestAbortController.signal
     )
     if (newSSEResponse.body) {
+      if (!this.#encoding) {
+        const enc = newSSEResponse.headers.get(STREAM_SSE_DATA_ENCODING_HEADER)
+        if (enc === `base64`) {
+          this.#encoding = `base64`
+        }
+      }
       return parseSSEStream(
         newSSEResponse.body,
         this.#requestAbortController.signal
@@ -778,6 +785,29 @@ export class StreamResponseImpl<
               this.#requestAbortController.signal,
               resumingFromPause
             )
+
+            // Check if fetchNext returned an SSE response (live: true sends live=sse)
+            const isSSEResponse =
+              response.headers
+                .get(`content-type`)
+                ?.includes(`text/event-stream`) ?? false
+
+            if (isSSEResponse && response.body) {
+              this.#markSSEConnectionStart()
+              if (!this.#encoding) {
+                const enc = response.headers.get(
+                  STREAM_SSE_DATA_ENCODING_HEADER
+                )
+                if (enc === `base64`) {
+                  this.#encoding = `base64`
+                }
+              }
+              sseEventIterator = parseSSEStream(
+                response.body,
+                this.#requestAbortController.signal
+              )
+              return
+            }
 
             this.#updateStateFromResponse(response)
             controller.enqueue(response)
