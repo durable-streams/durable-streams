@@ -286,6 +286,7 @@ async function main(): Promise<void> {
     }
 
     console.log(`\nResume with: cd ${result.cwd} && claude --continue`)
+    console.log(`Session ID: ${result.newSessionId}`)
   } else if (command === `merge`) {
     const repoRoot = requireRepoRoot()
     requireConfig(repoRoot)
