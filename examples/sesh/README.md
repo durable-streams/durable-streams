@@ -67,7 +67,7 @@ git commit -m "my changes"           # hook auto-pushes sessions to DS
 git push
 ```
 
-Or manually — run `sesh push` before each commit to write any new session entries to DS and update the offsets in the session files:
+Or manually — run `sesh push` before each commit to push changes to checked-in CC sessions to DS:
 
 ```bash
 sesh push
