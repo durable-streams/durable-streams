@@ -124,10 +124,19 @@ async function main(): Promise<void> {
       cwd = match?.cwd ?? process.cwd()
     }
 
-    // Make cwd relative to repo root
-    const relativeCwd = cwd.startsWith(repoRoot)
-      ? cwd.slice(repoRoot.length + 1) || `.`
-      : cwd
+    // Make cwd relative to repo root (handle symlinks via realpath)
+    const realCwd = fs.existsSync(cwd) ? fs.realpathSync(cwd) : cwd
+    const realRoot = fs.realpathSync(repoRoot)
+    let relativeCwd: string
+    if (realCwd.startsWith(realRoot)) {
+      const rel = realCwd.slice(realRoot.length + 1)
+      relativeCwd = rel ? `./${rel}` : `.`
+    } else if (cwd.startsWith(repoRoot)) {
+      const rel = cwd.slice(repoRoot.length + 1)
+      relativeCwd = rel ? `./${rel}` : `.`
+    } else {
+      relativeCwd = cwd
+    }
 
     // Get name
     let name = parseArg(`--name`)
