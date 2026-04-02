@@ -116,6 +116,9 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
 
   const playerScores = useMemo(() => getPlayerScores(cells), [cells])
 
+  const prevLeaderRef = useRef<string | null>(null)
+  const [leaderBlink, setLeaderBlink] = useState(false)
+
   const leader = useMemo(() => {
     let maxCells = 0
     let leaderId = ``
@@ -131,6 +134,20 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
     const other = otherPlayers.get(leaderId)
     return other ? { name: other.name, pct: leaderPct } : null
   }, [playerScores, totalCells, playerId, playerName, otherPlayers])
+
+  // Blink leader name when it changes
+  useEffect(() => {
+    if (!leader) return
+    if (
+      prevLeaderRef.current !== null &&
+      prevLeaderRef.current !== leader.name
+    ) {
+      setLeaderBlink(true)
+      const timer = setTimeout(() => setLeaderBlink(false), 900)
+      return () => clearTimeout(timer)
+    }
+    prevLeaderRef.current = leader.name
+  }, [leader])
 
   // Initialize player position and game timer
   useEffect(() => {
@@ -534,6 +551,8 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
         .live-dot { animation: blink 1.5s ease-in-out infinite; }
         @keyframes stun-pulse { 0%,100% { opacity:1 } 50% { opacity:0.2 } }
         .stunned { animation: stun-pulse 0.3s ease-in-out infinite; }
+        @keyframes leader-blink { 0%,100% { opacity:1 } 50% { opacity:0 } }
+        .leader-blink { animation: leader-blink 0.3s ease-in-out 3; }
       `}</style>
 
       {/* Header: EXIT | name@room | TIMER | PLAYERS */}
@@ -688,7 +707,12 @@ export function TerritoryGame({ onLeave }: TerritoryGameProps) {
           </div>
           {leader && (
             <div>
-              <span style={{ color: PALETTE.dim }}>{leader.name}</span>
+              <span
+                className={leaderBlink ? `leader-blink` : undefined}
+                style={{ color: PALETTE.dim }}
+              >
+                {leader.name}
+              </span>
               {` `}
               <span style={{ fontSize: FONT_SCORE, color: PALETTE.accent }}>
                 {leader.pct}%

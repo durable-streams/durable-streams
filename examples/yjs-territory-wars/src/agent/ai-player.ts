@@ -346,26 +346,35 @@ export class AIPlayer {
   private pickNearbyUnclaimedTarget(): { x: number; y: number } {
     const cells = readCells(this.doc)
     const range = 8
-    const candidates: Array<{ x: number; y: number }> = []
+    // Prefer unclaimed cells, then any cell not at current position
+    const unclaimed: Array<{ x: number; y: number }> = []
+    const anyOther: Array<{ x: number; y: number }> = []
     for (let dy = -range; dy <= range; dy++) {
       for (let dx = -range; dx <= range; dx++) {
+        if (dx === 0 && dy === 0) continue
         const x = this.x + dx
         const y = this.y + dy
         if (x < 0 || x >= this.cols || y < 0 || y >= this.rows) continue
         const cell = cells.get(`${x},${y}`)
         if (!cell || cell.owner !== this.playerId) {
-          candidates.push({ x, y })
+          unclaimed.push({ x, y })
+        } else {
+          anyOther.push({ x, y })
         }
       }
     }
-    if (candidates.length > 0) {
-      return candidates[Math.floor(Math.random() * candidates.length)]
+    const pool = unclaimed.length > 0 ? unclaimed : anyOther
+    if (pool.length > 0) {
+      return pool[Math.floor(Math.random() * pool.length)]
     }
-    // Fallback: random position
-    return {
-      x: Math.floor(Math.random() * this.cols),
-      y: Math.floor(Math.random() * this.rows),
-    }
+    // Absolute fallback: one step in a random direction
+    const dirs = [
+      { x: this.x + 1, y: this.y },
+      { x: this.x - 1, y: this.y },
+      { x: this.x, y: this.y + 1 },
+      { x: this.x, y: this.y - 1 },
+    ].filter((p) => p.x >= 0 && p.x < this.cols && p.y >= 0 && p.y < this.rows)
+    return dirs[Math.floor(Math.random() * dirs.length)]
   }
 
   private doMove(): void {
@@ -382,7 +391,12 @@ export class AIPlayer {
     if (!this.target) {
       this.advanceWaypoint()
     }
-    if (!this.target) return
+    if (!this.target) {
+      console.log(
+        `[${this.playerName}] NO TARGET — waypoints: ${this.waypoints.length}, pos: (${this.x},${this.y})`
+      )
+      return
+    }
 
     const others = readPlayers(this.doc, this.playerId)
     const cells = readCells(this.doc)
@@ -397,8 +411,15 @@ export class AIPlayer {
     )
 
     if (dir.dx === 0 && dir.dy === 0) {
-      // Reached target — advance to next waypoint or pick random
+      // At target — advance to next waypoint
+      const prevX = this.target.x
+      const prevY = this.target.y
       this.advanceWaypoint()
+      if (this.target.x === prevX && this.target.y === prevY) {
+        console.log(
+          `[${this.playerName}] STUCK at (${this.x},${this.y}) — no new waypoint`
+        )
+      }
       return
     }
 
@@ -414,6 +435,9 @@ export class AIPlayer {
     )
 
     this.stunnedUntil = result.stunnedUntil
+    if (result.stunned) {
+      console.log(`[${this.playerName}] STUNNED at (${this.x},${this.y})`)
+    }
     if (result.moved) {
       this.x = result.x
       this.y = result.y

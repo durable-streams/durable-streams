@@ -22,7 +22,7 @@ export interface TerritoryPlayer {
 
 export const DEFAULT_COLS = 64
 export const DEFAULT_ROWS = 64
-export const MOVE_INTERVAL = 120
+export const MOVE_INTERVAL = 200
 export const STUN_DURATION = 1500
 export const WIN_THRESHOLD = 0.3
 export const GAME_DURATION_MS = 120_000 // 2 minutes

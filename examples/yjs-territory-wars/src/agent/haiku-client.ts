@@ -20,7 +20,7 @@ function buildSystemPrompt(
   const enc = Math.max(3, Math.floor(Math.min(cols, rows) / 10))
   const maxDist = enc * 2
 
-  const base = `Territory Wars: ${cols}x${rows} grid. Claim cells by moving. Closing a boundary captures ALL cells inside (steals opponents'). First to 30% wins. Stun on collision ~12 steps.`
+  const base = `Territory Wars: ${cols}x${rows} grid. Claim cells by moving. Closing a boundary captures ALL cells inside (steals opponents'). First to 30% wins. Stun on collision ~8 steps.`
 
   const strategies: Record<AgentPersonality, string> = {
     destroyer: `PRIORITY: Systematically dismantle the largest opponent territory. Find the biggest cluster of O cells on the map and work to enclose it. Build your boundary around one side of their cluster at a time. Continue your previous plan if you were already building a boundary — don't restart. Each turn should extend the enclosure wall. Once closed, all their cells become yours.`,
@@ -46,7 +46,7 @@ RULES: Each waypoint within ${maxDist} cells of the previous one. Expand from M 
 
 RESPOND WITH ONLY THIS JSON, NO OTHER TEXT:
 {"waypoints":[{"x":<int>,"y":<int>},{"x":<int>,"y":<int>},...],"strategy":"<plan description>"}
-Give 5-8 waypoints that trace a path forming rectangles or enclosures. You have ~120 steps (15 seconds). Move ~${maxDist} cells per waypoint.`
+Give 5-8 waypoints that trace a path forming rectangles or enclosures. You have ~75 steps (15 seconds). Move ~${maxDist} cells per waypoint.`
 }
 
 interface StrategyResponse {
