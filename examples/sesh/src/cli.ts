@@ -215,7 +215,7 @@ async function main(): Promise<void> {
         ? `offset: ...${s.lastOffset.slice(-8)}`
         : `not pushed`
       console.log(
-        `${prefix}${s.sessionId.slice(0, 8)}  "${s.name}"  by ${s.createdBy}  cwd: ${s.cwd}  agent: ${s.agent}  ${offset}`
+        `${prefix}${s.sessionId}  "${s.name}"  by ${s.createdBy}  cwd: ${s.cwd}  agent: ${s.agent}  ${offset}`
       )
       const kids = children.get(s.sessionId) ?? []
       for (const kid of kids) {
@@ -251,9 +251,7 @@ async function main(): Promise<void> {
       } else {
         console.error(`Multiple sessions available:`)
         for (const s of sessions) {
-          console.error(
-            `  ${s.sessionId.slice(0, 8)}  "${s.name}"  by ${s.createdBy}`
-          )
+          console.error(`  ${s.sessionId}  "${s.name}"  by ${s.createdBy}`)
         }
         console.error(`\nSpecify which one: sesh resume <session-id>`)
         process.exit(1)
@@ -264,7 +262,6 @@ async function main(): Promise<void> {
     const allSessions = listSessionFiles(repoRoot)
     const match =
       allSessions.find((s) => s.sessionId === sessionId) ??
-      allSessions.find((s) => s.sessionId.startsWith(sessionId)) ??
       allSessions.find((s) => s.name === sessionId)
     if (match) {
       sessionId = match.sessionId
