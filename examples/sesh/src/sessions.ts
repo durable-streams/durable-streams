@@ -13,6 +13,7 @@ export interface SessionFile {
   parentSessionId: string | null
   streamUrl: string | null
   lastOffset: string | null
+  entryCount: number
   name: string
   cwd: string
   agent: string

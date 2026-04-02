@@ -151,6 +151,7 @@ async function main() {
       parentSessionId: null,
       streamUrl: null,
       lastOffset: null,
+      entryCount: 0,
       name: `test-session`,
       cwd: `.`,
       agent: `claude`,

@@ -4,6 +4,7 @@
  * sesh — Git-integrated CC session management via Durable Streams.
  */
 
+import * as fs from "node:fs"
 import { findRepoRoot, readConfig, saveToken, writeConfig } from "./config.js"
 import {
   findActiveSessions,
@@ -24,7 +25,8 @@ function usage(): void {
   sesh checkin [--session <id>] [--name <name>]  Mark a session for tracking
   sesh push                                       Push session deltas to DS
   sesh list                                       List tracked sessions
-  sesh resume [<session-id>] [--no-checkin]       Fork and resume a session
+  sesh resume [<session-id>] [--no-checkin] [--at <commit>]  Fork and resume a session
+  sesh install-hooks                              Install git pre-commit hook
 `)
 }
 
@@ -140,6 +142,7 @@ async function main(): Promise<void> {
       parentSessionId: null,
       streamUrl: null,
       lastOffset: null,
+      entryCount: 0,
       name,
       cwd: relativeCwd,
       agent: `claude`,
@@ -256,6 +259,37 @@ async function main(): Promise<void> {
     }
 
     console.log(`\nResume with: cd ${result.cwd} && claude --continue`)
+  } else if (command === `install-hooks`) {
+    const repoRoot = requireRepoRoot()
+
+    const hooksDir = `${repoRoot}/.git/hooks`
+    const hookPath = `${hooksDir}/pre-commit`
+
+    // Get the path to sesh CLI
+    const seshCliPath = new URL(`./cli.ts`, import.meta.url).pathname
+
+    const hookContent = `#!/bin/sh
+# sesh pre-commit hook — pushes session data to DS and stages updated files
+npx tsx ${seshCliPath} push 2>&1
+# Stage any updated session files
+git add .sesh/sessions/ 2>/dev/null || true
+`
+
+    // Check if hook already exists
+    if (
+      fs.existsSync(hookPath) &&
+      !fs.readFileSync(hookPath, `utf-8`).includes(`sesh`)
+    ) {
+      // Append to existing hook
+      fs.appendFileSync(hookPath, `\n${hookContent}`)
+      console.log(`Appended sesh to existing pre-commit hook.`)
+    } else {
+      fs.writeFileSync(hookPath, hookContent)
+      fs.chmodSync(hookPath, `755`)
+      console.log(`Installed pre-commit hook: ${hookPath}`)
+    }
+
+    console.log(`Sessions will be auto-pushed on each commit.`)
   } else {
     console.error(`Unknown command: ${command}\n`)
     usage()
