@@ -1,0 +1,64 @@
+{
+  "name": "@durable-streams/coding-agents",
+  "description": "Bridge coding agents to durable streams for persistent, shareable sessions",
+  "version": "0.1.0",
+  "author": "Durable Stream contributors",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/coding-agents"
+  },
+  "type": "module",
+  "main": "./dist/src/index.cjs",
+  "module": "./dist/src/index.js",
+  "types": "./dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/src/index.d.ts",
+        "default": "./dist/src/index.js"
+      },
+      "require": {
+        "types": "./dist/src/index.d.cts",
+        "default": "./dist/src/index.cjs"
+      }
+    },
+    "./client": {
+      "import": {
+        "types": "./dist/src/client.d.ts",
+        "default": "./dist/src/client.js"
+      },
+      "require": {
+        "types": "./dist/src/client.d.cts",
+        "default": "./dist/src/client.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "bin": {
+    "coding-agents": "./dist/cli/index.js"
+  },
+  "sideEffects": false,
+  "files": [
+    "dist",
+    "src"
+  ],
+  "dependencies": {
+    "@durable-streams/client": "workspace:*",
+    "ws": "^8.18.3"
+  },
+  "devDependencies": {
+    "@durable-streams/server": "workspace:*",
+    "@types/ws": "^8.18.1",
+    "tsdown": "^0.9.0"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}

@@ -1,20 +1,111 @@
-# @durable-streams/agent-client-protocol Implementation Plan
+# @durable-streams/agent-client-protocol Implementation Plan (XState)
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build a TypeScript library that bridges ACP coding agents to a remote durable stream, enabling durable, multi-device, multi-user coding sessions.
 
-**Architecture:** A bridge (Node-only) spawns an ACP agent subprocess and pipes its stdio JSON-RPC messages to/from a durable stream. A separate browser-safe client writes user prompts to the same stream. Resume uses synthesized replay with path rewriting.
+**Architecture:** A thin bridge (Node-only) spawns an ACP agent subprocess, persists ACP traffic to a durable stream, and relays stream traffic back to the agent. A separate browser-safe client appends prompts, responses, and cancels to the same stream. Replay uses synthesized history with path rewriting. Coordination is handled by an explicit XState machine.
 
-**Tech Stack:** TypeScript, `@durable-streams/client`, vitest, tsdown, Node.js `child_process`
+**Tech Stack:** TypeScript, `@durable-streams/client`, `xstate`, vitest, tsdown, Node.js `child_process`
 
 **Spec:** `docs/superpowers/specs/2026-03-31-durable-streams-acp-bridge-design.md`
 
 ---
 
+## Core constraints
+
+These are the design rules the implementation must preserve:
+
+- The bridge is a **pure relay**. It does not execute `fs/*`, `terminal/*`, or permission policy locally.
+- All ACP writes that matter for replay and multi-device consistency must flow through the durable stream.
+- The bridge may forward a JSON-RPC response to the agent **only after** that response has been observed on the stream.
+- The bridge must not advertise ACP `clientCapabilities` such as `fs` or `terminal`.
+- Prompt turns must be serialized. A second prompt cannot be sent to the agent until the current prompt turn completes.
+- Agent-initiated request ids must be tracked so duplicate client responses are dropped and `session/cancel` can generate cancelled outcomes for pending requests.
+- Resume must tail from the offset after consumed history: `historyResponse.offset`, never `head()`.
+
+---
+
+## Why XState
+
+The previous plan kept most protocol choreography in ad hoc flags and callbacks. That made the edge cases hard to reason about:
+
+- replay vs live tail startup
+- prompt queueing while a turn is active
+- pending request tracking
+- duplicate client responses
+- cancel handling for pending requests
+- boot / ready / close sequencing
+
+XState gives us:
+
+- explicit states
+- explicit events
+- guarded transitions
+- testable coordination logic without live network or child-process IO
+- a small `bridge.ts` wrapper that only wires real IO into the machine
+
+---
+
+## State machine
+
+The machine owns lifecycle and sequencing. Real IO lives in injected dependencies and thin wiring code.
+
+### Top-level states
+
+- `booting`
+  - load history from the stream
+  - capture `resumeOffset`
+- `initializing`
+  - send ACP `initialize`
+  - send ACP `session/new`
+- `replaying`
+  - if history exists, send a replay prompt
+  - append `session_resumed` control event to the stream
+- `live`
+  - steady-state relay mode
+  - nested prompt-turn states
+- `closing`
+  - stop live tail
+  - append `session_ended`
+  - kill agent
+- `failed`
+  - terminal error state for bridge startup failures
+
+### Nested `live` states
+
+- `idle`
+  - no prompt in flight
+  - if queue has a prompt, transition to `turnActive`
+- `turnActive`
+  - one ACP `session/prompt` is in flight
+  - additional prompts are queued
+  - on completion, return to `idle`
+
+### Key events
+
+- `AGENT_NOTIFICATION`
+- `AGENT_RESPONSE`
+- `AGENT_REQUEST`
+- `STREAM_PROMPT`
+- `STREAM_RESPONSE`
+- `STREAM_CANCEL`
+- `CLOSE`
+
+### Machine invariants
+
+- `resumeOffset` is assigned exactly once from consumed history.
+- Every `AGENT_REQUEST` id is added to `pendingAgentRequestIds`.
+- Only the first `STREAM_RESPONSE` for a pending id is forwarded to the agent.
+- `STREAM_CANCEL` appends cancelled response envelopes to the stream for all pending ids, then relays `session/cancel`.
+- Pending request ids are cleared only when the matching stream responses are observed and forwarded.
+- `AGENT_NOTIFICATION`, `AGENT_RESPONSE`, and `AGENT_REQUEST` are always appended to the stream.
+
+---
+
 ## File structure
 
-```
+```text
 packages/agent-client-protocol/
   package.json
   tsdown.config.ts
@@ -22,34 +113,40 @@ packages/agent-client-protocol/
   src/
     index.ts        — exports createAgentStream + types
     client.ts       — exports createStreamClient (browser-safe)
-    bridge.ts       — stdio <-> stream forwarding loop
-    agent.ts        — spawn ACP process, manage lifecycle
-    replay.ts       — read history, build replay text, rewrite paths
-    types.ts        — shared types
+    types.ts        — shared ACP / stream / machine types
+    replay.ts       — build replay text + path rewriting
+    agent.ts        — ACP subprocess transport + JSON-RPC parsing
+    machine.ts      — XState bridge machine
+    bridge.ts       — real wiring: stream + agent + actor lifecycle
   test/
-    replay.test.ts  — unit tests for replay module
-    agent.test.ts   — unit tests for agent resolution + JSON-RPC
-    client.test.ts  — unit tests for client message formatting
+    replay.test.ts
+    agent.test.ts
+    machine.test.ts
+    bridge.test.ts
+    client.test.ts
 ```
 
 ---
 
-### Task 1: Project scaffold
+## Task 1: Project scaffold
 
 **Files:**
 
 - Create: `packages/agent-client-protocol/package.json`
 - Create: `packages/agent-client-protocol/tsdown.config.ts`
 - Create: `packages/agent-client-protocol/tsconfig.json`
-- Create: `packages/agent-client-protocol/src/index.ts` (placeholder)
-- Create: `packages/agent-client-protocol/src/client.ts` (placeholder)
-- Create: `packages/agent-client-protocol/src/types.ts` (placeholder)
-- Create: `packages/agent-client-protocol/src/replay.ts` (placeholder)
-- Create: `packages/agent-client-protocol/src/agent.ts` (placeholder)
-- Create: `packages/agent-client-protocol/src/bridge.ts` (placeholder)
-- Modify: `vitest.config.ts` (add test project)
+- Create: `packages/agent-client-protocol/src/index.ts`
+- Create: `packages/agent-client-protocol/src/client.ts`
+- Create: `packages/agent-client-protocol/src/types.ts`
+- Create: `packages/agent-client-protocol/src/replay.ts`
+- Create: `packages/agent-client-protocol/src/agent.ts`
+- Create: `packages/agent-client-protocol/src/machine.ts`
+- Create: `packages/agent-client-protocol/src/bridge.ts`
+- Modify: `vitest.config.ts`
 
-- [ ] **Step 1: Create package.json**
+- [ ] **Step 1: Create `package.json`**
+
+Use the existing package conventions in this repo, but add `xstate` as a runtime dependency:
 
 ```json
 {
@@ -91,31 +188,28 @@ packages/agent-client-protocol/
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "@durable-streams/client": "workspace:*"
-  },
-  "devDependencies": {
-    "@types/node": "^22.15.21",
-    "tsdown": "^0.9.0",
-    "typescript": "^5.9.2",
-    "vitest": "^4.0.0"
+    "@durable-streams/client": "workspace:*",
+    "xstate": "^5.0.0"
   }
 }
 ```
 
-- [ ] **Step 2: Create tsdown.config.ts**
+- [ ] **Step 2: Create `tsdown.config.ts`**
 
 ```typescript
-import { defineConfig } from "tsdown"
+import type { Options } from "tsdown"
 
-export default defineConfig({
+const config: Options = {
   entry: ["src/index.ts", "src/client.ts"],
   format: ["esm", "cjs"],
   dts: true,
   clean: true,
-})
+}
+
+export default config
 ```
 
-- [ ] **Step 3: Create tsconfig.json**
+- [ ] **Step 3: Create `tsconfig.json`**
 
 ```json
 {
@@ -128,55 +222,18 @@ export default defineConfig({
 }
 ```
 
-- [ ] **Step 4: Create placeholder source files**
+- [ ] **Step 4: Add a Vitest project**
 
-Create these files with minimal content so the project compiles:
-
-`src/types.ts`:
+Add the alias and test project in `vitest.config.ts`:
 
 ```typescript
-export {}
+"@durable-streams/agent-client-protocol": path.resolve(
+  __dirname,
+  "./packages/agent-client-protocol/src"
+),
 ```
 
-`src/replay.ts`:
-
 ```typescript
-export {}
-```
-
-`src/agent.ts`:
-
-```typescript
-export {}
-```
-
-`src/bridge.ts`:
-
-```typescript
-export {}
-```
-
-`src/index.ts`:
-
-```typescript
-export {}
-```
-
-`src/client.ts`:
-
-```typescript
-export {}
-```
-
-- [ ] **Step 5: Add vitest project to root config**
-
-In `vitest.config.ts`, add to the `projects` array (add the alias entry too):
-
-```typescript
-// In the alias object at the top, add:
-"@durable-streams/agent-client-protocol": path.resolve(__dirname, "./packages/agent-client-protocol/src"),
-
-// In the projects array, add:
 defineProject({
   test: {
     name: "agent-client-protocol",
@@ -187,7 +244,7 @@ defineProject({
 }),
 ```
 
-- [ ] **Step 6: Install dependencies and verify**
+- [ ] **Step 5: Create placeholder files and verify install**
 
 Run:
 
@@ -195,51 +252,38 @@ Run:
 cd /Users/kylemathews/programs/durable-streams && pnpm install
 ```
 
-Expected: Clean install, no errors.
-
-- [ ] **Step 7: Commit**
-
-```bash
-git add packages/agent-client-protocol/ vitest.config.ts pnpm-lock.yaml
-git commit -m "feat: scaffold @durable-streams/agent-client-protocol package"
-```
+Expected: clean install, including `xstate`.
 
 ---
 
-### Task 2: Shared types
+## Task 2: Shared types
 
 **Files:**
 
 - Create: `packages/agent-client-protocol/src/types.ts`
 
-- [ ] **Step 1: Write the types module**
+- [ ] **Step 1: Write shared stream, JSON-RPC, and machine types**
+
+The types module should define:
+
+- stream message envelopes
+- JSON-RPC request / response / error shapes
+- client API types
+- XState machine context, input, events, and dependency contracts
+
+Target shape:
 
 ```typescript
-// Stream message types — every message on the durable stream is one of these
-
-export interface AgentEvent {
-  direction: "agent"
-  timestamp: number
-  payload: JsonRpcMessage
+export interface UserIdentity {
+  name: string
+  email: string
 }
 
-export interface UserPrompt {
-  direction: "user"
-  timestamp: number
-  user: { name: string; email: string }
-  payload: JsonRpcMessage
+export interface JsonRpcErrorShape {
+  code: number
+  message: string
+  data?: unknown
 }
-
-export interface ControlEvent {
-  direction: "agent"
-  timestamp: number
-  type: "session_resumed" | "session_ended"
-  payload?: JsonRpcMessage
-}
-
-export type StreamMessage = AgentEvent | UserPrompt | ControlEvent
-
-// Minimal JSON-RPC types (we forward raw messages, don't need full ACP SDK)
 
 export interface JsonRpcRequest {
   jsonrpc: "2.0"
@@ -252,7 +296,7 @@ export interface JsonRpcResponse {
   jsonrpc: "2.0"
   id: number | string | null
   result?: unknown
-  error?: { code: number; message: string; data?: unknown }
+  error?: JsonRpcErrorShape
 }
 
 export interface JsonRpcNotification {
@@ -266,10 +310,28 @@ export type JsonRpcMessage =
   | JsonRpcResponse
   | JsonRpcNotification
 
-// Configuration types
+export interface AgentEvent {
+  direction: "agent"
+  timestamp: number
+  payload: JsonRpcMessage
+}
+
+export interface UserEvent {
+  direction: "user"
+  timestamp: number
+  user: UserIdentity
+  payload: JsonRpcRequest | JsonRpcResponse
+}
+
+export interface ControlEvent {
+  direction: "agent"
+  timestamp: number
+  type: "session_resumed" | "session_ended"
+}
+
+export type StreamMessage = AgentEvent | UserEvent | ControlEvent
 
 export interface ReplayOptions {
-  /** Path rewrites applied to replay events (old path -> new path) */
   rewritePaths?: Record<string, string>
 }
 
@@ -292,20 +354,85 @@ export interface AgentStreamSession {
   close(): Promise<void>
 }
 
+export type ClientResponseInput =
+  | { result: unknown }
+  | { error: JsonRpcErrorShape }
+
 export interface StreamClientOptions {
   streamOptions: StreamOptions
-  user: { name: string; email: string }
+  user: UserIdentity
 }
 
 export interface StreamClient {
   prompt(text: string): Promise<void>
-  respond(requestId: number | string, result: unknown): Promise<void>
+  respond(
+    requestId: number | string,
+    response: ClientResponseInput
+  ): Promise<void>
   cancel(): Promise<void>
   close(): Promise<void>
 }
+
+export interface PendingPrompt {
+  params: Record<string, unknown>
+}
+
+export interface BridgeMachineContext {
+  history: StreamMessage[]
+  replayText: string
+  resumeOffset?: string
+  sessionId?: string
+  promptQueue: PendingPrompt[]
+  currentPrompt?: PendingPrompt
+  pendingAgentRequestIds: Set<number | string>
+  lastError?: Error
+}
+
+export type BridgeMachineEvent =
+  | { type: "AGENT_NOTIFICATION"; method: string; params: unknown }
+  | { type: "AGENT_RESPONSE"; response: JsonRpcResponse }
+  | {
+      type: "AGENT_REQUEST"
+      id: number | string
+      method: string
+      params: unknown
+    }
+  | { type: "STREAM_PROMPT"; params: Record<string, unknown> }
+  | {
+      type: "STREAM_RESPONSE"
+      id: number | string
+      result?: unknown
+      error?: JsonRpcErrorShape
+    }
+  | { type: "STREAM_CANCEL"; user: UserIdentity }
+  | { type: "CLOSE" }
+
+export interface BridgeMachineInput {
+  cwd: string
+  mcpServers: unknown[]
+  replayOptions: ReplayOptions
+  deps: BridgeMachineDeps
+}
+
+export interface BridgeMachineDeps {
+  loadHistory(): Promise<{ history: StreamMessage[]; resumeOffset: string }>
+  initializeSession(
+    cwd: string,
+    mcpServers: unknown[]
+  ): Promise<{ sessionId: string }>
+  sendAgentPrompt(
+    sessionId: string,
+    params: Record<string, unknown>
+  ): Promise<JsonRpcResponse>
+  sendAgentCancel(sessionId: string): void
+  sendAgentResponse(response: JsonRpcResponse): void
+  appendStreamMessage(message: StreamMessage): Promise<void>
+  killAgent(): void
+  now(): number
+}
 ```
 
-- [ ] **Step 2: Verify typecheck**
+- [ ] **Step 2: Typecheck**
 
 Run:
 
@@ -313,234 +440,30 @@ Run:
 cd /Users/kylemathews/programs/durable-streams && pnpm --filter @durable-streams/agent-client-protocol typecheck
 ```
 
-Expected: No errors.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add packages/agent-client-protocol/src/types.ts
-git commit -m "feat(agent-client-protocol): add shared types"
-```
+Expected: no errors.
 
 ---
 
-### Task 3: Replay module with tests
+## Task 3: Replay module
 
 **Files:**
 
 - Create: `packages/agent-client-protocol/src/replay.ts`
 - Create: `packages/agent-client-protocol/test/replay.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Keep the full-fidelity replay approach**
 
-`test/replay.test.ts`:
+The replay module should stay intentionally simple:
 
-```typescript
-import { describe, expect, it } from "vitest"
-import { rewritePaths, buildReplayText } from "../src/replay.js"
-import type { StreamMessage } from "../src/types.js"
+- serialize each non-control `StreamMessage` as a JSON line
+- preserve both user and agent envelopes
+- rewrite paths with string replacement
+- do **not** compact or truncate by default
 
-describe("rewritePaths", () => {
-  it("should replace all occurrences of each path", () => {
-    const text = "file at /old/path/foo.ts and /old/path/bar.ts"
-    const result = rewritePaths(text, { "/old/path": "/new/path" })
-    expect(result).toBe("file at /new/path/foo.ts and /new/path/bar.ts")
-  })
-
-  it("should apply multiple path rewrites", () => {
-    const text = "/sandbox-abc/src and /tmp/work/src"
-    const result = rewritePaths(text, {
-      "/sandbox-abc": "/workspace",
-      "/tmp/work": "/workspace",
-    })
-    expect(result).toBe("/workspace/src and /workspace/src")
-  })
-
-  it("should return text unchanged when no paths match", () => {
-    const text = "no paths here"
-    const result = rewritePaths(text, { "/old": "/new" })
-    expect(result).toBe("no paths here")
-  })
-})
-
-describe("buildReplayText", () => {
-  function makeAgentEvent(payload: Record<string, unknown>): StreamMessage {
-    return {
-      direction: "agent",
-      timestamp: 1000,
-      payload: payload as StreamMessage["payload"],
-    }
-  }
-
-  function makeUserEvent(payload: Record<string, unknown>): StreamMessage {
-    return {
-      direction: "user",
-      timestamp: 1000,
-      user: { name: "Kyle", email: "kyle@example.com" },
-      payload: payload as StreamMessage["payload"],
-    }
-  }
-
-  it("should serialize all events as JSON-RPC envelopes", () => {
-    const messages: StreamMessage[] = [
-      makeAgentEvent({
-        jsonrpc: "2.0",
-        method: "session/update",
-        params: {
-          sessionId: "s1",
-          update: {
-            sessionUpdate: "user_message_chunk",
-            content: { type: "text", text: "Hello" },
-          },
-        },
-      }),
-      makeAgentEvent({
-        jsonrpc: "2.0",
-        method: "session/update",
-        params: {
-          sessionId: "s1",
-          update: {
-            sessionUpdate: "tool_call",
-            toolCallId: "tc-1",
-            title: "read_file",
-          },
-        },
-      }),
-      makeAgentEvent({
-        jsonrpc: "2.0",
-        method: "session/update",
-        params: {
-          sessionId: "s1",
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "Done" },
-          },
-        },
-      }),
-    ]
-
-    const result = buildReplayText(messages)
-    const lines = result.split("\n").filter(Boolean)
-
-    // All events are included — tool_call is NOT filtered out
-    expect(lines.length).toBeGreaterThanOrEqual(4) // prefix + 3 events
-    expect(result).toContain("tool_call")
-    expect(result).toContain("read_file")
-    expect(result).toContain("Hello")
-    expect(result).toContain("Done")
-  })
-
-  it("should include both user and agent direction events", () => {
-    const messages: StreamMessage[] = [
-      makeUserEvent({
-        jsonrpc: "2.0",
-        id: 1,
-        method: "session/prompt",
-        params: { prompt: [{ type: "text", text: "Do something" }] },
-      }),
-      makeAgentEvent({
-        jsonrpc: "2.0",
-        method: "session/update",
-        params: {
-          sessionId: "s1",
-          update: {
-            sessionUpdate: "agent_message_chunk",
-            content: { type: "text", text: "OK" },
-          },
-        },
-      }),
-    ]
-
-    const result = buildReplayText(messages)
-    expect(result).toContain('"direction":"user"')
-    expect(result).toContain('"direction":"agent"')
-    expect(result).toContain("Do something")
-    expect(result).toContain("OK")
-  })
-
-  it("should serialize each event as a JSON line with direction, timestamp, payload", () => {
-    const messages: StreamMessage[] = [
-      makeAgentEvent({
-        jsonrpc: "2.0",
-        method: "session/update",
-        params: { sessionId: "s1", update: { sessionUpdate: "plan" } },
-      }),
-    ]
-
-    const result = buildReplayText(messages)
-    const lines = result.split("\n").filter(Boolean)
-    // First line is the prefix
-    const eventLine = lines[1]!
-    const parsed = JSON.parse(eventLine)
-    expect(parsed).toHaveProperty("direction", "agent")
-    expect(parsed).toHaveProperty("timestamp", 1000)
-    expect(parsed).toHaveProperty("payload")
-    expect(parsed.payload.method).toBe("session/update")
-  })
-
-  it("should apply path rewriting across serialized JSON", () => {
-    const messages: StreamMessage[] = [
-      makeAgentEvent({
-        jsonrpc: "2.0",
-        method: "session/update",
-        params: {
-          sessionId: "s1",
-          update: {
-            sessionUpdate: "tool_call",
-            toolCallId: "tc-1",
-            rawInput: "read /old/sandbox/src/main.ts",
-          },
-        },
-      }),
-    ]
-
-    const result = buildReplayText(messages, {
-      rewritePaths: { "/old/sandbox": "/workspace" },
-    })
-    expect(result).toContain("/workspace/src/main.ts")
-    expect(result).not.toContain("/old/sandbox")
-  })
-
-  it("should return empty string for empty message list", () => {
-    const result = buildReplayText([])
-    expect(result).toBe("")
-  })
-
-  it("should skip control events (session_resumed, session_ended)", () => {
-    const messages: StreamMessage[] = [
-      {
-        direction: "agent",
-        timestamp: 1000,
-        type: "session_resumed",
-      } as StreamMessage,
-      makeAgentEvent({
-        jsonrpc: "2.0",
-        method: "session/update",
-        params: { sessionId: "s1", update: { sessionUpdate: "plan" } },
-      }),
-    ]
-
-    const result = buildReplayText(messages)
-    expect(result).not.toContain("session_resumed")
-    expect(result).toContain("plan")
-  })
-})
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run:
-
-```bash
-cd /Users/kylemathews/programs/durable-streams && pnpm vitest run --project agent-client-protocol
-```
-
-Expected: FAIL — `rewritePaths` and `buildReplayText` are not exported.
-
-- [ ] **Step 3: Implement replay.ts**
+Implementation target:
 
 ```typescript
-import type { StreamMessage, ReplayOptions } from "./types.js"
+import type { ReplayOptions, StreamMessage } from "./types.js"
 
 const REPLAY_PREFIX =
   "Previous session history is replayed below as JSON-RPC envelopes. Use it as context before responding to the latest user prompt.\n"
@@ -562,762 +485,635 @@ export function buildReplayText(
 ): string {
   if (messages.length === 0) return ""
 
-  const { rewritePaths: pathMap } = options
-
   let text = REPLAY_PREFIX
-
   for (const msg of messages) {
-    // Skip control events (session_resumed, session_ended)
-    if (
-      "type" in msg &&
-      (msg.type === "session_resumed" || msg.type === "session_ended")
-    ) {
-      continue
-    }
-
-    const line = JSON.stringify({
-      direction: msg.direction,
-      timestamp: msg.timestamp,
-      payload: msg.payload,
-    })
-    text += `${line}\n`
+    if ("type" in msg) continue
+    text +=
+      JSON.stringify({
+        direction: msg.direction,
+        timestamp: msg.timestamp,
+        payload: msg.payload,
+      }) + "\n"
   }
 
-  if (pathMap) {
-    text = rewritePaths(text, pathMap)
-  }
-
-  return text
+  return options.rewritePaths ? rewritePaths(text, options.rewritePaths) : text
 }
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 2: Keep the replay tests focused**
 
-Run:
+The tests must verify:
 
-```bash
-cd /Users/kylemathews/programs/durable-streams && pnpm vitest run --project agent-client-protocol
-```
-
-Expected: All tests PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/agent-client-protocol/src/replay.ts packages/agent-client-protocol/test/replay.test.ts
-git commit -m "feat(agent-client-protocol): add replay module with full-fidelity event serialization"
-```
+- path rewriting works
+- control events are excluded
+- user and agent envelopes are preserved
+- no tool-call filtering happens
+- empty history returns `""`
 
 ---
 
-### Task 4: Agent module with tests
+## Task 4: Agent transport module
 
 **Files:**
 
 - Create: `packages/agent-client-protocol/src/agent.ts`
 - Create: `packages/agent-client-protocol/test/agent.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Keep `agent.ts` as a transport, not a workflow engine**
 
-`test/agent.test.ts`:
+Responsibilities:
 
-```typescript
-import { describe, expect, it } from "vitest"
-import { resolveAgent } from "../src/agent.js"
+- resolve known agents (`claude`, `codex`)
+- spawn child process
+- parse JSON-RPC lines from stdout
+- classify stdout messages as:
+  - request: `id + method`
+  - notification: `method` only
+  - response: `id` only
+- expose imperative methods:
+  - `sendRequest(...)`
+  - `sendNotification(...)`
+  - `sendResponse(...)`
 
-describe("resolveAgent", () => {
-  it("should resolve 'claude' to claude --acp", () => {
-    const result = resolveAgent("claude")
-    expect(result.command).toBe("claude")
-    expect(result.args).toEqual(["--acp"])
-  })
-
-  it("should resolve 'codex' to codex-acp", () => {
-    const result = resolveAgent("codex")
-    expect(result.command).toBe("codex-acp")
-    expect(result.args).toEqual([])
-  })
-
-  it("should throw for unknown agent name", () => {
-    expect(() => resolveAgent("unknown-agent")).toThrow("Unknown agent")
-  })
-
-  it("should pass through custom command objects", () => {
-    const result = resolveAgent({
-      command: "/usr/local/bin/my-agent",
-      args: ["--mode", "acp"],
-    })
-    expect(result.command).toBe("/usr/local/bin/my-agent")
-    expect(result.args).toEqual(["--mode", "acp"])
-  })
-
-  it("should default args to empty array for custom commands", () => {
-    const result = resolveAgent({ command: "my-agent" })
-    expect(result.args).toEqual([])
-  })
-})
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run:
-
-```bash
-cd /Users/kylemathews/programs/durable-streams && pnpm vitest run --project agent-client-protocol
-```
-
-Expected: FAIL — `resolveAgent` is not exported.
-
-- [ ] **Step 3: Implement agent.ts**
+Target public surface:
 
 ```typescript
-import { spawn, type ChildProcess } from "node:child_process"
-import type { JsonRpcRequest, JsonRpcResponse } from "./types.js"
-
-const KNOWN_AGENTS: Record<string, { command: string; args: string[] }> = {
-  claude: { command: "claude", args: ["--acp"] },
-  codex: { command: "codex-acp", args: [] },
-}
-
-export type RequestHandler = (
-  id: number | string,
-  method: string,
-  params: unknown
-) => void
-
 export interface AgentProcess {
   process: ChildProcess
   sendRequest(method: string, params?: unknown): Promise<JsonRpcResponse>
-  sendResponse(id: number | string, result: unknown): void
   sendNotification(method: string, params?: unknown): void
+  sendResponse(response: JsonRpcResponse): void
   onNotification(handler: (method: string, params: unknown) => void): void
-  onRequest(handler: RequestHandler): void
+  onRequest(
+    handler: (id: number | string, method: string, params: unknown) => void
+  ): void
   onResponse(handler: (response: JsonRpcResponse) => void): void
   kill(): void
 }
-
-export function resolveAgent(
-  agent: string | { command: string; args?: string[] }
-): { command: string; args: string[] } {
-  if (typeof agent === "string") {
-    const config = KNOWN_AGENTS[agent]
-    if (!config) {
-      throw new Error(
-        `Unknown agent: ${agent}. Use one of: ${Object.keys(KNOWN_AGENTS).join(", ")}`
-      )
-    }
-    return config
-  }
-  return { command: agent.command, args: agent.args ?? [] }
-}
-
-export function spawnAgent(
-  agent: string | { command: string; args?: string[] },
-  env?: Record<string, string>
-): AgentProcess {
-  const { command, args } = resolveAgent(agent)
-
-  const child = spawn(command, args, {
-    stdio: ["pipe", "pipe", "pipe"],
-    env: { ...process.env, ...env },
-  })
-
-  let nextId = 1
-  const pending = new Map<
-    number | string,
-    {
-      resolve: (r: JsonRpcResponse) => void
-      reject: (e: Error) => void
-    }
-  >()
-  let notificationHandler:
-    | ((method: string, params: unknown) => void)
-    | undefined
-  let requestHandler: RequestHandler | undefined
-  let responseHandler: ((response: JsonRpcResponse) => void) | undefined
-
-  // Line-buffered stdout reader
-  let buffer = ""
-  child.stdout!.on("data", (data: Buffer) => {
-    buffer += data.toString()
-    const lines = buffer.split("\n")
-    buffer = lines.pop()!
-    for (const line of lines) {
-      if (!line.trim()) continue
-      try {
-        const msg = JSON.parse(line)
-        const hasId = "id" in msg && msg.id !== undefined && msg.id !== null
-        const hasMethod = "method" in msg
-
-        if (hasMethod && hasId) {
-          // Agent-initiated request (has both id and method)
-          requestHandler?.(
-            msg.id as number | string,
-            msg.method as string,
-            msg.params
-          )
-        } else if (hasMethod) {
-          // Notification (method only)
-          notificationHandler?.(msg.method as string, msg.params)
-        } else if (hasId) {
-          // Response to one of our requests (id only)
-          const response = msg as JsonRpcResponse
-          responseHandler?.(response)
-          const p = pending.get(msg.id as number | string)
-          if (p) {
-            pending.delete(msg.id as number | string)
-            p.resolve(response)
-          }
-        }
-      } catch {
-        // Skip non-JSON lines (agent debug output on stdout)
-      }
-    }
-  })
-
-  child.on("error", (err) => {
-    for (const [, p] of pending) {
-      p.reject(err)
-    }
-    pending.clear()
-  })
-
-  child.on("exit", () => {
-    for (const [, p] of pending) {
-      p.reject(new Error("Agent process exited"))
-    }
-    pending.clear()
-  })
-
-  return {
-    process: child,
-
-    sendRequest(method: string, params?: unknown): Promise<JsonRpcResponse> {
-      const id = nextId++
-      const request: JsonRpcRequest = {
-        jsonrpc: "2.0",
-        id,
-        method,
-        ...(params !== undefined && { params }),
-      }
-      return new Promise((resolve, reject) => {
-        pending.set(id, { resolve, reject })
-        child.stdin!.write(JSON.stringify(request) + "\n")
-      })
-    },
-
-    sendResponse(id: number | string, result: unknown): void {
-      const response = { jsonrpc: "2.0" as const, id, result }
-      child.stdin!.write(JSON.stringify(response) + "\n")
-    },
-
-    sendNotification(method: string, params?: unknown): void {
-      const notification = {
-        jsonrpc: "2.0" as const,
-        method,
-        ...(params !== undefined && { params }),
-      }
-      child.stdin!.write(JSON.stringify(notification) + "\n")
-    },
-
-    onNotification(handler) {
-      notificationHandler = handler
-    },
-
-    onRequest(handler) {
-      requestHandler = handler
-    },
-
-    onResponse(handler) {
-      responseHandler = handler
-    },
-
-    kill() {
-      child.kill()
-    },
-  }
-}
-
-export async function initializeAgent(
-  agent: AgentProcess,
-  cwd: string,
-  mcpServers: unknown[] = []
-): Promise<{ sessionId: string }> {
-  const initResponse = await agent.sendRequest("initialize", {
-    protocolVersion: 1,
-    capabilities: {},
-    clientInfo: { name: "durable-streams-bridge", version: "0.1.0" },
-  })
-
-  if (initResponse.error) {
-    throw new Error(`Agent initialize failed: ${initResponse.error.message}`)
-  }
-
-  const sessionResponse = await agent.sendRequest("session/new", {
-    cwd,
-    mcpServers,
-  })
-
-  if (sessionResponse.error) {
-    throw new Error(`session/new failed: ${sessionResponse.error.message}`)
-  }
-
-  const sessionId = (sessionResponse.result as Record<string, unknown>)
-    ?.sessionId as string | undefined
-  if (!sessionId) {
-    throw new Error("session/new response missing sessionId")
-  }
-
-  return { sessionId }
-}
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 2: Add one more parser test than the old plan**
 
-Run:
+In addition to `resolveAgent` tests, add a parser test that confirms:
 
-```bash
-cd /Users/kylemathews/programs/durable-streams && pnpm vitest run --project agent-client-protocol
-```
+- a stdout message with both `id` and `method` is treated as a request
+- not as a response
 
-Expected: All tests PASS.
+- [ ] **Step 3: Keep `initializeAgent(...)` thin**
 
-- [ ] **Step 5: Commit**
+The initializer should only:
 
-```bash
-git add packages/agent-client-protocol/src/agent.ts packages/agent-client-protocol/test/agent.test.ts
-git commit -m "feat(agent-client-protocol): add agent spawn and JSON-RPC lifecycle"
+- send ACP `initialize`
+- send ACP `session/new`
+- return `{ sessionId }`
+
+It should **not** advertise ACP `clientCapabilities`.
+
+---
+
+## Task 5: Write machine tests first
+
+**Files:**
+
+- Create: `packages/agent-client-protocol/test/machine.test.ts`
+
+- [ ] **Step 1: Write failing tests for the state machine**
+
+These tests are the reason for switching to XState. They should verify protocol choreography directly, with mocked deps and no real network or child process.
+
+Scenarios to cover:
+
+1. `booting -> initializing -> live.idle` when history is empty
+2. existing history sends replay prompt before entering steady-state prompt processing
+3. `resumeOffset` is whatever `loadHistory()` returns, not a separate `head()` call
+4. prompts are serialized:
+   - first `STREAM_PROMPT` sends immediately
+   - second `STREAM_PROMPT` queues while turn is active
+   - queued prompt sends only after the first prompt completes
+5. `AGENT_NOTIFICATION` appends to stream
+6. `AGENT_RESPONSE` appends to stream
+7. `AGENT_REQUEST` appends to stream and adds id to `pendingAgentRequestIds`
+8. first `STREAM_RESPONSE` for a pending id forwards to the agent and clears the id
+9. duplicate `STREAM_RESPONSE` for the same id is ignored
+10. `STREAM_CANCEL`:
+    - appends cancelled response envelopes to the stream for all pending ids
+    - relays `session/cancel` to the agent
+
+- [ ] **Step 2: Use mocked deps, not fake child processes**
+
+The machine tests should instantiate the actor with mocked `BridgeMachineDeps`, for example:
+
+```typescript
+const deps: BridgeMachineDeps = {
+  loadHistory: vi.fn(),
+  initializeSession: vi.fn(),
+  sendAgentPrompt: vi.fn(),
+  sendAgentCancel: vi.fn(),
+  sendAgentResponse: vi.fn(),
+  appendStreamMessage: vi.fn(),
+  killAgent: vi.fn(),
+  now: vi.fn(() => 1000),
+}
 ```
 
 ---
 
-### Task 5: Bridge module
+## Task 6: Implement `machine.ts`
+
+**Files:**
+
+- Create: `packages/agent-client-protocol/src/machine.ts`
+
+- [ ] **Step 1: Build the machine with XState v5**
+
+Use:
+
+- `setup(...)`
+- `assign(...)`
+- `fromPromise(...)`
+- `createMachine(...)`
+
+The machine should be created from `BridgeMachineInput` and injected `BridgeMachineDeps`.
+
+- [ ] **Step 2: Implement the machine structure**
+
+Target shape:
+
+```typescript
+import { assign, fromPromise, setup } from "xstate"
+import { buildReplayText } from "./replay.js"
+import type {
+  BridgeMachineContext,
+  BridgeMachineEvent,
+  BridgeMachineInput,
+  JsonRpcResponse,
+  StreamMessage,
+  UserEvent,
+} from "./types.js"
+
+function makeCancelledResponse(
+  id: number | string,
+  user: { name: string; email: string },
+  now: number
+): UserEvent {
+  return {
+    direction: "user",
+    timestamp: now,
+    user,
+    payload: {
+      jsonrpc: "2.0",
+      id,
+      result: { outcome: { outcome: "cancelled" } },
+    },
+  }
+}
+
+export function createBridgeMachine(machineInput: BridgeMachineInput) {
+  const { deps, cwd, mcpServers, replayOptions } = machineInput
+
+  return setup({
+    types: {
+      context: {} as BridgeMachineContext,
+      events: {} as BridgeMachineEvent,
+    },
+    actors: {
+      loadHistory: fromPromise(async () => deps.loadHistory()),
+      initializeSession: fromPromise(async () =>
+        deps.initializeSession(cwd, mcpServers)
+      ),
+      sendReplayPrompt: fromPromise(async ({ context }) => {
+        if (!context.sessionId || !context.replayText) return
+        const pending = deps.sendAgentPrompt(context.sessionId, {
+          prompt: [{ type: "text", text: context.replayText }],
+        })
+        await deps.appendStreamMessage({
+          direction: "agent",
+          timestamp: deps.now(),
+          type: "session_resumed",
+        })
+        return pending
+      }),
+      sendCurrentPrompt: fromPromise(async ({ context }) => {
+        if (!context.sessionId || !context.currentPrompt) return
+        return deps.sendAgentPrompt(
+          context.sessionId,
+          context.currentPrompt.params
+        )
+      }),
+    },
+    guards: {
+      hasReplay: ({ context }) => context.replayText.length > 0,
+      hasQueuedPrompt: ({ context }) => context.promptQueue.length > 0,
+    },
+    actions: {
+      setBootstrapData: assign(({ event, context }) => {
+        if (!("output" in event) || !event.output) return {}
+        const history = event.output.history as StreamMessage[]
+        const replayText = buildReplayText(history, replayOptions)
+        return {
+          ...context,
+          history,
+          replayText,
+          resumeOffset: event.output.resumeOffset as string,
+        }
+      }),
+      enqueuePrompt: assign(({ context, event }) => {
+        if (event.type !== "STREAM_PROMPT") return {}
+        return {
+          ...context,
+          promptQueue: [...context.promptQueue, { params: event.params }],
+        }
+      }),
+      startNextPrompt: assign(({ context }) => {
+        const [currentPrompt, ...rest] = context.promptQueue
+        return {
+          ...context,
+          currentPrompt,
+          promptQueue: rest,
+        }
+      }),
+      clearCurrentPrompt: assign(({ context }) => ({
+        ...context,
+        currentPrompt: undefined,
+      })),
+      appendAgentNotification: ({ event }) => {
+        if (event.type !== "AGENT_NOTIFICATION") return
+        void deps.appendStreamMessage({
+          direction: "agent",
+          timestamp: deps.now(),
+          payload: {
+            jsonrpc: "2.0",
+            method: event.method,
+            params: event.params,
+          },
+        })
+      },
+      appendAgentResponse: ({ event }) => {
+        if (event.type !== "AGENT_RESPONSE") return
+        void deps.appendStreamMessage({
+          direction: "agent",
+          timestamp: deps.now(),
+          payload: event.response,
+        })
+      },
+      appendAgentRequest: assign(({ context, event }) => {
+        if (event.type !== "AGENT_REQUEST") return {}
+        void deps.appendStreamMessage({
+          direction: "agent",
+          timestamp: deps.now(),
+          payload: {
+            jsonrpc: "2.0",
+            id: event.id,
+            method: event.method,
+            params: event.params,
+          },
+        })
+        const next = new Set(context.pendingAgentRequestIds)
+        next.add(event.id)
+        return { ...context, pendingAgentRequestIds: next }
+      }),
+      forwardStreamResponseIfPending: assign(({ context, event }) => {
+        if (event.type !== "STREAM_RESPONSE") return {}
+        if (!context.pendingAgentRequestIds.has(event.id)) return {}
+        const next = new Set(context.pendingAgentRequestIds)
+        next.delete(event.id)
+        const response: JsonRpcResponse = {
+          jsonrpc: "2.0",
+          id: event.id,
+          ...(event.error ? { error: event.error } : { result: event.result }),
+        }
+        deps.sendAgentResponse(response)
+        return { ...context, pendingAgentRequestIds: next }
+      }),
+      appendCancelledResponsesForPending: ({ context, event }) => {
+        if (event.type !== "STREAM_CANCEL") return
+        for (const id of context.pendingAgentRequestIds) {
+          void deps.appendStreamMessage(
+            makeCancelledResponse(id, event.user, deps.now())
+          )
+        }
+      },
+      relayCancel: ({ context }) => {
+        if (!context.sessionId) return
+        deps.sendAgentCancel(context.sessionId)
+      },
+      setSessionId: assign(({ context, event }) => {
+        if (!("output" in event) || !event.output?.sessionId) return {}
+        return { ...context, sessionId: event.output.sessionId as string }
+      }),
+      setError: assign(({ context, event }) => ({
+        ...context,
+        lastError: new Error(
+          String(("error" in event ? event.error : event) ?? "unknown")
+        ),
+      })),
+      appendSessionEnded: () => {
+        void deps.appendStreamMessage({
+          direction: "agent",
+          timestamp: deps.now(),
+          type: "session_ended",
+        })
+      },
+      killAgent: () => {
+        deps.killAgent()
+      },
+    },
+  }).createMachine({
+    id: "bridge",
+    initial: "booting",
+    context: {
+      history: [],
+      replayText: "",
+      resumeOffset: undefined,
+      sessionId: undefined,
+      promptQueue: [],
+      currentPrompt: undefined,
+      pendingAgentRequestIds: new Set<number | string>(),
+      lastError: undefined,
+    },
+    on: {
+      AGENT_NOTIFICATION: { actions: "appendAgentNotification" },
+      AGENT_RESPONSE: { actions: "appendAgentResponse" },
+      AGENT_REQUEST: { actions: "appendAgentRequest" },
+      STREAM_RESPONSE: { actions: "forwardStreamResponseIfPending" },
+      CLOSE: { target: ".closing" },
+    },
+    states: {
+      booting: {
+        invoke: {
+          src: "loadHistory",
+          onDone: {
+            actions: "setBootstrapData",
+            target: "initializing",
+          },
+          onError: {
+            actions: "setError",
+            target: "failed",
+          },
+        },
+      },
+      initializing: {
+        invoke: {
+          src: "initializeSession",
+          onDone: [
+            {
+              actions: "setSessionId",
+              target: "replaying",
+              guard: "hasReplay",
+            },
+            {
+              actions: "setSessionId",
+              target: "live",
+            },
+          ],
+          onError: {
+            actions: "setError",
+            target: "failed",
+          },
+        },
+      },
+      replaying: {
+        on: {
+          STREAM_PROMPT: { actions: "enqueuePrompt" },
+          STREAM_CANCEL: {
+            actions: ["appendCancelledResponsesForPending", "relayCancel"],
+          },
+        },
+        invoke: {
+          src: "sendReplayPrompt",
+          onDone: { target: "live" },
+          onError: {
+            actions: "setError",
+            target: "failed",
+          },
+        },
+      },
+      live: {
+        initial: "idle",
+        states: {
+          idle: {
+            always: {
+              guard: "hasQueuedPrompt",
+              actions: "startNextPrompt",
+              target: "turnActive",
+            },
+            on: {
+              STREAM_PROMPT: { actions: "enqueuePrompt" },
+            },
+          },
+          turnActive: {
+            on: {
+              STREAM_PROMPT: { actions: "enqueuePrompt" },
+            },
+            invoke: {
+              src: "sendCurrentPrompt",
+              onDone: {
+                actions: "clearCurrentPrompt",
+                target: "idle",
+              },
+              onError: {
+                actions: "setError",
+                target: "#bridge.failed",
+              },
+            },
+          },
+        },
+        on: {
+          STREAM_CANCEL: {
+            actions: ["appendCancelledResponsesForPending", "relayCancel"],
+          },
+        },
+      },
+      closing: {
+        entry: ["appendSessionEnded", "killAgent"],
+        type: "final",
+      },
+      failed: {
+        type: "final",
+      },
+    },
+  })
+}
+```
+
+- [ ] **Step 3: Typecheck and run machine tests**
+
+Run:
+
+```bash
+cd /Users/kylemathews/programs/durable-streams && pnpm vitest run --project agent-client-protocol -t machine
+```
+
+Expected: machine tests pass after implementation.
+
+---
+
+## Task 7: Implement `bridge.ts` as thin wiring
 
 **Files:**
 
 - Create: `packages/agent-client-protocol/src/bridge.ts`
+- Create: `packages/agent-client-protocol/test/bridge.test.ts`
 
-- [ ] **Step 1: Implement bridge.ts**
+- [ ] **Step 1: Keep `bridge.ts` small**
+
+`bridge.ts` should do only real IO wiring:
+
+- create or connect the stream
+- create the agent process
+- define real `BridgeMachineDeps`
+- register agent listeners **before** actor start
+- start the XState actor
+- start the live tail once `resumeOffset` is available
+- map live stream messages into machine events
+- expose `close()`
+
+- [ ] **Step 2: Implement the real deps**
+
+The key dep implementations should look like:
 
 ```typescript
-import { DurableStream } from "@durable-streams/client"
-import type {
-  StreamOptions,
-  StreamMessage,
-  AgentEvent,
-  UserPrompt,
-  ControlEvent,
-  ReplayOptions,
-  JsonRpcMessage,
-} from "./types.js"
-import { spawnAgent, initializeAgent } from "./agent.js"
-import { buildReplayText } from "./replay.js"
+const deps: BridgeMachineDeps = {
+  async loadHistory() {
+    const historyResponse = await stream.stream<StreamMessage>({ json: true })
+    const history = await historyResponse.json()
+    return {
+      history,
+      resumeOffset: historyResponse.offset,
+    }
+  },
 
-export interface BridgeSession {
-  sessionId: string
-  close(): Promise<void>
+  initializeSession(currentCwd, currentMcpServers) {
+    return initializeAgent(agent, currentCwd, currentMcpServers)
+  },
+
+  sendAgentPrompt(sessionId, params) {
+    return agent.sendRequest("session/prompt", { ...params, sessionId })
+  },
+
+  sendAgentCancel(sessionId) {
+    agent.sendNotification("session/cancel", { sessionId })
+  },
+
+  sendAgentResponse(response) {
+    agent.sendResponse(response)
+  },
+
+  appendStreamMessage(message) {
+    return stream.append(JSON.stringify(message))
+  },
+
+  killAgent() {
+    agent.kill()
+  },
+
+  now() {
+    return Date.now()
+  },
 }
+```
 
-export async function startBridge(options: {
-  agent: string | { command: string; args?: string[] }
-  streamOptions: StreamOptions
-  cwd: string
-  mcpServers?: unknown[]
-  replayOptions?: ReplayOptions
-}): Promise<BridgeSession> {
-  const {
-    agent: agentOption,
-    streamOptions,
-    cwd,
-    mcpServers = [],
-    replayOptions = {},
-  } = options
+- [ ] **Step 3: Start live tail from machine context**
 
-  const contentType = streamOptions.contentType ?? "application/json"
+Register a machine subscription that starts the live tail exactly once when `resumeOffset` becomes available:
 
-  // Connect to or create stream
-  let stream: DurableStream
-  try {
-    stream = await DurableStream.create({
-      url: streamOptions.url,
-      contentType,
-      headers: streamOptions.headers,
-    })
-  } catch (e: unknown) {
-    const err = e as { code?: string }
-    if (err.code !== "CONFLICT_EXISTS") throw e
-    stream = new DurableStream({
-      url: streamOptions.url,
-      contentType,
-      headers: streamOptions.headers,
-    })
-  }
+```typescript
+let stopTail: (() => void) | undefined
 
-  // Read existing history — offset tracks position after consumed data
-  const historyResponse = await stream.stream<StreamMessage>({ json: true })
-  const history = await historyResponse.json()
-  const resumeOffset = historyResponse.offset
+actor.subscribe((snapshot) => {
+  if (!stopTail && snapshot.context.resumeOffset) {
+    const abortController = new AbortController()
+    stopTail = () => abortController.abort()
 
-  // Spawn agent process
-  const agent = spawnAgent(agentOption)
-
-  // Register ALL handlers BEFORE sending any messages to the agent.
-  // ACP prompt turns emit session/update notifications before the
-  // final response — handlers must be in place to capture them.
-
-  // Forward agent notifications → stream
-  agent.onNotification((method, params) => {
-    const event: AgentEvent = {
-      direction: "agent",
-      timestamp: Date.now(),
-      payload: {
-        jsonrpc: "2.0",
-        method,
-        params,
-      } as JsonRpcMessage,
-    }
-    stream.append(JSON.stringify(event))
-  })
-
-  // Forward agent responses (session/prompt results) → stream
-  agent.onResponse((response) => {
-    const event: AgentEvent = {
-      direction: "agent",
-      timestamp: Date.now(),
-      payload: response as JsonRpcMessage,
-    }
-    stream.append(JSON.stringify(event))
-    // A response to session/prompt marks the end of a turn
-    turnInProgress = false
-    processQueue()
-  })
-
-  // Forward agent-initiated requests → stream.
-  // The bridge does NOT handle these locally — clients respond
-  // through the stream and the bridge relays responses back.
-  // Track pending IDs for cancel handling and duplicate guarding.
-  const pendingAgentRequestIds = new Set<number | string>()
-
-  agent.onRequest((id, method, params) => {
-    const event: AgentEvent = {
-      direction: "agent",
-      timestamp: Date.now(),
-      payload: { jsonrpc: "2.0", id, method, params } as JsonRpcMessage,
-    }
-    stream.append(JSON.stringify(event))
-    pendingAgentRequestIds.add(id)
-  })
-
-  // Prompt queue — serializes turns so overlapping prompts don't collide
-  let turnInProgress = false
-  const promptQueue: Array<{
-    params: Record<string, unknown>
-  }> = []
-
-  function processQueue(): void {
-    if (turnInProgress || promptQueue.length === 0) return
-    turnInProgress = true
-    const { params } = promptQueue.shift()!
-    agent.sendRequest("session/prompt", { ...params, sessionId })
-  }
-
-  // Initialize and create session
-  const { sessionId } = await initializeAgent(agent, cwd, mcpServers)
-
-  // Handle resume if history exists
-  if (history.length > 0) {
-    const replayText = buildReplayText(history, replayOptions)
-    if (replayText) {
-      turnInProgress = true
-      agent.sendRequest("session/prompt", {
-        sessionId,
-        prompt: [{ type: "text", text: replayText }],
+    void (async () => {
+      const liveStream = await stream.stream<StreamMessage>({
+        offset: snapshot.context.resumeOffset,
+        live: "sse",
+        json: true,
+        signal: abortController.signal,
       })
 
-      const controlEvent: ControlEvent = {
-        direction: "agent",
-        timestamp: Date.now(),
-        type: "session_resumed",
-      }
-      await stream.append(JSON.stringify(controlEvent))
-    }
-  }
-
-  // Live-tail stream from current position (after history)
-  const abortController = new AbortController()
-  const liveStream = await stream.stream<StreamMessage>({
-    offset: resumeOffset,
-    live: "sse",
-    json: true,
-    signal: abortController.signal,
-  })
-
-  void (async () => {
-    try {
       for await (const item of liveStream.jsonStream()) {
-        if (item.direction !== "user" || !("payload" in item)) continue
+        if (item.direction !== "user") continue
 
         const payload = item.payload as Record<string, unknown>
         const method = payload.method as string | undefined
         const id = payload.id as number | string | undefined
 
         if (method === "session/prompt") {
-          const params = (payload.params as Record<string, unknown>) ?? {}
-          promptQueue.push({ params })
-          processQueue()
+          actor.send({
+            type: "STREAM_PROMPT",
+            params: (payload.params as Record<string, unknown>) ?? {},
+          })
         } else if (method === "session/cancel") {
-          // Write cancellation responses to stream for each pending request.
-          // The relay path below will forward them to the agent.
-          for (const reqId of pendingAgentRequestIds) {
-            const cancelResponse: UserPrompt = {
-              direction: "user",
-              timestamp: Date.now(),
-              user: { name: "bridge", email: "" },
-              payload: {
-                jsonrpc: "2.0",
-                id: reqId,
-                result: { outcome: { outcome: "cancelled" } },
-              } as JsonRpcMessage,
-            }
-            stream.append(JSON.stringify(cancelResponse))
-          }
-          agent.sendNotification("session/cancel", { sessionId })
+          actor.send({ type: "STREAM_CANCEL", user: item.user })
         } else if (id != null && !method) {
-          // Client JSON-RPC response — only forward the first per request ID
-          if (!pendingAgentRequestIds.has(id)) continue
-          pendingAgentRequestIds.delete(id)
-          if ("error" in payload) {
-            agent.process.stdin!.write(
-              JSON.stringify({
-                jsonrpc: "2.0",
-                id,
-                error: payload.error,
-              }) + "\n"
-            )
-          } else {
-            agent.sendResponse(id, payload.result)
-          }
+          actor.send({
+            type: "STREAM_RESPONSE",
+            id,
+            result: payload.result,
+            error: payload.error as JsonRpcErrorShape | undefined,
+          })
         }
       }
-    } catch (e: unknown) {
-      const err = e as { name?: string }
-      if (err.name !== "AbortError") {
-        console.error("Stream forwarding error:", e)
-      }
-    }
-  })()
-
-  return {
-    sessionId,
-    async close() {
-      abortController.abort()
-
-      const endEvent: ControlEvent = {
-        direction: "agent",
-        timestamp: Date.now(),
-        type: "session_ended",
-      }
-      await stream.append(JSON.stringify(endEvent))
-
-      agent.kill()
-    },
+    })()
   }
-}
+})
 ```
 
-- [ ] **Step 2: Verify typecheck**
+- [ ] **Step 4: Register agent listeners before actor start**
 
-Run:
-
-```bash
-cd /Users/kylemathews/programs/durable-streams && pnpm --filter @durable-streams/agent-client-protocol typecheck
-```
-
-Expected: No errors.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add packages/agent-client-protocol/src/bridge.ts
-git commit -m "feat(agent-client-protocol): add bridge forwarding loop"
-```
-
----
-
-### Task 6: Main entrypoint (index.ts)
-
-**Files:**
-
-- Create: `packages/agent-client-protocol/src/index.ts`
-
-- [ ] **Step 1: Write index.ts with re-exports**
+This prevents missing replay-turn updates:
 
 ```typescript
-export { startBridge as createAgentStream } from "./bridge.js"
-export type { BridgeSession as AgentStreamSession } from "./bridge.js"
-export type {
-  AgentStreamOptions,
-  StreamMessage,
-  AgentEvent,
-  UserPrompt,
-  ControlEvent,
-  ReplayOptions,
-  StreamOptions,
-  JsonRpcMessage,
-  JsonRpcRequest,
-  JsonRpcResponse,
-  JsonRpcNotification,
-} from "./types.js"
+agent.onNotification((method, params) => {
+  actor.send({ type: "AGENT_NOTIFICATION", method, params })
+})
+
+agent.onResponse((response) => {
+  actor.send({ type: "AGENT_RESPONSE", response })
+})
+
+agent.onRequest((id, method, params) => {
+  actor.send({ type: "AGENT_REQUEST", id, method, params })
+})
 ```
 
-- [ ] **Step 2: Verify typecheck**
+- [ ] **Step 5: Add a minimal `bridge.test.ts`**
 
-Run:
+Test only the wiring-specific invariants:
 
-```bash
-cd /Users/kylemathews/programs/durable-streams && pnpm --filter @durable-streams/agent-client-protocol typecheck
-```
-
-Expected: No errors.
-
-- [ ] **Step 3: Commit**
-
-```bash
-git add packages/agent-client-protocol/src/index.ts
-git commit -m "feat(agent-client-protocol): add main entrypoint exports"
-```
+- listeners are registered before actor start
+- history tailing uses `historyResponse.offset`
+- user response messages with `result` and `error` are both mapped into `STREAM_RESPONSE`
 
 ---
 
-### Task 7: Client module with tests
+## Task 8: Client module
 
 **Files:**
 
 - Create: `packages/agent-client-protocol/src/client.ts`
 - Create: `packages/agent-client-protocol/test/client.test.ts`
 
-- [ ] **Step 1: Write the failing tests**
+- [ ] **Step 1: Keep the client browser-safe and stream-only**
 
-`test/client.test.ts`:
+The client should only append stream messages:
 
-```typescript
-import { describe, expect, it, vi, beforeEach } from "vitest"
+- `prompt(...)`
+- `respond(...)`
+- `cancel()`
 
-// Mock DurableStream before importing client
-const mockAppend = vi.fn().mockResolvedValue(undefined)
-
-vi.mock("@durable-streams/client", () => ({
-  DurableStream: vi.fn().mockImplementation(() => ({
-    append: mockAppend,
-  })),
-}))
-
-import { createStreamClient } from "../src/client.js"
-
-describe("createStreamClient", () => {
-  const user = { name: "Kyle", email: "kyle@example.com" }
-
-  beforeEach(() => {
-    mockAppend.mockClear()
-  })
-
-  describe("prompt", () => {
-    it("should append a user prompt message to the stream", async () => {
-      const client = createStreamClient({
-        streamOptions: { url: "https://example.com/stream/test" },
-        user,
-      })
-
-      await client.prompt("Hello agent")
-
-      expect(mockAppend).toHaveBeenCalledOnce()
-      const written = JSON.parse(mockAppend.mock.calls[0]![0] as string)
-      expect(written.direction).toBe("user")
-      expect(written.user).toEqual(user)
-      expect(written.payload.method).toBe("session/prompt")
-      expect(written.payload.params.prompt).toEqual([
-        { type: "text", text: "Hello agent" },
-      ])
-      expect(written.timestamp).toBeTypeOf("number")
-    })
-
-    it("should include jsonrpc version and unique ids", async () => {
-      const client = createStreamClient({
-        streamOptions: { url: "https://example.com/stream/test" },
-        user,
-      })
-
-      await client.prompt("first")
-      await client.prompt("second")
-
-      const first = JSON.parse(mockAppend.mock.calls[0]![0] as string)
-      const second = JSON.parse(mockAppend.mock.calls[1]![0] as string)
-      expect(first.payload.jsonrpc).toBe("2.0")
-      expect(first.payload.id).not.toBe(second.payload.id)
-    })
-  })
-
-  describe("respond", () => {
-    it("should append a JSON-RPC response to the stream", async () => {
-      const client = createStreamClient({
-        streamOptions: { url: "https://example.com/stream/test" },
-        user,
-      })
-
-      await client.respond(42, {
-        outcome: { outcome: "selected", optionId: "allow" },
-      })
-
-      expect(mockAppend).toHaveBeenCalledOnce()
-      const written = JSON.parse(mockAppend.mock.calls[0]![0] as string)
-      expect(written.direction).toBe("user")
-      expect(written.user).toEqual(user)
-      expect(written.payload.id).toBe(42)
-      expect(written.payload.result).toEqual({
-        outcome: { outcome: "selected", optionId: "allow" },
-      })
-      expect(written.payload).not.toHaveProperty("method")
-    })
-  })
-
-  describe("cancel", () => {
-    it("should append a cancel notification to the stream", async () => {
-      const client = createStreamClient({
-        streamOptions: { url: "https://example.com/stream/test" },
-        user,
-      })
-
-      await client.cancel()
-
-      expect(mockAppend).toHaveBeenCalledOnce()
-      const written = JSON.parse(mockAppend.mock.calls[0]![0] as string)
-      expect(written.direction).toBe("user")
-      expect(written.user).toEqual(user)
-      expect(written.payload.method).toBe("session/cancel")
-    })
-  })
-})
-```
-
-- [ ] **Step 2: Run tests to verify they fail**
-
-Run:
-
-```bash
-cd /Users/kylemathews/programs/durable-streams && pnpm vitest run --project agent-client-protocol
-```
-
-Expected: FAIL — `createStreamClient` is not exported.
-
-- [ ] **Step 3: Implement client.ts**
+Implementation target:
 
 ```typescript
 import { DurableStream } from "@durable-streams/client"
 import type {
-  StreamClientOptions,
+  ClientResponseInput,
+  JsonRpcResponse,
   StreamClient,
-  UserPrompt,
-  JsonRpcMessage,
+  StreamClientOptions,
+  UserEvent,
 } from "./types.js"
 
 export function createStreamClient(options: StreamClientOptions): StreamClient {
@@ -1332,7 +1128,7 @@ export function createStreamClient(options: StreamClientOptions): StreamClient {
 
   return {
     async prompt(text: string): Promise<void> {
-      const message: UserPrompt = {
+      const message: UserEvent = {
         direction: "user",
         timestamp: Date.now(),
         user,
@@ -1343,118 +1139,122 @@ export function createStreamClient(options: StreamClientOptions): StreamClient {
           params: {
             prompt: [{ type: "text", text }],
           },
-        } as JsonRpcMessage,
+        },
       }
       await stream.append(JSON.stringify(message))
     },
 
-    async respond(requestId: number | string, result: unknown): Promise<void> {
-      const message: UserPrompt = {
+    async respond(
+      requestId: number | string,
+      response: ClientResponseInput
+    ): Promise<void> {
+      const payload: JsonRpcResponse = {
+        jsonrpc: "2.0",
+        id: requestId,
+        ...response,
+      }
+
+      const message: UserEvent = {
         direction: "user",
         timestamp: Date.now(),
         user,
-        payload: {
-          jsonrpc: "2.0",
-          id: requestId,
-          result,
-        } as JsonRpcMessage,
+        payload,
       }
+
       await stream.append(JSON.stringify(message))
     },
 
     async cancel(): Promise<void> {
-      const message: UserPrompt = {
+      const message: UserEvent = {
         direction: "user",
         timestamp: Date.now(),
         user,
         payload: {
           jsonrpc: "2.0",
           method: "session/cancel",
-        } as JsonRpcMessage,
+        },
       }
       await stream.append(JSON.stringify(message))
     },
 
     async close(): Promise<void> {
-      // Stream handle doesn't hold open connections — no cleanup needed
+      // DurableStream is a cold handle; nothing to clean up.
     },
   }
 }
-
-export type { StreamClient, StreamClientOptions } from "./types.js"
 ```
 
-- [ ] **Step 4: Run tests to verify they pass**
+- [ ] **Step 2: Update tests**
 
-Run:
+Tests must verify:
 
-```bash
-cd /Users/kylemathews/programs/durable-streams && pnpm vitest run --project agent-client-protocol
-```
-
-Expected: All tests PASS.
-
-- [ ] **Step 5: Commit**
-
-```bash
-git add packages/agent-client-protocol/src/client.ts packages/agent-client-protocol/test/client.test.ts
-git commit -m "feat(agent-client-protocol): add browser-safe stream client"
-```
+- prompt appends a `session/prompt` request
+- respond appends a JSON-RPC response with `result`
+- respond appends a JSON-RPC response with `error`
+- cancel appends `session/cancel`
+- content type defaults to `application/json`
 
 ---
 
-### Task 8: Build, typecheck, and verify exports
+## Task 9: Entrypoints, build, and verification
 
 **Files:**
 
-- No new files
+- Create: `packages/agent-client-protocol/src/index.ts`
 
-- [ ] **Step 1: Run full typecheck**
+- [ ] **Step 1: Export the public API**
+
+`src/index.ts` should export:
+
+```typescript
+export { createAgentStream } from "./bridge.js"
+export type { AgentStreamSession } from "./types.js"
+export { createBridgeMachine } from "./machine.js"
+export type {
+  AgentStreamOptions,
+  StreamClientOptions,
+  StreamClient,
+  StreamMessage,
+  AgentEvent,
+  UserEvent,
+  ControlEvent,
+  JsonRpcRequest,
+  JsonRpcResponse,
+  JsonRpcNotification,
+  JsonRpcErrorShape,
+  ClientResponseInput,
+  BridgeMachineContext,
+  BridgeMachineEvent,
+  BridgeMachineInput,
+  BridgeMachineDeps,
+  ReplayOptions,
+  StreamOptions,
+} from "./types.js"
+```
+
+- [ ] **Step 2: Run the full verification sequence**
 
 Run:
 
 ```bash
 cd /Users/kylemathews/programs/durable-streams && pnpm --filter @durable-streams/agent-client-protocol typecheck
-```
-
-Expected: No errors.
-
-- [ ] **Step 2: Build the package**
-
-Run:
-
-```bash
+cd /Users/kylemathews/programs/durable-streams && pnpm vitest run --project agent-client-protocol
 cd /Users/kylemathews/programs/durable-streams && pnpm --filter @durable-streams/agent-client-protocol build
-```
-
-Expected: Clean build producing `dist/index.js`, `dist/index.cjs`, `dist/client.js`, `dist/client.cjs`, and corresponding `.d.ts` files.
-
-- [ ] **Step 3: Verify dist contents**
-
-Run:
-
-```bash
 ls -la /Users/kylemathews/programs/durable-streams/packages/agent-client-protocol/dist/
 ```
 
-Expected: At minimum these files exist:
+Expected:
 
-- `index.js`, `index.cjs`, `index.d.ts`, `index.d.cts`
-- `client.js`, `client.cjs`, `client.d.ts`, `client.d.cts`
+- typecheck passes
+- replay / agent / machine / bridge / client tests pass
+- build emits `index.*` and `client.*`
 
-- [ ] **Step 4: Run all tests one final time**
+---
 
-Run:
+## Implementation notes
 
-```bash
-cd /Users/kylemathews/programs/durable-streams && pnpm vitest run --project agent-client-protocol
-```
-
-Expected: All tests PASS.
-
-- [ ] **Step 5: Commit any remaining changes**
-
-```bash
-git add -A packages/agent-client-protocol/
-git commit -m "feat(agent-client-protocol): build and verify package"
-```
+- The bridge should remain around “wiring code + actor lifecycle”, not another home-grown state machine.
+- The machine should own sequencing, not `bridge.ts`.
+- Do not reintroduce `clientCapabilities`.
+- Do not reintroduce local execution of ACP file or terminal methods.
+- If replay later needs compaction, add it as a separate machine input or replay strategy module. Do not mix it into the bridge choreography.
