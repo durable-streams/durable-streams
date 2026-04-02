@@ -12,9 +12,9 @@
    - Live deny/cancel coverage is in place for Claude and Codex
    - Scenarios assert the bridge forwards exactly one response and side effects are blocked
 
-4. [ ] Real resume after bridge restart
-   - Start a session, produce output, kill the bridge, resume in a new process
-   - Verify resumed behavior matches uninterrupted execution closely enough for the scenario
+4. [x] Real resume after bridge restart
+   - Live restart/resume coverage is in place for Claude and Codex
+   - Scenarios assert resumed bridge lifecycle events and successful post-resume turns
 
 5. [ ] Real approval + resume together
    - Stop the bridge while an approval is pending or just after one client responds

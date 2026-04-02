@@ -526,4 +526,100 @@ describe(`real agent smoke scenarios`, () => {
     },
     240_000
   )
+
+  maybeIt(
+    `Claude can resume after bridge restart`,
+    async () => {
+      const beforeToken = `CLAUDE_BEFORE_RESTART_OK`
+      const afterToken = `CLAUDE_AFTER_RESTART_OK`
+
+      const result = await scenario(`real claude restart and resume`)
+        .agent(`claude`, {
+          permissionMode: `plan`,
+        })
+        .client(`kyle`)
+        .prompt(`Reply with exactly ${beforeToken} and nothing else.`)
+        .waitForAssistantMessage(
+          new RegExp(`\\b${beforeToken}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+        .restart()
+        .prompt(`Reply with exactly ${afterToken} and nothing else.`)
+        .waitForAssistantMessage(
+          new RegExp(`\\b${afterToken}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+        .expectBridgeEvent(`session_started`, {
+          count: 1,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectBridgeEvent(`session_resumed`, {
+          count: 1,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectBridgeEvent(`session_ended`, {
+          count: 2,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectInvariant(`bridge_lifecycle_well_formed`, {
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .run()
+
+      const text = assistantTexts(result).join(` `)
+      expect(text).toContain(beforeToken)
+      expect(text).toContain(afterToken)
+    },
+    240_000
+  )
+
+  maybeIt(
+    `Codex can resume after bridge restart`,
+    async () => {
+      const beforeToken = `CODEX_BEFORE_RESTART_OK`
+      const afterToken = `CODEX_AFTER_RESTART_OK`
+
+      const result = await scenario(`real codex restart and resume`)
+        .agent(`codex`, {
+          permissionMode: `plan`,
+        })
+        .client(`kyle`)
+        .prompt(`Reply with exactly ${beforeToken} and nothing else.`)
+        .waitForAssistantMessage(
+          new RegExp(`\\b${beforeToken}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+        .restart()
+        .prompt(`Reply with exactly ${afterToken} and nothing else.`)
+        .waitForAssistantMessage(
+          new RegExp(`\\b${afterToken}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+        .expectBridgeEvent(`session_started`, {
+          count: 1,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectBridgeEvent(`session_resumed`, {
+          count: 1,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectBridgeEvent(`session_ended`, {
+          count: 2,
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectInvariant(`bridge_lifecycle_well_formed`, {
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .run()
+
+      const text = assistantTexts(result).join(` `)
+      expect(text).toContain(beforeToken)
+      expect(text).toContain(afterToken)
+    },
+    240_000
+  )
 })
