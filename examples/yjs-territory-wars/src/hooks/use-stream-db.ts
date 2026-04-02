@@ -1,28 +1,42 @@
 import { useEffect, useState } from "react"
 import { DurableStream } from "@durable-streams/client"
 import { createStreamDB } from "@durable-streams/state"
-import type { CreateStreamDBOptions } from "@durable-streams/state"
+import type {
+  CreateStreamDBOptions,
+  StreamStateDefinition,
+} from "@durable-streams/state"
 
-type AnyStreamDBOptions = CreateStreamDBOptions<any, any>
-type AnyStreamDB = Awaited<ReturnType<typeof createStreamDB<any, any>>>
-
-interface UseStreamDBOptions extends AnyStreamDBOptions {
-  /** TTL in seconds when creating the stream for the first time */
+interface UseStreamDBOptions<
+  TDef extends StreamStateDefinition,
+  TActions extends Record<string, any>,
+> extends CreateStreamDBOptions<TDef, TActions> {
   ttlSeconds?: number
 }
 
-interface UseStreamDBResult {
-  db: AnyStreamDB | null
-  isLoading: boolean
-  error: Error | null
-}
+type InferDB<T> =
+  T extends CreateStreamDBOptions<infer TDef, infer TActions>
+    ? Awaited<ReturnType<typeof createStreamDB<TDef, TActions>>>
+    : never
 
 /**
  * Hook that creates a StreamDB backed by a durable stream.
  * Handles stream creation (if it doesn't exist), preloading, and cleanup.
  */
-export function useStreamDB(options: UseStreamDBOptions): UseStreamDBResult {
-  const [state, setState] = useState<UseStreamDBResult>({
+export function useStreamDB<
+  TDef extends StreamStateDefinition,
+  TActions extends Record<string, any>,
+>(
+  options: UseStreamDBOptions<TDef, TActions>
+): {
+  db: InferDB<typeof options> | null
+  isLoading: boolean
+  error: Error | null
+} {
+  const [state, setState] = useState<{
+    db: InferDB<typeof options> | null
+    isLoading: boolean
+    error: Error | null
+  }>({
     db: null,
     isLoading: true,
     error: null,
@@ -31,8 +45,9 @@ export function useStreamDB(options: UseStreamDBOptions): UseStreamDBResult {
   const url = options.streamOptions.url
 
   useEffect(() => {
-    let db: AnyStreamDB | null = null
+    let db: InferDB<typeof options> | null = null
     const ac = new AbortController()
+    const isCancelled = () => ac.signal.aborted
 
     const init = async () => {
       setState({ db: null, isLoading: true, error: null })
@@ -45,7 +60,7 @@ export function useStreamDB(options: UseStreamDBOptions): UseStreamDBResult {
         })
 
         const headResult = await stream.head()
-        if (ac.signal.aborted) return
+        if (isCancelled()) return
 
         if (!headResult.exists) {
           await DurableStream.create({
@@ -56,14 +71,13 @@ export function useStreamDB(options: UseStreamDBOptions): UseStreamDBResult {
           })
         }
 
-        db = await createStreamDB(options)
+        db = (await createStreamDB(options)) as InferDB<typeof options>
         await db.preload()
 
-        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-        if (ac.signal.aborted) return
+        if (isCancelled()) return
         setState({ db, isLoading: false, error: null })
       } catch (err) {
-        if (ac.signal.aborted) return
+        if (isCancelled()) return
         const error = err instanceof Error ? err : new Error(String(err))
         console.error(`[useStreamDB] Failed to initialize ${url}:`, error)
         setState({ db: null, isLoading: false, error })

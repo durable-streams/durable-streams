@@ -2,7 +2,6 @@ import { createContext, useContext } from "react"
 import { REGISTRY_TTL_SECONDS, registryStateSchema } from "../utils/schemas"
 import { useStreamDB } from "../hooks/use-stream-db"
 import { useServerEndpoint } from "./server-endpoint-context"
-import type { createStreamDB } from "@durable-streams/state"
 import type { RoomMetadata } from "../utils/schemas"
 import type { ReactNode } from "react"
 
@@ -50,16 +49,11 @@ function registryDBOptions(url: string, headers: Record<string, string>) {
   }
 }
 
-// Keep the concrete type from createStreamDB so consumers get typed collections/actions
-type RegistryDBOptions = ReturnType<typeof registryDBOptions>
-export type RegistryDB = Awaited<
-  ReturnType<
-    typeof createStreamDB<
-      RegistryDBOptions[`state`],
-      ReturnType<RegistryDBOptions[`actions`]>
-    >
-  >
->
+function useRegistryDB(url: string, headers: Record<string, string>) {
+  return useStreamDB(registryDBOptions(url, headers))
+}
+
+type RegistryDB = NonNullable<ReturnType<typeof useRegistryDB>[`db`]>
 
 interface RegistryContextValue {
   registryDB: RegistryDB
@@ -77,8 +71,9 @@ export function useRegistryContext() {
 
 export function RegistryProvider({ children }: { children: ReactNode }) {
   const { dsEndpoint, dsHeaders } = useServerEndpoint()
-  const { db, isLoading, error } = useStreamDB(
-    registryDBOptions(`${dsEndpoint}/__snake_rooms`, dsHeaders)
+  const { db, isLoading, error } = useRegistryDB(
+    `${dsEndpoint}/__snake_rooms`,
+    dsHeaders
   )
 
   if (isLoading) {
@@ -102,7 +97,7 @@ export function RegistryProvider({ children }: { children: ReactNode }) {
   }
 
   return (
-    <RegistryContext.Provider value={{ registryDB: db as RegistryDB }}>
+    <RegistryContext.Provider value={{ registryDB: db }}>
       {children}
     </RegistryContext.Provider>
   )

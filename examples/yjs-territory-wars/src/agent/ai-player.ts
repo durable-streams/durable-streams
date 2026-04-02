@@ -382,6 +382,7 @@ export class AIPlayer {
     if (!this.target) {
       this.advanceWaypoint()
     }
+    if (!this.target) return
 
     const others = readPlayers(this.doc, this.playerId)
     const cells = readCells(this.doc)

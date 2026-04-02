@@ -2,7 +2,6 @@ import { createContext, useCallback, useContext } from "react"
 import { scoresStateSchema } from "../utils/schemas"
 import { useStreamDB } from "../hooks/use-stream-db"
 import { useServerEndpoint } from "./server-endpoint-context"
-import type { createStreamDB } from "@durable-streams/state"
 import type { ScoreEntry } from "../utils/schemas"
 import type { ReactNode } from "react"
 
@@ -32,15 +31,11 @@ function scoresDBOptions(url: string, headers: Record<string, string>) {
   }
 }
 
-type ScoresDBOptions = ReturnType<typeof scoresDBOptions>
-type ScoresDB = Awaited<
-  ReturnType<
-    typeof createStreamDB<
-      ScoresDBOptions[`state`],
-      ReturnType<ScoresDBOptions[`actions`]>
-    >
-  >
->
+function useScoresDB(url: string, headers: Record<string, string>) {
+  return useStreamDB(scoresDBOptions(url, headers))
+}
+
+type ScoresDB = NonNullable<ReturnType<typeof useScoresDB>[`db`]>
 
 interface ScoresContextValue {
   scoresDB: ScoresDB
@@ -63,31 +58,22 @@ interface ScoresProviderProps {
 
 export function ScoresProvider({ roomId, children }: ScoresProviderProps) {
   const { dsEndpoint, dsHeaders } = useServerEndpoint()
-  const { db, error } = useStreamDB(
-    scoresDBOptions(
-      `${dsEndpoint}/__snake_scores_${encodeURIComponent(roomId)}`,
-      dsHeaders
-    )
+  const { db, error } = useScoresDB(
+    `${dsEndpoint}/__snake_scores_${encodeURIComponent(roomId)}`,
+    dsHeaders
   )
 
   if (error) {
     console.warn(`[Scores] Error loading scores:`, error.message)
   }
 
-  // Render children even while scores are loading — game shouldn't be blocked
   return (
-    <ScoresContext.Provider
-      value={db ? { scoresDB: db as ScoresDB } : (null as any)}
-    >
+    <ScoresContext.Provider value={db ? { scoresDB: db } : (null as any)}>
       {children}
     </ScoresContext.Provider>
   )
 }
 
-/**
- * Hook to submit a score and get the current high scores.
- * Returns null if scores are still loading.
- */
 export function useRoomScores() {
   const context = useContext(ScoresContext)
   const scoresDB = context?.scoresDB ?? null
