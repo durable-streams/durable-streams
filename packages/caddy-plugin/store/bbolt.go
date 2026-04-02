@@ -34,6 +34,11 @@ type bboltMetadata struct {
 	// Stream closure state
 	Closed   bool                   `json:"closed,omitempty"`
 	ClosedBy *bboltClosedByProducer `json:"closed_by,omitempty"`
+	// Fork state
+	ForkedFrom  string `json:"forked_from,omitempty"`
+	ForkOffset  string `json:"fork_offset,omitempty"`
+	RefCount    int32  `json:"ref_count,omitempty"`
+	SoftDeleted bool   `json:"soft_deleted,omitempty"`
 }
 
 // bboltClosedByProducer is the serialized form of ClosedByProducer
@@ -130,6 +135,14 @@ func (s *BboltMetadataStore) Put(meta *StreamMetadata, directoryName string) err
 		}
 	}
 
+	// Convert fork fields
+	bm.ForkedFrom = meta.ForkedFrom
+	if meta.ForkedFrom != "" {
+		bm.ForkOffset = meta.ForkOffset.String()
+	}
+	bm.RefCount = meta.RefCount
+	bm.SoftDeleted = meta.SoftDeleted
+
 	data, err := json.Marshal(bm)
 	if err != nil {
 		return fmt.Errorf("failed to marshal metadata: %w", err)
@@ -210,6 +223,18 @@ func (s *BboltMetadataStore) Get(path string) (*StreamMetadata, string, error) {
 				Seq:        bm.ClosedBy.Seq,
 			}
 		}
+
+		// Deserialize fork fields
+		meta.ForkedFrom = bm.ForkedFrom
+		if bm.ForkOffset != "" {
+			forkOffset, err := ParseOffset(bm.ForkOffset)
+			if err != nil {
+				return fmt.Errorf("invalid fork offset: %w", err)
+			}
+			meta.ForkOffset = forkOffset
+		}
+		meta.RefCount = bm.RefCount
+		meta.SoftDeleted = bm.SoftDeleted
 
 		return nil
 	})
@@ -451,6 +476,18 @@ func (s *BboltMetadataStore) ForEach(fn func(meta *StreamMetadata, directoryName
 				}
 			}
 
+			// Deserialize fork fields
+			meta.ForkedFrom = bm.ForkedFrom
+			if bm.ForkOffset != "" {
+				forkOffset, err := ParseOffset(bm.ForkOffset)
+				if err != nil {
+					return fmt.Errorf("invalid fork offset: %w", err)
+				}
+				meta.ForkOffset = forkOffset
+			}
+			meta.RefCount = bm.RefCount
+			meta.SoftDeleted = bm.SoftDeleted
+
 			return fn(meta, bm.DirectoryName)
 		})
 	})
@@ -494,6 +531,119 @@ func (s *BboltMetadataStore) SetClosed(path string, closed bool, closedBy *Close
 		}
 
 		// Write back
+		newData, err := json.Marshal(bm)
+		if err != nil {
+			return err
+		}
+
+		return b.Put([]byte(path), newData)
+	})
+}
+
+// IncrementRefCount atomically increments the refcount for a stream
+func (s *BboltMetadataStore) IncrementRefCount(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return fmt.Errorf("store is closed")
+	}
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(metadataBucket)
+
+		data := b.Get([]byte(path))
+		if data == nil {
+			return ErrStreamNotFound
+		}
+
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+
+		var bm bboltMetadata
+		if err := json.Unmarshal(dataCopy, &bm); err != nil {
+			return err
+		}
+
+		bm.RefCount++
+
+		newData, err := json.Marshal(bm)
+		if err != nil {
+			return err
+		}
+
+		return b.Put([]byte(path), newData)
+	})
+}
+
+// DecrementRefCount atomically decrements the refcount for a stream.
+// Returns the new refcount, whether the stream is soft-deleted, and any error.
+func (s *BboltMetadataStore) DecrementRefCount(path string) (newRefCount int32, softDeleted bool, err error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return 0, false, fmt.Errorf("store is closed")
+	}
+
+	err = s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(metadataBucket)
+
+		data := b.Get([]byte(path))
+		if data == nil {
+			return ErrStreamNotFound
+		}
+
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+
+		var bm bboltMetadata
+		if err := json.Unmarshal(dataCopy, &bm); err != nil {
+			return err
+		}
+
+		bm.RefCount--
+		newRefCount = bm.RefCount
+		softDeleted = bm.SoftDeleted
+
+		newData, err := json.Marshal(bm)
+		if err != nil {
+			return err
+		}
+
+		return b.Put([]byte(path), newData)
+	})
+
+	return newRefCount, softDeleted, err
+}
+
+// SoftDelete atomically marks a stream as soft-deleted
+func (s *BboltMetadataStore) SoftDelete(path string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	if s.closed {
+		return fmt.Errorf("store is closed")
+	}
+
+	return s.db.Update(func(tx *bbolt.Tx) error {
+		b := tx.Bucket(metadataBucket)
+
+		data := b.Get([]byte(path))
+		if data == nil {
+			return ErrStreamNotFound
+		}
+
+		dataCopy := make([]byte, len(data))
+		copy(dataCopy, data)
+
+		var bm bboltMetadata
+		if err := json.Unmarshal(dataCopy, &bm); err != nil {
+			return err
+		}
+
+		bm.SoftDeleted = true
+
 		newData, err := json.Marshal(bm)
 		if err != nil {
 			return err
