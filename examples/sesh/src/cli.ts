@@ -260,6 +260,16 @@ async function main(): Promise<void> {
       }
     }
 
+    // Resolve short ID or name to full session ID
+    const allSessions = listSessionFiles(repoRoot)
+    const match =
+      allSessions.find((s) => s.sessionId === sessionId) ??
+      allSessions.find((s) => s.sessionId.startsWith(sessionId)) ??
+      allSessions.find((s) => s.name === sessionId)
+    if (match) {
+      sessionId = match.sessionId
+    }
+
     const noCheckin = hasFlag(`--no-checkin`)
     const atCommit = parseArg(`--at`)
 
