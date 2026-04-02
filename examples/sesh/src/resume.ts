@@ -129,12 +129,11 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
     }
   }
 
-  // If resuming at a specific commit, we need to truncate entries
-  // that are beyond the target offset. The DS returns everything from
-  // startOffset, but we only want up to session.lastOffset.
-  // Since we can't easily map DS offsets to individual entries,
-  // we read all and trust that the stream content up to lastOffset
-  // is what was present at that commit.
+  // If resuming at a specific commit, truncate entries to match
+  // the entry count at that point in time.
+  if (atCommit && session.entryCount > 0) {
+    entries = entries.slice(0, session.entryCount)
+  }
 
   // Generate new session ID
   const newSessionId = crypto.randomUUID()
@@ -178,6 +177,7 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
       parentSessionId: session.sessionId,
       streamUrl: null,
       lastOffset: null,
+      entryCount: 0,
       name: `${session.name} (resumed)`,
       cwd: session.cwd,
       agent: session.agent,

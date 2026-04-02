@@ -179,11 +179,12 @@ async function pushSession(
   // Update local state
   writeLocalState(repoRoot, session.sessionId, { lastPushedUuid })
 
-  // Update session file
+  // Update session file — track total entries in the stream
   const updated: SessionFile = {
     ...session,
     streamUrl,
     lastOffset,
+    entryCount: session.entryCount + linesToPush.length,
   }
   writeSessionFile(repoRoot, updated)
 
