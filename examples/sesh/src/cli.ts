@@ -5,6 +5,8 @@
  */
 
 import * as fs from "node:fs"
+import * as os from "node:os"
+import * as path from "node:path"
 import { findRepoRoot, readConfig, saveToken, writeConfig } from "./config.js"
 import {
   findActiveSessions,
@@ -27,6 +29,7 @@ function usage(): void {
   sesh list                                       List tracked sessions
   sesh resume [<session-id>] [--no-checkin] [--at <commit>]  Fork and resume a session
   sesh install-hooks                              Install git pre-commit hook
+  sesh install-skills [--global]                  Install /checkin skill for Claude Code
 `)
 }
 
@@ -290,6 +293,27 @@ git add .sesh/sessions/ 2>/dev/null || true
     }
 
     console.log(`Sessions will be auto-pushed on each commit.`)
+  } else if (command === `install-skills`) {
+    const skillsSource = new URL(`../skills`, import.meta.url).pathname
+    const global = hasFlag(`--global`)
+    const targetDir = global
+      ? path.join(os.homedir(), `.claude`, `skills`)
+      : path.resolve(`.claude`, `skills`)
+    fs.mkdirSync(targetDir, { recursive: true })
+
+    for (const skill of [`checkin`]) {
+      const target = path.join(targetDir, skill)
+      const source = path.join(skillsSource, skill)
+      if (fs.existsSync(target)) {
+        console.log(`  ${skill}: already exists, skipping`)
+      } else {
+        fs.symlinkSync(source, target)
+        console.log(`  ${skill}: linked → ${source}`)
+      }
+    }
+    console.log(
+      `\nSkills installed${global ? ` globally` : ``}. Use /checkin in Claude Code.`
+    )
   } else {
     console.error(`Unknown command: ${command}\n`)
     usage()
