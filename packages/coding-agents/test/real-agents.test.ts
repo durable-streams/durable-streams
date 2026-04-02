@@ -3,8 +3,11 @@ import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { REAL_AGENT_TIMEOUT_MS, scenario } from "./scenario-dsl.js"
 import type { ScenarioResult } from "./scenario-dsl.js"
+import type { PermissionRequestEvent } from "../src/normalize/types.js"
 
 const maybeIt = process.env.CODING_AGENTS_RUN_REAL === `1` ? it : it.skip
+const codexApprovalMatcher = (event: PermissionRequestEvent): boolean =>
+  event.tool === `terminal` || event.tool === `file_change`
 
 async function withWorkspaceTempCwd<T>(
   prefix: string,
@@ -175,16 +178,19 @@ describe(`real agent smoke scenarios`, () => {
             .prompt(
               `Create a file named ${fileName} in the current directory containing hello, then tell me you did it.`
             )
-            .waitForPermissionRequest(`file_change`, REAL_AGENT_TIMEOUT_MS)
+            .waitForPermissionRequest(
+              codexApprovalMatcher,
+              REAL_AGENT_TIMEOUT_MS
+            )
             .respondToLatestPermissionRequest(
               { behavior: `allow` },
               {
-                matcher: `file_change`,
+                matcher: codexApprovalMatcher,
                 timeoutMs: REAL_AGENT_TIMEOUT_MS,
               }
             )
             .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
-            .expectPermissionRequest(`file_change`, {
+            .expectPermissionRequest(codexApprovalMatcher, {
               timeoutMs: REAL_AGENT_TIMEOUT_MS,
             })
             .expectForwardedCount(
@@ -210,5 +216,136 @@ describe(`real agent smoke scenarios`, () => {
       )
     },
     180_000
+  )
+
+  maybeIt(
+    `Claude interrupt cancels pending approval and allows queued prompt to continue`,
+    async () => {
+      const commandTarget = `/Users/kylemathews/programs/durable-streams`
+      const followupToken = `CLAUDE_INTERRUPT_RECOVERED`
+
+      const result = await scenario(`real claude interrupt with queued prompt`)
+        .agent(`claude`, {
+          cwd: process.cwd(),
+          permissionMode: `default`,
+        })
+        .client(`kyle`)
+        .prompt(`Run ${commandTarget} using Bash and then tell me the output.`)
+        .waitForPermissionRequest(`Bash`, REAL_AGENT_TIMEOUT_MS)
+        .prompt(`Reply with exactly ${followupToken} and nothing else.`)
+        .cancel()
+        .waitForForwardedCount(
+          (event) => event.source === `interrupt_synthesized_response`,
+          1,
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForForwardedCount(
+          (event) => event.source === `interrupt`,
+          1,
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForForwardedCount(
+          (event) => event.source === `queued_prompt`,
+          2,
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForAssistantMessage(
+          new RegExp(`\\b${followupToken}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .expectInvariant(`single_in_flight_prompt`, {
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .expectInvariant(`bridge_lifecycle_well_formed`, {
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .run()
+
+      const synthesizedIndex = result.forwardedMessages.findIndex(
+        (event) => event.source === `interrupt_synthesized_response`
+      )
+      const interruptIndex = result.forwardedMessages.findIndex(
+        (event) => event.source === `interrupt`
+      )
+
+      expect(synthesizedIndex).toBeGreaterThanOrEqual(0)
+      expect(interruptIndex).toBeGreaterThan(synthesizedIndex)
+      expect(
+        assistantTexts(result).some((text) => text.includes(followupToken))
+      ).toBe(true)
+    },
+    240_000
+  )
+
+  maybeIt(
+    `Codex interrupt cancels pending approval and allows queued prompt to continue`,
+    async () => {
+      const followupToken = `CODEX_INTERRUPT_RECOVERED`
+
+      await withWorkspaceTempCwd(
+        `coding-agents-codex-interrupt-`,
+        async (cwd) => {
+          const fileName = `interrupt-codex.txt`
+
+          const result = await scenario(
+            `real codex interrupt with queued prompt`
+          )
+            .agent(`codex`, {
+              cwd,
+              permissionMode: `untrusted`,
+            })
+            .client(`kyle`)
+            .prompt(
+              `Create a file named ${fileName} in the current directory containing hello, then tell me you did it.`
+            )
+            .waitForPermissionRequest(
+              codexApprovalMatcher,
+              REAL_AGENT_TIMEOUT_MS
+            )
+            .prompt(`Reply with exactly ${followupToken} and nothing else.`)
+            .cancel()
+            .waitForForwardedCount(
+              (event) => event.source === `interrupt_synthesized_response`,
+              1,
+              REAL_AGENT_TIMEOUT_MS
+            )
+            .waitForForwardedCount(
+              (event) => event.source === `interrupt`,
+              1,
+              REAL_AGENT_TIMEOUT_MS
+            )
+            .waitForForwardedCount(
+              (event) => event.source === `queued_prompt`,
+              2,
+              REAL_AGENT_TIMEOUT_MS
+            )
+            .waitForAssistantMessage(
+              new RegExp(`\\b${followupToken}\\b`),
+              REAL_AGENT_TIMEOUT_MS
+            )
+            .expectInvariant(`single_in_flight_prompt`, {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .expectInvariant(`bridge_lifecycle_well_formed`, {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .run()
+
+          const synthesizedIndex = result.forwardedMessages.findIndex(
+            (event) => event.source === `interrupt_synthesized_response`
+          )
+          const interruptIndex = result.forwardedMessages.findIndex(
+            (event) => event.source === `interrupt`
+          )
+
+          expect(synthesizedIndex).toBeGreaterThanOrEqual(0)
+          expect(interruptIndex).toBeGreaterThan(synthesizedIndex)
+          expect(
+            assistantTexts(result).some((text) => text.includes(followupToken))
+          ).toBe(true)
+        }
+      )
+    },
+    240_000
   )
 })

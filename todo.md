@@ -3,11 +3,10 @@
 1. [x] Real approval round-trips for both agents
    - Live allow-path coverage is in place for Claude and Codex
 
-2. [ ] Real interrupt behavior during an active turn
-   - Start a long-running turn
-   - Send `interrupt`
-   - Assert synthesized cancellations happen before interrupt when needed
-   - Assert the turn ends cleanly and queued prompts continue
+2. [x] Real interrupt behavior during an active turn
+   - Live interrupt-path coverage is in place for Claude and Codex
+   - Includes synthesized cancellation ordering checks when approval requests are pending
+   - Includes queued prompt continuation checks after interruption
 
 3. [ ] Real deny/cancel approval variants for both agents
    - Trigger a real tool approval
