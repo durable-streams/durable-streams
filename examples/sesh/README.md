@@ -4,6 +4,20 @@ Share, discover, and resume Claude Code sessions across machines and teammates v
 
 Sessions are tracked in a `.sesh/` directory in your repo, persisted to Durable Streams at commit time, and discoverable by anyone who checks out the branch.
 
+## Installation
+
+The examples below use the `sesh` command. You can either install it globally:
+
+```bash
+cd examples/sesh && npm link
+```
+
+Or run it directly via tsx (replace `sesh` with the full path in all commands below):
+
+```bash
+npx tsx /path/to/durable-streams/examples/sesh/src/cli.ts
+```
+
 ## Quick start
 
 ### 1. Set up a Durable Streams server
