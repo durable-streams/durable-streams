@@ -162,6 +162,7 @@ export class DurableStreamTestServer {
       | `onStreamCreated`
       | `onStreamDeleted`
       | `compression`
+      | `checkpointRules`
       | `cursorIntervalSeconds`
       | `cursorEpoch`
     >
