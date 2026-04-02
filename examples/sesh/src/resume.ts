@@ -80,8 +80,15 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
 
   const headers = getAuthHeaders()
 
+  // Construct the stream URL from the config server + the stream path.
+  // The stored streamUrl might point to a different host (e.g., localhost)
+  // than the current config server (e.g., ngrok or VM IP).
+  let streamUrl = session.streamUrl
+  const streamPath = new URL(streamUrl).pathname
+  streamUrl = `${config.server}${streamPath}`
+
   // Read from DS — try checkpoint first, fall back to beginning
-  const readUrl = `${session.streamUrl}?offset=compact`
+  const readUrl = `${streamUrl}?offset=compact`
   const checkpointRes = await fetch(readUrl, {
     redirect: `manual`,
     headers,
@@ -91,7 +98,7 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
   if (checkpointRes.status === 307) {
     const location = checkpointRes.headers.get(`location`)!
     // Extract the offset from the redirect URL
-    const redirectUrl = new URL(location, session.streamUrl)
+    const redirectUrl = new URL(location, streamUrl)
     const redirectOffset = redirectUrl.searchParams.get(`offset`) ?? `-1`
 
     // If resuming at a specific commit, check if checkpoint is before our target
@@ -111,7 +118,7 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
 
   // Read the stream content
   const streamRes = await fetch(
-    `${session.streamUrl}?offset=${encodeURIComponent(startOffset)}`,
+    `${streamUrl}?offset=${encodeURIComponent(startOffset)}`,
     { headers }
   )
   if (!streamRes.ok) {
