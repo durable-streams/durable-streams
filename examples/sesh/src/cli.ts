@@ -17,6 +17,7 @@ import {
 } from "./sessions.js"
 import { pushAll } from "./push.js"
 import { resume } from "./resume.js"
+import { merge } from "./merge.js"
 
 const args = process.argv.slice(2)
 const command = args[0]
@@ -28,6 +29,7 @@ function usage(): void {
   sesh push                                       Push session deltas to DS
   sesh list                                       List tracked sessions
   sesh resume [<session-id>] [--no-checkin] [--at <commit>]  Fork and resume a session
+  sesh merge <session-A> <session-B>               Merge two sessions
   sesh install-hooks                              Install git pre-commit hook
   sesh install-skills [--global]                  Install /checkin skill for Claude Code
 `)
@@ -262,6 +264,24 @@ async function main(): Promise<void> {
     }
 
     console.log(`\nResume with: cd ${result.cwd} && claude --continue`)
+  } else if (command === `merge`) {
+    const repoRoot = requireRepoRoot()
+    requireConfig(repoRoot)
+
+    const sessionA = args[1]
+    const sessionB = args[2]
+    if (
+      !sessionA ||
+      !sessionB ||
+      sessionA.startsWith(`-`) ||
+      sessionB.startsWith(`-`)
+    ) {
+      console.error(`Error: two session IDs are required\n`)
+      usage()
+      process.exit(1)
+    }
+
+    merge({ sessionA, sessionB, repoRoot })
   } else if (command === `install-hooks`) {
     const repoRoot = requireRepoRoot()
 
