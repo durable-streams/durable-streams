@@ -27,6 +27,7 @@ export interface BridgeOptions {
   model?: string
   permissionMode?: string
   approvalPolicy?: CodexApprovalPolicy
+  experimentalFeatures?: Record<string, boolean>
   sandboxMode?: CodexSandboxMode
   developerInstructions?: string
   verbose?: boolean
@@ -124,6 +125,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
     model,
     permissionMode,
     approvalPolicy,
+    experimentalFeatures,
     sandboxMode,
     developerInstructions,
     verbose,
@@ -169,6 +171,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
       model,
       permissionMode,
       approvalPolicy,
+      experimentalFeatures,
       sandboxMode,
       developerInstructions,
       verbose,

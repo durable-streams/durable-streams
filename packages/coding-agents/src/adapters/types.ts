@@ -9,6 +9,7 @@ export interface SpawnOptions {
   model?: string
   permissionMode?: string
   approvalPolicy?: CodexApprovalPolicy
+  experimentalFeatures?: Record<string, boolean>
   sandboxMode?: CodexSandboxMode
   developerInstructions?: string
   verbose?: boolean

@@ -258,6 +258,18 @@ The final outcome was a better definition of the product boundary. Durable sessi
 ### What should be done in the future
 
 - If exact approval-response recovery is ever required, add an explicit persisted marker for “bridge forwarded/applied this response” rather than inferring it
+
+## Appendix: Desktop App Reverse-Engineering Fallback
+
+If CLI-level schema, flags, and live probing stop being enough, an acceptable fallback is to inspect the desktop apps that likely speak the same local protocols. On this machine, `/Applications/Claude.app` is a normal Electron bundle, so the first thing to try is forcing inspectability instead of patching the app:
+
+- `open -a /Applications/Claude.app --args --remote-debugging-port=9222`
+- `open -a /Applications/Claude.app --args --auto-open-devtools-for-tabs`
+- If `open` strips something important, launch the executable directly:
+- `/Applications/Claude.app/Contents/MacOS/Claude --remote-debugging-port=9222`
+
+The useful targets are localhost HTTP/WebSocket traffic, spawned helper process args, and any JSON-RPC-style payloads moving over local transports. This should stay a fallback, not the default path: prefer generated schema, documented flags, app-server requests, and live harness coverage first.
+
 - Keep item 10 in mind because crash/exit-mid-turn coverage will build directly on this prompt replay path
 
 ### Code review instructions

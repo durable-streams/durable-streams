@@ -128,9 +128,15 @@ function resolveSandboxMode(
 }
 
 function requiresExperimentalApi(
-  approvalPolicy: CodexApprovalPolicy | undefined
+  approvalPolicy: CodexApprovalPolicy | undefined,
+  experimentalFeatures: Record<string, boolean> | undefined
 ): boolean {
-  return typeof approvalPolicy === `object` && `granular` in approvalPolicy
+  return (
+    (typeof approvalPolicy === `object` && `granular` in approvalPolicy) ||
+    Boolean(
+      experimentalFeatures && Object.keys(experimentalFeatures).length > 0
+    )
+  )
 }
 
 function mapCommandDecision(
@@ -216,12 +222,22 @@ export class CodexAdapter implements AgentAdapter {
     this.#lastTurnId = null
     this.#pendingServerRequests.clear()
 
+    const featureArgs = Object.entries(
+      options.experimentalFeatures ?? {}
+    ).flatMap(([name, enabled]) =>
+      enabled ? [`--enable`, name] : [`--disable`, name]
+    )
+
     return await new Promise<AgentConnection>((resolve, reject) => {
-      const child = spawn(`codex`, [`app-server`, `--listen`, `stdio://`], {
-        cwd: options.cwd,
-        env: { ...process.env, ...options.env },
-        stdio: [`pipe`, `pipe`, `pipe`],
-      })
+      const child = spawn(
+        `codex`,
+        [`app-server`, `--listen`, `stdio://`, ...featureArgs],
+        {
+          cwd: options.cwd,
+          env: { ...process.env, ...options.env },
+          stdio: [`pipe`, `pipe`, `pipe`],
+        }
+      )
 
       let resolved = false
       let buffer = ``
@@ -401,7 +417,10 @@ export class CodexAdapter implements AgentAdapter {
               title: `Durable Streams Coding Agents`,
               version: `0.1.0`,
             },
-            capabilities: requiresExperimentalApi(explicitApprovalPolicy)
+            capabilities: requiresExperimentalApi(
+              explicitApprovalPolicy,
+              options.experimentalFeatures
+            )
               ? {
                   experimentalApi: true,
                 }

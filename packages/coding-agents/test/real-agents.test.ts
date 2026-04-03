@@ -1,4 +1,11 @@
-import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
+import {
+  access,
+  mkdir,
+  mkdtemp,
+  readFile,
+  rm,
+  writeFile,
+} from "node:fs/promises"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { REAL_AGENT_TIMEOUT_MS, scenario } from "./scenario-dsl.js"
@@ -30,6 +37,23 @@ async function withWorkspaceTempCwd<T>(
     return await run(cwd)
   } finally {
     await rm(cwd, { recursive: true, force: true })
+  }
+}
+
+async function withWorkspaceAndOutsideTempDirs<T>(
+  prefix: string,
+  run: (paths: { cwd: string; outside: string }) => Promise<T>
+): Promise<T> {
+  const parent = join(process.cwd(), `.tmp`)
+  await mkdir(parent, { recursive: true })
+
+  const cwd = await mkdtemp(join(parent, `${prefix}workspace-`))
+  const outside = await mkdtemp(join(parent, `${prefix}outside-`))
+  try {
+    return await run({ cwd, outside })
+  } finally {
+    await rm(cwd, { recursive: true, force: true })
+    await rm(outside, { recursive: true, force: true })
   }
 }
 
@@ -346,6 +370,132 @@ describe(`real agent smoke scenarios`, () => {
           expect(await readFile(filePath, `utf8`)).toBe(`hello\n`)
           expect(
             assistantTexts(result).some((text) => text.includes(fileName))
+          ).toBe(true)
+        }
+      )
+    },
+    180_000
+  )
+
+  maybeIt(
+    `Codex can complete a permissions approval round trip`,
+    async () => {
+      await withWorkspaceAndOutsideTempDirs(
+        `coding-agents-codex-permissions-`,
+        async ({ cwd, outside }) => {
+          const filePath = join(outside, `permission-target.txt`)
+          await writeFile(filePath, `PERMISSION_TOKEN\n`)
+
+          const result = await scenario(`real codex permissions approval`)
+            .agent(`codex`, {
+              cwd,
+              sandboxMode: `workspace-write`,
+              approvalPolicy: {
+                granular: {
+                  sandbox_approval: true,
+                  rules: true,
+                  skill_approval: false,
+                  request_permissions: true,
+                  mcp_elicitations: false,
+                },
+              },
+              experimentalFeatures: {
+                request_permissions_tool: true,
+              },
+            })
+            .client(`kyle`)
+            .prompt(
+              `Read the file at ${filePath} and reply with exactly its contents and nothing else.`
+            )
+            .waitForPermissionRequest(`permissions`, REAL_AGENT_TIMEOUT_MS)
+            .respondToLatestPermissionRequest(
+              {
+                permissions: {
+                  fileSystem: {
+                    read: [filePath],
+                  },
+                },
+                scope: `turn`,
+              },
+              {
+                matcher: `permissions`,
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+            .expectPermissionRequest(`permissions`, {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .expectForwardedCount(
+              (event) => event.source === `client_response`,
+              1,
+              {
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .run()
+
+          expect(
+            assistantTexts(result).some((text) =>
+              text.includes(`PERMISSION_TOKEN`)
+            )
+          ).toBe(true)
+        }
+      )
+    },
+    180_000
+  )
+
+  maybeIt(
+    `Codex can complete a request-user-input round trip`,
+    async () => {
+      await withWorkspaceTempCwd(
+        `coding-agents-codex-request-user-input-`,
+        async (cwd) => {
+          const result = await scenario(`real codex request-user-input`)
+            .agent(`codex`, {
+              cwd,
+              permissionMode: `plan`,
+              experimentalFeatures: {
+                default_mode_request_user_input: true,
+              },
+            })
+            .client(`kyle`)
+            .prompt(
+              `Before you answer, use the request_user_input tool to ask me whether I prefer option Alpha or option Beta. Do not choose for me and do not answer until I respond. After I answer, reply with exactly CHOSEN:<option>.`
+            )
+            .waitForPermissionRequest(
+              `request_user_input`,
+              REAL_AGENT_TIMEOUT_MS
+            )
+            .respondToLatestPermissionRequest(
+              {
+                answers: {
+                  option_choice: {
+                    answers: [`Alpha`],
+                  },
+                },
+              },
+              {
+                matcher: `request_user_input`,
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+            .expectPermissionRequest(`request_user_input`, {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .expectForwardedCount(
+              (event) => event.source === `client_response`,
+              1,
+              {
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .run()
+
+          expect(
+            assistantTexts(result).some((text) => text.includes(`CHOSEN:Alpha`))
           ).toBe(true)
         }
       )

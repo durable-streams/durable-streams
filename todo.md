@@ -28,11 +28,11 @@
    - Live queued-prompt coverage is in place for Claude and Codex
    - Scenarios assert prompt B is not forwarded until prompt A completes
 
-8. [ ] Codex app-server approval variants beyond command execution
+8. [x] Codex app-server approval variants beyond command execution
    - Live file-change approval coverage is in place
-   - Explicit Codex sandbox / approval-policy plumbing is in place
-   - Permission grant requests are not yet reproducible under the current harness
-   - `item/tool/requestUserInput` is not yet reproducible under the current harness
+   - Live permissions approval coverage is in place
+   - Live `item/tool/requestUserInput` coverage is in place
+   - Codex sandbox / approval-policy plumbing and spawn-time experimental feature flags are in place
 
 9. [x] Real normalization coverage from recorded histories
    - Live Claude and Codex prompt histories now assert stable client-facing event projections
@@ -46,4 +46,5 @@
 11. [ ] Path rewriting during resume across cwd changes
 
 - Claude path-rewrite unit coverage is in place for resume transcript generation
+- A first live Claude scenario candidate was explored but not retained because it did not fail or complete cleanly enough to trust in CI
 - Live cross-cwd resume behavior is not yet validated end to end
