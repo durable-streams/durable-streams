@@ -270,6 +270,14 @@ If CLI-level schema, flags, and live probing stop being enough, an acceptable fa
 
 The useful targets are localhost HTTP/WebSocket traffic, spawned helper process args, and any JSON-RPC-style payloads moving over local transports. This should stay a fallback, not the default path: prefer generated schema, documented flags, app-server requests, and live harness coverage first.
 
+## Appendix: Claude Cross-Cwd Resume Finding
+
+After the Codex work, I revisited the remaining Claude path-rewrite item with direct probes instead of another hanging end-to-end test. The useful result was not a pass; it was a precise failure. Rewritten resume transcripts are still generated correctly, but a live Claude resume into a different cwd currently fails fast with:
+
+- `No conversation found with session ID: ...`
+
+That matters because it suggests transcript rewriting alone is not sufficient for Claude cross-cwd resume. Claude appears to require additional conversation state beyond the rewritten JSONL transcript, or it keys lookup on more than the resume transcript file in the new project directory. I also updated the Claude adapter to reject immediately when the child exits before the websocket connects, including the captured child output, so this path now fails with an actionable error instead of a 30-second timeout.
+
 - Keep item 10 in mind because crash/exit-mid-turn coverage will build directly on this prompt replay path
 
 ### Code review instructions

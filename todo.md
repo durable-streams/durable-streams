@@ -46,5 +46,6 @@
 11. [ ] Path rewriting during resume across cwd changes
 
 - Claude path-rewrite unit coverage is in place for resume transcript generation
-- A first live Claude scenario candidate was explored but not retained because it did not fail or complete cleanly enough to trust in CI
+- Claude now fails fast instead of hanging when the resumed process exits before connecting back to the bridge
+- A direct live Claude probe currently exits with `No conversation found with session ID: ...` when resumed from a rewritten transcript in a different cwd
 - Live cross-cwd resume behavior is not yet validated end to end

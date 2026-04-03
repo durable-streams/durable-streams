@@ -101,11 +101,27 @@ export class ClaudeAdapter implements AgentAdapter {
         stdio: [`ignore`, `pipe`, `pipe`],
       })
 
+      let childStdout = ``
+      let childStderr = ``
+      child.stdout.on(`data`, (chunk: Buffer) => {
+        childStdout += chunk.toString(`utf8`)
+      })
+      child.stderr.on(`data`, (chunk: Buffer) => {
+        childStderr += chunk.toString(`utf8`)
+      })
+
       const wss = new WebSocketServer({ host: `127.0.0.1`, port })
       const timeout = setTimeout(() => {
         safeClose()
         child.kill()
-        reject(new Error(`Claude Code did not connect to the bridge in 30s`))
+        const detail = childStderr.trim() || childStdout.trim()
+        reject(
+          new Error(
+            detail
+              ? `Claude Code did not connect to the bridge in 30s: ${detail}`
+              : `Claude Code did not connect to the bridge in 30s`
+          )
+        )
       }, 30_000)
 
       let resolved = false
@@ -137,6 +153,21 @@ export class ClaudeAdapter implements AgentAdapter {
 
       child.once(`exit`, (code) => {
         safeClose()
+
+        if (!resolved) {
+          const detail = childStderr.trim() || childStdout.trim()
+          reject(
+            new Error(
+              detail
+                ? `Claude Code exited before connecting: ${detail}`
+                : `Claude Code exited before connecting${
+                    code == null ? `` : ` (exit code ${code})`
+                  }`
+            )
+          )
+          return
+        }
+
         exitHandler?.(code)
       })
 
