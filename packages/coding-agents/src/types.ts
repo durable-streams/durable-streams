@@ -1,4 +1,5 @@
 import type { NormalizedEvent } from "./normalize/types.js"
+import type { CodexApprovalPolicy, CodexSandboxMode } from "./protocol/codex.js"
 
 export type AgentType = `claude` | `codex`
 
@@ -92,9 +93,13 @@ export interface SessionOptions {
   contentType?: string
   model?: string
   permissionMode?: string
+  approvalPolicy?: CodexApprovalPolicy
+  sandboxMode?: CodexSandboxMode
+  developerInstructions?: string
   verbose?: boolean
   resume?: boolean
   rewritePaths?: Record<string, string>
+  env?: Record<string, string>
   debugHooks?: BridgeDebugHooks
 }
 

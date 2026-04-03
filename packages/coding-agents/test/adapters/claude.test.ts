@@ -1,3 +1,6 @@
+import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { homedir, tmpdir } from "node:os"
+import { basename, join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { ClaudeAdapter } from "../../src/adapters/claude.js"
 
@@ -83,5 +86,63 @@ describe(`ClaudeAdapter`, () => {
     } as const
 
     expect(adapter.translateClientIntent(raw)).toBe(raw)
+  })
+
+  it(`should rewrite serialized paths when preparing a resume transcript`, async () => {
+    const oldPath = `/tmp/old-workspace`
+    const rewrittenPath = `/tmp/new-workspace`
+    const cwd = await mkdtemp(join(tmpdir(), `claude-rewrite-cwd-`))
+    const resumeId = `resume-rewrite-${Date.now()}`
+    const sessionDir = join(
+      homedir(),
+      `.claude`,
+      `projects`,
+      basename(cwd)
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, `-`) || `user`
+    )
+    const transcriptPath = join(sessionDir, `${resumeId}.jsonl`)
+
+    try {
+      const prepared = await adapter.prepareResume(
+        [
+          {
+            agent: `claude`,
+            direction: `agent`,
+            timestamp: Date.now(),
+            raw: {
+              type: `system`,
+              session_id: resumeId,
+              cwd: oldPath,
+            },
+          },
+          {
+            agent: `claude`,
+            direction: `user`,
+            timestamp: Date.now() + 1,
+            user: { name: `Test`, email: `test@test.com` },
+            raw: {
+              type: `user_message`,
+              text: `Look at ${oldPath}/src/index.ts`,
+            },
+          },
+        ],
+        {
+          cwd,
+          rewritePaths: {
+            [oldPath]: rewrittenPath,
+          },
+        }
+      )
+
+      expect(prepared.resumeId).toBe(resumeId)
+
+      const transcript = await readFile(transcriptPath, `utf8`)
+      expect(transcript).toContain(rewrittenPath)
+      expect(transcript).not.toContain(oldPath)
+    } finally {
+      await rm(transcriptPath, { force: true })
+      await rm(cwd, { recursive: true, force: true })
+    }
   })
 })

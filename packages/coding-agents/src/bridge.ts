@@ -17,6 +17,7 @@ import type {
   StreamEnvelope,
   UserEnvelope,
 } from "./types.js"
+import type { CodexApprovalPolicy, CodexSandboxMode } from "./protocol/codex.js"
 
 export interface BridgeOptions {
   adapter: AgentAdapter
@@ -25,9 +26,13 @@ export interface BridgeOptions {
   contentType?: string
   model?: string
   permissionMode?: string
+  approvalPolicy?: CodexApprovalPolicy
+  sandboxMode?: CodexSandboxMode
+  developerInstructions?: string
   verbose?: boolean
   rewritePaths?: Record<string, string>
   resume?: boolean
+  env?: Record<string, string>
   debugHooks?: BridgeDebugHooks
 }
 
@@ -118,9 +123,13 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
     contentType = `application/json`,
     model,
     permissionMode,
+    approvalPolicy,
+    sandboxMode,
+    developerInstructions,
     verbose,
     rewritePaths,
     resume = false,
+    env,
     debugHooks,
   } = options
 
@@ -159,8 +168,12 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
       cwd,
       model,
       permissionMode,
+      approvalPolicy,
+      sandboxMode,
+      developerInstructions,
       verbose,
       resume: resumeValue,
+      env,
     })
   }
 

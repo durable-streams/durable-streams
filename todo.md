@@ -24,25 +24,26 @@
    - Live two-client approval race coverage is in place for Claude and Codex
    - Scenarios assert `first_response_wins` and verify the winning response determines the observed outcome
 
-7. [ ] Multiple queued prompts against live agents
-   - Send prompt A and B quickly
-   - Assert B is not forwarded until A completes
+7. [x] Multiple queued prompts against live agents
+   - Live queued-prompt coverage is in place for Claude and Codex
+   - Scenarios assert prompt B is not forwarded until prompt A completes
 
 8. [ ] Codex app-server approval variants beyond command execution
-   - File-change approval
-   - Permission grant requests
-   - `item/tool/requestUserInput` if it can be triggered reliably
+   - Live file-change approval coverage is in place
+   - Explicit Codex sandbox / approval-policy plumbing is in place
+   - Permission grant requests are not yet reproducible under the current harness
+   - `item/tool/requestUserInput` is not yet reproducible under the current harness
 
-9. [ ] Real normalization coverage from recorded histories
-   - Capture real Claude and Codex histories
-   - Assert normalizers produce stable client-facing events
+9. [x] Real normalization coverage from recorded histories
+   - Live Claude and Codex prompt histories now assert stable client-facing event projections
+   - Codex normalizer now suppresses common transport noise and no longer misclassifies initialize responses as turn completion
 
-10. [ ] Bridge crash / agent exit mid-turn
+10. [x] Bridge crash / agent exit mid-turn
 
-- Force child exit during a turn
-- Assert lifecycle events, teardown, and restart behavior
+- Scripted bridge coverage now forces agent exit during a turn
+- Scenarios assert lifecycle events, teardown, and prompt replay after resume
 
 11. [ ] Path rewriting during resume across cwd changes
 
-- Resume from a different workspace path
-- Verify reconstructed local state still behaves correctly
+- Claude path-rewrite unit coverage is in place for resume transcript generation
+- Live cross-cwd resume behavior is not yet validated end to end

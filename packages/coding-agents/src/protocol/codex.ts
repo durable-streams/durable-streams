@@ -45,11 +45,36 @@ export interface CodexClientInfo {
   version: string
 }
 
+export interface CodexInitializeCapabilities {
+  experimentalApi: boolean
+  optOutNotificationMethods?: Array<string> | null
+}
+
+export type CodexApprovalPolicy =
+  | `untrusted`
+  | `on-failure`
+  | `on-request`
+  | `never`
+  | {
+      granular: {
+        sandbox_approval: boolean
+        rules: boolean
+        skill_approval: boolean
+        request_permissions: boolean
+        mcp_elicitations: boolean
+      }
+    }
+
+export type CodexSandboxMode =
+  | `read-only`
+  | `workspace-write`
+  | `danger-full-access`
+
 export interface CodexInitializeRequest extends CodexJsonRpcRequest<
   `initialize`,
   {
     clientInfo: CodexClientInfo
-    capabilities: object | null
+    capabilities: CodexInitializeCapabilities | null
   }
 > {}
 
@@ -58,8 +83,8 @@ export interface CodexThreadStartRequest extends CodexJsonRpcRequest<
   {
     model?: string | null
     cwd?: string | null
-    approvalPolicy?: `untrusted` | `on-failure` | `on-request` | `never`
-    sandbox?: `read-only` | `workspace-write` | `danger-full-access` | null
+    approvalPolicy?: CodexApprovalPolicy
+    sandbox?: CodexSandboxMode | null
     developerInstructions?: string | null
     ephemeral?: boolean | null
     experimentalRawEvents: boolean
@@ -73,8 +98,8 @@ export interface CodexThreadResumeRequest extends CodexJsonRpcRequest<
     threadId: string
     model?: string | null
     cwd?: string | null
-    approvalPolicy?: `untrusted` | `on-failure` | `on-request` | `never`
-    sandbox?: `read-only` | `workspace-write` | `danger-full-access` | null
+    approvalPolicy?: CodexApprovalPolicy
+    sandbox?: CodexSandboxMode | null
     developerInstructions?: string | null
     persistExtendedHistory: boolean
   }
@@ -95,7 +120,7 @@ export interface CodexTurnStartRequest extends CodexJsonRpcRequest<
     threadId: string
     input: Array<CodexTextInput>
     cwd?: string | null
-    approvalPolicy?: `untrusted` | `on-failure` | `on-request` | `never`
+    approvalPolicy?: CodexApprovalPolicy
   }
 > {}
 
@@ -358,10 +383,11 @@ export interface CodexToolRequestUserInputRequest extends CodexJsonRpcRequest<
   {
     threadId: string
     turnId: string
-    callId: string
-    tool: string
-    question: string
-    [key: string]: unknown
+    itemId: string
+    questions: Array<{
+      id: string
+      [key: string]: unknown
+    }>
   }
 > {}
 

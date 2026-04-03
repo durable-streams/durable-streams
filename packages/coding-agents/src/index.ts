@@ -18,6 +18,7 @@ export async function createSession(options: SessionOptions): Promise<Session> {
 export { ClaudeAdapter } from "./adapters/claude.js"
 export { CodexAdapter } from "./adapters/codex.js"
 export type {
+  CodexApprovalPolicy,
   ClaudeAssistantContentBlock,
   ClaudeAssistantMessage,
   ClaudeContentBlockDeltaEvent,
@@ -45,6 +46,7 @@ export type {
   CodexExecItem,
   CodexExecTurnCompletedEvent,
   CodexFileChangeApprovalRequest,
+  CodexInitializeCapabilities,
   CodexInitializeRequest,
   CodexItemCompletedNotification,
   CodexJsonRpcError,
@@ -53,6 +55,7 @@ export type {
   CodexJsonRpcResult,
   CodexPermissionsApprovalRequest,
   CodexRequestId,
+  CodexSandboxMode,
   CodexThreadItem,
   CodexThreadResumeRequest,
   CodexThreadStartRequest,

@@ -420,12 +420,43 @@ function permissionRequestAssertion(
 }
 
 function turnCompleteAssertion(snapshot: ScenarioSnapshot): void {
-  const found = snapshot.normalizedEvents.some(
-    (event) =>
-      event.direction === `agent` && event.event.type === `turn_complete`
-  )
+  const found = countTurnCompleteEvents(snapshot) > 0
 
   expect(found).toBe(true)
+}
+
+function isRawTurnComplete(agent: AgentType, raw: object): boolean {
+  const message = raw as Record<string, unknown>
+
+  return agent === `claude`
+    ? message.type === `result`
+    : message.method === `turn/completed`
+}
+
+function countTurnCompleteEvents(snapshot: ScenarioSnapshot): number {
+  return snapshot.agentMessages.filter((event) =>
+    isRawTurnComplete(snapshot.agent, event.raw)
+  ).length
+}
+
+function turnCompleteCountAssertion(
+  count: number
+): (snapshot: ScenarioSnapshot) => void {
+  return (snapshot) => {
+    const actualCount = countTurnCompleteEvents(snapshot)
+
+    expect(actualCount).toBe(count)
+  }
+}
+
+function turnCompleteCountAtLeastAssertion(
+  count: number
+): (snapshot: ScenarioSnapshot) => void {
+  return (snapshot) => {
+    const actualCount = countTurnCompleteEvents(snapshot)
+
+    expect(actualCount).toBeGreaterThanOrEqual(count)
+  }
 }
 
 function forwardedCountAssertion(
@@ -989,6 +1020,21 @@ export class ScenarioBuilder {
     return this
   }
 
+  waitForTurnCompleteCount(
+    count: number,
+    timeoutMs: number = DEFAULT_TIMEOUT_MS
+  ): this {
+    this.#steps.push(async (runtime) => {
+      await waitForExpectation(runtime, {
+        description: `turn complete count ${count}`,
+        phase: `before_close`,
+        timeoutMs,
+        assert: turnCompleteCountAtLeastAssertion(count),
+      })
+    })
+    return this
+  }
+
   waitForPermissionRequest(
     matcher?: PermissionMatcher,
     timeoutMs: number = DEFAULT_TIMEOUT_MS
@@ -1036,6 +1082,19 @@ export class ScenarioBuilder {
       phase: options.phase ?? `after_close`,
       timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
       assert: turnCompleteAssertion,
+    })
+    return this
+  }
+
+  expectTurnCompleteCount(
+    count: number,
+    options: { phase?: ScenarioPhase; timeoutMs?: number } = {}
+  ): this {
+    this.#expectations.push({
+      description: `turn complete count ${count}`,
+      phase: options.phase ?? `after_close`,
+      timeoutMs: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      assert: turnCompleteCountAssertion(count),
     })
     return this
   }

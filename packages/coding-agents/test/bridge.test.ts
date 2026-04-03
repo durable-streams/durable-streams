@@ -19,6 +19,7 @@ function createMockAdapter(): {
     simulateMessage: (raw: object) => void
     sentMessages: Array<object>
     killed: boolean
+    kill: () => void
   }
 } {
   let messageHandler: ((raw: object) => void) | null = null
@@ -82,6 +83,9 @@ function createMockAdapter(): {
       get killed() {
         return killed
       },
+      kill() {
+        connection.kill()
+      },
     },
   }
 }
@@ -128,6 +132,43 @@ function createResumeFailingAdapter(): {
     },
     connection: {
       sentMessages,
+    },
+  }
+}
+
+function createRewriteCapturingAdapter(): {
+  adapter: AgentAdapter
+  getRewritePaths: () => Record<string, string> | undefined
+} {
+  let rewritePaths: Record<string, string> | undefined
+
+  return {
+    adapter: {
+      agentType: `claude`,
+      async spawn() {
+        return {
+          onMessage() {},
+          send() {},
+          kill() {},
+          on() {},
+        }
+      },
+      parseDirection() {
+        return { type: `notification` }
+      },
+      isTurnComplete() {
+        return false
+      },
+      translateClientIntent(raw: ClientIntent) {
+        return raw
+      },
+      prepareResume(_history, options) {
+        rewritePaths = options.rewritePaths
+        return Promise.reject(new Error(`captured rewrite paths`))
+      },
+    },
+    getRewritePaths() {
+      return rewritePaths
     },
   }
 }
@@ -365,6 +406,195 @@ describe(`startBridge`, () => {
     })
 
     await session.close()
+  })
+
+  it(`should pass rewritePaths through to adapter.prepareResume`, async () => {
+    const streamUrl = `${baseUrl}/v1/stream/bridge-rewrite-paths-${Date.now()}`
+    await DurableStream.create({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+
+    const seedStream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+    const seedProducer = new IdempotentProducer(seedStream, `seed-rewrite`, {
+      autoClaim: true,
+    })
+
+    seedProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `agent`,
+        timestamp: Date.now(),
+        raw: { type: `system`, session_id: `resume-id` },
+      })
+    )
+    await seedProducer.flush()
+    await seedProducer.detach()
+
+    const rewritePaths = {
+      [`/old/workspace`]: `/new/workspace`,
+    }
+    const { adapter, getRewritePaths } = createRewriteCapturingAdapter()
+    await expect(
+      startBridge({
+        adapter,
+        streamUrl,
+        cwd: `/tmp`,
+        resume: true,
+        rewritePaths,
+      })
+    ).rejects.toThrow(`captured rewrite paths`)
+
+    expect(getRewritePaths()).toEqual(rewritePaths)
+  })
+
+  it(`should write session_ended when the agent exits mid-turn`, async () => {
+    const streamUrl = `${baseUrl}/v1/stream/bridge-agent-exit-${Date.now()}`
+    const { adapter, connection } = createMockAdapter()
+
+    const session = await startBridge({
+      adapter,
+      streamUrl,
+      cwd: `/tmp`,
+    })
+
+    const clientStream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+    const clientProducer = new IdempotentProducer(clientStream, `test-exit`, {
+      autoClaim: true,
+    })
+
+    clientProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now(),
+        user: { name: `Test`, email: `test@test.com` },
+        raw: { type: `user_message`, text: `Exit mid-turn` },
+      })
+    )
+    await clientProducer.flush()
+
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(connection.sentMessages).toContainEqual({
+      type: `user_message`,
+      text: `Exit mid-turn`,
+    })
+
+    connection.simulateMessage({
+      type: `assistant`,
+      message: { content: [{ type: `text`, text: `working` }] },
+    })
+    connection.kill()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    const stream = new DurableStream({ url: streamUrl })
+    const response = await stream.stream<StreamEnvelope>({
+      json: true,
+      live: false,
+    })
+    const items = await response.json()
+
+    const bridgeEvents = items.filter(
+      (
+        item: StreamEnvelope
+      ): item is Extract<StreamEnvelope, { direction: `bridge` }> =>
+        item.direction === `bridge`
+    )
+
+    expect(bridgeEvents.map((event) => event.type)).toEqual([
+      `session_started`,
+      `session_ended`,
+    ])
+
+    await clientProducer.detach()
+    await session.close()
+  })
+
+  it(`should replay the unfinished prompt after an agent exits mid-turn and the bridge resumes`, async () => {
+    const streamUrl = `${baseUrl}/v1/stream/bridge-agent-exit-replay-${Date.now()}`
+    const first = createMockAdapter()
+
+    const firstSession = await startBridge({
+      adapter: first.adapter,
+      streamUrl,
+      cwd: `/tmp`,
+    })
+
+    const clientStream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+    const clientProducer = new IdempotentProducer(
+      clientStream,
+      `test-exit-replay`,
+      {
+        autoClaim: true,
+      }
+    )
+
+    clientProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now(),
+        user: { name: `Test`, email: `test@test.com` },
+        raw: { type: `user_message`, text: `Replay after exit` },
+      })
+    )
+    await clientProducer.flush()
+
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(first.connection.sentMessages).toContainEqual({
+      type: `user_message`,
+      text: `Replay after exit`,
+    })
+
+    first.connection.kill()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    const second = createMockAdapter()
+    const resumedSession = await startBridge({
+      adapter: second.adapter,
+      streamUrl,
+      cwd: `/tmp`,
+      resume: true,
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 200))
+    expect(second.connection.sentMessages).toContainEqual({
+      type: `user_message`,
+      text: `Replay after exit`,
+    })
+
+    const stream = new DurableStream({ url: streamUrl })
+    const response = await stream.stream<StreamEnvelope>({
+      json: true,
+      live: false,
+    })
+    const items = await response.json()
+
+    const bridgeEvents = items.filter(
+      (
+        item: StreamEnvelope
+      ): item is Extract<StreamEnvelope, { direction: `bridge` }> =>
+        item.direction === `bridge`
+    )
+
+    expect(bridgeEvents.map((event) => event.type)).toEqual([
+      `session_started`,
+      `session_ended`,
+      `session_resumed`,
+    ])
+
+    await clientProducer.detach()
+    await resumedSession.close()
+    await firstSession.close()
   })
 
   it(`should fall back to a fresh spawn and replay unfinished prompts when resume fails`, async () => {

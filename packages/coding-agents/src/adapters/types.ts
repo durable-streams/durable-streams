@@ -1,9 +1,16 @@
 import type { AgentType, ClientIntent, StreamEnvelope } from "../types.js"
+import type {
+  CodexApprovalPolicy,
+  CodexSandboxMode,
+} from "../protocol/codex.js"
 
 export interface SpawnOptions {
   cwd: string
   model?: string
   permissionMode?: string
+  approvalPolicy?: CodexApprovalPolicy
+  sandboxMode?: CodexSandboxMode
+  developerInstructions?: string
   verbose?: boolean
   resume?: string
   env?: Record<string, string>

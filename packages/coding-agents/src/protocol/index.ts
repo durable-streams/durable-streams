@@ -18,6 +18,7 @@ export type {
 } from "./claude.js"
 
 export type {
+  CodexApprovalPolicy,
   CodexAgentMessageDeltaNotification,
   CodexAppServerClientRequest,
   CodexAppServerMessage,
@@ -29,6 +30,7 @@ export type {
   CodexExecItem,
   CodexExecTurnCompletedEvent,
   CodexFileChangeApprovalRequest,
+  CodexInitializeCapabilities,
   CodexInitializeRequest,
   CodexItemCompletedNotification,
   CodexJsonRpcError,
@@ -37,6 +39,7 @@ export type {
   CodexJsonRpcResult,
   CodexPermissionsApprovalRequest,
   CodexRequestId,
+  CodexSandboxMode,
   CodexThreadItem,
   CodexThreadResumeRequest,
   CodexThreadStartRequest,

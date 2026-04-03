@@ -17,10 +17,14 @@ function coerceText(value: unknown): string {
 function normalizeItem(
   item: Record<string, unknown>,
   raw: object
-): NormalizedEvent {
+): NormalizedEvent | null {
   const itemType = item.type as string | undefined
 
   switch (itemType) {
+    case `userMessage`:
+    case `user_message`:
+      return null
+
     case `agentMessage`:
     case `agent_message`:
       return {
@@ -150,6 +154,41 @@ export function normalizeCodex(raw: object): NormalizedEvent | null {
     return normalizeItem(item ?? {}, raw)
   }
 
+  if (
+    method === `mcpServer/startupStatus/updated` ||
+    method === `turn/started` ||
+    method === `item/started` ||
+    method === `account/rateLimits/updated` ||
+    method === `thread/tokenUsage/updated` ||
+    method === `serverRequest/resolved`
+  ) {
+    return null
+  }
+
+  if (method === `thread/status/changed`) {
+    const params = message.params as Record<string, unknown> | undefined
+    const status = params?.status
+
+    if (typeof status === `string`) {
+      return {
+        type: `status_change`,
+        status,
+      }
+    }
+
+    if (status && typeof status === `object`) {
+      const statusType = (status as Record<string, unknown>).type
+      if (typeof statusType === `string`) {
+        return {
+          type: `status_change`,
+          status: statusType,
+        }
+      }
+    }
+
+    return null
+  }
+
   if (method === `turn/completed`) {
     const params = message.params as Record<string, unknown> | undefined
     const turn = params?.turn as Record<string, unknown> | undefined
@@ -197,12 +236,20 @@ export function normalizeCodex(raw: object): NormalizedEvent | null {
 
   if (method === `item/tool/requestUserInput`) {
     const params = message.params as Record<string, unknown> | undefined
+    const rawQuestions = params?.questions
+    const questions = Array.isArray(rawQuestions)
+      ? (rawQuestions as Array<Record<string, unknown>>)
+      : []
     return {
       type: `permission_request`,
       id: (message.id as string | number | undefined) ?? ``,
-      tool: String(params?.tool ?? `request_user_input`),
+      tool: `request_user_input`,
       input: {
-        question: params?.question as string | undefined,
+        questions,
+        question:
+          (questions[0]?.question as string | undefined) ??
+          (questions[0]?.prompt as string | undefined) ??
+          (params?.question as string | undefined),
       },
     }
   }
@@ -214,14 +261,11 @@ export function normalizeCodex(raw: object): NormalizedEvent | null {
     !(`error` in message)
   ) {
     const result = message.result as Record<string, unknown> | undefined
-    if (
-      (result?.thread as Record<string, unknown> | undefined)?.id != null ||
-      (result?.turn as Record<string, unknown> | undefined)?.id != null
-    ) {
-      return null
+    if (typeof result?.success === `boolean`) {
+      return { type: `turn_complete`, success: result.success }
     }
 
-    return { type: `turn_complete`, success: true }
+    return null
   }
 
   if (message.id != null && !(`method` in message) && `error` in message) {

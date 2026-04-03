@@ -115,6 +115,97 @@ describe(`CodexAdapter`, () => {
       })
     })
 
+    it(`should translate file-change approvals using the app-server decision enum`, () => {
+      adapter.parseDirection({
+        id: 7,
+        method: `item/fileChange/requestApproval`,
+        params: {},
+      })
+
+      expect(
+        adapter.translateClientIntent({
+          type: `control_response`,
+          response: {
+            request_id: 7,
+            subtype: `success`,
+            response: { behavior: `allow_for_session` },
+          },
+        })
+      ).toEqual({
+        jsonrpc: `2.0`,
+        id: 7,
+        result: { decision: `acceptForSession` },
+      })
+    })
+
+    it(`should translate permissions approvals to granted permissions plus scope`, () => {
+      adapter.parseDirection({
+        id: 8,
+        method: `item/permissions/requestApproval`,
+        params: {},
+      })
+
+      expect(
+        adapter.translateClientIntent({
+          type: `control_response`,
+          response: {
+            request_id: 8,
+            subtype: `success`,
+            response: {
+              permissions: {
+                fileSystem: { mode: `read-only`, roots: [`/tmp/demo`] },
+              },
+              scope: `session`,
+            },
+          },
+        })
+      ).toEqual({
+        jsonrpc: `2.0`,
+        id: 8,
+        result: {
+          permissions: {
+            fileSystem: { mode: `read-only`, roots: [`/tmp/demo`] },
+          },
+          scope: `session`,
+        },
+      })
+    })
+
+    it(`should translate request-user-input responses to answers maps`, () => {
+      adapter.parseDirection({
+        id: 9,
+        method: `item/tool/requestUserInput`,
+        params: {},
+      })
+
+      expect(
+        adapter.translateClientIntent({
+          type: `control_response`,
+          response: {
+            request_id: 9,
+            subtype: `success`,
+            response: {
+              answers: {
+                choice: {
+                  answers: [`A`],
+                },
+              },
+            },
+          },
+        })
+      ).toEqual({
+        jsonrpc: `2.0`,
+        id: 9,
+        result: {
+          answers: {
+            choice: {
+              answers: [`A`],
+            },
+          },
+        },
+      })
+    })
+
     it(`should translate an interrupt to a JSON-RPC cancel`, () => {
       expect(adapter.translateClientIntent({ type: `interrupt` })).toEqual({
         jsonrpc: `2.0`,

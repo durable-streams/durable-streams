@@ -1,4 +1,4 @@
-import { access, mkdir, mkdtemp, rm } from "node:fs/promises"
+import { access, mkdir, mkdtemp, readFile, rm } from "node:fs/promises"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { REAL_AGENT_TIMEOUT_MS, scenario } from "./scenario-dsl.js"
@@ -61,6 +61,34 @@ function assistantTexts(result: ScenarioResult): Array<string> {
   })
 }
 
+function turnCompleteSequences(result: ScenarioResult): Array<number> {
+  return result.agentMessages.flatMap((event) => {
+    const message = event.raw as Record<string, unknown>
+    const isTurnComplete =
+      result.agent === `claude`
+        ? message.type === `result`
+        : message.method === `turn/completed`
+
+    return isTurnComplete ? [event.sequence] : []
+  })
+}
+
+function normalizedAgentEventCounts(
+  result: ScenarioResult
+): Map<string, number> {
+  const counts = new Map<string, number>()
+
+  for (const event of result.normalizedEvents) {
+    if (event.direction !== `agent`) {
+      continue
+    }
+
+    counts.set(event.event.type, (counts.get(event.event.type) ?? 0) + 1)
+  }
+
+  return counts
+}
+
 describe(`real agent smoke scenarios`, () => {
   maybeIt(
     `Claude can complete a simple prompt round trip`,
@@ -114,6 +142,55 @@ describe(`real agent smoke scenarios`, () => {
           timeoutMs: REAL_AGENT_TIMEOUT_MS,
         })
         .run()
+    },
+    180_000
+  )
+
+  maybeIt(
+    `Claude normalization stays stable on a live prompt history`,
+    async () => {
+      const result = await scenario(`real claude normalization`)
+        .agent(`claude`, {
+          permissionMode: `plan`,
+        })
+        .client(`kyle`)
+        .prompt(
+          `Reply with exactly the word NORMALIZE_CLAUDE and nothing else.`
+        )
+        .waitForAssistantMessage(/\bNORMALIZE_CLAUDE\b/i, REAL_AGENT_TIMEOUT_MS)
+        .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+        .run()
+
+      const counts = normalizedAgentEventCounts(result)
+
+      expect(counts.get(`assistant_message`)).toBeGreaterThanOrEqual(1)
+      expect(counts.get(`turn_complete`)).toBe(1)
+      expect(counts.get(`session_init`)).toBeGreaterThanOrEqual(1)
+      expect(counts.get(`unknown`) ?? 0).toBe(0)
+    },
+    180_000
+  )
+
+  maybeIt(
+    `Codex normalization stays stable on a live prompt history`,
+    async () => {
+      const result = await scenario(`real codex normalization`)
+        .agent(`codex`, {
+          permissionMode: `plan`,
+        })
+        .client(`kyle`)
+        .prompt(`Reply with exactly the word NORMALIZE_CODEX and nothing else.`)
+        .waitForAssistantMessage(/\bNORMALIZE_CODEX\b/i, REAL_AGENT_TIMEOUT_MS)
+        .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+        .run()
+
+      const counts = normalizedAgentEventCounts(result)
+
+      expect(counts.get(`assistant_message`)).toBeGreaterThanOrEqual(1)
+      expect(counts.get(`stream_delta`)).toBeGreaterThanOrEqual(1)
+      expect(counts.get(`turn_complete`)).toBe(1)
+      expect(counts.get(`session_init`)).toBe(1)
+      expect(counts.get(`unknown`) ?? 0).toBe(0)
     },
     180_000
   )
@@ -221,6 +298,55 @@ describe(`real agent smoke scenarios`, () => {
               }),
             ])
           )
+        }
+      )
+    },
+    180_000
+  )
+
+  maybeIt(
+    `Codex can complete a file-change approval round trip`,
+    async () => {
+      await withWorkspaceTempCwd(
+        `coding-agents-codex-file-change-`,
+        async (cwd) => {
+          const fileName = `approval-codex-file-change.txt`
+          const filePath = join(cwd, fileName)
+
+          const result = await scenario(`real codex file-change approval`)
+            .agent(`codex`, {
+              cwd,
+              permissionMode: `untrusted`,
+            })
+            .client(`kyle`)
+            .prompt(
+              `Create a file named ${fileName} in the current directory containing hello. Do not use shell commands or terminal commands. Edit the file directly, then tell me you did it.`
+            )
+            .waitForPermissionRequest(`file_change`, REAL_AGENT_TIMEOUT_MS)
+            .respondToLatestPermissionRequest(
+              { behavior: `allow` },
+              {
+                matcher: `file_change`,
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+            .expectPermissionRequest(`file_change`, {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .expectForwardedCount(
+              (event) => event.source === `client_response`,
+              1,
+              {
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .run()
+
+          expect(await readFile(filePath, `utf8`)).toBe(`hello\n`)
+          expect(
+            assistantTexts(result).some((text) => text.includes(fileName))
+          ).toBe(true)
         }
       )
     },
@@ -695,6 +821,126 @@ describe(`real agent smoke scenarios`, () => {
       expect(assistantTexts(result).some((text) => text.includes(token))).toBe(
         true
       )
+    },
+    240_000
+  )
+
+  maybeIt(
+    `Claude serializes multiple queued live prompts`,
+    async () => {
+      const firstToken = `CLAUDE_QUEUE_FIRST`
+      const secondToken = `CLAUDE_QUEUE_SECOND`
+
+      const result = await scenario(`real claude queued prompts`)
+        .agent(`claude`, {
+          permissionMode: `plan`,
+        })
+        .client(`kyle`)
+        .prompt(`Reply with exactly ${firstToken} and nothing else.`)
+        .prompt(`Reply with exactly ${secondToken} and nothing else.`)
+        .waitForForwardedCount(
+          (event) => event.source === `queued_prompt`,
+          1,
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForAssistantMessage(
+          new RegExp(`\\b${firstToken}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnCompleteCount(1, REAL_AGENT_TIMEOUT_MS)
+        .waitForForwardedCount(
+          (event) => event.source === `queued_prompt`,
+          2,
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForAssistantMessage(
+          new RegExp(`\\b${secondToken}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnCompleteCount(2, REAL_AGENT_TIMEOUT_MS)
+        .expectInvariant(`single_in_flight_prompt`, {
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .run()
+
+      const queuedPromptSequences = result.forwardedMessages
+        .filter((event) => event.source === `queued_prompt`)
+        .map((event) => ({
+          sequence: event.sequence,
+          text: JSON.stringify(event.raw),
+        }))
+      const completedTurns = turnCompleteSequences(result)
+      const text = assistantTexts(result).join(` `)
+
+      expect(queuedPromptSequences).toHaveLength(2)
+      expect(completedTurns.length).toBeGreaterThanOrEqual(2)
+      expect(queuedPromptSequences[0]?.text).toContain(firstToken)
+      expect(queuedPromptSequences[1]?.text).toContain(secondToken)
+      expect(queuedPromptSequences[1]!.sequence).toBeGreaterThan(
+        completedTurns[0]!
+      )
+      expect(text).toContain(firstToken)
+      expect(text).toContain(secondToken)
+    },
+    240_000
+  )
+
+  maybeIt(
+    `Codex serializes multiple queued live prompts`,
+    async () => {
+      const firstToken = `CODEX_QUEUE_FIRST`
+      const secondToken = `CODEX_QUEUE_SECOND`
+
+      const result = await scenario(`real codex queued prompts`)
+        .agent(`codex`, {
+          permissionMode: `plan`,
+        })
+        .client(`kyle`)
+        .prompt(`Reply with exactly ${firstToken} and nothing else.`)
+        .prompt(`Reply with exactly ${secondToken} and nothing else.`)
+        .waitForForwardedCount(
+          (event) => event.source === `queued_prompt`,
+          1,
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForAssistantMessage(
+          new RegExp(`\\b${firstToken}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnCompleteCount(1, REAL_AGENT_TIMEOUT_MS)
+        .waitForForwardedCount(
+          (event) => event.source === `queued_prompt`,
+          2,
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForAssistantMessage(
+          new RegExp(`\\b${secondToken}\\b`),
+          REAL_AGENT_TIMEOUT_MS
+        )
+        .waitForTurnCompleteCount(2, REAL_AGENT_TIMEOUT_MS)
+        .expectInvariant(`single_in_flight_prompt`, {
+          timeoutMs: REAL_AGENT_TIMEOUT_MS,
+        })
+        .run()
+
+      const queuedPromptSequences = result.forwardedMessages
+        .filter((event) => event.source === `queued_prompt`)
+        .map((event) => ({
+          sequence: event.sequence,
+          text: JSON.stringify(event.raw),
+        }))
+      const completedTurns = turnCompleteSequences(result)
+      const text = assistantTexts(result).join(` `)
+
+      expect(queuedPromptSequences).toHaveLength(2)
+      expect(completedTurns.length).toBeGreaterThanOrEqual(2)
+      expect(queuedPromptSequences[0]?.text).toContain(firstToken)
+      expect(queuedPromptSequences[1]?.text).toContain(secondToken)
+      expect(queuedPromptSequences[1]!.sequence).toBeGreaterThan(
+        completedTurns[0]!
+      )
+      expect(text).toContain(firstToken)
+      expect(text).toContain(secondToken)
     },
     240_000
   )

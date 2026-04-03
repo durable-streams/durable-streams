@@ -138,6 +138,84 @@ describe(`normalizeCodex`, () => {
     })
   })
 
+  it(`should normalize a permissions approval request`, () => {
+    const raw = {
+      id: `approval-2`,
+      method: `item/permissions/requestApproval`,
+      params: {
+        threadId: `thread-1`,
+        turnId: `turn-1`,
+        itemId: `perm-1`,
+        reason: `Need access to an extra path`,
+        permissions: {
+          fileSystem: {
+            mode: `read-only`,
+            roots: [`/tmp/extra`],
+          },
+        },
+      },
+    }
+
+    expect(normalizeCodex(raw)).toEqual({
+      type: `permission_request`,
+      id: `approval-2`,
+      tool: `permissions`,
+      input: {
+        fileSystem: {
+          mode: `read-only`,
+          roots: [`/tmp/extra`],
+        },
+      },
+    })
+  })
+
+  it(`should normalize a request-user-input approval request`, () => {
+    const raw = {
+      id: `approval-3`,
+      method: `item/tool/requestUserInput`,
+      params: {
+        threadId: `thread-1`,
+        turnId: `turn-1`,
+        itemId: `input-1`,
+        questions: [
+          {
+            id: `choice`,
+            header: `Pick one`,
+            question: `Choose a mode`,
+            isOther: false,
+            isSecret: false,
+            options: [
+              { label: `A`, value: `A` },
+              { label: `B`, value: `B` },
+            ],
+          },
+        ],
+      },
+    }
+
+    expect(normalizeCodex(raw)).toEqual({
+      type: `permission_request`,
+      id: `approval-3`,
+      tool: `request_user_input`,
+      input: {
+        questions: [
+          {
+            id: `choice`,
+            header: `Pick one`,
+            question: `Choose a mode`,
+            isOther: false,
+            isSecret: false,
+            options: [
+              { label: `A`, value: `A` },
+              { label: `B`, value: `B` },
+            ],
+          },
+        ],
+        question: `Choose a mode`,
+      },
+    })
+  })
+
   it(`should normalize a turn completed notification`, () => {
     expect(
       normalizeCodex({
@@ -151,6 +229,43 @@ describe(`normalizeCodex`, () => {
       type: `turn_complete`,
       success: true,
     })
+  })
+
+  it(`should normalize thread status changes`, () => {
+    expect(
+      normalizeCodex({
+        method: `thread/status/changed`,
+        params: {
+          threadId: `thread-1`,
+          status: { type: `active`, activeFlags: [] },
+        },
+      })
+    ).toEqual({
+      type: `status_change`,
+      status: `active`,
+    })
+  })
+
+  it(`should ignore codex transport noise notifications`, () => {
+    expect(
+      normalizeCodex({
+        method: `mcpServer/startupStatus/updated`,
+        params: {
+          name: `codex_apps`,
+          status: `ready`,
+          error: null,
+        },
+      })
+    ).toBeNull()
+
+    expect(
+      normalizeCodex({
+        method: `item/started`,
+        params: {
+          item: { type: `agentMessage`, id: `item-1`, text: `` },
+        },
+      })
+    ).toBeNull()
   })
 
   it(`should normalize a legacy command execution`, () => {
@@ -219,6 +334,19 @@ describe(`normalizeCodex`, () => {
       type: `turn_complete`,
       success: true,
     })
+  })
+
+  it(`should ignore non-turn app-server responses`, () => {
+    expect(
+      normalizeCodex({
+        jsonrpc: `2.0`,
+        id: 1,
+        result: {
+          userAgent: `probe/0.0.0`,
+          codexHome: `/tmp/codex`,
+        },
+      })
+    ).toBeNull()
   })
 
   it(`should normalize a turn error`, () => {

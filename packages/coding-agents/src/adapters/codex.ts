@@ -7,6 +7,10 @@ import type {
   SpawnOptions,
 } from "./types.js"
 import type { ClientIntent, StreamEnvelope } from "../types.js"
+import type {
+  CodexApprovalPolicy,
+  CodexSandboxMode,
+} from "../protocol/codex.js"
 
 function parseJsonLines(
   chunk: Buffer,
@@ -108,6 +112,25 @@ function mapApprovalPolicy(
     default:
       return undefined
   }
+}
+
+function resolveApprovalPolicy(
+  permissionMode: string | undefined,
+  explicitApprovalPolicy: CodexApprovalPolicy | undefined
+): CodexApprovalPolicy | undefined {
+  return explicitApprovalPolicy ?? mapApprovalPolicy(permissionMode)
+}
+
+function resolveSandboxMode(
+  sandboxMode: CodexSandboxMode | undefined
+): CodexSandboxMode | null {
+  return sandboxMode ?? null
+}
+
+function requiresExperimentalApi(
+  approvalPolicy: CodexApprovalPolicy | undefined
+): boolean {
+  return typeof approvalPolicy === `object` && `granular` in approvalPolicy
 }
 
 function mapCommandDecision(
@@ -367,20 +390,30 @@ export class CodexAdapter implements AgentAdapter {
 
       void (async () => {
         try {
+          const explicitApprovalPolicy = resolveApprovalPolicy(
+            options.permissionMode,
+            options.approvalPolicy
+          )
+
           await sendRequest(`initialize`, {
             clientInfo: {
               name: `durable-streams-coding-agents`,
               title: `Durable Streams Coding Agents`,
               version: `0.1.0`,
             },
-            capabilities: null,
+            capabilities: requiresExperimentalApi(explicitApprovalPolicy)
+              ? {
+                  experimentalApi: true,
+                }
+              : null,
           })
 
-          const approvalPolicy = mapApprovalPolicy(options.permissionMode)
           const baseParams = {
             model: options.model ?? null,
             cwd: options.cwd,
-            approvalPolicy,
+            approvalPolicy: explicitApprovalPolicy,
+            sandbox: resolveSandboxMode(options.sandboxMode),
+            developerInstructions: options.developerInstructions ?? null,
             persistExtendedHistory: false,
           }
 
