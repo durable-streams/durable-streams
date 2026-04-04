@@ -87,7 +87,7 @@ The protocol defines operations to create, append to, read, close, delete, and q
 
 The protocol does not prescribe a specific URL structure. Servers may organize streams using any URL scheme they choose (e.g., `/v1/stream/{path}`, `/streams/{id}`, or domain-specific paths). The protocol is defined by the HTTP methods, query parameters, and headers applied to any stream URL.
 
-Streams support arbitrary content types. The protocol operates at the byte level, leaving message framing and schema interpretation to clients.
+Streams support arbitrary content types. The protocol operates at the byte level except where this document defines additional semantics for specific content types such as `application/json` (see Section 7.1).
 
 **Independent Read/Write Implementation**: Servers **MAY** implement the read and write paths independently. For example, a database synchronization server may only implement the read path and use its own injection system for writes, while a collaborative editing service might implement both paths.
 
@@ -143,7 +143,7 @@ Where `{stream-url}` is any URL that identifies the stream to be created.
 
 Creates a new stream. If the stream already exists at `{stream-url}`, the server **MUST** either:
 
-- return `200 OK` if the existing stream's configuration (content type, TTL/expiry, and closure status) matches the request, or
+- return `200 OK` if the existing stream's configuration (stream content type, attached schema identity if any, TTL/expiry, and closure status) matches the request, or
 - return `409 Conflict` if it does not.
 
 This provides idempotent "create or ensure exists" semantics aligned with HTTP PUT expectations.
@@ -157,8 +157,14 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 
 #### Request Headers (Optional)
 
-- `Content-Type: <stream-content-type>`
-  - Sets the stream's content type. If omitted, the server **MAY** default to `application/octet-stream`.
+- `Content-Type: <media-type>`
+  - In the common case, sets the stream's content type. If omitted, the server **MAY** default to `application/octet-stream`.
+  - For inline schema creation in JSON mode, `Content-Type` instead describes the request body and **MUST** be `application/schema+json`.
+  - `application/schema+json` is used by convention for JSON Schema documents in this protocol.
+
+- `Stream-Content-Type: <stream-content-type>`
+  - Declares the stream payload content type when `Content-Type` describes the request body rather than the stream itself.
+  - Servers **MUST** reject this header with `400 Bad Request` unless `Content-Type` is `application/schema+json` and `Stream-Content-Type` is exactly `application/json`.
 
 - `Stream-TTL: <seconds>`
   - Sets a relative time-to-live in seconds from creation. The value **MUST** be a non-negative integer in decimal notation without leading zeros, plus signs, decimal points, or scientific notation (e.g., `3600` is valid; `+3600`, `03600`, `3600.0`, and `3.6e3` are not).
@@ -174,16 +180,48 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
     - `PUT /stream + Stream-Closed: true` (empty body): Creates an empty, immediately-closed stream (useful for "completed with no output" or error placeholders).
     - `PUT /stream + Stream-Closed: true + body`: Creates a single-shot stream with the body as its complete content (useful for cached responses, pre-computed results).
 
+- `Stream-Schema-Url: <absolute-http-or-https-url>`
+  - Attaches a JSON Schema to an `application/json` stream by URL.
+  - Servers **MUST** reject this header with `400 Bad Request` unless the resulting stream content type is exactly `application/json`.
+  - `Stream-Schema-Url` is mutually exclusive with inline schema creation.
+
+#### JSON Schema Attachment for JSON Mode
+
+The schema attachment rules in this section apply only to streams whose payload type is `application/json`. Servers **MUST** reject schema attachment headers and inline schema creation for non-JSON streams with `400 Bad Request`.
+
+Exactly one of the following creation modes applies:
+
+1. No schema attachment
+   - `Content-Type: application/json`
+   - The request body, if present, is initial stream data.
+
+2. Inline schema attachment
+   - `Content-Type: application/schema+json`
+   - `Stream-Content-Type: application/json`
+   - The request body is the schema document.
+   - This mode creates the stream with no initial messages. Initial data, if needed, is sent later with `POST`.
+
+3. Schema URL attachment
+   - `Content-Type: application/json`
+   - `Stream-Schema-Url: <absolute-http-or-https-url>`
+   - The request body, if present, is initial stream data validated against the resolved schema.
+
+Requests that combine inline schema attachment with `Stream-Schema-Url` **MUST** fail with `400 Bad Request`.
+
+See Section 7.1 for schema validation, schema identity, and schema URL resolution rules.
+
 #### Request Body (Optional)
 
-- Initial stream bytes. If provided, these bytes form the first content of the stream.
+- In the common case, initial stream bytes. If provided, these bytes form the first content of the stream.
+- For inline schema attachment, the body is the schema document and **MUST NOT** be interpreted as initial stream data.
 
 #### Response Codes
 
 - `201 Created`: Stream created successfully
 - `200 OK`: Stream already exists with matching configuration (idempotent success)
 - `409 Conflict`: Stream already exists with different configuration
-- `400 Bad Request`: Invalid headers or parameters (including conflicting TTL/expiry)
+- `400 Bad Request`: Invalid headers or parameters (including conflicting TTL/expiry, invalid schema attachment mode, invalid schema URL, malformed JSON, or malformed/unsupported schema document)
+- `422 Unprocessable Content`: Valid JSON request body does not satisfy the attached schema
 - `429 Too Many Requests`: Rate limit exceeded
 
 #### Response Headers (on 201 or 200)
@@ -235,10 +273,11 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 #### Response Codes
 
 - `204 No Content`: Append successful (or stream already closed when closing idempotently)
-- `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body without `Stream-Closed: true`)
+- `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body without `Stream-Closed: true`, or malformed JSON syntax for `application/json` streams)
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
 - `409 Conflict`: Content type mismatch with stream's configured type, sequence regression (if `Stream-Seq` provided), or **stream is closed** (when attempting to append without `Stream-Closed: true`)
+- `422 Unprocessable Content`: Valid JSON does not satisfy the attached schema for an `application/json` stream
 - `413 Payload Too Large`: Request body exceeds server limits
 - `429 Too Many Requests`: Rate limit exceeded
 
@@ -450,7 +489,7 @@ Deletes the stream and all its data. In-flight reads may terminate with a `404 N
 HEAD {stream-url}
 ```
 
-Where `{stream-url}` is the URL of the stream. Checks stream existence and returns metadata without transferring a body. This is the canonical way to find the tail offset, TTL, expiry information, and **closure status**.
+Where `{stream-url}` is the URL of the stream. Checks stream existence and returns metadata without transferring a body. This is the canonical way to find the tail offset, TTL, expiry information, **closure status**, and attached schema metadata.
 
 #### Response Codes
 
@@ -465,11 +504,44 @@ Where `{stream-url}` is the URL of the stream. Checks stream existence and retur
 - `Stream-TTL: <seconds>` (optional): Remaining time-to-live, if applicable
 - `Stream-Expires-At: <rfc3339>` (optional): Absolute expiry time, if applicable
 - `Stream-Closed: true` (optional): Present when the stream has been closed. Absence indicates the stream is still open.
+- `Link: <absolute-schema-url>; rel="describedby"; type="application/schema+json"` (optional): Present when a schema is attached. The target **MUST** be an absolute URL that retrieves the effective schema document for the stream.
+- `Stream-Schema-Digest: <digest>` (optional): Present when a schema is attached. Identifies the pinned effective schema document.
+- `Stream-Schema-Url: <url>` (optional): Present when the stream was created from a schema URL. This header is informational metadata and does not change retrieval behavior.
 - `Cache-Control`: See Section 8
 
 #### Caching Guidance
 
 Servers **SHOULD** make `HEAD` responses effectively non-cacheable, for example by returning `Cache-Control: no-store`. Servers **MAY** use `Cache-Control: private, max-age=0, must-revalidate` as an alternative, but `no-store` is recommended to avoid stale tail offsets and closure status.
+
+### 5.5.1. Retrieve Attached Schema
+
+#### Request
+
+```
+GET {stream-url}?schema
+```
+
+Where `{stream-url}` is the URL of the stream. Returns the pinned effective schema document for a stream with an attached schema.
+
+The `schema` query parameter is mutually exclusive with stream read parameters. Requests that combine `schema` with `offset`, `live`, or `cursor` **MUST** fail with `400 Bad Request`.
+
+#### Response Codes
+
+- `200 OK`: Stream exists and has an attached schema
+- `400 Bad Request`: Invalid parameter combination
+- `404 Not Found`: Stream does not exist, or the stream exists but has no attached schema
+- `429 Too Many Requests`: Rate limit exceeded
+
+#### Response Headers (on 200)
+
+- `Content-Type: application/schema+json`
+- `Stream-Schema-Digest: <digest>`
+
+#### Response Body
+
+- The pinned effective schema document used for validation.
+- If the original schema document omitted `$schema`, the returned effective schema document **MUST** include `$schema: "https://json-schema.org/draft/2020-12/schema"`.
+- When a stream was created from `Stream-Schema-Url`, this endpoint still returns the stored effective schema document rather than re-fetching the original URL.
 
 ### 5.6. Read Stream - Catch-up
 
@@ -762,7 +834,7 @@ Clients **MUST** use the `Stream-Next-Offset` value returned in responses for su
 
 ## 7. Content Types
 
-The protocol supports arbitrary MIME content types. Most content types operate at the byte level, leaving message framing and interpretation to clients. The `application/json` content type has special semantics defined below.
+The protocol supports arbitrary MIME content types. Most content types operate at the byte level, leaving message framing and interpretation to clients. The `application/json` content type has special semantics defined below, including optional schema attachment and validation.
 
 **SSE Encoding:**
 
@@ -778,7 +850,19 @@ Clients **MAY** use any content type for their streams, including:
 
 ### 7.1. JSON Mode
 
-Streams created with `Content-Type: application/json` have special semantics for message boundaries and batch operations.
+Streams whose payload type is `application/json` have special semantics for message boundaries, batch operations, and optional schema validation.
+
+The payload type is `application/json` when a stream is created either with `Content-Type: application/json` or with inline schema creation using `Content-Type: application/schema+json` together with `Stream-Content-Type: application/json`.
+
+#### Schema Attachment
+
+Each `application/json` stream **MAY** have no attached schema or exactly one attached schema. The schema attachment model is defined in Section 5.1:
+
+- No schema attachment: JSON mode without schema validation
+- Inline schema attachment: the create request body is a schema document
+- Schema URL attachment: the create request provides `Stream-Schema-Url`
+
+The server stores a pinned effective schema document for validation and retrieval. Attached schema is immutable for the lifetime of the stream.
 
 #### Message Boundaries
 
@@ -801,11 +885,50 @@ When a POST request body contains a JSON array, servers **MUST** flatten exactly
 
 Servers **MUST** reject POST requests containing empty JSON arrays (`[]`) with `400 Bad Request`. Empty arrays in append operations represent no-op operations with no semantic meaning and likely indicate a client bug.
 
-PUT requests with an empty array body (`[]`) are valid and create an empty stream. The empty array simply means no initial messages are being written.
+PUT requests whose body is initial JSON data may use an empty array body (`[]`) to create an empty stream. In that case, the empty array simply means no initial messages are being written.
 
 #### JSON Validation
 
-Servers **MUST** validate that appended data is valid JSON. If validation fails, servers **MUST** return `400 Bad Request` with an appropriate error message.
+Servers **MUST** validate that initial JSON data and appended JSON data are valid JSON. If parsing fails, servers **MUST** return `400 Bad Request` with an appropriate error message.
+
+#### Schema Validation
+
+When an `application/json` stream has an attached schema:
+
+- Servers **MUST** validate the `PUT` request body when that body is initial stream data.
+- Servers **MUST** validate every later `POST` append.
+- Validation **MUST** occur per logical JSON message after the one-level array flattening rules defined above.
+- If any message in a batch fails validation, the entire request **MUST** fail with `422 Unprocessable Content` and no messages are appended.
+- A stream without an attached schema behaves exactly as JSON mode does today.
+
+Schema document validation rules:
+
+- Servers **MUST** support at least JSON Schema 2020-12 for attached schemas.
+- If a schema document omits `$schema`, servers **MUST** treat it as JSON Schema 2020-12 and **MUST** materialize that default in the pinned effective schema document.
+- If a schema document declares `$schema`, servers **MUST** reject creation when that version is unsupported.
+- Servers **MUST** validate that the schema document itself is a valid JSON Schema for the supported dialect.
+- External `$ref` resolution is unsupported in this version of the protocol. Servers **MUST** reject schema documents that require external reference resolution.
+
+#### Schema Identity and Idempotency
+
+Attached schema identity is part of stream configuration for `PUT` idempotency.
+
+- `Stream-Schema-Digest` is the canonical identity of the pinned effective schema document.
+- `Stream-Schema-Digest` **MUST** use the form `sha-256:<lowercase-hex>`.
+- The digest **MUST** be computed over the pinned effective schema document after canonical JSON serialization per RFC 8785, using UTF-8 bytes as the digest input.
+- Inline schema creation and schema-URL creation are idempotently equivalent when they produce the same pinned effective schema document.
+- A stream with no attached schema and a stream with an attached schema are always different configurations, even if the attached schema is maximally permissive.
+- `Stream-Schema-Url` is informational metadata and does not participate in configuration matching.
+
+#### Schema URL Resolution
+
+When `Stream-Schema-Url` is used:
+
+- The URL **MUST** be an absolute `http` or `https` URL.
+- Servers **MUST** resolve the URL exactly once at create time and store the resulting effective schema document.
+- A successful resolution **MUST** return `200 OK` and produce a body that parses as JSON and satisfies the schema document validation rules above.
+- Unsupported URL schemes, non-absolute URLs, resolution failures, non-`200` responses, invalid JSON, invalid schema documents, or blocked fetches **MUST** cause the create request to fail with `400 Bad Request`.
+- Failed create operations **MUST NOT** leave partial stream state behind.
 
 #### Response Format
 
@@ -948,6 +1071,16 @@ Clients **MUST** treat stream contents as untrusted input and **MUST NOT** evalu
 
 Servers **MUST** validate that appended content types match the stream's declared content type to prevent type confusion attacks.
 
+### 10.4.1. Schema URL Resolution
+
+When resolving `Stream-Schema-Url`, servers **MUST** treat the target as untrusted input:
+
+- Only absolute `http` and `https` URLs are permitted.
+- Servers **MUST** resolve the schema URL exactly once at create time and **MUST NOT** re-fetch it during later appends or reads.
+- Servers **MUST NOT** forward caller credentials such as `Authorization` headers or cookies when resolving schema URLs.
+- Servers **SHOULD** reject loopback, link-local, private, and other non-public address ranges unless explicitly configured to allow them.
+- Servers **MAY** apply timeout, redirect, response-size, and allowlist restrictions. If those restrictions block resolution, the create request **MUST** fail as if the schema URL were invalid.
+
 ### 10.5. Rate Limiting
 
 Servers **SHOULD** implement rate limiting to prevent abuse. The `429 Too Many Requests` response code indicates rate limit exhaustion.
@@ -990,25 +1123,31 @@ This port was selected from the IANA unassigned range 4434-4440. Standalone serv
 
 This document requests registration of the following HTTP headers in the "Permanent Message Header Field Names" registry:
 
-| Field Name           | Status    | Reference     |
-| -------------------- | --------- | ------------- |
-| `Stream-TTL`         | permanent | This document |
-| `Stream-Expires-At`  | permanent | This document |
-| `Stream-Seq`         | permanent | This document |
-| `Stream-Cursor`      | permanent | This document |
-| `Stream-Next-Offset` | permanent | This document |
-| `Stream-Up-To-Date`  | permanent | This document |
-| `Stream-Closed`      | permanent | This document |
+| Field Name             | Status    | Reference     |
+| ---------------------- | --------- | ------------- |
+| `Stream-TTL`           | permanent | This document |
+| `Stream-Expires-At`    | permanent | This document |
+| `Stream-Content-Type`  | permanent | This document |
+| `Stream-Seq`           | permanent | This document |
+| `Stream-Cursor`        | permanent | This document |
+| `Stream-Next-Offset`   | permanent | This document |
+| `Stream-Up-To-Date`    | permanent | This document |
+| `Stream-Closed`        | permanent | This document |
+| `Stream-Schema-Url`    | permanent | This document |
+| `Stream-Schema-Digest` | permanent | This document |
 
 **Descriptions:**
 
 - `Stream-TTL`: Relative time-to-live for streams (seconds)
 - `Stream-Expires-At`: Absolute expiry time for streams (RFC 3339 timestamp)
+- `Stream-Content-Type`: Declares the stream payload content type when `Content-Type` describes the request body
 - `Stream-Seq`: Writer sequence number for coordination (opaque string)
 - `Stream-Cursor`: Cursor for CDN collapsing (opaque string)
 - `Stream-Next-Offset`: Next offset for subsequent reads (opaque string)
 - `Stream-Up-To-Date`: Indicates up-to-date response (presence header)
 - `Stream-Closed`: Indicates stream is closed / end-of-stream (presence header, value `true`)
+- `Stream-Schema-Url`: Original schema source URL for schema-bound JSON streams
+- `Stream-Schema-Digest`: Canonical identity of the pinned effective schema document
 
 ## 12. References
 
@@ -1019,6 +1158,8 @@ This document requests registration of the following HTTP headers in the "Perman
 [RFC3339] Klyne, G. and C. Newman, "Date and Time on the Internet: Timestamps", RFC 3339, DOI 10.17487/RFC3339, July 2002, <https://www.rfc-editor.org/info/rfc3339>.
 
 [RFC8174] Leiba, B., "Ambiguity of Uppercase vs Lowercase in RFC 2119 Key Words", BCP 14, RFC 8174, DOI 10.17487/RFC8174, May 2017, <https://www.rfc-editor.org/info/rfc8174>.
+
+[RFC8785] Rundgren, A., Jordan, B., and S. Erdtman, "JSON Canonicalization Scheme (JCS)", RFC 8785, DOI 10.17487/RFC8785, June 2020, <https://www.rfc-editor.org/info/rfc8785>.
 
 [RFC9110] Fielding, R., Ed., Nottingham, M., Ed., and J. Reschke, Ed., "HTTP Semantics", STD 97, RFC 9110, DOI 10.17487/RFC9110, June 2022, <https://www.rfc-editor.org/info/rfc9110>.
 
@@ -1033,6 +1174,8 @@ This document requests registration of the following HTTP headers in the "Perman
 ### 12.2. Informative References
 
 [SSE] Hickson, I., "Server-Sent Events", W3C Recommendation, February 2015, <https://www.w3.org/TR/eventsource/>.
+
+[JSON-SCHEMA-2020-12] JSON Schema, "Draft 2020-12", <https://json-schema.org/draft/2020-12>.
 
 ---
 
