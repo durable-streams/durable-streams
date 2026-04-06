@@ -1,18 +1,88 @@
 import { spawn } from "node:child_process"
-import { basename } from "node:path"
 import { WebSocketServer } from "ws"
 import type WebSocket from "ws"
 import type {
   AgentAdapter,
   AgentConnection,
   MessageClassification,
+  PreparedResume,
   ResumeOptions,
   SpawnOptions,
 } from "./types.js"
 import type { ClientIntent, StreamEnvelope } from "../types.js"
 
 function sanitizePathSegment(value: string): string {
-  return value.replace(/[^a-zA-Z0-9._-]/g, `-`) || `project`
+  return value.replace(/[^a-zA-Z0-9.-]/g, `-`) || `project`
+}
+
+async function canonicalizeCwd(cwd: string): Promise<string> {
+  const fs = await import(`node:fs/promises`)
+
+  try {
+    return await fs.realpath(cwd)
+  } catch {
+    return cwd
+  }
+}
+
+function getTranscriptPathFromCanonicalCwd(
+  cwd: string,
+  sessionId: string
+): string {
+  return [
+    process.env.HOME ?? ``,
+    `.claude`,
+    `projects`,
+    sanitizePathSegment(cwd),
+    `${sessionId}.jsonl`,
+  ].join(`/`)
+}
+
+function getSessionSignalsPath(
+  sessionId: string,
+  suffix: `stop` | `ended`
+): string {
+  return [
+    process.env.HOME ?? ``,
+    `.claude`,
+    `session-signals`,
+    `${sessionId}.${suffix}.json`,
+  ].join(`/`)
+}
+
+function rewriteTranscriptText(
+  transcript: string,
+  options: {
+    rewritePaths?: Record<string, string>
+    fromSessionId?: string
+    toSessionId?: string
+  }
+): string {
+  let rewritten = transcript
+
+  if (
+    options.fromSessionId &&
+    options.toSessionId &&
+    options.fromSessionId !== options.toSessionId
+  ) {
+    rewritten = rewritten.replaceAll(options.fromSessionId, options.toSessionId)
+  }
+
+  for (const [from, to] of Object.entries(options.rewritePaths ?? {})) {
+    rewritten = rewritten.replaceAll(from, to)
+  }
+
+  return rewritten
+}
+
+function extractErrorDetail(error: unknown): string {
+  return error instanceof Error ? error.message : String(error)
+}
+
+function isMissingClaudeConversationError(error: unknown): boolean {
+  return extractErrorDetail(error).includes(
+    `No conversation found with session ID`
+  )
 }
 
 function rawDataToText(data: unknown): string {
@@ -62,6 +132,40 @@ export class ClaudeAdapter implements AgentAdapter {
   readonly agentType = `claude` as const
 
   async spawn(options: SpawnOptions): Promise<AgentConnection> {
+    if (options.resume && options.forceSeedWorkspace) {
+      const seededResumeId = await this.seedSyntheticResumeSession(
+        options,
+        options.resume
+      )
+
+      return await this.spawnBridgeConnection({
+        ...options,
+        resume: seededResumeId,
+        forceSeedWorkspace: false,
+      })
+    }
+
+    try {
+      return await this.spawnBridgeConnection(options)
+    } catch (error) {
+      if (!options.resume || !isMissingClaudeConversationError(error)) {
+        throw error
+      }
+
+      const seededResumeId = await this.seedSyntheticResumeSession(
+        options,
+        options.resume
+      )
+      return await this.spawnBridgeConnection({
+        ...options,
+        resume: seededResumeId,
+      })
+    }
+  }
+
+  protected async spawnBridgeConnection(
+    options: SpawnOptions
+  ): Promise<AgentConnection> {
     const port = await findFreePort()
     const sessionId = options.resume ?? `session-${Date.now()}`
     const sdkUrl = `ws://127.0.0.1:${port}/ws/cli/${sessionId}`
@@ -205,6 +309,9 @@ export class ClaudeAdapter implements AgentAdapter {
               socket.send(`${JSON.stringify(raw)}\n`)
             }
           },
+          close() {
+            safeClose()
+          },
           kill() {
             safeClose()
             child.kill()
@@ -217,6 +324,211 @@ export class ClaudeAdapter implements AgentAdapter {
         resolve(connection)
       })
     })
+  }
+
+  protected async createSeedSession(options: SpawnOptions): Promise<string> {
+    const fs = await import(`node:fs/promises`)
+    const connection = await this.spawnBridgeConnection({
+      ...options,
+      resume: undefined,
+      forceSeedWorkspace: false,
+      resumeTranscriptSourcePath: undefined,
+    })
+
+    return await new Promise<string>((resolve, reject) => {
+      let sessionId: string | undefined
+      let sawTurnComplete = false
+      let settled = false
+      let promptSent = false
+      let stopping = false
+      let forceKillTimeout: NodeJS.Timeout | null = null
+      let lastAssistantMessage = ``
+
+      const sendSeedPrompt = (): void => {
+        if (promptSent || settled) {
+          return
+        }
+
+        promptSent = true
+        connection.send(
+          this.translateClientIntent({
+            type: `user_message`,
+            text: `Reply with exactly OK and nothing else.`,
+          })
+        )
+      }
+
+      const fail = (error: Error): void => {
+        if (settled) {
+          return
+        }
+
+        settled = true
+        clearTimeout(timeout)
+        if (forceKillTimeout) {
+          clearTimeout(forceKillTimeout)
+          forceKillTimeout = null
+        }
+        connection.kill()
+        reject(error)
+      }
+
+      const requestStop = async (): Promise<void> => {
+        if (settled || stopping) {
+          return
+        }
+
+        if (typeof sessionId !== `string`) {
+          fail(new Error(`Claude seed session never produced a session id`))
+          return
+        }
+
+        stopping = true
+
+        try {
+          const canonicalCwd = await canonicalizeCwd(options.cwd)
+          const transcriptPath = getTranscriptPathFromCanonicalCwd(
+            canonicalCwd,
+            sessionId
+          )
+          const stopPath = getSessionSignalsPath(sessionId, `stop`)
+
+          await fs.mkdir(stopPath.slice(0, stopPath.lastIndexOf(`/`)), {
+            recursive: true,
+          })
+          await fs.writeFile(
+            stopPath,
+            JSON.stringify({
+              session_id: sessionId,
+              transcript_path: transcriptPath,
+              cwd: canonicalCwd,
+              permission_mode: options.permissionMode ?? `default`,
+              hook_event_name: `Stop`,
+              stop_hook_active: false,
+              last_assistant_message: lastAssistantMessage,
+              stopped_at: `${Date.now() / 1000}`,
+            }),
+            `utf8`
+          )
+        } catch (error) {
+          fail(
+            new Error(
+              `Failed to write Claude stop signal: ${extractErrorDetail(error)}`
+            )
+          )
+          return
+        }
+
+        forceKillTimeout = setTimeout(() => {
+          connection.kill()
+        }, 10_000)
+      }
+
+      const timeout = setTimeout(() => {
+        fail(new Error(`Claude seed session timed out`))
+      }, 30_000)
+
+      connection.onMessage((raw) => {
+        const message = raw as Record<string, unknown>
+        if (typeof message.session_id === `string`) {
+          sessionId = message.session_id
+        }
+
+        if (message.type === `assistant`) {
+          const assistantMessage = message.message as
+            | Record<string, unknown>
+            | undefined
+          const content = assistantMessage?.content
+          if (Array.isArray(content)) {
+            lastAssistantMessage = content
+              .flatMap((item) => {
+                const part = item as Record<string, unknown>
+                return typeof part.text === `string` ? [part.text] : []
+              })
+              .join(``)
+          }
+        }
+
+        if (
+          !promptSent &&
+          message.type === `system` &&
+          message.subtype === `init`
+        ) {
+          sendSeedPrompt()
+        }
+
+        if (this.isTurnComplete(raw)) {
+          sawTurnComplete = true
+          void requestStop()
+        }
+      })
+
+      connection.on(`exit`, (code) => {
+        if (forceKillTimeout) {
+          clearTimeout(forceKillTimeout)
+          forceKillTimeout = null
+        }
+
+        if (settled) {
+          if (
+            sawTurnComplete &&
+            typeof sessionId === `string` &&
+            (code === 0 || code === null)
+          ) {
+            settled = true
+            resolve(sessionId)
+          }
+          return
+        }
+
+        clearTimeout(timeout)
+
+        if (!sawTurnComplete || typeof sessionId !== `string`) {
+          reject(
+            new Error(
+              `Claude seed session exited before completing a resumable turn${
+                code == null ? `` : ` (exit code ${code})`
+              }`
+            )
+          )
+          return
+        }
+
+        settled = true
+        resolve(sessionId)
+      })
+
+      setTimeout(() => {
+        sendSeedPrompt()
+      }, 100)
+    })
+  }
+
+  protected async seedSyntheticResumeSession(
+    options: SpawnOptions,
+    syntheticResumeId: string
+  ): Promise<string> {
+    const fs = await import(`node:fs/promises`)
+    const canonicalCwd = await canonicalizeCwd(options.cwd)
+
+    const sourceTranscriptPath =
+      options.resumeTranscriptSourcePath ??
+      getTranscriptPathFromCanonicalCwd(canonicalCwd, syntheticResumeId)
+    const seededResumeId = await this.createSeedSession(options)
+    const seededTranscriptPath = getTranscriptPathFromCanonicalCwd(
+      canonicalCwd,
+      seededResumeId
+    )
+
+    const syntheticTranscript = await fs.readFile(sourceTranscriptPath, `utf8`)
+    const rewrittenTranscript = rewriteTranscriptText(syntheticTranscript, {
+      rewritePaths: options.rewritePaths,
+      fromSessionId: syntheticResumeId,
+      toSessionId: seededResumeId,
+    })
+    await fs.writeFile(seededTranscriptPath, rewrittenTranscript, `utf8`)
+
+    return seededResumeId
   }
 
   parseDirection(raw: object): MessageClassification {
@@ -261,15 +573,13 @@ export class ClaudeAdapter implements AgentAdapter {
   async prepareResume(
     history: Array<StreamEnvelope>,
     options: ResumeOptions
-  ): Promise<{ resumeId: string }> {
+  ): Promise<PreparedResume> {
     const fs = await import(`node:fs/promises`)
-    const os = await import(`node:os`)
     const path = await import(`node:path`)
+    const canonicalCwd = await canonicalizeCwd(options.cwd)
 
     let resumeId: string | undefined
-    const respondedRequestIds = new Set<string | number>()
-    const lines: Array<string> = []
-
+    let sourceCwd: string | undefined
     for (const envelope of history) {
       if (envelope.direction === `bridge`) {
         continue
@@ -277,41 +587,120 @@ export class ClaudeAdapter implements AgentAdapter {
 
       if (
         envelope.direction === `agent` &&
-        resumeId === undefined &&
         (envelope.raw as Record<string, unknown>).type === `system`
       ) {
         const systemMessage = envelope.raw as Record<string, unknown>
-        if (typeof systemMessage.session_id === `string`) {
+        if (
+          resumeId === undefined &&
+          typeof systemMessage.session_id === `string`
+        ) {
           resumeId = systemMessage.session_id
         }
+
+        if (sourceCwd === undefined && typeof systemMessage.cwd === `string`) {
+          sourceCwd = systemMessage.cwd
+        }
       }
+    }
+
+    const finalResumeId = resumeId ?? `resume-${Date.now()}`
+    const shouldForceSeedWorkspace =
+      sourceCwd !== undefined &&
+      (await canonicalizeCwd(sourceCwd)) !== canonicalCwd
+    const sourceTranscriptPath =
+      resumeId && sourceCwd
+        ? getTranscriptPathFromCanonicalCwd(
+            await canonicalizeCwd(sourceCwd),
+            resumeId
+          )
+        : undefined
+    const expandedRewritePaths = { ...(options.rewritePaths ?? {}) }
+
+    for (const [from, to] of Object.entries(options.rewritePaths ?? {})) {
+      const canonicalFrom = await canonicalizeCwd(from)
+      const canonicalTo = await canonicalizeCwd(to)
+      expandedRewritePaths[canonicalFrom] = canonicalTo
+    }
+
+    if (sourceTranscriptPath && resumeId) {
+      const targetTranscriptPath = getTranscriptPathFromCanonicalCwd(
+        canonicalCwd,
+        finalResumeId
+      )
+
+      try {
+        const originalTranscript = await fs.readFile(
+          sourceTranscriptPath,
+          `utf8`
+        )
+        const rewrittenTranscript = rewriteTranscriptText(originalTranscript, {
+          rewritePaths: expandedRewritePaths,
+          fromSessionId: resumeId,
+          toSessionId: finalResumeId,
+        })
+
+        await fs.mkdir(path.dirname(targetTranscriptPath), { recursive: true })
+        await fs.writeFile(targetTranscriptPath, rewrittenTranscript, `utf8`)
+
+        return {
+          resumeId: finalResumeId,
+          forceSeedWorkspace: shouldForceSeedWorkspace,
+          resumeTranscriptSourcePath: sourceTranscriptPath,
+        }
+      } catch {
+        // Fall back to stream-history reconstruction when the original Claude
+        // transcript is unavailable from disk.
+      }
+    }
+
+    const lines: Array<string> = []
+    const writtenResponses = new Set<string | number>()
+
+    for (const envelope of history) {
+      if (envelope.direction === `bridge`) {
+        continue
+      }
+
+      let rawForTranscript = envelope.raw
 
       if (envelope.direction === `user`) {
-        const raw = envelope.raw
-        if (raw.type === `control_response`) {
-          const requestId = raw.response.request_id
+        if (envelope.raw.type === `control_response`) {
+          const requestId = envelope.raw.response.request_id
 
-          if (respondedRequestIds.has(requestId)) {
+          if (writtenResponses.has(requestId)) {
             continue
           }
-          respondedRequestIds.add(requestId)
+
+          writtenResponses.add(requestId)
+        }
+
+        if (envelope.raw.type === `user_message`) {
+          rawForTranscript = this.translateClientIntent(envelope.raw)
         }
       }
 
-      let serialized = JSON.stringify(envelope.raw)
-
-      if (options.rewritePaths) {
-        for (const [from, to] of Object.entries(options.rewritePaths)) {
-          serialized = serialized.replaceAll(from, to)
-        }
+      if (`session_id` in rawForTranscript) {
+        ;(rawForTranscript as Record<string, unknown>).session_id =
+          finalResumeId
       }
+
+      const serialized = rewriteTranscriptText(
+        JSON.stringify(rawForTranscript),
+        {
+          rewritePaths: expandedRewritePaths,
+        }
+      )
 
       lines.push(serialized)
     }
 
-    const finalResumeId = resumeId ?? `resume-${Date.now()}`
-    const projectId = sanitizePathSegment(basename(options.cwd))
-    const sessionDir = path.join(os.homedir(), `.claude`, `projects`, projectId)
+    const projectId = sanitizePathSegment(canonicalCwd)
+    const sessionDir = path.join(
+      process.env.HOME ?? ``,
+      `.claude`,
+      `projects`,
+      projectId
+    )
     await fs.mkdir(sessionDir, { recursive: true })
     await fs.writeFile(
       path.join(sessionDir, `${finalResumeId}.jsonl`),
@@ -319,6 +708,10 @@ export class ClaudeAdapter implements AgentAdapter {
       `utf8`
     )
 
-    return { resumeId: finalResumeId }
+    return {
+      resumeId: finalResumeId,
+      forceSeedWorkspace: shouldForceSeedWorkspace,
+      resumeTranscriptSourcePath: sourceTranscriptPath,
+    }
   }
 }

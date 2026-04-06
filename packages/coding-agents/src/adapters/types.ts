@@ -6,6 +6,7 @@ import type {
 
 export interface SpawnOptions {
   cwd: string
+  rewritePaths?: Record<string, string>
   model?: string
   permissionMode?: string
   approvalPolicy?: CodexApprovalPolicy
@@ -14,12 +15,15 @@ export interface SpawnOptions {
   developerInstructions?: string
   verbose?: boolean
   resume?: string
+  forceSeedWorkspace?: boolean
+  resumeTranscriptSourcePath?: string
   env?: Record<string, string>
 }
 
 export interface AgentConnection {
   onMessage: (handler: (raw: object) => void) => void
   send: (raw: object) => void
+  close?: () => void
   kill: () => void
   on: (event: `exit`, handler: (code: number | null) => void) => void
 }
@@ -34,10 +38,18 @@ export interface ResumeOptions {
   rewritePaths?: Record<string, string>
 }
 
+export interface PreparedResume {
+  resumeId: string
+  forceSeedWorkspace?: boolean
+  resumeTranscriptSourcePath?: string
+}
+
 export interface AgentAdapter {
   readonly agentType: AgentType
 
   spawn: (options: SpawnOptions) => Promise<AgentConnection>
+
+  isReadyMessage?: (raw: object) => boolean
 
   parseDirection: (raw: object) => MessageClassification
 
@@ -48,5 +60,5 @@ export interface AgentAdapter {
   prepareResume: (
     history: Array<StreamEnvelope>,
     options: ResumeOptions
-  ) => Promise<{ resumeId: string }>
+  ) => Promise<PreparedResume>
 }

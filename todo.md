@@ -43,9 +43,11 @@
 - Scripted bridge coverage now forces agent exit during a turn
 - Scenarios assert lifecycle events, teardown, and prompt replay after resume
 
-11. [ ] Path rewriting during resume across cwd changes
+11. [x] Path rewriting during resume across cwd changes
 
 - Claude path-rewrite unit coverage is in place for resume transcript generation
+- Claude resume transcript writes now use the same full-path-sanitized project directory shape that real Claude sessions create under `~/.claude/projects`
 - Claude now fails fast instead of hanging when the resumed process exits before connecting back to the bridge
-- A direct live Claude probe currently exits with `No conversation found with session ID: ...` when resumed from a rewritten transcript in a different cwd
-- Live cross-cwd resume behavior is not yet validated end to end
+- Direct synthetic cross-cwd resume was proven insufficient because Claude binds resumability to workspace-local registration, not just transcript contents
+- The implemented fallback seeds a real Claude session in the target cwd, overwrites the seeded transcript with the reconstructed history, and resumes using the seeded session id
+- Live cross-cwd resume coverage is now in place and passing for Claude

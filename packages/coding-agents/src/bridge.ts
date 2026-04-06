@@ -160,14 +160,19 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
   )
 
   let resumeId: string | undefined
+  let forceSeedWorkspace = false
+  let resumeTranscriptSourcePath: string | undefined
   if (shouldResume && hasHistory) {
     const prepared = await adapter.prepareResume(history, { cwd, rewritePaths })
     resumeId = prepared.resumeId
+    forceSeedWorkspace = prepared.forceSeedWorkspace ?? false
+    resumeTranscriptSourcePath = prepared.resumeTranscriptSourcePath
   }
 
   const openConnection = async (resumeValue?: string) => {
     return await adapter.spawn({
       cwd,
+      rewritePaths,
       model,
       permissionMode,
       approvalPolicy,
@@ -176,6 +181,8 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
       developerInstructions,
       verbose,
       resume: resumeValue,
+      forceSeedWorkspace,
+      resumeTranscriptSourcePath,
       env,
     })
   }
@@ -198,6 +205,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
   const controlEventType = shouldResume ? `session_resumed` : `session_started`
 
   let turnInProgress = false
+  let connectionReady = shouldResume && adapter.isReadyMessage ? false : true
   let sessionEndedWritten = false
   let shutdownPromise: Promise<void> | null = null
   let agentExited = false
@@ -228,6 +236,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
 
   const processQueue = (): void => {
     if (
+      !connectionReady ||
       turnInProgress ||
       promptQueue.length === 0 ||
       shutdownPromise !== null
@@ -252,6 +261,11 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
       pendingAgentRequestIds.add(classification.id)
     }
 
+    if (!connectionReady && adapter.isReadyMessage?.(raw)) {
+      connectionReady = true
+      processQueue()
+    }
+
     if (adapter.isTurnComplete(raw)) {
       turnInProgress = false
       processQueue()
@@ -265,6 +279,19 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
   }
   processQueue()
 
+  let liveRelayReadyResolved = false
+  let resolveLiveRelayReady!: () => void
+  const liveRelayReady = new Promise<void>((resolve) => {
+    resolveLiveRelayReady = () => {
+      if (liveRelayReadyResolved) {
+        return
+      }
+
+      liveRelayReadyResolved = true
+      resolve()
+    }
+  })
+
   const liveRelayPromise = (async () => {
     try {
       const liveStream = await stream.stream<StreamEnvelope>({
@@ -273,6 +300,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         json: true,
         signal: abortController.signal,
       })
+      resolveLiveRelayReady()
 
       for await (const item of liveStream.jsonStream()) {
         const envelope = item
@@ -340,14 +368,18 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         (error as Error).name === `AbortError` ||
         (error as Error).message === `Stream request was aborted`
       ) {
+        resolveLiveRelayReady()
         return
       }
 
+      resolveLiveRelayReady()
       if ((error as Error).name !== `AbortError`) {
         console.error(`coding-agents bridge relay failed`, error)
       }
     }
   })()
+
+  await liveRelayReady
 
   const shutdown = async (killConnection: boolean): Promise<void> => {
     if (shutdownPromise) {

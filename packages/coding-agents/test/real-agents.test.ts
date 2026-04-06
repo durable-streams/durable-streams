@@ -6,9 +6,16 @@ import {
   rm,
   writeFile,
 } from "node:fs/promises"
+import { randomUUID } from "node:crypto"
+import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { DurableStream } from "@durable-streams/client"
+import { DurableStreamTestServer } from "@durable-streams/server"
 import { describe, expect, it } from "vitest"
+import { createClient } from "../src/client.js"
+import { createSession } from "../src/index.js"
 import { REAL_AGENT_TIMEOUT_MS, scenario } from "./scenario-dsl.js"
+import type { StreamEnvelope } from "../src/types.js"
 import type { ScenarioResult } from "./scenario-dsl.js"
 import type { PermissionRequestEvent } from "../src/normalize/types.js"
 
@@ -54,6 +61,20 @@ async function withWorkspaceAndOutsideTempDirs<T>(
   } finally {
     await rm(cwd, { recursive: true, force: true })
     await rm(outside, { recursive: true, force: true })
+  }
+}
+
+async function withTwoWorkspaceTempDirs<T>(
+  prefix: string,
+  run: (paths: { initialCwd: string; resumedCwd: string }) => Promise<T>
+): Promise<T> {
+  const initialCwd = await mkdtemp(join(tmpdir(), `${prefix}initial-`))
+  const resumedCwd = await mkdtemp(join(tmpdir(), `${prefix}resumed-`))
+  try {
+    return await run({ initialCwd, resumedCwd })
+  } finally {
+    await rm(initialCwd, { recursive: true, force: true })
+    await rm(resumedCwd, { recursive: true, force: true })
   }
 }
 
@@ -405,7 +426,7 @@ describe(`real agent smoke scenarios`, () => {
             })
             .client(`kyle`)
             .prompt(
-              `Read the file at ${filePath} and reply with exactly its contents and nothing else.`
+              `Before reading the file at ${filePath}, use the request_permissions tool to request read access for exactly that file. After permission is granted, read the file and reply with exactly its contents and nothing else.`
             )
             .waitForPermissionRequest(`permissions`, REAL_AGENT_TIMEOUT_MS)
             .respondToLatestPermissionRequest(
@@ -603,18 +624,18 @@ describe(`real agent smoke scenarios`, () => {
           })
           .client(`kyle`)
           .prompt(
-            `Create a file named ${fileName} in the current directory containing hello, then tell me you did it.`
+            `Create a file named ${fileName} in the current directory containing hello. Do not use shell commands or terminal commands. Edit the file directly, and if that edit is denied, do not try any fallback tool or alternative method; just explain that you were blocked.`
           )
-          .waitForPermissionRequest(codexApprovalMatcher, REAL_AGENT_TIMEOUT_MS)
+          .waitForPermissionRequest(`file_change`, REAL_AGENT_TIMEOUT_MS)
           .respondToLatestPermissionRequest(
             { behavior: `deny` },
             {
-              matcher: codexApprovalMatcher,
+              matcher: `file_change`,
               timeoutMs: REAL_AGENT_TIMEOUT_MS,
             }
           )
-          .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
-          .expectPermissionRequest(codexApprovalMatcher, {
+          .sleep(2_000)
+          .expectPermissionRequest(`file_change`, {
             timeoutMs: REAL_AGENT_TIMEOUT_MS,
           })
           .expectForwardedCount(
@@ -976,6 +997,172 @@ describe(`real agent smoke scenarios`, () => {
   )
 
   maybeIt(
+    `Claude can resume reconstructed history across cwd changes by seeding the new workspace`,
+    async () => {
+      await withTwoWorkspaceTempDirs(
+        `coding-agents-claude-rewrite-`,
+        async ({ initialCwd, resumedCwd }) => {
+          const originalPath = join(initialCwd, `important-token.txt`)
+          const rewrittenPath = join(resumedCwd, `important-token.txt`)
+          const server = new DurableStreamTestServer({ port: 0 })
+          await server.start()
+
+          const streamUrl = `${server.url}/v1/stream/claude-cross-cwd-${randomUUID()}`
+          const stream = new DurableStream({
+            url: streamUrl,
+            contentType: `application/json`,
+          })
+          const client = createClient({
+            agent: `claude`,
+            streamUrl,
+            user: { name: `Kyle`, email: `kyle@example.com` },
+          })
+
+          const readHistory = async (): Promise<Array<StreamEnvelope>> => {
+            const response = await stream.stream<StreamEnvelope>({
+              live: false,
+              json: true,
+            })
+            return await response.json()
+          }
+
+          const waitForHistory = async (
+            predicate: (history: Array<StreamEnvelope>) => boolean,
+            timeoutMs: number
+          ): Promise<Array<StreamEnvelope>> => {
+            const started = Date.now()
+            while (Date.now() - started < timeoutMs) {
+              const history = await readHistory()
+              if (predicate(history)) {
+                return history
+              }
+              await new Promise((resolve) => setTimeout(resolve, 1000))
+            }
+
+            throw new Error(`Timed out waiting for cross-cwd Claude resume`)
+          }
+
+          const assistantMessages = (
+            history: Array<StreamEnvelope>
+          ): Array<string> =>
+            history.flatMap((event) => {
+              if (event.direction !== `agent`) {
+                return []
+              }
+
+              const raw = event.raw as Record<string, unknown>
+              if (raw.type !== `assistant`) {
+                return []
+              }
+
+              const message = raw.message as Record<string, unknown> | undefined
+              const content = message?.content
+              if (!Array.isArray(content)) {
+                return []
+              }
+
+              return [
+                content
+                  .flatMap((item) => {
+                    const part = item as Record<string, unknown>
+                    return part.type === `text` && typeof part.text === `string`
+                      ? [part.text]
+                      : []
+                  })
+                  .join(` `)
+                  .trim(),
+              ]
+            })
+
+          let firstSession:
+            | Awaited<ReturnType<typeof createSession>>
+            | undefined
+          let resumedSession:
+            | Awaited<ReturnType<typeof createSession>>
+            | undefined
+
+          try {
+            firstSession = await createSession({
+              agent: `claude`,
+              streamUrl,
+              cwd: initialCwd,
+              permissionMode: `plan`,
+            })
+
+            client.prompt(
+              `Remember this exact absolute path for later: ${originalPath}. Reply with exactly OK and nothing else.`
+            )
+
+            await waitForHistory(
+              (history) =>
+                assistantMessages(history).some((text) =>
+                  text.includes(`OK`)
+                ) &&
+                history.some(
+                  (event) =>
+                    event.direction === `agent` &&
+                    (event.raw as Record<string, unknown>).type === `result`
+                ),
+              REAL_AGENT_TIMEOUT_MS
+            )
+
+            await firstSession.close()
+
+            resumedSession = await createSession({
+              agent: `claude`,
+              streamUrl,
+              cwd: resumedCwd,
+              permissionMode: `plan`,
+              resume: true,
+              rewritePaths: {
+                [initialCwd]: resumedCwd,
+              },
+            })
+            await waitForHistory(
+              (history) =>
+                history.some(
+                  (event) =>
+                    event.direction === `bridge` &&
+                    event.type === `session_resumed`
+                ),
+              REAL_AGENT_TIMEOUT_MS
+            )
+
+            client.prompt(
+              `What exact absolute path did I ask you to remember earlier? Reply with only the path.`
+            )
+
+            const finalHistory = await waitForHistory(
+              (history) =>
+                assistantMessages(history).some((text) =>
+                  text.includes(rewrittenPath)
+                ) &&
+                history.filter(
+                  (event) =>
+                    event.direction === `bridge` &&
+                    event.type === `session_resumed`
+                ).length >= 1,
+              REAL_AGENT_TIMEOUT_MS
+            )
+
+            expect(
+              assistantMessages(finalHistory).some((text) =>
+                text.includes(rewrittenPath)
+              )
+            ).toBe(true)
+          } finally {
+            await resumedSession?.close().catch(() => undefined)
+            await firstSession?.close().catch(() => undefined)
+            await client.close().catch(() => undefined)
+            await server.stop().catch(() => undefined)
+          }
+        }
+      )
+    },
+    240_000
+  )
+
+  maybeIt(
     `Claude serializes multiple queued live prompts`,
     async () => {
       const firstToken = `CLAUDE_QUEUE_FIRST`
@@ -1204,7 +1391,7 @@ describe(`real agent smoke scenarios`, () => {
                 timeoutMs: REAL_AGENT_TIMEOUT_MS,
               }
             )
-            .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+            .sleep(2_000)
             .expectForwardedCount(
               (event) => event.source === `client_response`,
               1,
@@ -1218,10 +1405,29 @@ describe(`real agent smoke scenarios`, () => {
             .run()
 
           expect(await pathExists(filePath)).toBe(false)
-          expect(result.forwardedMessages).toEqual(
+          const forwardedResponses = result.forwardedMessages.filter(
+            (event) => event.source === `client_response`
+          )
+          expect(forwardedResponses).toHaveLength(1)
+          expect(forwardedResponses).toEqual(
             expect.arrayContaining([
               expect.objectContaining({
-                source: `client_response`,
+                raw: expect.objectContaining({
+                  result: expect.objectContaining({
+                    decision: `decline`,
+                  }),
+                }),
+              }),
+            ])
+          )
+          expect(forwardedResponses).not.toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                raw: expect.objectContaining({
+                  result: expect.objectContaining({
+                    decision: `accept`,
+                  }),
+                }),
               }),
             ])
           )

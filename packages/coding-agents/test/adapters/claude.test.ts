@@ -1,8 +1,9 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
-import { basename, join } from "node:path"
+import { join } from "node:path"
 import { describe, expect, it } from "vitest"
 import { ClaudeAdapter } from "../../src/adapters/claude.js"
+import type { AgentConnection, SpawnOptions } from "../../src/adapters/types.js"
 
 describe(`ClaudeAdapter`, () => {
   const adapter = new ClaudeAdapter()
@@ -92,14 +93,13 @@ describe(`ClaudeAdapter`, () => {
     const oldPath = `/tmp/old-workspace`
     const rewrittenPath = `/tmp/new-workspace`
     const cwd = await mkdtemp(join(tmpdir(), `claude-rewrite-cwd-`))
+    const canonicalCwd = await realpath(cwd)
     const resumeId = `resume-rewrite-${Date.now()}`
     const sessionDir = join(
       homedir(),
       `.claude`,
       `projects`,
-      basename(cwd)
-        .toLowerCase()
-        .replace(/[^a-z0-9]+/g, `-`) || `user`
+      canonicalCwd.replace(/[^a-zA-Z0-9.-]/g, `-`) || `project`
     )
     const transcriptPath = join(sessionDir, `${resumeId}.jsonl`)
 
@@ -140,9 +140,52 @@ describe(`ClaudeAdapter`, () => {
       const transcript = await readFile(transcriptPath, `utf8`)
       expect(transcript).toContain(rewrittenPath)
       expect(transcript).not.toContain(oldPath)
+      expect(transcript).toContain(`"type":"user"`)
+      expect(transcript).not.toContain(`"type":"user_message"`)
+      expect(transcript).toContain(`"session_id":"${resumeId}"`)
     } finally {
       await rm(transcriptPath, { force: true })
       await rm(cwd, { recursive: true, force: true })
     }
+  })
+
+  it(`should fall back to a seeded Claude session when resume is not registered in the workspace`, async () => {
+    const mockConnection: AgentConnection = {
+      onMessage() {},
+      send() {},
+      kill() {},
+      on() {},
+    }
+
+    class TestClaudeAdapter extends ClaudeAdapter {
+      readonly resumeAttempts: Array<string | undefined> = []
+      spawnBridgeConnection(options: SpawnOptions): Promise<AgentConnection> {
+        this.resumeAttempts.push(options.resume)
+        if (options.resume === `synthetic-session`) {
+          throw new Error(
+            `Claude Code exited before connecting: No conversation found with session ID: synthetic-session`
+          )
+        }
+
+        return Promise.resolve(mockConnection)
+      }
+
+      seedSyntheticResumeSession(): Promise<string> {
+        return Promise.resolve(`seeded-session`)
+      }
+    }
+
+    const testAdapter = new TestClaudeAdapter()
+    const connection = await testAdapter.spawn({
+      cwd: `/tmp/claude-seed-fallback`,
+      resume: `synthetic-session`,
+      permissionMode: `plan`,
+    })
+
+    expect(connection).toBe(mockConnection)
+    expect(testAdapter.resumeAttempts).toEqual([
+      `synthetic-session`,
+      `seeded-session`,
+    ])
   })
 })

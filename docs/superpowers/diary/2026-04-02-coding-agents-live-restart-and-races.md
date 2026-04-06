@@ -278,6 +278,10 @@ After the Codex work, I revisited the remaining Claude path-rewrite item with di
 
 That matters because it suggests transcript rewriting alone is not sufficient for Claude cross-cwd resume. Claude appears to require additional conversation state beyond the rewritten JSONL transcript, or it keys lookup on more than the resume transcript file in the new project directory. I also updated the Claude adapter to reject immediately when the child exits before the websocket connects, including the captured child output, so this path now fails with an actionable error instead of a 30-second timeout.
 
+The next round of probing narrowed the boundary further. A fresh real Claude session showed that normal SDK runs write their transcript under a full-path-sanitized project directory in `~/.claude/projects`, not the basename-only directory shape our adapter had been using. I aligned `prepareResume()` to that observed layout and re-ran the existing live restart/resume cases to make sure the working same-cwd path still passed.
+
+Then I tested the plausible hidden-state candidates. Copying the exact original session JSONL into a new cwd's project directory failed with the same `No conversation found` error, even before any path rewriting. Rewriting the JSONL contents to the new cwd did not help. Rewriting `~/.claude/session-signals/<session>.ended.json` to point at the new transcript and new cwd also did not help, and deleting that sidecar entirely did not break same-cwd resume. The sharpest signal was a symlink experiment: resuming from a symlink alias to the original workspace still worked. The best current inference is that Claude binds resumability to the canonical original workspace rather than trusting a copied transcript in a different real directory.
+
 - Keep item 10 in mind because crash/exit-mid-turn coverage will build directly on this prompt replay path
 
 ### Code review instructions
@@ -299,6 +303,12 @@ That matters because it suggests transcript rewriting alone is not sufficient fo
 - `CLAUDE_REPLAY_AFTER_RESTART`
 - `CODEX_REPLAY_AFTER_RESTART`
 - Codex incomplete-turn resume fallback is triggered when `adapter.spawn({ resume })` throws
+- Additional Claude cross-cwd probes:
+- same session id + original cwd: resume found the conversation
+- same session id + new cwd + copied original transcript: `No conversation found`
+- same session id + new cwd + rewritten transcript: `No conversation found`
+- same session id + new cwd + rewritten `session-signals/<session>.ended.json`: `No conversation found`
+- same session id + symlink alias to the original cwd: resume still worked
 
 ## Step 4: Add Live Multi-Client Approval Races
 
@@ -392,3 +402,16 @@ The main product unlock is that shared sessions now have real coverage for the r
 - `.expectForwardedCount((event) => event.source === 'client_response', 1)`
 - Shared invariant:
 - `.expectInvariant('first_response_wins')`
+
+## Postscript
+
+The remaining Claude cross-cwd resume item was eventually closed by treating Claude session ids as workspace-local registration ids, not durable ids. The direct “write a synthetic transcript into a new workspace and resume it” path never worked reliably because Claude does not consider that session registered in the new cwd, even when the JSONL contents are valid.
+
+The implemented fallback is to seed a real Claude session in the target workspace, overwrite the seeded transcript with the reconstructed history, and then resume using the seeded session id. That path is now live-tested and passes. I also added a small trace helper at [trace-claude-resume.sh](/Users/kylemathews/programs/durable-streams/scripts/trace-claude-resume.sh) because `fs_usage` turned out to be the fastest way to confirm which Claude state files actually mattered during resume.
+
+The other late lesson was on the Codex side: deny-path tests need to assert the actual bridge invariant, not overfit to a single post-denial conversational path. Real Codex runs may deny a `file_change`, then attempt a fallback `commandExecution`, or stop immediately if the prompt explicitly forbids fallbacks. The final live tests were hardened around those semantics by:
+
+- waiting for the Nth matching permission request when a scenario expects multiple approvals in one turn
+- asserting on the translated forwarded JSON-RPC response shape for duplicate-response races
+- making the permissions-round-trip prompt explicitly request `request_permissions`
+- making the direct file-edit deny prompt explicitly forbid fallback tools

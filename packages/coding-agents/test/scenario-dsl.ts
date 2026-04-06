@@ -419,6 +419,17 @@ function permissionRequestAssertion(
   }
 }
 
+function permissionRequestCountAtLeastAssertion(
+  matcher: PermissionMatcher | undefined,
+  count: number
+): (snapshot: ScenarioSnapshot) => void {
+  return (snapshot) => {
+    expect(
+      permissionRequestsFromSnapshot(snapshot, matcher).length
+    ).toBeGreaterThanOrEqual(count)
+  }
+}
+
 function turnCompleteAssertion(snapshot: ScenarioSnapshot): void {
   const found = countTurnCompleteEvents(snapshot) > 0
 
@@ -561,7 +572,8 @@ const invariantAssertions: Record<
 async function waitForPermissionRequestEvent(
   runtime: ScenarioRuntime,
   matcher: PermissionMatcher | undefined,
-  timeoutMs: number
+  timeoutMs: number,
+  count: number = 1
 ): Promise<
   NormalizedAgentStreamEvent & {
     event: PermissionRequestEvent
@@ -571,10 +583,12 @@ async function waitForPermissionRequestEvent(
     description: `permission request`,
     phase: `before_close`,
     timeoutMs,
-    assert: permissionRequestAssertion(matcher),
+    assert: permissionRequestCountAtLeastAssertion(matcher, count),
   })
 
-  const request = permissionRequestsFromSnapshot(snapshot, matcher).at(-1)
+  const request = permissionRequestsFromSnapshot(snapshot, matcher).at(
+    count - 1
+  )
   if (!request) {
     throw new Error(`Permission request disappeared before it could be used`)
   }
@@ -891,6 +905,7 @@ export class ScenarioBuilder {
       matcher?: PermissionMatcher
       timeoutMs?: number
       subtype?: `success` | `cancelled`
+      count?: number
     } = {}
   ): this {
     const clientName = this.#requireCurrentClient()
@@ -903,7 +918,8 @@ export class ScenarioBuilder {
       const permissionRequest = await waitForPermissionRequestEvent(
         runtime,
         options.matcher,
-        options.timeoutMs ?? DEFAULT_TIMEOUT_MS
+        options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+        options.count ?? 1
       )
 
       client.respond(
@@ -917,7 +933,11 @@ export class ScenarioBuilder {
   }
 
   cancelLatestPermissionRequest(
-    options: { matcher?: PermissionMatcher; timeoutMs?: number } = {}
+    options: {
+      matcher?: PermissionMatcher
+      timeoutMs?: number
+      count?: number
+    } = {}
   ): this {
     return this.respondToLatestPermissionRequest(
       {},
