@@ -146,8 +146,9 @@ export class StreamStore {
   }
 
   /**
-   * Get a stream, deleting it if expired.
-   * Returns undefined if stream doesn't exist or is expired.
+   * Get a stream, handling expiry.
+   * Returns undefined if stream doesn't exist or is expired (and has no refs).
+   * Expired streams with refCount > 0 are soft-deleted instead of fully deleted.
    */
   private getIfNotExpired(path: string): Stream | undefined {
     const stream = this.streams.get(path)
@@ -155,6 +156,11 @@ export class StreamStore {
       return undefined
     }
     if (this.isExpired(stream)) {
+      if (stream.refCount > 0) {
+        // Expired with refs: soft-delete instead of full delete
+        stream.softDeleted = true
+        return stream
+      }
       // Delete expired stream
       this.delete(path)
       return undefined
@@ -165,6 +171,7 @@ export class StreamStore {
   /**
    * Create a new stream.
    * @throws Error if stream already exists with different config
+   * @throws Error if fork source not found, soft-deleted, or offset invalid
    * @returns existing stream if config matches (idempotent)
    */
   create(
@@ -175,47 +182,145 @@ export class StreamStore {
       expiresAt?: string
       initialData?: Uint8Array
       closed?: boolean
+      forkedFrom?: string
+      forkOffset?: string
     } = {}
   ): Stream {
-    // Use getIfNotExpired to treat expired streams as non-existent
-    const existing = this.getIfNotExpired(path)
-    if (existing) {
-      // Check if config matches (idempotent create)
-      const contentTypeMatches =
-        (normalizeContentType(options.contentType) ||
-          `application/octet-stream`) ===
-        (normalizeContentType(existing.contentType) ||
-          `application/octet-stream`)
-      const ttlMatches = options.ttlSeconds === existing.ttlSeconds
-      const expiresMatches = options.expiresAt === existing.expiresAt
-      const closedMatches =
-        (options.closed ?? false) === (existing.closed ?? false)
-
-      if (contentTypeMatches && ttlMatches && expiresMatches && closedMatches) {
-        // Idempotent success - return existing stream
-        return existing
-      } else {
-        // Config mismatch - conflict
+    // Check if stream already exists
+    const existingRaw = this.streams.get(path)
+    if (existingRaw) {
+      if (this.isExpired(existingRaw)) {
+        // Expired: delete and proceed with creation
+        this.streams.delete(path)
+        this.cancelLongPollsForStream(path)
+      } else if (existingRaw.softDeleted) {
+        // Soft-deleted streams block new creation
         throw new Error(
-          `Stream already exists with different configuration: ${path}`
+          `Stream has active forks — path cannot be reused until all forks are removed: ${path}`
         )
+      } else {
+        // Check if config matches (idempotent create)
+        const contentTypeMatches =
+          (normalizeContentType(options.contentType) ||
+            `application/octet-stream`) ===
+          (normalizeContentType(existingRaw.contentType) ||
+            `application/octet-stream`)
+        const ttlMatches = options.ttlSeconds === existingRaw.ttlSeconds
+        const expiresMatches = options.expiresAt === existingRaw.expiresAt
+        const closedMatches =
+          (options.closed ?? false) === (existingRaw.closed ?? false)
+        const forkedFromMatches =
+          (options.forkedFrom ?? undefined) === existingRaw.forkedFrom
+        // Only compare forkOffset when explicitly provided; when omitted the
+        // server resolves a default at creation time, so a second PUT that
+        // also omits it should still be considered idempotent.
+        const forkOffsetMatches =
+          options.forkOffset === undefined ||
+          options.forkOffset === existingRaw.forkOffset
+
+        if (
+          contentTypeMatches &&
+          ttlMatches &&
+          expiresMatches &&
+          closedMatches &&
+          forkedFromMatches &&
+          forkOffsetMatches
+        ) {
+          // Idempotent success - return existing stream
+          return existingRaw
+        } else {
+          // Config mismatch - conflict
+          throw new Error(
+            `Stream already exists with different configuration: ${path}`
+          )
+        }
       }
+    }
+
+    // Fork creation: validate source stream and resolve fork parameters
+    const isFork = !!options.forkedFrom
+    let forkOffset = `0000000000000000_0000000000000000`
+    let sourceContentType: string | undefined
+    let sourceStream: Stream | undefined
+
+    if (isFork) {
+      sourceStream = this.streams.get(options.forkedFrom!)
+      if (!sourceStream) {
+        throw new Error(`Source stream not found: ${options.forkedFrom}`)
+      }
+      if (sourceStream.softDeleted) {
+        throw new Error(`Source stream is soft-deleted: ${options.forkedFrom}`)
+      }
+      if (this.isExpired(sourceStream)) {
+        throw new Error(`Source stream not found: ${options.forkedFrom}`)
+      }
+
+      sourceContentType = sourceStream.contentType
+
+      // Resolve fork offset: use provided or source's currentOffset
+      if (options.forkOffset) {
+        forkOffset = options.forkOffset
+      } else {
+        forkOffset = sourceStream.currentOffset
+      }
+
+      // Validate: zeroOffset <= forkOffset <= source.currentOffset
+      const zeroOffset = `0000000000000000_0000000000000000`
+      if (forkOffset < zeroOffset || sourceStream.currentOffset < forkOffset) {
+        throw new Error(`Invalid fork offset: ${forkOffset}`)
+      }
+
+      // Increment source refcount
+      sourceStream.refCount++
+    }
+
+    // Determine content type: use options, or inherit from source if fork
+    let contentType = options.contentType
+    if (!contentType || contentType.trim() === ``) {
+      if (isFork) {
+        contentType = sourceContentType
+      }
+    } else if (
+      isFork &&
+      normalizeContentType(contentType) !==
+        normalizeContentType(sourceContentType)
+    ) {
+      throw new Error(`Content type mismatch with source stream`)
+    }
+
+    // Compute effective expiry for forks
+    let effectiveExpiresAt = options.expiresAt
+    let effectiveTtlSeconds = options.ttlSeconds
+    if (isFork) {
+      effectiveExpiresAt = this.computeForkExpiry(options, sourceStream!)
+      effectiveTtlSeconds = undefined // Forks store expiresAt, not TTL
     }
 
     const stream: Stream = {
       path,
-      contentType: options.contentType,
+      contentType,
       messages: [],
-      currentOffset: `0000000000000000_0000000000000000`,
-      ttlSeconds: options.ttlSeconds,
-      expiresAt: options.expiresAt,
+      currentOffset: isFork ? forkOffset : `0000000000000000_0000000000000000`,
+      ttlSeconds: effectiveTtlSeconds,
+      expiresAt: effectiveExpiresAt,
       createdAt: Date.now(),
       closed: options.closed ?? false,
+      refCount: 0,
+      forkedFrom: isFork ? options.forkedFrom : undefined,
+      forkOffset: isFork ? forkOffset : undefined,
     }
 
     // If initial data is provided, append it
     if (options.initialData && options.initialData.length > 0) {
-      this.appendToStream(stream, options.initialData, true) // isInitialCreate = true
+      try {
+        this.appendToStream(stream, options.initialData, true) // isInitialCreate = true
+      } catch (err) {
+        // Rollback source refcount on failure
+        if (isFork && sourceStream) {
+          sourceStream.refCount--
+        }
+        throw err
+      }
     }
 
     this.streams.set(path, stream)
@@ -223,27 +328,133 @@ export class StreamStore {
   }
 
   /**
-   * Get a stream by path.
-   * Returns undefined if stream doesn't exist or is expired.
+   * Compute the effective expiry for a fork stream, capped at the source's expiry.
    */
-  get(path: string): Stream | undefined {
-    return this.getIfNotExpired(path)
+  private computeForkExpiry(
+    opts: { ttlSeconds?: number; expiresAt?: string },
+    sourceMeta: Stream
+  ): string | undefined {
+    // Resolve source's absolute expiry
+    let sourceExpiryMs: number | undefined
+    if (sourceMeta.expiresAt) {
+      sourceExpiryMs = new Date(sourceMeta.expiresAt).getTime()
+    } else if (sourceMeta.ttlSeconds !== undefined) {
+      sourceExpiryMs = sourceMeta.createdAt + sourceMeta.ttlSeconds * 1000
+    }
+
+    // Resolve fork's requested expiry
+    let forkExpiryMs: number | undefined
+    if (opts.expiresAt) {
+      forkExpiryMs = new Date(opts.expiresAt).getTime()
+    } else if (opts.ttlSeconds !== undefined) {
+      forkExpiryMs = Date.now() + opts.ttlSeconds * 1000
+    } else {
+      forkExpiryMs = sourceExpiryMs // Inherit source expiry
+    }
+
+    // Cap at source expiry
+    if (
+      sourceExpiryMs !== undefined &&
+      forkExpiryMs !== undefined &&
+      forkExpiryMs > sourceExpiryMs
+    ) {
+      forkExpiryMs = sourceExpiryMs
+    }
+
+    if (forkExpiryMs !== undefined) {
+      return new Date(forkExpiryMs).toISOString()
+    }
+    return undefined
   }
 
   /**
-   * Check if a stream exists (and is not expired).
+   * Get a stream by path.
+   * Returns undefined if stream doesn't exist or is expired.
+   * Returns soft-deleted streams (caller should check stream.softDeleted).
+   */
+  get(path: string): Stream | undefined {
+    const stream = this.streams.get(path)
+    if (!stream) {
+      return undefined
+    }
+    if (this.isExpired(stream)) {
+      if (stream.refCount > 0) {
+        // Expired with refs: soft-delete instead of full delete
+        stream.softDeleted = true
+        return stream
+      }
+      this.delete(path)
+      return undefined
+    }
+    return stream
+  }
+
+  /**
+   * Check if a stream exists, is not expired, and is not soft-deleted.
    */
   has(path: string): boolean {
-    return this.getIfNotExpired(path) !== undefined
+    const stream = this.get(path)
+    if (!stream) return false
+    if (stream.softDeleted) return false
+    return true
   }
 
   /**
    * Delete a stream.
+   * If the stream has forks (refCount > 0), it is soft-deleted instead of fully removed.
+   * Returns true if the stream was found and deleted (or soft-deleted).
    */
   delete(path: string): boolean {
-    // Cancel any pending long-polls for this stream
+    const stream = this.streams.get(path)
+    if (!stream) {
+      return false
+    }
+
+    // Already soft-deleted: idempotent success
+    if (stream.softDeleted) {
+      return true
+    }
+
+    // If there are forks referencing this stream, soft-delete
+    if (stream.refCount > 0) {
+      stream.softDeleted = true
+      return true
+    }
+
+    // RefCount == 0: full delete with cascading GC
+    this.deleteWithCascade(path)
+    return true
+  }
+
+  /**
+   * Fully delete a stream and cascade to soft-deleted parents
+   * whose refcount drops to zero.
+   */
+  private deleteWithCascade(path: string): void {
+    const stream = this.streams.get(path)
+    if (!stream) return
+
+    const forkedFrom = stream.forkedFrom
+
+    // Delete this stream's data
+    this.streams.delete(path)
     this.cancelLongPollsForStream(path)
-    return this.streams.delete(path)
+
+    // If this stream is a fork, decrement the source's refcount
+    if (forkedFrom) {
+      const parent = this.streams.get(forkedFrom)
+      if (parent) {
+        parent.refCount--
+        if (parent.refCount < 0) {
+          parent.refCount = 0
+        }
+
+        // If parent refcount hit 0 and parent is soft-deleted, cascade
+        if (parent.refCount === 0 && parent.softDeleted) {
+          this.deleteWithCascade(forkedFrom)
+        }
+      }
+    }
   }
 
   /**
@@ -401,6 +612,11 @@ export class StreamStore {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
+    }
+
+    // Guard against soft-deleted streams
+    if (stream.softDeleted) {
+      throw new Error(`Stream is soft-deleted: ${path}`)
     }
 
     // Check if stream is closed
@@ -568,6 +784,10 @@ export class StreamStore {
       return null
     }
 
+    if (stream.softDeleted) {
+      throw new Error(`Stream is soft-deleted: ${path}`)
+    }
+
     const alreadyClosed = stream.closed ?? false
     stream.closed = true
 
@@ -686,6 +906,7 @@ export class StreamStore {
 
   /**
    * Read messages from a stream starting at the given offset.
+   * For forked streams, stitches messages from the source chain and the fork's own messages.
    * @throws Error if stream doesn't exist or is expired
    */
   read(
@@ -699,16 +920,31 @@ export class StreamStore {
 
     // No offset or -1 means start from beginning
     if (!offset || offset === `-1`) {
+      if (stream.forkedFrom) {
+        // Read all inherited messages from source chain, plus fork's own
+        const inherited = this.readForkedMessages(
+          stream.forkedFrom,
+          undefined,
+          stream.forkOffset!
+        )
+        return {
+          messages: [...inherited, ...stream.messages],
+          upToDate: true,
+        }
+      }
       return {
         messages: [...stream.messages],
         upToDate: true,
       }
     }
 
-    // Find messages after the given offset
+    if (stream.forkedFrom) {
+      return this.readFromFork(stream, offset)
+    }
+
+    // Non-forked stream: find messages after the given offset
     const offsetIndex = this.findOffsetIndex(stream, offset)
     if (offsetIndex === -1) {
-      // Offset is at or past the end
       return {
         messages: [],
         upToDate: true,
@@ -719,6 +955,88 @@ export class StreamStore {
       messages: stream.messages.slice(offsetIndex),
       upToDate: true,
     }
+  }
+
+  /**
+   * Read from a forked stream, stitching inherited and own messages.
+   */
+  private readFromFork(
+    stream: Stream,
+    offset: string
+  ): { messages: Array<StreamMessage>; upToDate: boolean } {
+    const messages: Array<StreamMessage> = []
+
+    // If offset is before the forkOffset, read from source chain
+    if (offset < stream.forkOffset!) {
+      const inherited = this.readForkedMessages(
+        stream.forkedFrom!,
+        offset,
+        stream.forkOffset!
+      )
+      messages.push(...inherited)
+    }
+
+    // Read fork's own messages (offset >= forkOffset)
+    const ownMessages = this.readOwnMessages(stream, offset)
+    messages.push(...ownMessages)
+
+    return {
+      messages,
+      upToDate: true,
+    }
+  }
+
+  /**
+   * Read a stream's own messages starting after the given offset.
+   */
+  private readOwnMessages(
+    stream: Stream,
+    offset: string
+  ): Array<StreamMessage> {
+    const offsetIndex = this.findOffsetIndex(stream, offset)
+    if (offsetIndex === -1) {
+      return []
+    }
+    return stream.messages.slice(offsetIndex)
+  }
+
+  /**
+   * Recursively read messages from a fork's source chain.
+   * Reads from source (and its sources if also forked), capped at forkOffset.
+   * Does NOT check softDeleted — forks must read through soft-deleted sources.
+   */
+  private readForkedMessages(
+    sourcePath: string,
+    offset: string | undefined,
+    capOffset: string
+  ): Array<StreamMessage> {
+    const source = this.streams.get(sourcePath)
+    if (!source) {
+      return []
+    }
+
+    const messages: Array<StreamMessage> = []
+
+    // If source is also a fork and offset is before source's forkOffset,
+    // recursively read from source's source
+    if (source.forkedFrom && (!offset || offset < source.forkOffset!)) {
+      const inherited = this.readForkedMessages(
+        source.forkedFrom,
+        offset,
+        // Cap at the minimum of source's forkOffset and our capOffset
+        source.forkOffset! < capOffset ? source.forkOffset! : capOffset
+      )
+      messages.push(...inherited)
+    }
+
+    // Read source's own messages, capped at capOffset
+    for (const msg of source.messages) {
+      if (offset && msg.offset <= offset) continue
+      if (msg.offset > capOffset) break
+      messages.push(msg)
+    }
+
+    return messages
   }
 
   /**
@@ -765,6 +1083,13 @@ export class StreamStore {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
       throw new Error(`Stream not found: ${path}`)
+    }
+
+    // For forks: if offset is in the inherited range (< forkOffset),
+    // read and return immediately instead of long-polling
+    if (stream.forkedFrom && offset < stream.forkOffset!) {
+      const { messages } = this.read(path, offset)
+      return { messages, timedOut: false }
     }
 
     // Check if there are already new messages
