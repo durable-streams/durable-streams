@@ -1,0 +1,93 @@
+[
+  {
+    "type": "system",
+    "subtype": "init",
+    "session_id": "claude-session-1",
+    "model": "claude-sonnet-4-5-20250514",
+    "permission_mode": "plan",
+    "tools": []
+  },
+  {
+    "type": "user",
+    "message": {
+      "role": "user",
+      "content": [
+        {
+          "type": "text",
+          "text": "reply with pong"
+        }
+      ]
+    }
+  },
+  {
+    "type": "stream_event",
+    "event": {
+      "type": "content_block_delta",
+      "delta": {
+        "type": "text_delta",
+        "text": "PO"
+      }
+    }
+  },
+  {
+    "type": "stream_event",
+    "event": {
+      "type": "content_block_delta",
+      "delta": {
+        "type": "thinking_delta",
+        "thinking": "checking whether a tool is needed"
+      }
+    }
+  },
+  {
+    "type": "assistant",
+    "message": {
+      "content": [
+        {
+          "type": "text",
+          "text": "PONG"
+        },
+        {
+          "type": "tool_use",
+          "id": "toolu_1",
+          "name": "Bash",
+          "input": {
+            "command": "pwd"
+          }
+        }
+      ]
+    }
+  },
+  {
+    "type": "control_request",
+    "request_id": "perm-1",
+    "request": {
+      "subtype": "can_use_tool",
+      "tool_name": "Bash",
+      "input": {
+        "command": "pwd"
+      }
+    }
+  },
+  {
+    "type": "tool_progress",
+    "tool_use_id": "toolu_1",
+    "elapsed": 125
+  },
+  {
+    "type": "result",
+    "subtype": "success",
+    "cost_usd": 0.02,
+    "usage": {
+      "input_tokens": 100,
+      "output_tokens": 25
+    }
+  },
+  {
+    "type": "keep_alive"
+  },
+  {
+    "type": "some_future_type",
+    "value": 123
+  }
+]

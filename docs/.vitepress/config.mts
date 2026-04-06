@@ -65,6 +65,7 @@ export default defineConfig({
         text: "Usage",
         items: [
           { text: "CLI", link: "/cli" },
+          { text: "Coding Agents", link: "/coding-agents" },
           {
             text: "Clients",
             items: [

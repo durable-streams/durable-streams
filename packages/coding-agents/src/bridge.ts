@@ -8,9 +8,11 @@ import type { AgentAdapter } from "./adapters/types.js"
 import type {
   AgentEnvelope,
   AgentType,
+  BridgeAgentDebugEnvelope,
   BridgeDebugHooks,
-  BridgeEnvelope,
+  BridgeForwardDebugEnvelope,
   BridgeForwardSource,
+  BridgeLifecycleEnvelope,
   ClientIntent,
   ControlResponseIntent,
   Session,
@@ -34,6 +36,7 @@ export interface BridgeOptions {
   rewritePaths?: Record<string, string>
   resume?: boolean
   env?: Record<string, string>
+  debugStream?: boolean
   debugHooks?: BridgeDebugHooks
 }
 
@@ -44,13 +47,49 @@ function getStreamSessionId(streamUrl: string): string {
 
 function createBridgeEnvelope(
   agent: AgentType,
-  type: BridgeEnvelope[`type`]
-): BridgeEnvelope {
+  type: BridgeLifecycleEnvelope[`type`]
+): BridgeLifecycleEnvelope {
   return {
     agent,
     direction: `bridge`,
     timestamp: Date.now(),
     type,
+  }
+}
+
+function createBridgeForwardDebugEnvelope(
+  agent: AgentType,
+  event: {
+    sequence: number
+    source: BridgeForwardSource
+    raw: object
+  }
+): BridgeForwardDebugEnvelope {
+  return {
+    agent,
+    direction: `bridge`,
+    timestamp: Date.now(),
+    type: `forwarded_to_agent`,
+    sequence: event.sequence,
+    source: event.source,
+    raw: event.raw,
+  }
+}
+
+function createBridgeAgentDebugEnvelope(
+  agent: AgentType,
+  event: {
+    sequence: number
+    raw: object
+  }
+): BridgeAgentDebugEnvelope {
+  return {
+    agent,
+    direction: `bridge`,
+    timestamp: Date.now(),
+    type: `agent_message_received`,
+    sequence: event.sequence,
+    raw: event.raw,
   }
 }
 
@@ -132,6 +171,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
     rewritePaths,
     resume = false,
     env,
+    debugStream = false,
     debugHooks,
   } = options
 
@@ -216,12 +256,16 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
   }
 
   const sendToAgent = (raw: object, source: BridgeForwardSource): void => {
-    debugHooks?.onForwardToAgent?.({
+    const event = {
       sequence: ++debugSequence,
       timestamp: Date.now(),
       source,
       raw,
-    })
+    }
+    debugHooks?.onForwardToAgent?.(event)
+    if (debugStream) {
+      writeJson(createBridgeForwardDebugEnvelope(adapter.agentType, event))
+    }
     connection.send(raw)
   }
 
@@ -249,11 +293,15 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
   }
 
   connection.onMessage((raw) => {
-    debugHooks?.onAgentMessage?.({
+    const event = {
       sequence: ++debugSequence,
       timestamp: Date.now(),
       raw,
-    })
+    }
+    debugHooks?.onAgentMessage?.(event)
+    if (debugStream) {
+      writeJson(createBridgeAgentDebugEnvelope(adapter.agentType, event))
+    }
     writeJson(createAgentEnvelope(adapter.agentType, raw))
 
     const classification = adapter.parseDirection(raw)

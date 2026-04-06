@@ -50,6 +50,21 @@ describe(`StreamEnvelope`, () => {
     expect(envelope.type).toBe(`session_started`)
   })
 
+  it(`should accept a valid persisted bridge debug envelope`, () => {
+    const envelope: BridgeEnvelope = {
+      agent: `codex`,
+      direction: `bridge`,
+      timestamp: Date.now(),
+      type: `forwarded_to_agent`,
+      sequence: 1,
+      source: `queued_prompt`,
+      raw: { method: `turn/start` },
+    }
+
+    expect(envelope.direction).toBe(`bridge`)
+    expect(envelope.type).toBe(`forwarded_to_agent`)
+  })
+
   it(`should discriminate envelope types via direction field`, () => {
     const envelope: StreamEnvelope = {
       agent: `codex`,

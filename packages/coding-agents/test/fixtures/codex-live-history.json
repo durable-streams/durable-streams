@@ -1,0 +1,193 @@
+[
+  {
+    "method": "thread/started",
+    "params": {
+      "thread": {
+        "id": "thread-1"
+      }
+    }
+  },
+  {
+    "method": "thread/status/changed",
+    "params": {
+      "threadId": "thread-1",
+      "status": {
+        "type": "active",
+        "activeFlags": []
+      }
+    }
+  },
+  {
+    "method": "item/started",
+    "params": {
+      "item": {
+        "type": "agentMessage",
+        "id": "msg-1",
+        "text": ""
+      }
+    }
+  },
+  {
+    "method": "item/agentMessage/delta",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "delta": "PO"
+    }
+  },
+  {
+    "method": "item/reasoning/summaryTextDelta",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "delta": "checking command safety"
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "item": {
+        "type": "agentMessage",
+        "id": "msg-1",
+        "text": "PONG"
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "item": {
+        "type": "reasoning",
+        "id": "reason-1",
+        "content": ["Need to check one extra file."],
+        "summary": []
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "item": {
+        "type": "commandExecution",
+        "id": "cmd-1",
+        "command": "pwd",
+        "cwd": "/repo"
+      }
+    }
+  },
+  {
+    "method": "item/completed",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "item": {
+        "type": "fileChange",
+        "id": "file-1",
+        "changes": [
+          {
+            "path": "src/index.ts",
+            "diff": "+const x = 1"
+          }
+        ]
+      }
+    }
+  },
+  {
+    "id": "approval-1",
+    "method": "item/commandExecution/requestApproval",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "itemId": "cmd-1",
+      "command": "pwd",
+      "cwd": "/repo"
+    }
+  },
+  {
+    "id": "approval-2",
+    "method": "item/fileChange/requestApproval",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "itemId": "file-1",
+      "reason": "Need to write a file",
+      "grantRoot": "/repo"
+    }
+  },
+  {
+    "id": "approval-3",
+    "method": "item/permissions/requestApproval",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "itemId": "perm-1",
+      "reason": "Need an extra root",
+      "permissions": {
+        "fileSystem": {
+          "mode": "read-only",
+          "roots": ["/tmp/extra"]
+        }
+      }
+    }
+  },
+  {
+    "id": "approval-4",
+    "method": "item/tool/requestUserInput",
+    "params": {
+      "threadId": "thread-1",
+      "turnId": "turn-1",
+      "itemId": "input-1",
+      "questions": [
+        {
+          "id": "choice",
+          "header": "Pick one",
+          "question": "Choose a mode",
+          "isOther": false,
+          "isSecret": false,
+          "options": [
+            {
+              "label": "A",
+              "value": "A"
+            },
+            {
+              "label": "B",
+              "value": "B"
+            }
+          ]
+        }
+      ]
+    }
+  },
+  {
+    "method": "turn/completed",
+    "params": {
+      "threadId": "thread-1",
+      "turn": {
+        "id": "turn-1",
+        "status": "completed",
+        "items": [],
+        "error": null
+      }
+    }
+  },
+  {
+    "method": "mcpServer/startupStatus/updated",
+    "params": {
+      "name": "codex_apps",
+      "status": "ready",
+      "error": null
+    }
+  },
+  {
+    "method": "future/protocol/change",
+    "params": {
+      "value": 123
+    }
+  }
+]

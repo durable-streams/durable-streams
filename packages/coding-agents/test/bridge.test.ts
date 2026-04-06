@@ -363,6 +363,133 @@ describe(`startBridge`, () => {
     await session.close()
   })
 
+  it(`should keep persisted bridge debug events disabled by default`, async () => {
+    const streamUrl = `${baseUrl}/v1/stream/bridge-debug-default-${Date.now()}`
+    const { adapter, connection } = createMockAdapter()
+
+    const session = await startBridge({
+      adapter,
+      streamUrl,
+      cwd: `/tmp`,
+    })
+
+    const clientStream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+    const clientProducer = new IdempotentProducer(
+      clientStream,
+      `test-debug-default`,
+      {
+        autoClaim: true,
+      }
+    )
+
+    clientProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now(),
+        user: { name: `Test`, email: `test@test.com` },
+        raw: { type: `user_message`, text: `Hello` },
+      })
+    )
+    await clientProducer.flush()
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    connection.simulateMessage({ type: `assistant`, message: { content: [] } })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    const stream = new DurableStream({ url: streamUrl })
+    const response = await stream.stream<StreamEnvelope>({
+      json: true,
+      live: false,
+    })
+    const items = await response.json()
+    const bridgeTypes = items
+      .filter(
+        (
+          item: StreamEnvelope
+        ): item is Extract<StreamEnvelope, { direction: `bridge` }> =>
+          item.direction === `bridge`
+      )
+      .map((event) => event.type)
+
+    expect(bridgeTypes).toEqual([`session_started`])
+
+    await clientProducer.detach()
+    await session.close()
+  })
+
+  it(`should persist bridge debug events when debugStream is enabled`, async () => {
+    const streamUrl = `${baseUrl}/v1/stream/bridge-debug-enabled-${Date.now()}`
+    const { adapter, connection } = createMockAdapter()
+
+    const session = await startBridge({
+      adapter,
+      streamUrl,
+      cwd: `/tmp`,
+      debugStream: true,
+    })
+
+    const clientStream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+    const clientProducer = new IdempotentProducer(
+      clientStream,
+      `test-debug-enabled`,
+      {
+        autoClaim: true,
+      }
+    )
+
+    clientProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now(),
+        user: { name: `Test`, email: `test@test.com` },
+        raw: { type: `user_message`, text: `Hello` },
+      })
+    )
+    await clientProducer.flush()
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    connection.simulateMessage({ type: `assistant`, message: { content: [] } })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    const stream = new DurableStream({ url: streamUrl })
+    const response = await stream.stream<StreamEnvelope>({
+      json: true,
+      live: false,
+    })
+    const items = await response.json()
+    const bridgeEvents = items.filter(
+      (
+        item: StreamEnvelope
+      ): item is Extract<StreamEnvelope, { direction: `bridge` }> =>
+        item.direction === `bridge`
+    )
+
+    expect(bridgeEvents).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          type: `forwarded_to_agent`,
+          source: `queued_prompt`,
+          raw: { type: `user_message`, text: `Hello` },
+        }),
+        expect.objectContaining({
+          type: `agent_message_received`,
+          raw: { type: `assistant`, message: { content: [] } },
+        }),
+      ])
+    )
+
+    await clientProducer.detach()
+    await session.close()
+  })
+
   it(`should replay an unfinished prompt after resume`, async () => {
     const streamUrl = `${baseUrl}/v1/stream/bridge-replay-prompt-${Date.now()}`
     await DurableStream.create({

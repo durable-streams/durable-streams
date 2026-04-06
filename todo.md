@@ -25,26 +25,26 @@ Validated end to end:
    - Claude and Codex smoke jobs are split by runner label
    - Full live suites remain explicit/manual rather than default PR-gated CI
 
-2. [ ] CLI / API parity
-   - Surface advanced Codex options in the CLI: approval policy, sandbox mode, experimental features, developer instructions, and env
-   - Decide whether Claude-specific resume/path-rewrite controls should remain library-only or become explicit CLI flags
+2. [x] CLI / API parity
+   - The CLI now surfaces advanced Codex options: approval policy, sandbox mode, experimental features, developer instructions, and env
+   - Claude-specific resume/path-rewrite controls remain library-only because they are adapter-internal recovery behavior rather than stable CLI concepts
 
-3. [ ] Persistable bridge debug mode
-   - Optional on-stream debug envelopes for postmortems and replayable bridge telemetry
-   - Keep the default path clean and protocol-stable
+3. [x] Persistable bridge debug mode
+   - Optional on-stream debug envelopes now exist behind `debugStream: true`
+   - The default path remains protocol-stable and does not append bridge debug events
 
-4. [ ] Recorded protocol fixture capture
-   - Capture representative Claude and Codex raw histories as regression fixtures
-   - Use them to harden normalizers and reduce reliance on live repro for protocol drift
+4. [x] Recorded protocol fixture capture
+   - Representative Claude and Codex raw histories are checked into `packages/coding-agents/test/fixtures`
+   - Normalizer regression tests now run against ordered mixed-event histories, not just one-off hand-built events
 
-5. [ ] Public docs / examples
-   - Add a first-class user-facing docs page for `@durable-streams/coding-agents`
-   - Include examples for browser clients, shared sessions, approvals, and resume
+5. [x] Public docs / examples
+   - Added `docs/coding-agents.md` and linked it in the VitePress sidebar
+   - Added user-facing examples for clients, shared approvals, resume, CLI usage, and debugging
 
-6. [ ] API polish
-   - Review exported types and entrypoints for a publishable first release
-   - Remove or clearly mark test-only/debug-only surfaces
+6. [x] API polish
+   - Added explicit advanced subpath exports for `./normalize` and `./protocol`
+   - Clearly marked bridge debug hooks and persisted debug telemetry as advanced diagnostic surfaces
 
-7. [ ] Operational guidance
-   - Document runtime prerequisites, expected agent versions, and known platform assumptions
-   - Document when Claude seeded-workspace fallback is expected during cross-cwd resume
+7. [x] Operational guidance
+   - Documented runtime prerequisites, local checks, and live test tiers in the package README and docs page
+   - Documented when Claude seeded-workspace fallback is expected during cross-cwd resume

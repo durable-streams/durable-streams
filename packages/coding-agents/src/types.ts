@@ -48,17 +48,47 @@ export interface UserEnvelope<TRaw extends object = ClientIntent> {
   raw: TRaw
 }
 
-export type BridgeEventType =
+export type BridgeLifecycleEventType =
   | `session_started`
   | `session_resumed`
   | `session_ended`
 
-export interface BridgeEnvelope {
+export type BridgeDebugEventType =
+  | `forwarded_to_agent`
+  | `agent_message_received`
+
+export type BridgeEventType = BridgeLifecycleEventType | BridgeDebugEventType
+
+export interface BridgeLifecycleEnvelope {
   agent: AgentType
   direction: `bridge`
   timestamp: number
-  type: BridgeEventType
+  type: BridgeLifecycleEventType
 }
+
+export interface BridgeForwardDebugEnvelope {
+  agent: AgentType
+  direction: `bridge`
+  timestamp: number
+  type: `forwarded_to_agent`
+  sequence: number
+  source: BridgeForwardSource
+  raw: object
+}
+
+export interface BridgeAgentDebugEnvelope {
+  agent: AgentType
+  direction: `bridge`
+  timestamp: number
+  type: `agent_message_received`
+  sequence: number
+  raw: object
+}
+
+export type BridgeEnvelope =
+  | BridgeLifecycleEnvelope
+  | BridgeForwardDebugEnvelope
+  | BridgeAgentDebugEnvelope
 
 export type StreamEnvelope = AgentEnvelope | UserEnvelope | BridgeEnvelope
 
@@ -82,7 +112,15 @@ export interface BridgeAgentDebugEvent {
 }
 
 export interface BridgeDebugHooks {
+  /**
+   * Advanced diagnostics hook.
+   * Intended for tests and bridge-level debugging rather than normal app code.
+   */
   onForwardToAgent?: (event: BridgeForwardDebugEvent) => void
+  /**
+   * Advanced diagnostics hook.
+   * Intended for tests and bridge-level debugging rather than normal app code.
+   */
   onAgentMessage?: (event: BridgeAgentDebugEvent) => void
 }
 
@@ -101,6 +139,15 @@ export interface SessionOptions {
   resume?: boolean
   rewritePaths?: Record<string, string>
   env?: Record<string, string>
+  /**
+   * Opt-in persisted bridge telemetry.
+   * When enabled, extra bridge debug envelopes are appended to the stream.
+   */
+  debugStream?: boolean
+  /**
+   * In-memory bridge diagnostics hooks.
+   * Useful in tests; most applications should not need this.
+   */
   debugHooks?: BridgeDebugHooks
 }
 

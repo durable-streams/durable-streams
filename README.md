@@ -83,6 +83,7 @@ The protocol is:
 ## Usage
 
 - [CLI](https://durablestreams.com/cli) -- create, read, append-to and tail streams
+- [Coding Agents](https://durablestreams.com/coding-agents) -- durable Claude Code and Codex sessions on top of streams
 - [Clients](https://durablestreams.com/typescript-client) -- TypeScript, Python and other languages
 - [JSON mode](https://durablestreams.com/json-mode) -- stream structured data using JSON messages
 - [Durable Proxy](https://durablestreams.com/durable-proxy) -- durable proxy for AI token streams
@@ -120,12 +121,13 @@ The protocol is:
 
 ### Servers & Tools
 
-| Package                                      | Description                                        |
-| -------------------------------------------- | -------------------------------------------------- |
-| [@durable-streams/server](./packages/server) | Node.js reference server (development/testing)     |
-| [caddy-plugin](./packages/caddy-plugin)      | Production Caddy server plugin                     |
-| [@durable-streams/cli](./packages/cli)       | Command-line tool                                  |
-| [@durable-streams/state](./packages/state)   | State Protocol (insert/update/delete over streams) |
+| Package                                                    | Description                                         |
+| ---------------------------------------------------------- | --------------------------------------------------- |
+| [@durable-streams/server](./packages/server)               | Node.js reference server (development/testing)      |
+| [caddy-plugin](./packages/caddy-plugin)                    | Production Caddy server plugin                      |
+| [@durable-streams/cli](./packages/cli)                     | Command-line tool                                   |
+| [@durable-streams/coding-agents](./packages/coding-agents) | Durable Claude Code and Codex sessions over streams |
+| [@durable-streams/state](./packages/state)                 | State Protocol (insert/update/delete over streams)  |
 
 ### Testing & Benchmarks
 

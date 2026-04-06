@@ -34,6 +34,26 @@
         "default": "./dist/src/client.cjs"
       }
     },
+    "./normalize": {
+      "import": {
+        "types": "./dist/src/normalize/index.d.ts",
+        "default": "./dist/src/normalize/index.js"
+      },
+      "require": {
+        "types": "./dist/src/normalize/index.d.cts",
+        "default": "./dist/src/normalize/index.cjs"
+      }
+    },
+    "./protocol": {
+      "import": {
+        "types": "./dist/src/protocol/index.d.ts",
+        "default": "./dist/src/protocol/index.js"
+      },
+      "require": {
+        "types": "./dist/src/protocol/index.d.cts",
+        "default": "./dist/src/protocol/index.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "bin": {
