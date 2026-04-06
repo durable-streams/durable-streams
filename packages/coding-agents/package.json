@@ -56,7 +56,12 @@
   "scripts": {
     "build": "tsdown",
     "dev": "tsdown --watch",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "cd ../.. && pnpm exec vitest run --project coding-agents",
+    "test:live": "cd ../.. && CODING_AGENTS_RUN_REAL=1 pnpm exec vitest run --project coding-agents packages/coding-agents/test/real-agents.test.ts",
+    "test:live:smoke": "cd ../.. && CODING_AGENTS_RUN_REAL=1 pnpm exec vitest run --project coding-agents packages/coding-agents/test/real-agents.test.ts -t \"simple prompt round trip|normalization stays stable\"",
+    "test:live:claude": "cd ../.. && CODING_AGENTS_RUN_REAL=1 pnpm exec vitest run --project coding-agents packages/coding-agents/test/real-agents.test.ts -t \"Claude\"",
+    "test:live:codex": "cd ../.. && CODING_AGENTS_RUN_REAL=1 pnpm exec vitest run --project coding-agents packages/coding-agents/test/real-agents.test.ts -t \"Codex\""
   },
   "engines": {
     "node": ">=18.0.0"

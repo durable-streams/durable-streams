@@ -1,53 +1,50 @@
 # Todo
 
-1. [x] Real approval round-trips for both agents
-   - Live allow-path coverage is in place for Claude and Codex
+## Phase 1 Status
 
-2. [x] Real interrupt behavior during an active turn
-   - Live interrupt-path coverage is in place for Claude and Codex
-   - Includes synthesized cancellation ordering checks when approval requests are pending
-   - Includes queued prompt continuation checks after interruption
+Phase 1 is complete.
 
-3. [x] Real deny/cancel approval variants for both agents
-   - Live deny/cancel coverage is in place for Claude and Codex
-   - Scenarios assert the bridge forwards exactly one response and side effects are blocked
+Validated end to end:
 
-4. [x] Real resume after bridge restart
-   - Live restart/resume coverage is in place for Claude and Codex
-   - Scenarios assert resumed bridge lifecycle events and successful post-resume turns
+- Claude and Codex prompt round trips
+- approval allow / deny / cancel flows
+- interrupts with synthesized cancellation ordering
+- restart / resume
+- prompt replay after restart before turn completion
+- multi-client duplicate response races
+- queued prompts
+- Codex `file_change`, `permissions`, and `request_user_input`
+- normalization stability
+- bridge crash / agent exit mid-turn
+- Claude cross-cwd resume via seeded-workspace fallback
 
-5. [x] Real prompt replay after restart before turn completion
-   - Live mid-turn prompt replay coverage is in place for Claude and Codex
-   - Scenarios verify a durably written in-flight prompt still produces the expected turn output after restart
+## Phase 2 Backlog
 
-6. [x] Multi-client duplicate response races against a live agent
-   - Live two-client approval race coverage is in place for Claude and Codex
-   - Scenarios assert `first_response_wins` and verify the winning response determines the observed outcome
+1. [ ] CI strategy for live-agent tests
+   - Decide which live suites run in CI vs local-only
+   - Define required env, secrets, and machine assumptions for Claude and Codex
+   - Keep `test:live:smoke` cheap enough to run regularly
 
-7. [x] Multiple queued prompts against live agents
-   - Live queued-prompt coverage is in place for Claude and Codex
-   - Scenarios assert prompt B is not forwarded until prompt A completes
+2. [ ] CLI / API parity
+   - Surface advanced Codex options in the CLI: approval policy, sandbox mode, experimental features, developer instructions, and env
+   - Decide whether Claude-specific resume/path-rewrite controls should remain library-only or become explicit CLI flags
 
-8. [x] Codex app-server approval variants beyond command execution
-   - Live file-change approval coverage is in place
-   - Live permissions approval coverage is in place
-   - Live `item/tool/requestUserInput` coverage is in place
-   - Codex sandbox / approval-policy plumbing and spawn-time experimental feature flags are in place
+3. [ ] Persistable bridge debug mode
+   - Optional on-stream debug envelopes for postmortems and replayable bridge telemetry
+   - Keep the default path clean and protocol-stable
 
-9. [x] Real normalization coverage from recorded histories
-   - Live Claude and Codex prompt histories now assert stable client-facing event projections
-   - Codex normalizer now suppresses common transport noise and no longer misclassifies initialize responses as turn completion
+4. [ ] Recorded protocol fixture capture
+   - Capture representative Claude and Codex raw histories as regression fixtures
+   - Use them to harden normalizers and reduce reliance on live repro for protocol drift
 
-10. [x] Bridge crash / agent exit mid-turn
+5. [ ] Public docs / examples
+   - Add a first-class user-facing docs page for `@durable-streams/coding-agents`
+   - Include examples for browser clients, shared sessions, approvals, and resume
 
-- Scripted bridge coverage now forces agent exit during a turn
-- Scenarios assert lifecycle events, teardown, and prompt replay after resume
+6. [ ] API polish
+   - Review exported types and entrypoints for a publishable first release
+   - Remove or clearly mark test-only/debug-only surfaces
 
-11. [x] Path rewriting during resume across cwd changes
-
-- Claude path-rewrite unit coverage is in place for resume transcript generation
-- Claude resume transcript writes now use the same full-path-sanitized project directory shape that real Claude sessions create under `~/.claude/projects`
-- Claude now fails fast instead of hanging when the resumed process exits before connecting back to the bridge
-- Direct synthetic cross-cwd resume was proven insufficient because Claude binds resumability to workspace-local registration, not just transcript contents
-- The implemented fallback seeds a real Claude session in the target cwd, overwrites the seeded transcript with the reconstructed history, and resumes using the seeded session id
-- Live cross-cwd resume coverage is now in place and passing for Claude
+7. [ ] Operational guidance
+   - Document runtime prerequisites, expected agent versions, and known platform assumptions
+   - Document when Claude seeded-workspace fallback is expected during cross-cwd resume

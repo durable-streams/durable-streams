@@ -1,363 +1,327 @@
 # @durable-streams/coding-agents
 
-A TypeScript library and CLI that makes coding agent sessions durable and shareable. Spawns Claude Code or Codex, records every protocol message to a durable stream, and provides a browser-safe client for multi-device, multi-user access.
+A TypeScript library and CLI for making Claude Code and Codex sessions durable, shareable, and multi-client safe by recording raw protocol traffic to a durable stream.
 
 ## Problem
 
-Coding agent sessions are ephemeral. When a sandbox shuts down, the conversation is lost. Resuming requires reconstructing prior context. Multi-device access (laptop, phone, web) requires a sync layer. Existing solutions couple session management, HTTP servers, and UI rendering into monolithic systems.
+Coding agent sessions are normally local and ephemeral.
 
-Previous approaches used ACP (Agent Client Protocol) as an abstraction layer over agents. ACP standardizes but also flattens: it loses agent-specific features, streaming fidelity, and native tool-call UX. The abstraction becomes a bottleneck.
+- When the bridge process or sandbox dies, the active session dies with it.
+- Multi-device access needs a shared source of truth.
+- Generic protocol layers flatten away agent-native behavior and make approvals, streaming, and resume less faithful.
 
 ## Solution
 
-Use each agent's native protocol directly. Claude Code speaks NDJSON over WebSocket (`--sdk-url`). Codex speaks JSON-RPC over stdio. A thin bridge process accepts these connections, records every raw message to a durable stream, and relays client messages back. No protocol translation, no fidelity loss.
+Use each agent's native protocol directly and treat the durable stream as the event log.
 
-The stream stores raw events (event sourcing). Normalization into a unified format happens client-side, as a projection over the raw data. This means normalization bugs are fixable after the fact, and the stream is always the complete truth.
+- Claude Code uses its observed `--sdk-url` WebSocket protocol with NDJSON messages.
+- Codex uses `codex app-server --listen stdio://` and speaks JSON-RPC.
+- The bridge records raw agent messages to the stream and relays client intents back to the agent.
+- Normalization happens client-side as a projection over immutable raw events.
+
+That keeps the stream as the durable truth and lets client projections evolve without rewriting history.
 
 ## Architecture
 
-```
-                        Durable Stream (remote)
+```text
+                        Durable Stream
                         ┌──────────────────────┐
-  Client A ────────────>│                      │<─── Bridge (in sandbox)
-  (browser) <───────────│   stream URL         │───>   │
-                        │                      │       ├── WebSocket server (:port)
-  Client B ────────────>│                      │       │     ↕
-  (phone)   <───────────│                      │       ├── Claude Code (--sdk-url)
-                        └──────────────────────┘       │   or Codex (stdio)
+  Browser / Phone ─────>│                      │<──── Bridge
+  Browser / Phone <─────│      stream URL      │─────┐
+                        │                      │     │
+                        └──────────────────────┘     │
+                                                     │
+                                                     ├── Claude Code via WebSocket
+                                                     └── Codex app-server via stdio
 ```
 
 Three components:
 
-1. **Bridge** (Node-only): spawns the agent, accepts its connection, relays all traffic through the durable stream.
-2. **Client** (browser-safe): reads events from the stream with agent-specific normalizers, writes prompts/responses/cancel.
-3. **CLI**: `start` and `resume` commands that wrap the bridge API.
+1. Bridge: Node-only process that spawns the agent, records raw traffic, and applies forwarding rules.
+2. Client: browser-safe reader/writer over the stream.
+3. CLI: thin wrapper around the bridge API.
 
-## Stream envelope format
+## Stream model
 
-Every message on the stream is a JSON envelope containing the raw protocol message:
+Every stream item is an envelope:
 
-```typescript
-// Agent messages
-{
-  agent: "claude" | "codex",
-  direction: "agent",
-  timestamp: number,
-  raw: object  // exact message from agent protocol
+```ts
+type AgentEnvelope = {
+  agent: "claude" | "codex"
+  direction: "agent"
+  timestamp: number
+  raw: object
 }
 
-// User messages
-{
-  agent: "claude" | "codex",
-  direction: "user",
-  timestamp: number,
-  user: { name: string, email: string },
-  raw: object  // client intent: prompt, permission response, or cancel
+type UserEnvelope = {
+  agent: "claude" | "codex"
+  direction: "user"
+  timestamp: number
+  user: { name: string; email: string }
+  raw: ClientIntent
 }
 
-// Bridge control events
-{
-  agent: "claude" | "codex",
-  direction: "bridge",
-  timestamp: number,
-  type: "session_started" | "session_resumed" | "session_ended",
+type BridgeEnvelope = {
+  agent: "claude" | "codex"
+  direction: "bridge"
+  timestamp: number
+  type: "session_started" | "session_resumed" | "session_ended"
 }
 ```
 
-For agent messages, `raw` is the exact NDJSON object (Claude) or JSON-RPC message (Codex) from the agent's output. For user messages, `raw` is **client intent**, not guaranteed-delivered traffic. Clients append directly to the stream; the bridge decides what to forward to the agent (e.g., dropping duplicate responses, queuing prompts). The stream records all client intent for observability, but the bridge is the authority on what the agent actually receives.
+Client intents are generic:
 
-### Client intent schema
-
-User envelope `raw` follows a generic intent format. The bridge translates these to agent-native wire format via `adapter.translateClientIntent()` before forwarding.
-
-```typescript
-// Prompt
-{ type: "user_message", text: string }
-
-// Permission response
-{ type: "control_response", response: { request_id: string | number, subtype: "success" | "cancelled", response: object } }
-
-// Cancel current turn
-{ type: "interrupt" }
+```ts
+type ClientIntent =
+  | { type: "user_message"; text: string }
+  | {
+      type: "control_response"
+      response: {
+        request_id: string | number
+        subtype: "success" | "cancelled"
+        response: object
+      }
+    }
+  | { type: "interrupt" }
 ```
 
-All writes to the stream (bridge and client) must use `IdempotentProducer` from `@durable-streams/client` for exactly-once semantics. Both use `autoClaim: true` so the server handles epoch fencing automatically. The durability guarantees differ:
+The stream stores client intent, not guaranteed-delivered bridge output. The bridge is the authority on what actually gets forwarded to the agent.
 
-- **Bridge**: producer ID `bridge-{sessionId}`. Restart-safe across sandbox replacement. On resume in a new sandbox, autoClaim fences out the zombie bridge from the previous sandbox. The bridge is a long-lived writer that survives across sandbox lifecycles.
-- **Client**: random producer ID per instance (e.g., `client-{crypto.randomUUID()}`). Ephemeral: the producer identity is per browser tab/device instance, not per user, and does not survive tab closure. Each tab or device is an independent writer with no cross-tab coordination.
+## Durable boundary
 
-`IdempotentProducer.append()` is fire-and-forget, which is the right default for both bridge and client writes. At shutdown, call `await producer.flush()` as the checked durability barrier (ensures all pending writes have landed), then `producer.detach()` to retire the producer without closing the stream. `producer.close()` permanently closes the underlying stream, which would break resume/shareability. Note: `detach()` swallows flush errors internally, so it is not a durability guarantee on its own. Consumers should block teardown (e.g., `beforeunload`) until flush completes.
+The durable source of truth is:
 
-## Bridge
+- user-authored intents written to the stream
+- persisted raw agent messages
+- bridge lifecycle events
 
-The bridge is a single Node process with three responsibilities:
+The bridge does not try to make every transient in-memory agent state durable.
 
-### 1. Local WebSocket server
+That distinction matters most for resume:
 
-Listens on a local port. For Claude Code, the bridge passes `--sdk-url ws://localhost:{port}/ws/cli/{sessionId}` so the agent connects back. For Codex, the adapter uses stdio pipes instead.
+- durable prompts are replayable
+- duplicate client responses are reconciled by bridge rules
+- pending approval wait state is not itself the durable object unless the agent exposes a stable resume model for it
 
-### 2. Agent adapter
+This is the key product boundary: resume reconstructs durable user intent, not arbitrary live agent waiting state.
 
-Each agent gets an adapter that handles spawning, protocol framing, and lifecycle. The adapter interface:
+## Bridge behavior
 
-```typescript
+The bridge:
+
+- opens or connects to the durable stream
+- spawns the selected agent adapter
+- writes `session_started` or `session_resumed`
+- records every raw agent message
+- tails live user events from the stream
+- translates client intents to agent-native messages
+- serializes prompts so only one prompt is in flight at a time
+
+Forwarding rules:
+
+- only one prompt is forwarded at a time
+- duplicate responses for the same pending request id are dropped
+- `interrupt` synthesizes cancellation responses for all pending requests before sending the native interrupt signal
+
+The bridge also exposes in-memory debug hooks for:
+
+- forwarded agent traffic
+- raw agent messages
+
+Those hooks are used by tests to validate bridge semantics without expanding the persisted public stream protocol.
+
+## Agent adapters
+
+Shared adapter shape:
+
+```ts
 interface AgentAdapter {
-  spawn(options: SpawnOptions): AgentConnection
-}
-
-interface AgentConnection {
-  onMessage(handler: (raw: object) => void): void
-  send(raw: object): void
-  kill(): void
-  on(event: "exit", handler: (code: number) => void): void
-}
-```
-
-**Claude adapter**: spawns `claude` with `--sdk-url`, `--print`, `--output-format stream-json`, `--input-format stream-json`. Parses incoming NDJSON lines from the WebSocket connection. Supports pass-through of agent options: `--model`, `--permission-mode`, `--verbose`, `--resume`.
-
-**Codex adapter**: spawns `codex` with stdio pipes. Parses JSON-RPC from stdout. Supports equivalent option mapping.
-
-Each adapter also implements:
-
-```typescript
-interface AgentAdapter {
-  // ...
-  parseDirection(raw: object): {
-    type: "request" | "response" | "notification"
-    id?: string | number
-  }
+  readonly agentType: "claude" | "codex"
+  spawn(options: SpawnOptions): Promise<AgentConnection>
+  parseDirection(raw: object): MessageClassification
   isTurnComplete(raw: object): boolean
-  translateClientIntent(raw: object): object
+  translateClientIntent(raw: ClientIntent): object
   prepareResume(
     history: StreamEnvelope[],
     options: ResumeOptions
-  ): Promise<{ resumeId: string }>
+  ): Promise<{
+    resumeId: string
+    forceSeedWorkspace?: boolean
+    resumeTranscriptSourcePath?: string
+  }>
+  isReadyMessage?: (raw: object) => boolean
 }
 ```
 
-`parseDirection` lets the bridge track pending request IDs without understanding protocol internals. `isTurnComplete` returns true when a message signals the end of a prompt turn (Claude: `result` message; Codex: see open questions). The bridge uses this to dequeue the next prompt. `translateClientIntent` converts generic client intent (`user_message`, `control_response`, `interrupt`) into the agent's native wire format. Claude's adapter passes through unchanged; Codex's adapter maps to JSON-RPC. `prepareResume` reconstructs local session files from stream history before spawning with resume flags, and returns the agent-native resume identifier (e.g., Claude session ID) for the bridge to pass to `spawn()`.
+### Claude
 
-### 3. Stream relay
+Claude is driven through its WebSocket SDK path:
 
-The bridge is a pure relay. It does not interpret, approve, or handle message content. All it does:
+- spawn `claude` with `--sdk-url`, `--print`, `--output-format stream-json`, `--input-format stream-json`
+- accept the websocket connection locally
+- persist raw Claude wire messages unchanged
+- treat `result` as turn completion
 
-- Agent message received → wrap in envelope → append to stream
-- Client message read from stream → unwrap → translate via `adapter.translateClientIntent()` → send to agent via `connection.send()`
+Resume is transcript-based:
 
-Pending request tracking:
+- same-cwd resume works by reconstructing or copying the Claude transcript JSONL under `~/.claude/projects/<sanitized-full-cwd>/<session>.jsonl`
+- path rewriting is applied to reconstructed transcript content
+- if Claude rejects a cross-cwd synthetic resume with `No conversation found with session ID`, the adapter seeds a real Claude session in the target cwd, overwrites the seeded transcript with reconstructed history, and resumes using the seeded session id
 
-- Bridge tracks IDs of agent-initiated requests using `parseDirection`
-- Duplicate client responses for the same ID are dropped (only the first is forwarded)
-- Cancel is the one exception to pure relay: for each pending request ID, the bridge appends a cancellation response envelope to the stream (for resume reconstruction), then sends it directly to the agent. Direct send is required because the relay loop would drop responses for IDs cleared during cancel. After resolving pending requests, the bridge sends the translated cancel signal to the agent. The agent's turn-complete response triggers the next queued prompt through the normal path.
+That seeded-workspace fallback is an adapter implementation detail. It exists because Claude binds resumability to workspace-local registration, not just transcript contents.
+
+### Codex
+
+Codex is driven through `codex app-server`:
+
+- spawn `codex app-server --listen stdio://`
+- `initialize`
+- `thread/start` or `thread/resume`
+- `turn/start`
+- `turn/interrupt`
+- answer approval and user-input server requests over JSON-RPC
+
+Turn completion is based on `turn/completed`.
+
+Codex supports additional options through the library API:
+
+- `approvalPolicy`
+- `sandboxMode`
+- `experimentalFeatures`
+- `developerInstructions`
+- `env`
+
+## Resume strategy
+
+When resuming from a stream with history:
+
+1. Read full history and capture the stream offset.
+2. Let the adapter inspect history and determine the native resume path.
+3. Reconstruct agent-local state if needed.
+4. Spawn the agent in resume mode.
+5. If direct resume fails and the adapter has a safe fallback, use it.
+6. Write `session_resumed`.
+7. Start live relay from the stored stream offset.
+
+Reconciliation rules:
+
+- include durable prompts from stream history
+- include only the first effective response for a given request id
+- include bridge-synthesized cancellation responses because the agent actually received them
+- replay unfinished prompts after restart rather than trying to reconstruct transient waiting state
+
+For Codex, thread resume is native and direct.
+
+For Claude:
+
+- same-cwd resume is direct
+- cross-cwd resume uses the seeded-workspace fallback described above
+
+## Multi-user behavior
+
+Multiple clients can write to the same stream URL with different `user` identities.
+
+The bridge does not merge user identities into a single logical client. Instead:
+
+- every client writes its own intents
+- the stream keeps all intents for observability
+- the bridge decides which intents become effective agent traffic
+
+This is what makes duplicate-response races testable and replayable.
+
+## Normalization
+
+Client-side normalizers project raw agent events into a unified event model:
+
+- `assistant_message`
+- `stream_delta`
+- `tool_call`
+- `permission_request`
+- `turn_complete`
+- `status_change`
+- `session_init`
+- `unknown`
+
+Normalization is intentionally a projection, not the stored truth. Raw envelopes remain the durable source of record.
 
 ## Public API
 
-### Bridge (Node-only)
+Bridge API:
 
-```typescript
+```ts
 import { createSession } from "@durable-streams/coding-agents"
 
 const session = await createSession({
   agent: "claude",
   streamUrl: "https://streams.example.com/v1/stream/my-session",
   cwd: "/workspace/project",
-  model: "opus",
-  permissionMode: "auto",
+  permissionMode: "plan",
 })
 
-// session.streamUrl — the shareable stream URL
-// session.close() — graceful shutdown
+await session.close()
 ```
 
-`createSession` handles:
+Client API:
 
-- Creating the durable stream (or connecting to an existing one)
-- Spawning the agent with the appropriate adapter
-- Starting the WebSocket server (for Claude) or stdio pipes (for Codex)
-- Bidirectional relay between agent and stream
-- Writing `session_started` control event
-- Writing `session_ended` control event on agent exit (graceful or crash)
-
-### Client (browser-safe)
-
-```typescript
+```ts
 import { createClient } from "@durable-streams/coding-agents/client"
 
 const client = createClient({
-  agent: "claude",
+  agent: "codex",
   streamUrl: "https://streams.example.com/v1/stream/my-session",
   user: { name: "Kyle", email: "kyle@example.com" },
 })
 
-// Send a prompt
 client.prompt("Refactor the auth module")
-
-// Respond to a permission request
 client.respond(requestId, { behavior: "allow" })
-
-// Cancel current turn
 client.cancel()
 
-// Read normalized events
 for await (const event of client.events()) {
-  // unified format regardless of claude vs codex
+  // normalized agent events, bridge events, and user envelopes
 }
-
-await client.close()
 ```
-
-Normalization transforms are tree-shakeable. The `agent` field on each stream envelope tells the client which normalizer to apply. If you only use Claude sessions, the Codex normalizer is not bundled.
 
 ## CLI
 
+Current CLI surface is intentionally small:
+
 ```bash
-# Start a Claude session
-npx @durable-streams/coding-agents start --agent claude
-
-# Start with options
-npx @durable-streams/coding-agents start --agent codex --model gpt-4.1 --cwd /workspace/project
-
-# Explicit stream URL
-npx @durable-streams/coding-agents start --agent claude --stream-url https://streams.example.com/v1/stream/my-session
-
-# Resume an existing stream in a new sandbox
-npx @durable-streams/coding-agents resume --stream-url https://streams.example.com/v1/stream/abc123
+coding-agents start  --agent claude --stream-url <url> [--cwd <path>] [--model <model>] [--permission-mode <mode>] [--verbose]
+coding-agents resume --agent codex  --stream-url <url> [--cwd <path>] [--model <model>] [--permission-mode <mode>] [--verbose]
 ```
 
-**`start`**: creates a stream, spawns the agent, prints the stream URL and (if applicable) a shareable view URL. Stays alive until the agent exits.
+The library API is richer than the CLI. Advanced Codex options are available programmatically but are not yet surfaced through CLI flags.
 
-**`resume`**: reads history from an existing stream, adapter reconstructs local session files with path rewriting, spawns agent with `--resume`. Writes `session_resumed` control event.
+## Validation status
 
-Configuration via `DURABLE_STREAMS_URL` environment variable for the base URL. The CLI auto-generates a unique stream path per session. `--stream-url` overrides for explicit control.
+The package is validated by:
 
-## Resume strategy
+- unit tests for bridge, adapters, client, and normalizers
+- scenario DSL tests
+- live real-agent coverage for Claude and Codex
 
-When the bridge starts with a stream that has existing history:
+Live coverage currently includes:
 
-1. Read all messages from the stream, capture `historyResponse.offset`
-2. Adapter's `prepareResume` reconciles stream history into local session files:
-   - **Claude**: write raw messages as JSONL to `~/.claude/projects/<project>/<sessionId>.jsonl`, apply path rewriting (string replacement for changed sandbox mount paths)
-   - **Codex**: equivalent reconstruction for Codex's local state format
-3. Spawn agent with resume flag (e.g., `--resume <sessionId>` for Claude)
-4. Write `session_resumed` control event to stream
-5. Begin live-tailing from `historyResponse.offset`
+- simple prompt round trips
+- approval allow / deny / cancel
+- interrupt behavior
+- restart / resume
+- prompt replay after restart
+- multi-client duplicate response races
+- queued prompts
+- Codex `file_change`, `permissions`, and `request_user_input`
+- Claude cross-cwd resume via seeded-workspace fallback
 
-### Resume reconciliation
+## What this package does not do
 
-Resume reconstruction includes all user prompts from stream history, regardless of whether they were forwarded before the bridge died. The agent will see them as part of its history and work through them on resume.
+- render UI
+- host a browser app
+- manage many sessions from one bridge process
+- install Claude or Codex binaries
+- persist bridge debug telemetry on-stream by default
 
-Reconciliation rules:
+## Known caveats
 
-- **Permission responses**: if multiple clients responded to the same request ID, include only the first by stream order (the one the bridge would have forwarded).
-- **Cancel-synthesized responses**: the bridge writes cancellation response envelopes to the stream. Include these in the reconstruction since the agent received them.
-
-The adapter receives the full stream history and applies these rules during reconstruction.
-
-### Path rewriting
-
-Path rewriting handles sandbox remounting:
-
-```typescript
-rewritePaths: {
-  "/old/sandbox/path": "/workspace/project",
-}
-```
-
-Applied as string replacements across the reconstructed session files.
-
-## Multi-user
-
-Multiple clients connect to the same stream URL with different `user` identities. Each message includes `user: { name, email }` in the envelope. The bridge relays all client messages to the agent. The UI uses the `user` field to show who said what.
-
-Prompt turn serialization: the bridge queues prompts and only sends one to the agent at a time, since agents expect turns to complete sequentially.
-
-## Normalization (client-side)
-
-Raw stream events are agent-specific. The client library provides normalizers that project raw events into a unified format:
-
-```typescript
-// Unified event types (examples)
-type NormalizedEvent =
-  | { type: "assistant_message"; content: string }
-  | { type: "tool_call"; tool: string; input: object }
-  | { type: "tool_result"; output: string }
-  | { type: "permission_request"; id: string; tool: string; input: object }
-  | { type: "stream_delta"; content: string }
-  | { type: "turn_complete"; cost?: object }
-// ...
-```
-
-Each normalizer maps agent-specific message types:
-
-- Claude: `assistant`, `stream_event`, `control_request` (can_use_tool), `result`, etc.
-- Codex: `agentMessage`, `commandExecution`, `fileChange`, approval requests, etc.
-
-Because normalization is a projection over immutable raw events, bugs in normalizers can be fixed and re-applied without data loss.
-
-## Package structure
-
-```
-packages/coding-agents/
-  package.json
-  tsdown.config.ts
-  tsconfig.json
-  src/
-    index.ts              — exports createSession + types
-    client.ts             — exports createClient (browser-safe)
-    bridge.ts             — WebSocket server + stream relay + lifecycle
-    types.ts              — shared envelope, event, adapter types
-    adapters/
-      claude.ts           — spawn, NDJSON parsing, resume reconstruction
-      codex.ts            — spawn, JSON-RPC parsing, resume reconstruction
-      types.ts            — adapter interface
-    normalize/
-      claude.ts           — raw Claude events → unified format
-      codex.ts            — raw Codex events → unified format
-      types.ts            — unified event types
-  cli/
-    index.ts              — CLI entrypoint (start, resume)
-  test/
-    bridge.test.ts
-    client.test.ts
-    adapters/
-      claude.test.ts
-      codex.test.ts
-    normalize/
-      claude.test.ts
-      codex.test.ts
-```
-
-**Three entrypoints:**
-
-- `src/index.ts` — bridge API (Node-only, uses `child_process` and `ws`)
-- `src/client.ts` — client + normalizers (browser-safe)
-- `cli/index.ts` — CLI binary
-
-**Location:** `packages/coding-agents/` in the durable-streams monorepo.
-
-**Dependencies:**
-
-- `@durable-streams/client` (`DurableStream`, `IdempotentProducer`, `StreamResponse`)
-- `ws` (WebSocket server for Claude adapter)
-
-## What this does NOT do
-
-- Render events (separate UI concern, events are already structured)
-- Host a web app view (separate deployment, uses the client library)
-- Manage multiple sessions (one bridge = one session)
-- Run an HTTP server (WebSocket server is local, agent-facing only)
-- Install agent binaries (user's responsibility, resolved from PATH or npx)
-- Normalize on write (raw events are the source of truth)
-
-## Agent compatibility
-
-Targets:
-
-- Claude Code via `--sdk-url` WebSocket protocol
-- Codex via stdio JSON-RPC protocol
-
-Both protocols are reverse-engineered from The Companion (MIT licensed). The protocols are stable in practice since breaking changes would affect all existing SDK integrations.
-
-## Open questions
-
-- **Codex prompt ID tracking**: `isTurnComplete` for Codex is defined as "JSON-RPC response to the prompt request", but the bridge does not currently track which JSON-RPC request ID corresponds to a prompt vs other traffic. `translateClientIntent` manufactures the native JSON-RPC request, but the generated ID is not surfaced back to the bridge. This may cause the prompt queue to unblock on the wrong JSON-RPC response. Needs investigation with a real Codex process.
+- The CLI still exposes only a minimal option set.
+- Bridge debug telemetry is in-memory only today.
+- Claude cross-cwd resume depends on the seeded-workspace fallback because direct synthetic transcript resume is not sufficient in a new real cwd.
