@@ -1,4 +1,4 @@
-import type { AgentType, ClientIntent, StreamEnvelope } from "../types.js"
+import type { AgentType, ClientIntent, StreamEnvelope, User } from "../types.js"
 import type {
   CodexApprovalPolicy,
   CodexSandboxMode,
@@ -55,7 +55,7 @@ export interface AgentAdapter {
 
   isTurnComplete: (raw: object) => boolean
 
-  translateClientIntent: (raw: ClientIntent) => object
+  translateClientIntent: (raw: ClientIntent, user?: User) => object
 
   prepareResume: (
     history: Array<StreamEnvelope>,

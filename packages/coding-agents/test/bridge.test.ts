@@ -260,6 +260,78 @@ describe(`startBridge`, () => {
     await session.close()
   })
 
+  it(`should pass user identity through when forwarding prompts`, async () => {
+    const streamUrl = `${baseUrl}/v1/stream/bridge-user-context-${Date.now()}`
+    const { connection } = createMockAdapter()
+    const capturedUsers: Array<{ name: string; email: string } | undefined> = []
+
+    const adapter: AgentAdapter = {
+      agentType: `claude`,
+      spawn() {
+        return Promise.resolve({
+          onMessage() {},
+          send(raw) {
+            connection.sentMessages.push(raw)
+          },
+          kill() {},
+          on() {},
+        })
+      },
+      parseDirection() {
+        return { type: `notification` }
+      },
+      isTurnComplete() {
+        return false
+      },
+      translateClientIntent(raw: ClientIntent, user) {
+        capturedUsers.push(user)
+        return raw
+      },
+      prepareResume() {
+        return Promise.resolve({ resumeId: `mock-resume` })
+      },
+    }
+
+    const session = await startBridge({
+      adapter,
+      streamUrl,
+      cwd: `/tmp`,
+    })
+
+    const clientStream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+    const clientProducer = new IdempotentProducer(
+      clientStream,
+      `test-user-context`,
+      {
+        autoClaim: true,
+      }
+    )
+
+    clientProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now(),
+        user: { name: `Operator`, email: `operator@test.com` },
+        raw: { type: `user_message`, text: `Hello` },
+      })
+    )
+    await clientProducer.flush()
+
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    expect(capturedUsers).toContainEqual({
+      name: `Operator`,
+      email: `operator@test.com`,
+    })
+
+    await clientProducer.detach()
+    await session.close()
+  })
+
   it(`should drop duplicate responses for the same request ID`, async () => {
     const streamUrl = `${baseUrl}/v1/stream/bridge-dedup-${Date.now()}`
     const { adapter, connection } = createMockAdapter()

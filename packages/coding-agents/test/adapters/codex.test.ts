@@ -78,10 +78,13 @@ describe(`CodexAdapter`, () => {
   describe(`translateClientIntent`, () => {
     it(`should translate a user_message to turn/start`, () => {
       expect(
-        adapter.translateClientIntent({
-          type: `user_message`,
-          text: `Fix the bug`,
-        })
+        adapter.translateClientIntent(
+          {
+            type: `user_message`,
+            text: `Fix the bug`,
+          },
+          { name: `Operator`, email: `operator@test.com` }
+        )
       ).toMatchObject({
         jsonrpc: `2.0`,
         method: `turn/start`,
@@ -90,7 +93,15 @@ describe(`CodexAdapter`, () => {
           input: [
             {
               type: `text`,
-              text: `Fix the bug`,
+              text: [
+                `[Current speaker]`,
+                `name: Operator`,
+                `email: operator@test.com`,
+                `Interpret first-person references like "I", "me", "my", "mine", "we", and "our" as referring to this speaker unless the message says otherwise.`,
+                ``,
+                `[User message]`,
+                `Fix the bug`,
+              ].join(`\n`),
               text_elements: [],
             },
           ],

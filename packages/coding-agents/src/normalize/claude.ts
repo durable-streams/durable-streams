@@ -77,12 +77,16 @@ export function normalizeClaude(raw: object): NormalizedEvent | null {
 
   switch (type) {
     case `system`:
-      return {
-        type: `session_init`,
-        sessionId: message.session_id as string | undefined,
-        model: message.model as string | undefined,
-        permissionMode: message.permission_mode as string | undefined,
+      if (message.subtype === `init`) {
+        return {
+          type: `session_init`,
+          sessionId: message.session_id as string | undefined,
+          model: message.model as string | undefined,
+          permissionMode: message.permission_mode as string | undefined,
+        }
       }
+
+      return null
 
     case `assistant`: {
       const assistant = message.message as Record<string, unknown> | undefined

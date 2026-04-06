@@ -4,6 +4,7 @@ import {
   FetchError,
   IdempotentProducer,
 } from "@durable-streams/client"
+import { getSharedSessionInstructions } from "./shared-session-instructions.js"
 import type { AgentAdapter } from "./adapters/types.js"
 import type {
   AgentEnvelope,
@@ -134,13 +135,18 @@ async function createOrConnectStream(
 function buildPendingPromptIntents(
   history: Array<StreamEnvelope>,
   adapter: AgentAdapter
-): Array<Extract<ClientIntent, { type: `user_message` }>> {
-  const pendingPrompts: Array<Extract<ClientIntent, { type: `user_message` }>> =
-    []
+): Array<UserEnvelope<Extract<ClientIntent, { type: `user_message` }>>> {
+  const pendingPrompts: Array<
+    UserEnvelope<Extract<ClientIntent, { type: `user_message` }>>
+  > = []
 
   for (const envelope of history) {
     if (envelope.direction === `user` && envelope.raw.type === `user_message`) {
-      pendingPrompts.push(envelope.raw)
+      pendingPrompts.push(
+        envelope as UserEnvelope<
+          Extract<ClientIntent, { type: `user_message` }>
+        >
+      )
       continue
     }
 
@@ -218,7 +224,9 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
       approvalPolicy,
       experimentalFeatures,
       sandboxMode,
-      developerInstructions,
+      developerInstructions: getSharedSessionInstructions(
+        developerInstructions
+      ),
       verbose,
       resume: resumeValue,
       forceSeedWorkspace,
@@ -323,7 +331,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
   writeJson(createBridgeEnvelope(adapter.agentType, controlEventType))
 
   for (const prompt of pendingPromptIntents) {
-    promptQueue.push(adapter.translateClientIntent(prompt))
+    promptQueue.push(adapter.translateClientIntent(prompt.raw, prompt.user))
   }
   processQueue()
 
@@ -367,7 +375,9 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         }
 
         if (raw.type === `user_message`) {
-          promptQueue.push(adapter.translateClientIntent(raw))
+          promptQueue.push(
+            adapter.translateClientIntent(raw, userEnvelope.user)
+          )
           processQueue()
           continue
         }

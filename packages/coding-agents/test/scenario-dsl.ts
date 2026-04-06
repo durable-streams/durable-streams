@@ -657,8 +657,8 @@ function createScriptedAdapterHarness(
       return baseAdapter.isTurnComplete(raw)
     },
 
-    translateClientIntent(raw) {
-      return baseAdapter.translateClientIntent(raw)
+    translateClientIntent(raw, user) {
+      return baseAdapter.translateClientIntent(raw, user)
     },
 
     prepareResume() {

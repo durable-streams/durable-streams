@@ -55,7 +55,26 @@ describe(`scenario DSL`, () => {
         return undefined
       })
 
-    expect(promptTexts).toEqual([`first`, `second`])
+    expect(promptTexts).toEqual([
+      [
+        `[Current speaker]`,
+        `name: alice`,
+        `email: alice@example.com`,
+        `Interpret first-person references like "I", "me", "my", "mine", "we", and "our" as referring to this speaker unless the message says otherwise.`,
+        ``,
+        `[User message]`,
+        `first`,
+      ].join(`\n`),
+      [
+        `[Current speaker]`,
+        `name: bob`,
+        `email: bob@example.com`,
+        `Interpret first-person references like "I", "me", "my", "mine", "we", and "our" as referring to this speaker unless the message says otherwise.`,
+        ``,
+        `[User message]`,
+        `second`,
+      ].join(`\n`),
+    ])
   })
 
   it(`deduplicates competing client responses`, async () => {

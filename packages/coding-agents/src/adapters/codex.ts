@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process"
+import { formatPromptForAgent } from "../prompt-format.js"
 import type {
   AgentAdapter,
   AgentConnection,
@@ -6,7 +7,7 @@ import type {
   ResumeOptions,
   SpawnOptions,
 } from "./types.js"
-import type { ClientIntent, StreamEnvelope } from "../types.js"
+import type { ClientIntent, StreamEnvelope, User } from "../types.js"
 import type {
   CodexApprovalPolicy,
   CodexSandboxMode,
@@ -485,7 +486,7 @@ export class CodexAdapter implements AgentAdapter {
     return message.method === `turn/completed`
   }
 
-  translateClientIntent(raw: ClientIntent): object {
+  translateClientIntent(raw: ClientIntent, user?: User): object {
     if (raw.type === `user_message`) {
       return {
         jsonrpc: `2.0`,
@@ -496,7 +497,7 @@ export class CodexAdapter implements AgentAdapter {
           input: [
             {
               type: `text`,
-              text: raw.text,
+              text: formatPromptForAgent(raw.text, user),
               text_elements: [],
             },
           ],

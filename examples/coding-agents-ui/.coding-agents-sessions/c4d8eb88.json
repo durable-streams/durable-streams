@@ -1,0 +1,17 @@
+{
+  "id": "c4d8eb88",
+  "title": "claude · durable-streams",
+  "agent": "claude",
+  "cwd": "/Users/kylemathews/programs/durable-streams",
+  "permissionMode": "plan",
+  "approvalPolicy": "on-request",
+  "sandboxMode": "workspace-write",
+  "experimentalFeatures": [
+    "request_permissions_tool",
+    "default_mode_request_user_input"
+  ],
+  "debugStream": true,
+  "upstreamStreamUrl": "http://localhost:4437/v1/stream/coding-agents-ui/c4d8eb88",
+  "createdAt": "2026-04-06T14:20:42.978Z",
+  "updatedAt": "2026-04-06T14:20:42.978Z"
+}

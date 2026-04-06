@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process"
 import { WebSocketServer } from "ws"
+import { formatPromptForAgent } from "../prompt-format.js"
 import type WebSocket from "ws"
 import type {
   AgentAdapter,
@@ -9,7 +10,7 @@ import type {
   ResumeOptions,
   SpawnOptions,
 } from "./types.js"
-import type { ClientIntent, StreamEnvelope } from "../types.js"
+import type { ClientIntent, StreamEnvelope, User } from "../types.js"
 
 function sanitizePathSegment(value: string): string {
   return value.replace(/[^a-zA-Z0-9.-]/g, `-`) || `project`
@@ -128,6 +129,45 @@ async function findFreePort(): Promise<number> {
   })
 }
 
+export function buildClaudeCliArgs(
+  sdkUrl: string,
+  options: SpawnOptions
+): Array<string> {
+  const args = [
+    `--sdk-url`,
+    sdkUrl,
+    `--print`,
+    `--output-format`,
+    `stream-json`,
+    `--input-format`,
+    `stream-json`,
+  ]
+
+  if (options.model) {
+    args.push(`--model`, options.model)
+  }
+
+  if (options.permissionMode) {
+    args.push(`--permission-mode`, options.permissionMode)
+  }
+
+  if (options.developerInstructions) {
+    args.push(`--append-system-prompt`, options.developerInstructions)
+  }
+
+  if (options.verbose) {
+    args.push(`--verbose`)
+  }
+
+  if (options.resume) {
+    args.push(`--resume`, options.resume)
+  }
+
+  args.push(`-p`, ``)
+
+  return args
+}
+
 export class ClaudeAdapter implements AgentAdapter {
   readonly agentType = `claude` as const
 
@@ -171,33 +211,7 @@ export class ClaudeAdapter implements AgentAdapter {
     const sdkUrl = `ws://127.0.0.1:${port}/ws/cli/${sessionId}`
 
     return await new Promise<AgentConnection>((resolve, reject) => {
-      const args = [
-        `--sdk-url`,
-        sdkUrl,
-        `--print`,
-        `--output-format`,
-        `stream-json`,
-        `--input-format`,
-        `stream-json`,
-      ]
-
-      if (options.model) {
-        args.push(`--model`, options.model)
-      }
-
-      if (options.permissionMode) {
-        args.push(`--permission-mode`, options.permissionMode)
-      }
-
-      if (options.verbose) {
-        args.push(`--verbose`)
-      }
-
-      if (options.resume) {
-        args.push(`--resume`, options.resume)
-      }
-
-      args.push(`-p`, ``)
+      const args = buildClaudeCliArgs(sdkUrl, options)
 
       const child = spawn(`claude`, args, {
         cwd: options.cwd,
@@ -554,13 +568,13 @@ export class ClaudeAdapter implements AgentAdapter {
     return (raw as Record<string, unknown>).type === `result`
   }
 
-  translateClientIntent(raw: ClientIntent): object {
+  translateClientIntent(raw: ClientIntent, user?: User): object {
     if (raw.type === `user_message`) {
       return {
         type: `user`,
         message: {
           role: `user`,
-          content: raw.text,
+          content: formatPromptForAgent(raw.text, user),
         },
         parent_tool_use_id: null,
         session_id: ``,
@@ -675,7 +689,10 @@ export class ClaudeAdapter implements AgentAdapter {
         }
 
         if (envelope.raw.type === `user_message`) {
-          rawForTranscript = this.translateClientIntent(envelope.raw)
+          rawForTranscript = this.translateClientIntent(
+            envelope.raw,
+            envelope.user
+          )
         }
       }
 

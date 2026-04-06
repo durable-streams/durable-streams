@@ -2,7 +2,7 @@ import { mkdtemp, readFile, realpath, rm } from "node:fs/promises"
 import { homedir, tmpdir } from "node:os"
 import { join } from "node:path"
 import { describe, expect, it } from "vitest"
-import { ClaudeAdapter } from "../../src/adapters/claude.js"
+import { ClaudeAdapter, buildClaudeCliArgs } from "../../src/adapters/claude.js"
 import type { AgentConnection, SpawnOptions } from "../../src/adapters/types.js"
 
 describe(`ClaudeAdapter`, () => {
@@ -64,16 +64,41 @@ describe(`ClaudeAdapter`, () => {
 
   it(`should translate prompts into Claude stream-json user messages`, () => {
     expect(
-      adapter.translateClientIntent({ type: `user_message`, text: `hello` })
+      adapter.translateClientIntent(
+        { type: `user_message`, text: `hello` },
+        { name: `Operator One`, email: `operator1@test.com` }
+      )
     ).toEqual({
       type: `user`,
       message: {
         role: `user`,
-        content: `hello`,
+        content: [
+          `[Current speaker]`,
+          `name: Operator One`,
+          `email: operator1@test.com`,
+          `Interpret first-person references like "I", "me", "my", "mine", "we", and "our" as referring to this speaker unless the message says otherwise.`,
+          ``,
+          `[User message]`,
+          `hello`,
+        ].join(`\n`),
       },
       parent_tool_use_id: null,
       session_id: ``,
     })
+  })
+
+  it(`should append shared developer instructions to the Claude CLI args`, () => {
+    expect(
+      buildClaudeCliArgs(`ws://127.0.0.1:9000/ws/cli/demo`, {
+        cwd: `/tmp`,
+        developerInstructions: `shared multi-user session`,
+      })
+    ).toEqual(
+      expect.arrayContaining([
+        `--append-system-prompt`,
+        `shared multi-user session`,
+      ])
+    )
   })
 
   it(`should pass through non-prompt client intents unchanged`, () => {
@@ -143,6 +168,9 @@ describe(`ClaudeAdapter`, () => {
       expect(transcript).toContain(`"type":"user"`)
       expect(transcript).not.toContain(`"type":"user_message"`)
       expect(transcript).toContain(`"session_id":"${resumeId}"`)
+      expect(transcript).toContain(`[Current speaker]`)
+      expect(transcript).toContain(`name: Test`)
+      expect(transcript).toContain(`email: test@test.com`)
     } finally {
       await rm(transcriptPath, { force: true })
       await rm(cwd, { recursive: true, force: true })

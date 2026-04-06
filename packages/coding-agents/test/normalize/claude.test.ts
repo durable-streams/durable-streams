@@ -19,6 +19,16 @@ describe(`normalizeClaude`, () => {
     })
   })
 
+  it(`should skip non-init system messages`, () => {
+    expect(
+      normalizeClaude({
+        type: `system`,
+        subtype: `hook_started`,
+        session_id: `sess-123`,
+      })
+    ).toBeNull()
+  })
+
   it(`should normalize an assistant message`, () => {
     const raw = {
       type: `assistant`,
