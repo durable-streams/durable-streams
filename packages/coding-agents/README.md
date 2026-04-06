@@ -109,6 +109,8 @@ Useful commands:
 - `pnpm --filter @durable-streams/coding-agents test`
 - `pnpm --filter @durable-streams/coding-agents test:live`
 - `pnpm --filter @durable-streams/coding-agents test:live:smoke`
+- `pnpm --filter @durable-streams/coding-agents test:live:smoke:claude`
+- `pnpm --filter @durable-streams/coding-agents test:live:smoke:codex`
 - `pnpm --filter @durable-streams/coding-agents test:live:claude`
 - `pnpm --filter @durable-streams/coding-agents test:live:codex`
 

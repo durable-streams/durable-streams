@@ -1,0 +1,71 @@
+name: Coding Agents Live
+
+# This workflow is intentionally manual and self-hosted.
+# Claude and Codex live tests require authenticated agent binaries and a runner
+# that can safely hold that local state. The default GitHub-hosted CI matrix
+# should stay fast and credential-free.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  claude-smoke:
+    name: Claude live smoke
+    runs-on:
+      - self-hosted
+      - coding-agents
+      - claude
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Verify Claude CLI
+        run: claude --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Claude live smoke tests
+        run: pnpm --filter @durable-streams/coding-agents test:live:smoke:claude
+
+  codex-smoke:
+    name: Codex live smoke
+    runs-on:
+      - self-hosted
+      - coding-agents
+      - codex
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Verify Codex CLI
+        run: codex --version
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Run Codex live smoke tests
+        run: pnpm --filter @durable-streams/coding-agents test:live:smoke:codex

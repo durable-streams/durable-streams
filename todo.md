@@ -20,10 +20,10 @@ Validated end to end:
 
 ## Phase 2 Backlog
 
-1. [ ] CI strategy for live-agent tests
-   - Decide which live suites run in CI vs local-only
-   - Define required env, secrets, and machine assumptions for Claude and Codex
-   - Keep `test:live:smoke` cheap enough to run regularly
+1. [x] CI strategy for live-agent tests
+   - Manual self-hosted smoke workflow added in `.github/workflows/coding-agents-live.yml`
+   - Claude and Codex smoke jobs are split by runner label
+   - Full live suites remain explicit/manual rather than default PR-gated CI
 
 2. [ ] CLI / API parity
    - Surface advanced Codex options in the CLI: approval policy, sandbox mode, experimental features, developer instructions, and env
