@@ -784,6 +784,10 @@ export class StreamStore {
       return null
     }
 
+    if (stream.softDeleted) {
+      throw new Error(`Stream is soft-deleted: ${path}`)
+    }
+
     const alreadyClosed = stream.closed ?? false
     stream.closed = true
 

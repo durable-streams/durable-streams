@@ -8883,6 +8883,132 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(recreateRes.status).toBe(409)
     })
 
+    test(`should return 410 for GET on soft-deleted source`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-soft-get-${id}`
+      const forkPath = `/v1/stream/fork-del-soft-get-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      await fetch(`${getBaseUrl()}${sourcePath}`, { method: `DELETE` })
+
+      const getRes = await fetch(`${getBaseUrl()}${sourcePath}?offset=-1`)
+      expect(getRes.status).toBe(410)
+    })
+
+    test(`should return 410 for POST on soft-deleted source`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-soft-post-${id}`
+      const forkPath = `/v1/stream/fork-del-soft-post-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      await fetch(`${getBaseUrl()}${sourcePath}`, { method: `DELETE` })
+
+      const postRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `more data`,
+      })
+      expect(postRes.status).toBe(410)
+    })
+
+    test(`should return 410 for DELETE on soft-deleted source`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-soft-del-${id}`
+      const forkPath = `/v1/stream/fork-del-soft-del-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      await fetch(`${getBaseUrl()}${sourcePath}`, { method: `DELETE` })
+
+      const deleteRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `DELETE`,
+      })
+      expect(deleteRes.status).toBe(410)
+    })
+
+    test(`should return 409 for fork from soft-deleted source`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-del-soft-refork-${id}`
+      const forkPath = `/v1/stream/fork-del-soft-refork-fork1-${id}`
+      const fork2Path = `/v1/stream/fork-del-soft-refork-fork2-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      await fetch(`${getBaseUrl()}${sourcePath}`, { method: `DELETE` })
+
+      const fork2Res = await fetch(`${getBaseUrl()}${fork2Path}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(fork2Res.status).toBe(409)
+    })
+
+    test(`should return 409 for fork with content-type mismatch`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-ct-mismatch-src-${id}`
+      const forkPath = `/v1/stream/fork-ct-mismatch-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/json`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(409)
+    })
+
     test(`should cascade GC when last fork is deleted`, async () => {
       const id = uniqueId()
       const sourcePath = `/v1/stream/fork-del-cascade-src-${id}`

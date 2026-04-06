@@ -671,6 +671,11 @@ export class DurableStreamTestServer {
           res.end(`source stream was deleted but still has active forks`)
           return
         }
+        if (err.message.includes(`Content type mismatch`)) {
+          res.writeHead(409, { "content-type": `text/plain` })
+          res.end(`Content type mismatch with source stream`)
+          return
+        }
       }
       throw err
     }
@@ -1558,6 +1563,14 @@ export class DurableStreamTestServer {
    * Handle DELETE - delete stream
    */
   private async handleDelete(path: string, res: ServerResponse): Promise<void> {
+    // Check for soft-deleted streams before attempting delete
+    const existing = this.store.get(path)
+    if (existing?.softDeleted) {
+      res.writeHead(410, { "content-type": `text/plain` })
+      res.end(`Stream is gone`)
+      return
+    }
+
     const deleted = this.store.delete(path)
     if (!deleted) {
       res.writeHead(404, { "content-type": `text/plain` })

@@ -81,7 +81,7 @@ The key words "MUST", "MUST NOT", "REQUIRED", "SHALL", "SHALL NOT", "SHOULD", "S
 
 **Reference Count**: The number of forks that reference a given stream as their source. Used to determine whether a stream can be fully deleted or must be soft-deleted.
 
-**Soft-Deleted Stream**: A stream that has been deleted by its owner but is retained because active forks still reference its data. A soft-deleted stream returns `410 Gone` for direct operations but its data remains available to fork readers.
+**Soft-Deleted Stream**: A stream that has been deleted by its owner but is retained because active forks still reference its data. A soft-deleted stream returns `410 Gone` for all client-facing operations on its URL (`GET`, `HEAD`, `POST`, `DELETE`), but the server retains its data internally for fork reads.
 
 ## 3. Protocol Overview
 
@@ -140,26 +140,29 @@ The `Stream-Closed` header uses the value `true` (case-insensitive) to indicate 
 
 ### 4.2. Stream forking
 
-Stream forking creates a new stream that contains the same data as a source stream up to a specified offset. The fork is a variant of stream creation — a `PUT` with additional headers. Once created, the fork behaves as an independent stream: it has its own URL, accepts appends, and can be closed or deleted without affecting the source. Reads on a fork return the inherited data followed by any data appended to the fork itself.
+Stream forking creates a new stream that references the data of a source stream up to a specified offset. The fork is a variant of stream creation — a `PUT` with additional headers. Once created, the fork behaves as an independent stream: it has its own URL, accepts appends, and can be closed or deleted without affecting the source. Reads on a fork return the inherited data followed by any data appended to the fork itself. How the server provides access to the source data is an implementation detail — it may use copy-on-fork, pointer-based stitching, or any other mechanism.
 
 #### Fork creation headers
 
 These headers are used on `PUT` requests to create a forked stream:
 
-- `Stream-Forked-From: <source-path>`: The URL path of the source stream to fork from. When present, the `PUT` creates a fork rather than a new empty stream.
+- `Stream-Forked-From: <source-path>`: The path component of the source stream's URL, relative to the same server. When present, the `PUT` creates a fork rather than a new empty stream. Cross-service forking is not supported — the source stream must be on the same server as the fork.
 - `Stream-Fork-Offset: <offset>`: The divergence point in the source stream. The fork inherits all data from the source up to (but not including) this offset. If omitted, defaults to the source stream's current tail offset.
 
-When forking, the `Content-Type` header is optional — if omitted, the fork inherits the source stream's content type. If provided, it **MUST** match the source stream's content type; servers **MUST** return `409 Conflict` if it differs. `Stream-TTL` and `Stream-Expires-At` are capped at the source stream's expiry time.
+When forking, the `Content-Type` header is optional — if omitted, the fork inherits the source stream's content type. If provided, it **MUST** match the source stream's content type; servers **MUST** return `409 Conflict` if it differs. `Stream-TTL` and `Stream-Expires-At` are capped at the source stream's expiry time at the moment of fork creation.
 
 #### Fork creation errors
 
-| Condition                        | Status          | Description                                                       |
-| -------------------------------- | --------------- | ----------------------------------------------------------------- |
-| Source stream not found          | 404 Not Found   | The `Stream-Forked-From` path does not exist                      |
-| Fork offset beyond stream length | 400 Bad Request | The `Stream-Fork-Offset` exceeds the source stream's current tail |
-| Invalid offset format            | 400 Bad Request | The `Stream-Fork-Offset` value is malformed                       |
-| Target path already in use       | 409 Conflict    | A stream already exists at the target URL                         |
-| Source is soft-deleted           | 409 Conflict    | The source stream has been deleted but still has forks            |
+Fork creation may return the standard stream creation errors from Section 5.1 (such as `409 Conflict` for content-type mismatch or `400 Bad Request` for invalid TTL/expiry), plus the following fork-specific errors:
+
+| Condition                         | Status          | Description                                                       |
+| --------------------------------- | --------------- | ----------------------------------------------------------------- |
+| Source stream not found           | 404 Not Found   | The `Stream-Forked-From` path does not exist                      |
+| Fork offset beyond stream length  | 400 Bad Request | The `Stream-Fork-Offset` exceeds the source stream's current tail |
+| Invalid offset format             | 400 Bad Request | The `Stream-Fork-Offset` value is malformed                       |
+| Content-Type mismatch with source | 409 Conflict    | Provided `Content-Type` differs from the source stream's type     |
+| Target path already in use        | 409 Conflict    | A stream already exists at the target URL with different config   |
+| Source is soft-deleted            | 409 Conflict    | The source stream has been deleted but still has forks            |
 
 #### Idempotent fork creation
 
@@ -173,9 +176,9 @@ Closed streams **MAY** be forked. The resulting fork starts in the open state re
 
 When a stream with active forks (reference count > 0) is deleted via `DELETE`, it transitions to a **soft-deleted** state:
 
-- The stream returns `410 Gone` for direct operations (`GET`, `HEAD`, `POST`, `DELETE`)
+- Direct client access to the stream's URL returns `410 Gone` for all operations (`GET`, `HEAD`, `POST`, `DELETE`)
 - The stream's path is blocked from re-creation via `PUT` (`409 Conflict`)
-- The stream's data is preserved for fork readers
+- The server retains the stream's data internally so that fork reads can stitch inherited data — this is transparent to clients reading from forks
 - When the last fork referencing the stream is deleted, the stream's data is cleaned up
 
 Garbage collection cascades: if deleting a fork causes its source's reference count to reach zero and the source is also soft-deleted, the source is cleaned up too. This cascade continues up the fork chain.
