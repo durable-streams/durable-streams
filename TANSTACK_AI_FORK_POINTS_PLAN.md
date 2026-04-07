@@ -323,61 +323,519 @@ Replaying all inherited markers ensures:
 
 ## Example app plan
 
-Target new example:
+The example app is the main motivation for this work. This section is intentionally more specific than the package sections above and should be treated as an implementation spec for the demo.
+
+### Primary objective
+
+Build a polished example app that demonstrates:
+
+- one durable stream per chat session
+- exact message-boundary fork points surfaced in the UI
+- recursive conversation branching
+- a left-hand fork tree stored in browser localStorage
+- resilient reload behavior, where both the active chat and the fork tree survive page refresh
+
+The demo should make the value of Durable Streams for branching AI sessions obvious within a few seconds of use.
+
+### Target example
+
+Create a new example:
 
 - `examples/chat-tanstack-forks`
 
 Base it on:
 
-- `examples/chat-tanstack` for transport and route structure
-- `y-llm` for UI styling and layout ideas
+- `examples/chat-tanstack` for transport, route structure, and SSR snapshot behavior
+- `y-llm` for shell layout, visual style, and plain-CSS structure
 
-### Storage split
+### Product story the demo should tell
+
+The demo should present a single clear workflow:
+
+1. user opens the app and lands in a root chat
+2. user sends one or more messages
+3. completed messages become forkable
+4. user clicks `Fork chat` after a message
+5. a new branch appears in the tree on the left
+6. the new branch opens with inherited history up to the fork point
+7. the user continues the conversation differently in the child
+8. the user can switch between branches and fork again from inherited history
+
+If this full loop is easy to understand, the underlying transport work has succeeded.
+
+### App information architecture
+
+The app should have a simple two-pane layout:
+
+1. Left pane: fork tree and chat navigation
+2. Right pane: active chat session
+
+The right pane should itself contain:
+
+1. a compact top header with current chat title and ancestry hint
+2. a scrollable message timeline
+3. a composer at the bottom
+
+The left pane should make the tree structure obvious even before the user reads any explanatory copy.
+
+### Visual and interaction requirements
+
+The example should feel like a real product demo, not a raw protocol test page.
 
 Use:
 
+- a clean sidebar tree with indentation and clear active-node styling
+- message bubbles similar in spirit to `examples/chat-tanstack`
+- subtle metadata affordances for branch ancestry
+- UI spacing, tones, and structure inspired by `y-llm`
+
+The app should avoid:
+
+- debug-looking JSON dumps in the main UI
+- transport jargon in user-facing labels
+- exposing offsets directly except optionally in a small developer/debug disclosure
+
+### Required user-facing features
+
+The demo must include all of the following:
+
+- automatic creation of a root chat on first visit
+- a persistent fork tree in localStorage
+- a visible `Fork chat` action after each completed forkable message
+- immediate creation and navigation to a child branch after fork
+- inherited message history in the child branch
+- ability to fork again from inherited messages in the child
+- branch switching from the left-hand tree
+- chat titles derived from the first user message
+
+Optional but valuable if cheap:
+
+- a small ancestry breadcrumb in the header
+- a `New root chat` button
+- a lightweight debug panel showing `messageId` and `endOffset` for the currently hovered message
+
+### Explicit non-requirements for v1 of the demo
+
+Do not block the demo on:
+
+- rename chat
+- delete chat
+- drag-and-drop tree editing
+- multi-user synchronization of the tree model
+- tool calling or advanced non-text assistant parts
+- generalized metadata browsers
+
+### Storage split
+
+Use two distinct storage layers.
+
 1. Durable Streams main session stream
-   - messages
-   - fork-point markers
+   - user message echo chunks
+   - assistant chunks
+   - fork-point `CUSTOM` markers
 
 2. Browser localStorage
    - chat tree structure
    - active chat id
-   - local titles and fork ancestry
+   - local title cache
+   - parent/child relationships
+   - fork ancestry metadata for navigation
 
-Suggested local shape:
+The stream remains the source of truth for message history.
+
+localStorage is the source of truth for the tree UI.
+
+### Local storage schema
+
+Use a versioned local storage document so future demo iterations can migrate safely.
+
+Suggested shape:
 
 ```ts
 type ChatNode = {
   id: string
   title: string
   createdAt: string
+  updatedAt: string
   parentId: string | null
+  childIds: Array<string>
   forkedFromMessageId: string | null
   forkOffset: string | null
+  sourceStreamPath: string
+  depth: number
+}
+
+type ChatTreeState = {
+  version: 1
+  activeChatId: string | null
+  rootChatIds: Array<string>
+  chatsById: Record<string, ChatNode>
 }
 ```
 
-### UI behavior
+Behavioral requirements:
 
-On the right:
+- localStorage updates must be atomic from the point of view of the app
+- a malformed stored payload should fall back to a fresh tree instead of breaking the app
+- `updatedAt` should be touched when a branch becomes active or receives a new title
 
-- render messages as normal
-- if `message.metadata?.durable?.endOffset` exists, show `Fork chat`
+### Durable stream path conventions
 
-On the left:
+The example should use a predictable stream path convention, for example:
 
-- render a tree of local chat sessions
-- selecting a node navigates to that chat
+```ts
+chat/<chatId>
+```
 
-### Fork UX
+The child branch should always have its own durable stream path even when it inherits all visible data up to the fork point.
+
+### Routing model
+
+Recommended routes:
+
+- `/`
+  - redirect to the active chat if it exists in localStorage
+  - otherwise create a new root chat and redirect there
+
+- `/chat`
+  - layout route that renders sidebar plus outlet
+
+- `/chat/$id`
+  - active chat page
+  - SSR-loads the materialized snapshot for that chat id
+
+- `/api/chat`
+  - POST new user message and stream assistant output
+
+- `/api/chat-stream`
+  - read proxy for the durable stream
+
+- `/api/chat-forks`
+  - create a child branch from a specific message boundary
+
+- `/api/chats/root`
+  - optional helper to create a new root chat session if keeping root creation server-driven is simpler
+
+### Server route contracts
+
+#### `POST /api/chat`
+
+Responsibilities:
+
+- validate chat id
+- ensure the session stream exists
+- call `toDurableChatSessionResponse(..., { includeForkPoints: true })`
+- update lightweight metadata if needed for title derivation
+
+Input:
+
+```ts
+{
+  id?: string
+  messages: Array<unknown>
+}
+```
+
+The route should keep the example aligned with the existing `chat-tanstack` structure unless there is a strong reason to diverge.
+
+#### `GET /api/chat-stream`
+
+Responsibilities:
+
+- resolve the durable stream path for the chat id
+- proxy read requests with server-side auth
+- forward offset/live params
+
+This route should stay as close as possible to the existing `examples/chat-tanstack` implementation.
+
+#### `POST /api/chat-forks`
+
+This route is the core of the demo and should be fully specified.
+
+Input:
+
+```ts
+type CreateForkRequest = {
+  sourceChatId: string
+  sourceMessageId: string
+  forkOffset: string
+}
+```
+
+Response:
+
+```ts
+type CreateForkResponse = {
+  chat: {
+    id: string
+    title: string
+    createdAt: string
+    parentId: string
+    forkedFromMessageId: string
+    forkOffset: string
+    sourceStreamPath: string
+    depth: number
+  }
+}
+```
+
+Route responsibilities:
+
+1. validate request body
+2. derive source stream path from `sourceChatId`
+3. allocate a new child chat id
+4. create the child durable stream using:
+   - `Stream-Forked-From`
+   - `Stream-Fork-Offset`
+5. materialize the parent snapshot up to `forkOffset`
+6. collect every inherited fork-point marker up to that boundary
+7. replay those markers into the child stream using `IdempotentProducer`
+8. return child chat metadata for insertion into localStorage
+
+Failure requirements:
+
+- invalid `forkOffset` should return a clear `400`
+- missing source chat should return `404`
+- if child stream creation succeeds but marker replay fails, the route should return an error and the UI should not insert the child node into localStorage
+
+### Client state model
+
+The client should maintain two separate but connected pieces of state:
+
+1. route-driven active chat session state
+2. localStorage-backed tree state
+
+The tree state should be managed by a dedicated small library or hook, not scattered across components.
+
+Suggested responsibilities for `chat-tree.ts`:
+
+- load and validate local storage
+- create root node
+- insert fork child node
+- set active chat id
+- update cached title
+- expose helpers for tree traversal and ancestry lookup
+
+### Chat page loader behavior
+
+For `/chat/$id`, the loader should:
+
+1. ensure the chat exists in local tree state or can be treated as a direct deep-link
+2. load the durable snapshot from the server
+3. pass `messages` and `resumeOffset` into the chat component
+4. include enough metadata for the header to show branch ancestry
+
+If a chat id exists in the URL but not in localStorage:
+
+- the page should still load the durable stream if it exists
+- the client should backfill a minimal node into localStorage on mount
+
+This makes shared links and manual refreshes more robust.
+
+### Sidebar tree specification
+
+The left pane should show a real tree, not a flat list.
+
+Requirements:
+
+- root chats render at depth 0
+- child chats are indented under parents
+- active chat is visually obvious
+- sibling branches are easy to compare
+- the tree scrolls independently of the message pane
+
+Each node should show:
+
+- title
+- optional compact branch label, for example `Fork`
+- optional timestamp if there is room
+
+Interaction requirements:
+
+- clicking a node navigates to `/chat/$id`
+- active chat is highlighted
+- keyboard focus styles should be present
+
+### Message timeline specification
+
+Each visible message row should support:
+
+- role styling for user vs assistant
+- normal message content rendering
+- an optional footer action area
+
+Fork action eligibility:
+
+- show `Fork chat` only when `message.metadata?.durable?.endOffset` exists
+- do not show a fork action for incomplete assistant messages
+- do not show a fork action while the message boundary is still being written
+
+Recommended action placement:
+
+- render the button in a small footer below the bubble
+- align it with the message bubble rather than the full container
+
+Optional developer affordance:
+
+- a collapsed metadata disclosure that shows `messageId` and `endOffset`
+
+### Composer behavior
+
+The composer should follow the existing `chat-tanstack` pattern:
+
+- multiline or single-line input is acceptable
+- submit on button press
+- disable while busy if that remains the simplest path
+
+The important requirement is that, after a send completes, the newly completed user or assistant messages gain fork buttons once their fork-point markers are available.
+
+### Header specification
+
+The header should help orient the user in the tree.
+
+Recommended contents:
+
+- current chat title
+- a small badge such as `Root` or `Fork`
+- an ancestry label such as `Forked from "What if we..."` when applicable
+
+This should reinforce the branching model without requiring the user to inspect the left-hand tree every time.
+
+### Initial load behavior
+
+On first visit with empty localStorage:
+
+1. create a root chat
+2. insert it into localStorage
+3. navigate to it
+4. show an empty-state message inviting the user to begin
+
+On revisit with existing localStorage:
+
+1. restore the previous active chat id if present
+2. navigate there automatically
+3. render the restored tree immediately
+
+### Fork creation UX specification
 
 When the user clicks `Fork chat`:
 
-1. POST to `/api/chat-forks`
-2. receive the child chat id
-3. write the tree node into localStorage
-4. navigate to the child route
+1. disable the clicked fork button
+2. show an in-place pending state such as `Forking...`
+3. POST to `/api/chat-forks`
+4. if successful:
+   - insert the returned child node into localStorage
+   - update the parent node's `childIds`
+   - set the child as active
+   - navigate to `/chat/$id`
+5. if failed:
+   - restore the button state
+   - show a small inline or toast error
+   - do not mutate localStorage
+
+### Title derivation rules
+
+Titles should be lightweight and deterministic.
+
+Recommended rules:
+
+- default title: `New chat`
+- once the first user message exists, derive title from that message
+- truncate to a reasonable length, for example 40 characters
+- child branches should initially inherit a title derived from their own first visible user message if available
+- if the child has no unique first user message yet, use a temporary label like `Fork of <parent title>`
+
+### Deep-link and refresh behavior
+
+The demo should behave well when:
+
+- the user refreshes on a child branch
+- the user opens a child branch directly in a new tab
+- the localStorage tree is present but slightly stale
+
+Requirements:
+
+- the route should still load the durable snapshot for the branch
+- the local tree should be repaired if the node is missing
+- the active chat id in localStorage should update to match the route
+
+### Tree reconstruction expectations
+
+The example is intentionally using localStorage for tree structure, not the durable stream itself.
+
+That means:
+
+- localStorage loss loses the tree organization
+- but the individual chat streams still exist and remain readable if the ids are known
+
+This trade-off is acceptable for the demo, but the README should state it explicitly so the example is honest about what is and is not durable.
+
+### Example app README requirements
+
+The example README should explain:
+
+- what the demo shows
+- that message history lives in Durable Streams
+- that tree state lives in browser localStorage
+- why fork-point markers exist in the main stream
+- how to run the demo locally
+- how forking works at a high level
+
+### Demo acceptance criteria
+
+The demo is complete when all of the following are true:
+
+1. A new root chat is created automatically on first visit.
+2. Sending messages produces forkable completed messages.
+3. Clicking `Fork chat` creates a child branch and navigates to it.
+4. The child shows inherited history up to the selected message boundary.
+5. The child can fork again from inherited messages.
+6. The left-hand tree survives page refresh.
+7. Reloading directly on a child route restores the child session correctly.
+8. Unknown `CUSTOM` chunks do not leak into visible chat UI.
+9. The fork flow is fast and feels intentional rather than debuggy.
+
+### Example-specific implementation notes
+
+Recommended internal helper modules:
+
+- `src/lib/chat-tree.ts`
+  - localStorage model
+  - validation
+  - inserts and updates
+
+- `src/lib/fork-points.ts`
+  - small helpers for reading `message.metadata.durable.endOffset`
+  - type guards for forkable messages
+
+- `src/lib/chat-session.server.ts`
+  - create root chat
+  - load snapshot
+  - create fork child
+
+- `src/components/chat-tree.tsx`
+  - recursive node rendering
+
+- `src/components/chat-header.tsx`
+  - title and ancestry
+
+- `src/components/chat-message-actions.tsx`
+  - fork button and pending state
+
+### Example-specific testing and verification
+
+In addition to package-level tests, the example should be manually verified against the full product story:
+
+1. Start from an empty browser storage state.
+2. Create a root conversation with at least three messages.
+3. Fork after the first message.
+4. Continue the child conversation.
+5. Return to the parent and confirm it is unchanged.
+6. Fork again from the child using an inherited message.
+7. Refresh on both parent and child routes.
+8. Confirm the tree and active branch are restored.
+
+If time permits, add a small integration-style test or scripted smoke path around the fork API contract and tree insertion logic.
 
 ## Package-level implementation steps
 
