@@ -2752,6 +2752,140 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(body).toContain(`new data`)
       }
     )
+
+    test.concurrent(`should extend TTL on write (sliding window)`, async () => {
+      const streamPath = uniquePath(`ttl-renew-write`)
+
+      // Create stream with 2 second TTL
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `2`,
+        },
+      })
+      expect(createResponse.status).toBe(201)
+
+      // Wait 1.5s (past the midpoint)
+      await sleep(1500)
+
+      // Append — this should reset TTL to 2s from now
+      const appendResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `keep alive`,
+      })
+      expect(appendResponse.status).toBe(204)
+
+      // Wait another 1.5s — total 3s since creation, but only 1.5s since last write
+      await sleep(1500)
+
+      // Stream should still be alive (TTL was reset by the write)
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      expect(headResponse.status).toBe(200)
+    })
+
+    test.concurrent(`should extend TTL on read (sliding window)`, async () => {
+      const streamPath = uniquePath(`ttl-renew-read`)
+
+      // Create stream with 2 second TTL and some data
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `2`,
+        },
+        body: `test data`,
+      })
+      expect(createResponse.status).toBe(201)
+
+      // Wait 1.5s
+      await sleep(1500)
+
+      // Read — this should reset TTL to 2s from now
+      const readResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
+      })
+      expect(readResponse.status).toBe(200)
+
+      // Wait another 1.5s — total 3s since creation, but only 1.5s since last read
+      await sleep(1500)
+
+      // Stream should still be alive (TTL was reset by the read)
+      const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      expect(headResponse.status).toBe(200)
+    })
+
+    test.concurrent(`should NOT extend TTL on HEAD`, async () => {
+      const streamPath = uniquePath(`ttl-no-renew-head`)
+
+      // Create stream with 2 second TTL
+      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `2`,
+        },
+      })
+      expect(createResponse.status).toBe(201)
+
+      // Wait 1.5s
+      await sleep(1500)
+
+      // HEAD — should NOT reset TTL
+      const headMid = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      expect(headMid.status).toBe(200)
+
+      // Wait another 1s — total 2.5s since creation, past original TTL
+      await sleep(1000)
+
+      // Stream should be expired (HEAD did not extend TTL)
+      const headAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `HEAD`,
+      })
+      expect(headAfter.status).toBe(404)
+    })
+
+    test.concurrent(
+      `should NOT extend Expires-At on read or write`,
+      async () => {
+        const streamPath = uniquePath(`expires-at-no-renew`)
+
+        // Create stream that expires in 2 seconds
+        const expiresAt = new Date(Date.now() + 2000).toISOString()
+        const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-Expires-At": expiresAt,
+          },
+          body: `test data`,
+        })
+        expect(createResponse.status).toBe(201)
+
+        // Read at 1.5s — if this were TTL, it would extend; for Expires-At it should not
+        await sleep(1500)
+        const readResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `GET`,
+        })
+        expect(readResponse.status).toBe(200)
+
+        // Wait past the original Expires-At (another 1s, total ~2.5s)
+        await sleep(1000)
+
+        // Stream should be expired despite recent read
+        const headAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headAfter.status).toBe(404)
+      }
+    )
   })
 
   // ============================================================================
