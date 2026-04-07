@@ -2481,10 +2481,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
       // SHOULD return TTL metadata
       const ttl = response.headers.get(`Stream-TTL`)
-      if (ttl) {
-        expect(parseInt(ttl)).toBeGreaterThan(0)
-        expect(parseInt(ttl)).toBeLessThanOrEqual(3600)
-      }
+      // Stream-TTL returns the window value, not remaining time
+      expect(ttl).toBe(`3600`)
     })
 
     test(`should return Expires-At metadata if configured`, async () => {
@@ -2556,38 +2554,35 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(headAfter.status).toBe(404)
     })
 
-    test.concurrent(`should return 404 on GET after TTL expires`, async () => {
-      const streamPath = uniquePath(`ttl-expire-get`)
+    test.concurrent(
+      `should return 404 on GET after TTL expires (idle)`,
+      async () => {
+        const streamPath = uniquePath(`ttl-expire-get`)
 
-      // Create stream with 1 second TTL and some data
-      const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `PUT`,
-        headers: {
-          "Content-Type": `text/plain`,
-          "Stream-TTL": `1`,
-        },
-        body: `test data`,
-      })
-      expect(createResponse.status).toBe(201)
+        // Create stream with 1 second TTL and some data
+        const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-TTL": `1`,
+          },
+          body: `test data`,
+        })
+        expect(createResponse.status).toBe(201)
 
-      // Verify stream is readable immediately
-      const getBefore = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `GET`,
-      })
-      expect(getBefore.status).toBe(200)
+        // Wait for TTL to expire (no reads or writes — stream is idle)
+        await sleep(1500)
 
-      // Wait for TTL to expire
-      await sleep(1500)
-
-      // Stream should no longer exist
-      const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `GET`,
-      })
-      expect(getAfter.status).toBe(404)
-    })
+        // Stream should no longer exist
+        const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `GET`,
+        })
+        expect(getAfter.status).toBe(404)
+      }
+    )
 
     test.concurrent(
-      `should return 404 on POST append after TTL expires`,
+      `should return 404 on POST append after TTL expires (idle)`,
       async () => {
         const streamPath = uniquePath(`ttl-expire-post`)
 
@@ -2601,15 +2596,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(createResponse.status).toBe(201)
 
-        // Verify append works immediately
-        const postBefore = await fetch(`${getBaseUrl()}${streamPath}`, {
-          method: `POST`,
-          headers: { "Content-Type": `text/plain` },
-          body: `appended data`,
-        })
-        expect(postBefore.status).toBe(204)
-
-        // Wait for TTL to expire
+        // Wait for TTL to expire (no reads or writes — stream is idle)
         await sleep(1500)
 
         // Append should fail - stream no longer exists
@@ -9282,46 +9269,6 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       })
       expect([200, 201]).toContain(forkRes.status)
-    })
-
-    test(`should cap fork TTL at source expiry`, async () => {
-      const id = uniqueId()
-      const sourcePath = `/v1/stream/fork-ttl-cap-src-${id}`
-      const forkPath = `/v1/stream/fork-ttl-cap-fork-${id}`
-
-      // Create source with short TTL (10 seconds)
-      await fetch(`${getBaseUrl()}${sourcePath}`, {
-        method: `PUT`,
-        headers: {
-          "Content-Type": `text/plain`,
-          "Stream-TTL": `10`,
-        },
-        body: `data`,
-      })
-
-      // Fork with much longer TTL → should be capped
-      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
-        method: `PUT`,
-        headers: {
-          "Content-Type": `text/plain`,
-          [STREAM_FORKED_FROM_HEADER]: sourcePath,
-          "Stream-TTL": `99999`,
-        },
-      })
-      expect([200, 201]).toContain(forkRes.status)
-
-      // Fork's expiry should not exceed source's
-      const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
-        method: `HEAD`,
-      })
-      const forkExpires = forkHead.headers.get(`Stream-Expires-At`)
-      if (forkExpires) {
-        // Fork expires at most 10 seconds from source creation
-        const now = Date.now()
-        const forkExpiryMs = new Date(forkExpires).getTime()
-        // Should expire within ~15 seconds from now (10s TTL + some slack)
-        expect(forkExpiryMs).toBeLessThan(now + 15000)
-      }
     })
 
     test.concurrent(
