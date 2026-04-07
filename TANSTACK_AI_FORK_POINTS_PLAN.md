@@ -4,6 +4,8 @@
 
 This document proposes an opt-in fork-point feature for `packages/tanstack-ai-transport` that stores durable fork metadata in the main chat session stream.
 
+The core goal of this plan is to get to a compelling forked-chat demo. The package and transport changes described here are only valuable insofar as they enable that demo to exist and feel solid. This is not a transport-first plan looking for a use case later. It is a demo-driven plan, where the demo requirements define the shape of the transport work.
+
 The goal is to support chat UIs that can fork a conversation after any completed message and create a new Durable Stream fork at the exact durable offset for that message boundary.
 
 The current shape is:
@@ -18,6 +20,7 @@ This intentionally avoids protocol changes for now.
 
 ## Goals
 
+- make the forked-chat demo possible, robust, and easy to understand
 - keep the feature opt-in
 - keep existing TanStack transport behavior unchanged by default
 - store fork-point metadata in the main chat session stream
@@ -443,7 +446,14 @@ Use two distinct storage layers.
 
 The stream remains the source of truth for message history.
 
-localStorage is the source of truth for the tree UI.
+localStorage is the source of truth for the tree UI in the current browser.
+
+This is intentionally weaker than durable stream persistence:
+
+- message history is durable and reloadable from the stream
+- tree organization is browser-local and only fully recoverable when localStorage is still present
+
+The demo should be explicit about this trade-off.
 
 ### Local storage schema
 
@@ -494,8 +504,10 @@ The child branch should always have its own durable stream path even when it inh
 Recommended routes:
 
 - `/`
-  - redirect to the active chat if it exists in localStorage
-  - otherwise create a new root chat and redirect there
+  - render a lightweight client bootstrap screen
+  - after hydration, inspect localStorage for `activeChatId`
+  - if present, navigate client-side to `/chat/$id`
+  - otherwise create a new root chat and navigate client-side to it
 
 - `/chat`
   - layout route that renders sidebar plus outlet
@@ -514,7 +526,13 @@ Recommended routes:
   - create a child branch from a specific message boundary
 
 - `/api/chats/root`
-  - optional helper to create a new root chat session if keeping root creation server-driven is simpler
+  - helper to create a new root chat session for the client bootstrap flow
+
+Important implementation note:
+
+- the `/` route must not rely on SSR-time access to localStorage
+- bootstrap and active-chat restoration should happen in a client component after hydration
+- the initial route can show a small loading state while deciding where to navigate
 
 ### Server route contracts
 
@@ -583,20 +601,29 @@ Route responsibilities:
 
 1. validate request body
 2. derive source stream path from `sourceChatId`
-3. allocate a new child chat id
-4. create the child durable stream using:
+3. load the source stream's fork-point markers up to the requested boundary
+4. validate that `sourceMessageId` exists in the source markers and that its recorded `endOffset` exactly matches the requested `forkOffset`
+5. allocate a new child chat id
+6. create the child durable stream using:
    - `Stream-Forked-From`
    - `Stream-Fork-Offset`
-5. materialize the parent snapshot up to `forkOffset`
-6. collect every inherited fork-point marker up to that boundary
-7. replay those markers into the child stream using `IdempotentProducer`
-8. return child chat metadata for insertion into localStorage
+7. materialize the parent snapshot up to `forkOffset`
+8. collect every inherited fork-point marker up to that boundary
+9. replay those markers into the child stream using `IdempotentProducer`
+10. return child chat metadata for insertion into localStorage
 
 Failure requirements:
 
 - invalid `forkOffset` should return a clear `400`
 - missing source chat should return `404`
+- mismatched `sourceMessageId` and `forkOffset` should return `400` or `409`
 - if child stream creation succeeds but marker replay fails, the route should return an error and the UI should not insert the child node into localStorage
+
+Validation rule:
+
+- the fork route must not trust the client-supplied `sourceMessageId` and `forkOffset` independently
+- it should only create the child if the requested pair matches the source stream's recorded fork-point marker set
+- this prevents stale UI state from creating a branch at one offset while labeling it as another message
 
 ### Client state model
 
@@ -620,17 +647,17 @@ Suggested responsibilities for `chat-tree.ts`:
 
 For `/chat/$id`, the loader should:
 
-1. ensure the chat exists in local tree state or can be treated as a direct deep-link
-2. load the durable snapshot from the server
-3. pass `messages` and `resumeOffset` into the chat component
-4. include enough metadata for the header to show branch ancestry
+1. load the durable snapshot from the server
+2. pass `messages` and `resumeOffset` into the chat component
+3. include enough metadata for the header to show branch ancestry when available locally
 
 If a chat id exists in the URL but not in localStorage:
 
 - the page should still load the durable stream if it exists
 - the client should backfill a minimal node into localStorage on mount
+- the minimal node should be treated as a standalone known branch until local tree data reconnects it to a parent
 
-This makes shared links and manual refreshes more robust.
+This makes direct links and manual refreshes robust for the active branch, without pretending the app can reconstruct the full tree from the stream alone.
 
 ### Sidebar tree specification
 
@@ -705,16 +732,21 @@ This should reinforce the branching model without requiring the user to inspect 
 
 On first visit with empty localStorage:
 
-1. create a root chat
-2. insert it into localStorage
-3. navigate to it
-4. show an empty-state message inviting the user to begin
+1. render a client bootstrap shell on `/`
+2. after hydration, detect empty localStorage
+3. call `/api/chats/root`
+4. insert the returned root node into localStorage
+5. navigate to `/chat/$id`
+6. show an empty-state message inviting the user to begin
 
 On revisit with existing localStorage:
 
-1. restore the previous active chat id if present
-2. navigate there automatically
-3. render the restored tree immediately
+1. render a client bootstrap shell on `/`
+2. after hydration, restore the previous active chat id if present
+3. navigate there automatically
+4. render the restored tree immediately
+
+This behavior should be implemented as a client bootstrap flow, not as a server redirect based on localStorage.
 
 ### Fork creation UX specification
 
@@ -756,8 +788,14 @@ The demo should behave well when:
 Requirements:
 
 - the route should still load the durable snapshot for the branch
-- the local tree should be repaired if the node is missing
+- if the node is missing from localStorage, the app should backfill a minimal node for the active branch
 - the active chat id in localStorage should update to match the route
+
+Explicit limitation:
+
+- a direct deep-link to `/chat/$id` is only required to restore the current branch session
+- it is not required to reconstruct the full fork ancestry or sibling tree if localStorage is absent
+- full tree restoration is only expected when the browser still has the localStorage tree document
 
 ### Tree reconstruction expectations
 
@@ -768,6 +806,12 @@ That means:
 - localStorage loss loses the tree organization
 - but the individual chat streams still exist and remain readable if the ids are known
 
+Therefore:
+
+- the app should backfill a minimal active-node record on direct load when possible
+- the app should not attempt to invent missing parent/sibling relationships from the stream alone
+- the sidebar may temporarily show only the active branch after a deep-link if the local tree document is missing
+
 This trade-off is acceptable for the demo, but the README should state it explicitly so the example is honest about what is and is not durable.
 
 ### Example app README requirements
@@ -777,6 +821,7 @@ The example README should explain:
 - what the demo shows
 - that message history lives in Durable Streams
 - that tree state lives in browser localStorage
+- that the full tree is browser-local and not fully reconstructable from a shared URL alone
 - why fork-point markers exist in the main stream
 - how to run the demo locally
 - how forking works at a high level
@@ -790,8 +835,8 @@ The demo is complete when all of the following are true:
 3. Clicking `Fork chat` creates a child branch and navigates to it.
 4. The child shows inherited history up to the selected message boundary.
 5. The child can fork again from inherited messages.
-6. The left-hand tree survives page refresh.
-7. Reloading directly on a child route restores the child session correctly.
+6. The left-hand tree survives page refresh when localStorage is preserved.
+7. Reloading directly on a child route restores the child session correctly, even if only a minimal node can be backfilled.
 8. Unknown `CUSTOM` chunks do not leak into visible chat UI.
 9. The fork flow is fast and feels intentional rather than debuggy.
 
