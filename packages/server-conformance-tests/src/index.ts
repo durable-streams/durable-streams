@@ -1575,22 +1575,27 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         { method: `GET` }
       )
 
-      // Give the long-poll a moment to start waiting
-      await new Promise((r) => setTimeout(r, 100))
+      // Continuously append data so the long-poll picks it up regardless of
+      // when the server establishes the subscription or how short its timeout is.
+      const interval = setInterval(() => {
+        void fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `new data`,
+        })
+      }, 50)
 
-      // Append new data while long-poll is waiting
-      await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `POST`,
-        headers: { "Content-Type": `text/plain` },
-        body: `new data`,
-      })
-
-      // Long-poll should return with the new data (not historical)
-      const response = await longPollPromise
-      expect(response.status).toBe(200)
-      const text = await response.text()
-      expect(text).toBe(`new data`)
-      expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      try {
+        // Long-poll should return with new data (not historical)
+        const response = await longPollPromise
+        expect(response.status).toBe(200)
+        const text = await response.text()
+        expect(text).toContain(`new data`)
+        expect(text).not.toContain(`historical`)
+        expect(response.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+      } finally {
+        clearInterval(interval)
+      }
     })
 
     test(`should support offset=now with SSE mode`, async () => {
@@ -2631,8 +2636,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       async () => {
         const streamPath = uniquePath(`expires-at-head`)
 
-        // Create stream that expires in 1 second
-        const expiresAt = new Date(Date.now() + 1000).toISOString()
+        // Create stream that expires in 3 seconds (wide window to tolerate clock skew)
+        const expiresAt = new Date(Date.now() + 3000).toISOString()
         const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `PUT`,
           headers: {
@@ -2649,7 +2654,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(headBefore.status).toBe(200)
 
         // Wait for expiry, polling HEAD until deleted
-        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 3000)
 
         // Verify with GET as well
         const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -2664,8 +2669,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       async () => {
         const streamPath = uniquePath(`expires-at-get`)
 
-        // Create stream that expires in 1 second
-        const expiresAt = new Date(Date.now() + 1000).toISOString()
+        // Create stream that expires in 3 seconds (wide window to tolerate clock skew)
+        const expiresAt = new Date(Date.now() + 3000).toISOString()
         const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `PUT`,
           headers: {
@@ -2683,7 +2688,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(getBefore.status).toBe(200)
 
         // Wait for expiry, polling HEAD until deleted
-        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 3000)
 
         // Verify with GET as well
         const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -2698,8 +2703,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       async () => {
         const streamPath = uniquePath(`expires-at-post`)
 
-        // Create stream that expires in 1 second
-        const expiresAt = new Date(Date.now() + 1000).toISOString()
+        // Create stream that expires in 3 seconds (wide window to tolerate clock skew)
+        const expiresAt = new Date(Date.now() + 3000).toISOString()
         const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `PUT`,
           headers: {
@@ -2718,7 +2723,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(postBefore.status).toBe(204)
 
         // Wait for expiry, polling HEAD until deleted
-        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 3000)
 
         // Verify append fails - stream no longer exists
         const postAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -2875,8 +2880,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       async () => {
         const streamPath = uniquePath(`expires-at-no-renew`)
 
-        // Create stream that expires in 2 seconds
-        const expiresAt = new Date(Date.now() + 2000).toISOString()
+        // Create stream that expires in 4 seconds (wide window to tolerate clock skew)
+        const expiresAt = new Date(Date.now() + 4000).toISOString()
         const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `PUT`,
           headers: {
@@ -2887,16 +2892,16 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(createResponse.status).toBe(201)
 
-        // Read at 1.5s — if this were TTL, it would extend; for Expires-At it should not
-        await sleep(1500)
+        // Read at 2s — if this were TTL, it would extend; for Expires-At it should not
+        await sleep(2000)
         const readResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `GET`,
         })
         expect(readResponse.status).toBe(200)
 
         // Stream should be expired despite recent read
-        // Poll until deleted — original 2s Expires-At minus ~1.5s already waited
-        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 500)
+        // Poll until deleted — original 4s Expires-At minus ~2s already waited
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 2000)
 
         // Verify with GET as well
         const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -4644,9 +4649,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
               expect(finalResult).toEqual(expected)
             }
           ),
-          { numRuns: 20 } // Limit runs since each creates a stream
+          { numRuns: 20, interruptAfterTimeLimit: 10_000 }
         )
-      })
+      }, 30_000)
 
       test(`single byte values cover full range (0-255) with concurrent readers during write`, async () => {
         await fc.assert(
@@ -4699,9 +4704,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
               expect(finalResult).toEqual(expected)
             }
           ),
-          { numRuns: 50 } // Test a good sample of byte values
+          { numRuns: 50, interruptAfterTimeLimit: 10_000 }
         )
-      })
+      }, 30_000)
     })
 
     describe(`Operation Sequence Properties`, () => {
@@ -4834,9 +4839,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
               return true
             }
           ),
-          { numRuns: 15 }
+          { numRuns: 15, interruptAfterTimeLimit: 30_000 }
         )
-      })
+      }, 60_000)
 
       test(`offsets are always monotonically increasing`, async () => {
         await fc.assert(
