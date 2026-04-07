@@ -134,9 +134,9 @@ export class StreamStore {
       }
     }
 
-    // Check TTL (relative to creation time)
+    // Check TTL (sliding window from last access)
     if (stream.ttlSeconds !== undefined) {
-      const expiryTime = stream.createdAt + stream.ttlSeconds * 1000
+      const expiryTime = stream.lastAccessedAt + stream.ttlSeconds * 1000
       if (now >= expiryTime) {
         return true
       }
@@ -166,6 +166,16 @@ export class StreamStore {
       return undefined
     }
     return stream
+  }
+
+  /**
+   * Update lastAccessedAt to now. Called on reads and appends (not HEAD).
+   */
+  touchAccess(path: string): void {
+    const stream = this.streams.get(path)
+    if (stream) {
+      stream.lastAccessedAt = Date.now()
+    }
   }
 
   /**
@@ -292,8 +302,9 @@ export class StreamStore {
     let effectiveExpiresAt = options.expiresAt
     let effectiveTtlSeconds = options.ttlSeconds
     if (isFork) {
-      effectiveExpiresAt = this.computeForkExpiry(options, sourceStream!)
-      effectiveTtlSeconds = undefined // Forks store expiresAt, not TTL
+      const resolved = this.resolveForkExpiry(options, sourceStream!)
+      effectiveExpiresAt = resolved.expiresAt
+      effectiveTtlSeconds = resolved.ttlSeconds
     }
 
     const stream: Stream = {
@@ -304,6 +315,7 @@ export class StreamStore {
       ttlSeconds: effectiveTtlSeconds,
       expiresAt: effectiveExpiresAt,
       createdAt: Date.now(),
+      lastAccessedAt: Date.now(),
       closed: options.closed ?? false,
       refCount: 0,
       forkedFrom: isFork ? options.forkedFrom : undefined,
@@ -328,43 +340,33 @@ export class StreamStore {
   }
 
   /**
-   * Compute the effective expiry for a fork stream, capped at the source's expiry.
+   * Resolve fork expiry per the decision table.
+   * Forks have independent lifetimes — no capping at source expiry.
    */
-  private computeForkExpiry(
+  private resolveForkExpiry(
     opts: { ttlSeconds?: number; expiresAt?: string },
     sourceMeta: Stream
-  ): string | undefined {
-    // Resolve source's absolute expiry
-    let sourceExpiryMs: number | undefined
-    if (sourceMeta.expiresAt) {
-      sourceExpiryMs = new Date(sourceMeta.expiresAt).getTime()
-    } else if (sourceMeta.ttlSeconds !== undefined) {
-      sourceExpiryMs = sourceMeta.createdAt + sourceMeta.ttlSeconds * 1000
+  ): { ttlSeconds?: number; expiresAt?: string } {
+    // Fork explicitly requests TTL — use it
+    if (opts.ttlSeconds !== undefined) {
+      return { ttlSeconds: opts.ttlSeconds }
     }
 
-    // Resolve fork's requested expiry
-    let forkExpiryMs: number | undefined
+    // Fork explicitly requests Expires-At — use it
     if (opts.expiresAt) {
-      forkExpiryMs = new Date(opts.expiresAt).getTime()
-    } else if (opts.ttlSeconds !== undefined) {
-      forkExpiryMs = Date.now() + opts.ttlSeconds * 1000
-    } else {
-      forkExpiryMs = sourceExpiryMs // Inherit source expiry
+      return { expiresAt: opts.expiresAt }
     }
 
-    // Cap at source expiry
-    if (
-      sourceExpiryMs !== undefined &&
-      forkExpiryMs !== undefined &&
-      forkExpiryMs > sourceExpiryMs
-    ) {
-      forkExpiryMs = sourceExpiryMs
+    // No expiry requested — inherit from source
+    if (sourceMeta.ttlSeconds !== undefined) {
+      return { ttlSeconds: sourceMeta.ttlSeconds }
+    }
+    if (sourceMeta.expiresAt) {
+      return { expiresAt: sourceMeta.expiresAt }
     }
 
-    if (forkExpiryMs !== undefined) {
-      return new Date(forkExpiryMs).toISOString()
-    }
-    return undefined
+    // Source has no expiry either
+    return {}
   }
 
   /**
