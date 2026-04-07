@@ -747,6 +747,14 @@ export class DurableStreamTestServer {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
 
+    // Include TTL/Expiry metadata
+    if (stream.ttlSeconds !== undefined) {
+      headers[STREAM_TTL_HEADER] = String(stream.ttlSeconds)
+    }
+    if (stream.expiresAt) {
+      headers[STREAM_EXPIRES_AT_HEADER] = stream.expiresAt
+    }
+
     // Generate ETag: {path}:-1:{offset}[:c] (includes closure status)
     // The :c suffix ensures ETag changes when a stream is closed, even without new data
     const closedSuffix = stream.closed ? `:c` : ``
