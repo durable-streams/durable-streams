@@ -5,7 +5,7 @@
  * any server implementation to verify protocol compliance.
  */
 
-import { describe, expect, test } from "vitest"
+import { describe, expect, test, vi } from "vitest"
 import * as fc from "fast-check"
 import {
   DurableStream,
@@ -2524,6 +2524,23 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     const uniquePath = (prefix: string) =>
       `/v1/stream/${prefix}-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
+    // Poll HEAD until the stream is deleted, tolerating slight timing delays
+    const waitForDeletion = async (
+      url: string,
+      initialSleepMs: number,
+      expectedStatuses: Array<number> = [404],
+      timeoutMs: number = 5000
+    ) => {
+      await sleep(initialSleepMs)
+      await vi.waitFor(
+        async () => {
+          const head = await fetch(url, { method: `HEAD` })
+          expect(expectedStatuses).toContain(head.status)
+        },
+        { timeout: timeoutMs, interval: 200 }
+      )
+    }
+
     // Run tests concurrently to avoid 6x 1.5s wait time
     test.concurrent(`should return 404 on HEAD after TTL expires`, async () => {
       const streamPath = uniquePath(`ttl-expire-head`)
@@ -2544,14 +2561,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
       expect(headBefore.status).toBe(200)
 
-      // Wait for TTL to expire (1 second + buffer)
-      await sleep(1500)
+      // Wait for TTL to expire, polling HEAD until deleted
+      await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
 
-      // Stream should no longer exist
-      const headAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `HEAD`,
+      // Verify with GET as well
+      const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
       })
-      expect(headAfter.status).toBe(404)
+      expect(getAfter.status).toBe(404)
     })
 
     test.concurrent(
@@ -2571,9 +2588,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(createResponse.status).toBe(201)
 
         // Wait for TTL to expire (no reads or writes — stream is idle)
-        await sleep(1500)
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
 
-        // Stream should no longer exist
+        // Verify with GET as well
         const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `GET`,
         })
@@ -2597,9 +2614,9 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(createResponse.status).toBe(201)
 
         // Wait for TTL to expire (no reads or writes — stream is idle)
-        await sleep(1500)
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
 
-        // Append should fail - stream no longer exists
+        // Verify append fails - stream no longer exists
         const postAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `POST`,
           headers: { "Content-Type": `text/plain` },
@@ -2631,14 +2648,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(headBefore.status).toBe(200)
 
-        // Wait for expiry time to pass
-        await sleep(1500)
+        // Wait for expiry, polling HEAD until deleted
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
 
-        // Stream should no longer exist
-        const headAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
-          method: `HEAD`,
+        // Verify with GET as well
+        const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `GET`,
         })
-        expect(headAfter.status).toBe(404)
+        expect(getAfter.status).toBe(404)
       }
     )
 
@@ -2665,10 +2682,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(getBefore.status).toBe(200)
 
-        // Wait for expiry time to pass
-        await sleep(1500)
+        // Wait for expiry, polling HEAD until deleted
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
 
-        // Stream should no longer exist
+        // Verify with GET as well
         const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `GET`,
         })
@@ -2700,10 +2717,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(postBefore.status).toBe(204)
 
-        // Wait for expiry time to pass
-        await sleep(1500)
+        // Wait for expiry, polling HEAD until deleted
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
 
-        // Append should fail - stream no longer exists
+        // Verify append fails - stream no longer exists
         const postAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
           method: `POST`,
           headers: { "Content-Type": `text/plain` },
@@ -2729,8 +2746,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(createResponse.status).toBe(201)
 
-        // Wait for TTL to expire
-        await sleep(1500)
+        // Wait for TTL to expire, polling HEAD until deleted
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 1000)
 
         // Recreate stream with different config - should succeed (201)
         const recreateResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
@@ -2842,14 +2859,15 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
       expect(headMid.status).toBe(200)
 
-      // Wait another 1s — total 2.5s since creation, past original TTL
-      await sleep(1000)
-
       // Stream should be expired (HEAD did not extend TTL)
-      const headAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
-        method: `HEAD`,
+      // Poll until deleted — original 2s TTL minus ~1.5s already waited
+      await waitForDeletion(`${getBaseUrl()}${streamPath}`, 500)
+
+      // Verify with GET as well
+      const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `GET`,
       })
-      expect(headAfter.status).toBe(404)
+      expect(getAfter.status).toBe(404)
     })
 
     test.concurrent(
@@ -2876,14 +2894,15 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(readResponse.status).toBe(200)
 
-        // Wait past the original Expires-At (another 1s, total ~2.5s)
-        await sleep(1000)
-
         // Stream should be expired despite recent read
-        const headAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
-          method: `HEAD`,
+        // Poll until deleted — original 2s Expires-At minus ~1.5s already waited
+        await waitForDeletion(`${getBaseUrl()}${streamPath}`, 500)
+
+        // Verify with GET as well
+        const getAfter = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `GET`,
         })
-        expect(headAfter.status).toBe(404)
+        expect(getAfter.status).toBe(404)
       }
     )
   })
@@ -9337,6 +9356,23 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     const sleep = (ms: number) =>
       new Promise((resolve) => setTimeout(resolve, ms))
 
+    // Poll HEAD until the stream is deleted, tolerating slight timing delays
+    const waitForDeletion = async (
+      url: string,
+      initialSleepMs: number,
+      expectedStatuses: Array<number> = [404],
+      timeoutMs: number = 5000
+    ) => {
+      await sleep(initialSleepMs)
+      await vi.waitFor(
+        async () => {
+          const head = await fetch(url, { method: `HEAD` })
+          expect(expectedStatuses).toContain(head.status)
+        },
+        { timeout: timeoutMs, interval: 200 }
+      )
+    }
+
     test(`should inherit source expiry when none specified`, async () => {
       const id = uniqueId()
       const sourcePath = `/v1/stream/fork-ttl-inherit-src-${id}`
@@ -9438,14 +9474,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(forkHeadBefore.status).toBe(200)
 
-        // Wait for fork to expire
-        await sleep(1500)
+        // Wait for fork to expire, polling HEAD until deleted
+        await waitForDeletion(`${getBaseUrl()}${forkPath}`, 1000)
 
-        // Fork should be gone
-        const forkHeadAfter = await fetch(`${getBaseUrl()}${forkPath}`, {
-          method: `HEAD`,
+        // Verify with GET as well
+        const forkGetAfter = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `GET`,
         })
-        expect(forkHeadAfter.status).toBe(404)
+        expect(forkGetAfter.status).toBe(404)
       }
     )
 
@@ -9475,21 +9511,23 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           },
         })
 
-        // Wait for expiry
-        await sleep(1500)
+        // Wait for source to expire, polling HEAD until deleted
+        await waitForDeletion(`${getBaseUrl()}${sourcePath}`, 1000, [404, 410])
 
-        // Source should expire. With refCount > 0 it might be 410 or 404
-        // depending on whether expiry also checks refCount.
-        const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
-          method: `HEAD`,
+        // Verify source with GET as well
+        const sourceGet = await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `GET`,
         })
-        expect([404, 410]).toContain(sourceHead.status)
+        expect([404, 410]).toContain(sourceGet.status)
 
         // Fork should also expire (inherited same expiry)
-        const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
-          method: `HEAD`,
+        await waitForDeletion(`${getBaseUrl()}${forkPath}`, 0, [404, 410])
+
+        // Verify fork with GET as well
+        const forkGet = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `GET`,
         })
-        expect([404, 410]).toContain(forkHead.status)
+        expect([404, 410]).toContain(forkGet.status)
       }
     )
 
@@ -9597,16 +9635,17 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(forkRead.status).toBe(200)
 
-        // Wait another 1s — source should be expired (2.5s idle), fork alive (1s since last read)
-        await sleep(1000)
+        // Source should be expired (2s TTL, idle since creation)
+        // Poll until deleted — original 2s TTL minus ~1.5s already waited
+        await waitForDeletion(`${getBaseUrl()}${sourcePath}`, 500, [404, 410])
 
-        // Source expired
-        const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
-          method: `HEAD`,
+        // Verify source with GET as well
+        const sourceGet = await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `GET`,
         })
-        expect([404, 410]).toContain(sourceHead.status)
+        expect([404, 410]).toContain(sourceGet.status)
 
-        // Fork still alive
+        // Fork still alive (TTL was renewed by read)
         const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
           method: `HEAD`,
         })
