@@ -230,6 +230,7 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 
 - `Stream-TTL: <seconds>`
   - Sets a sliding time-to-live window in seconds. The stream expires after being idle (no reads or writes) for this duration. Each read or write operation resets the expiry countdown to this value. `HEAD` requests do **not** reset the countdown. The value **MUST** be a non-negative integer in decimal notation without leading zeros, plus signs, decimal points, or scientific notation (e.g., `3600` is valid; `+3600`, `03600`, `3600.0`, and `3.6e3` are not).
+  - TTL resets are a server-side concern: only requests that reach the origin server reset the countdown. Reads served from intermediate caches (CDN catch-up reads with `Cache-Control: public, max-age=60`) do not reach the server and do not reset the TTL. For live read modes (long-poll, SSE), the TTL resets when the server begins processing the request, not when data is delivered or the response completes. This means a stream with active live readers will not expire, even if no new data is being produced.
 
 - `Stream-Expires-At: <rfc3339>`
   - Sets an absolute expiry time as an RFC 3339 timestamp.
