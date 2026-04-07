@@ -9492,6 +9492,203 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect([404, 410]).toContain(forkHead.status)
       }
     )
+
+    test(`should inherit source TTL value when none specified`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-ttl-inherit-ttl-src-${id}`
+      const forkPath = `/v1/stream/fork-ttl-inherit-ttl-fork-${id}`
+
+      // Create source with TTL
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `3600`,
+        },
+        body: `data`,
+      })
+
+      // Fork without specifying expiry → should inherit TTL value
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Fork should have TTL metadata matching source
+      const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      expect(forkHead.status).toBe(200)
+      const forkTTL = forkHead.headers.get(`Stream-TTL`)
+      expect(forkTTL).toBe(`3600`)
+    })
+
+    test(`should use fork's own TTL when specified`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-own-ttl-src-${id}`
+      const forkPath = `/v1/stream/fork-own-ttl-fork-${id}`
+
+      // Create source with TTL=3600
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `3600`,
+        },
+        body: `data`,
+      })
+
+      // Fork with different TTL
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          "Stream-TTL": `7200`,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Fork should have its own TTL value
+      const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      expect(forkHead.status).toBe(200)
+      const forkTTL = forkHead.headers.get(`Stream-TTL`)
+      expect(forkTTL).toBe(`7200`)
+    })
+
+    test.concurrent(
+      `should allow fork to outlive source via TTL renewal`,
+      async () => {
+        const id = uniqueId()
+        const sourcePath = `/v1/stream/fork-outlive-src-${id}`
+        const forkPath = `/v1/stream/fork-outlive-fork-${id}`
+
+        // Create source with 2s TTL
+        await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-TTL": `2`,
+          },
+          body: `source data`,
+        })
+
+        // Fork with 2s TTL
+        const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_FORKED_FROM_HEADER]: sourcePath,
+            "Stream-TTL": `2`,
+          },
+        })
+        expect(forkRes.status).toBe(201)
+
+        // Wait 1.5s, then read the fork (extends fork's TTL, source is idle)
+        await sleep(1500)
+        const forkRead = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `GET`,
+        })
+        expect(forkRead.status).toBe(200)
+
+        // Wait another 1s — source should be expired (2.5s idle), fork alive (1s since last read)
+        await sleep(1000)
+
+        // Source expired
+        const sourceHead = await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `HEAD`,
+        })
+        expect([404, 410]).toContain(sourceHead.status)
+
+        // Fork still alive
+        const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `HEAD`,
+        })
+        expect(forkHead.status).toBe(200)
+      }
+    )
+
+    test(`should allow fork Expires-At beyond source TTL expiry`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-expires-beyond-src-${id}`
+      const forkPath = `/v1/stream/fork-expires-beyond-fork-${id}`
+
+      // Create source with short TTL (10s)
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `10`,
+        },
+        body: `data`,
+      })
+
+      // Fork with Expires-At far in the future (no capping)
+      const farFuture = new Date(Date.now() + 3600000).toISOString()
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          "Stream-Expires-At": farFuture,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Fork should have its own Expires-At, not capped at source
+      const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      expect(forkHead.status).toBe(200)
+      const forkExpiresAt = forkHead.headers.get(`Stream-Expires-At`)
+      if (forkExpiresAt) {
+        // Fork expiry should be ~1 hour from now, not ~10s
+        expect(new Date(forkExpiresAt).getTime()).toBeGreaterThan(
+          Date.now() + 3500000
+        )
+      }
+    })
+
+    test(`should allow fork TTL longer than source TTL (no capping)`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-ttl-nocap-src-${id}`
+      const forkPath = `/v1/stream/fork-ttl-nocap-fork-${id}`
+
+      // Create source with TTL=10
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Stream-TTL": `10`,
+        },
+        body: `data`,
+      })
+
+      // Fork with TTL=99999 — previously would be capped, now independent
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          "Stream-TTL": `99999`,
+        },
+      })
+      expect([200, 201]).toContain(forkRes.status)
+
+      // Fork should have its own TTL, not capped
+      const forkHead = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      expect(forkHead.status).toBe(200)
+      const forkTTL = forkHead.headers.get(`Stream-TTL`)
+      expect(forkTTL).toBe(`99999`)
+    })
   })
 
   // ============================================================================
