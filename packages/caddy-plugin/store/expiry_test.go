@@ -29,17 +29,21 @@ func TestStreamMetadata_IsExpired_ExpiresAt(t *testing.T) {
 func TestStreamMetadata_IsExpired_TTL(t *testing.T) {
 	// Stream with TTL that has passed
 	ttl := int64(1) // 1 second
+	past := time.Now().Add(-2 * time.Second)
 	meta := &StreamMetadata{
-		Path:       "/test",
-		TTLSeconds: &ttl,
-		CreatedAt:  time.Now().Add(-2 * time.Second), // Created 2 seconds ago
+		Path:           "/test",
+		TTLSeconds:     &ttl,
+		CreatedAt:      past,
+		LastAccessedAt: past, // Last accessed 2 seconds ago — TTL has expired
 	}
 	if !meta.IsExpired() {
 		t.Error("stream with expired TTL should be expired")
 	}
 
 	// Stream with TTL that hasn't passed
-	meta.CreatedAt = time.Now() // Just created
+	now := time.Now()
+	meta.CreatedAt = now      // Just created
+	meta.LastAccessedAt = now // Just accessed
 	if meta.IsExpired() {
 		t.Error("stream with non-expired TTL should not be expired")
 	}
