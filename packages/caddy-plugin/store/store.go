@@ -193,20 +193,21 @@ type Message struct {
 
 // StreamMetadata contains metadata about a stream
 type StreamMetadata struct {
-	Path          string
-	ContentType   string
-	CurrentOffset Offset
-	LastSeq       string // Last Stream-Seq value
-	TTLSeconds    *int64
-	ExpiresAt     *time.Time
-	CreatedAt     time.Time
-	Producers     map[string]*ProducerState // Producer ID -> state
-	Closed        bool                      // Stream is closed (no more appends allowed)
-	ClosedBy      *ClosedByProducer         // Producer that closed the stream (for idempotent duplicate detection)
-	ForkedFrom    string                    // Source stream path (empty if not a fork)
-	ForkOffset    Offset                    // Divergence point: offsets < ForkOffset come from source
-	RefCount      int32                     // Number of forks referencing this stream
-	SoftDeleted   bool                      // Logically deleted but retained for fork readers
+	Path           string
+	ContentType    string
+	CurrentOffset  Offset
+	LastSeq        string // Last Stream-Seq value
+	TTLSeconds     *int64
+	ExpiresAt      *time.Time
+	CreatedAt      time.Time
+	LastAccessedAt time.Time
+	Producers      map[string]*ProducerState // Producer ID -> state
+	Closed         bool                      // Stream is closed (no more appends allowed)
+	ClosedBy       *ClosedByProducer         // Producer that closed the stream (for idempotent duplicate detection)
+	ForkedFrom     string                    // Source stream path (empty if not a fork)
+	ForkOffset     Offset                    // Divergence point: offsets < ForkOffset come from source
+	RefCount       int32                     // Number of forks referencing this stream
+	SoftDeleted    bool                      // Logically deleted but retained for fork readers
 }
 
 // IsExpired checks if the stream has expired based on TTL or ExpiresAt
@@ -220,7 +221,7 @@ func (m *StreamMetadata) IsExpired() bool {
 
 	// Check TTL-based expiry
 	if m.TTLSeconds != nil {
-		expiryTime := m.CreatedAt.Add(time.Duration(*m.TTLSeconds) * time.Second)
+		expiryTime := m.LastAccessedAt.Add(time.Duration(*m.TTLSeconds) * time.Second)
 		if now.After(expiryTime) {
 			return true
 		}
