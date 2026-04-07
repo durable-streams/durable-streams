@@ -219,34 +219,27 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 		return nil, false, ErrContentTypeMismatch
 	}
 
-	// Compute effective expiry
-	var effectiveExpiry *time.Time
-	if isFork {
-		effectiveExpiry = s.computeForkExpiry(opts, *sourceMeta)
-	} else {
-		effectiveExpiry = opts.ExpiresAt
-	}
-
 	// Build metadata
+	now := time.Now()
 	meta := StreamMetadata{
-		Path:        path,
-		ContentType: contentType,
-		CreatedAt:   time.Now(),
-		Closed:      opts.Closed, // Support creating stream in closed state
+		Path:           path,
+		ContentType:    contentType,
+		CreatedAt:      now,
+		LastAccessedAt: now,
+		Closed:         opts.Closed, // Support creating stream in closed state
 	}
 
 	if isFork {
+		forkTTL, forkExpiresAt := s.resolveForkExpiry(opts, *sourceMeta)
 		meta.CurrentOffset = forkOffset
 		meta.ForkOffset = forkOffset
 		meta.ForkedFrom = opts.ForkedFrom
-		// For forks, store the computed ExpiresAt (not TTLSeconds) to avoid
-		// TTL being computed relative to CreatedAt which could extend beyond source expiry
-		meta.ExpiresAt = effectiveExpiry
-		meta.TTLSeconds = nil
+		meta.TTLSeconds = forkTTL
+		meta.ExpiresAt = forkExpiresAt
 	} else {
 		meta.CurrentOffset = ZeroOffset
 		meta.TTLSeconds = opts.TTLSeconds
-		meta.ExpiresAt = effectiveExpiry
+		meta.ExpiresAt = opts.ExpiresAt
 	}
 
 	stream := &memoryStream{
@@ -274,37 +267,31 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 	return &stream.metadata, true, nil // true = newly created
 }
 
-// computeForkExpiry determines the effective expiry for a fork stream,
-// capped at the source stream's expiry.
-func (s *MemoryStore) computeForkExpiry(opts CreateOptions, sourceMeta StreamMetadata) *time.Time {
-	// Resolve source's absolute expiry
-	var sourceExpiry *time.Time
-	if sourceMeta.ExpiresAt != nil {
-		sourceExpiry = sourceMeta.ExpiresAt
-	} else if sourceMeta.TTLSeconds != nil {
-		t := sourceMeta.CreatedAt.Add(time.Duration(*sourceMeta.TTLSeconds) * time.Second)
-		sourceExpiry = &t
+// resolveForkExpiry resolves fork TTL/expiry per the decision table.
+// Forks have independent lifetimes — no capping at source expiry.
+func (s *MemoryStore) resolveForkExpiry(opts CreateOptions, sourceMeta StreamMetadata) (*int64, *time.Time) {
+	// Fork explicitly requests TTL — use it
+	if opts.TTLSeconds != nil {
+		return opts.TTLSeconds, nil
 	}
 
-	// Resolve fork's requested expiry
-	var forkExpiry *time.Time
+	// Fork explicitly requests Expires-At — use it
 	if opts.ExpiresAt != nil {
-		forkExpiry = opts.ExpiresAt
-	} else if opts.TTLSeconds != nil {
-		t := time.Now().Add(time.Duration(*opts.TTLSeconds) * time.Second)
-		forkExpiry = &t
-	} else {
-		forkExpiry = sourceExpiry // Inherit source expiry
+		return nil, opts.ExpiresAt
 	}
 
-	// Cap at source expiry
-	if sourceExpiry != nil && forkExpiry != nil {
-		if forkExpiry.After(*sourceExpiry) {
-			forkExpiry = sourceExpiry
-		}
+	// No expiry requested — inherit from source
+	if sourceMeta.TTLSeconds != nil {
+		ttl := *sourceMeta.TTLSeconds
+		return &ttl, nil
+	}
+	if sourceMeta.ExpiresAt != nil {
+		t := *sourceMeta.ExpiresAt
+		return nil, &t
 	}
 
-	return forkExpiry
+	// Source has no expiry either
+	return nil, nil
 }
 
 func (s *MemoryStore) Get(path string) (*StreamMetadata, error) {
@@ -560,6 +547,9 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 		return AppendResult{}, ErrStreamNotFound
 	}
 
+	// Refresh TTL sliding window
+	stream.metadata.LastAccessedAt = time.Now()
+
 	// Check if stream is closed
 	if stream.metadata.Closed {
 		// Check if this is a duplicate of the closing request (idempotent producer)
@@ -752,11 +742,11 @@ func (s *MemoryStore) readForkedStream(stream *memoryStream, offset Offset) []Me
 }
 
 func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) {
-	s.mu.RLock()
+	s.mu.Lock()
 
 	stream, ok := s.streams[path]
 	if !ok {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, false, ErrStreamNotFound
 	}
 
@@ -764,26 +754,20 @@ func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) 
 	if stream.metadata.IsExpired() {
 		if stream.metadata.RefCount > 0 {
 			// Expiry with active forks: treat as soft-delete
-			// Need write lock to mutate
-			s.mu.RUnlock()
-			s.mu.Lock()
-			// Re-check under write lock
-			stream, ok = s.streams[path]
-			if ok && stream.metadata.IsExpired() && stream.metadata.RefCount > 0 {
-				stream.metadata.SoftDeleted = true
-			}
-			s.mu.Unlock()
-			return nil, false, ErrStreamNotFound
+			stream.metadata.SoftDeleted = true
 		}
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, false, ErrStreamNotFound
 	}
 
 	// Soft-deleted streams are not visible for direct reads
 	if stream.metadata.SoftDeleted {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, false, ErrStreamNotFound
 	}
+
+	// Refresh TTL sliding window
+	stream.metadata.LastAccessedAt = time.Now()
 
 	// Read messages across fork chain
 	messages := s.readForkedStream(stream, offset)
@@ -800,7 +784,7 @@ func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) 
 		upToDate = offset.Equal(stream.metadata.CurrentOffset) || stream.metadata.CurrentOffset.Equal(ZeroOffset)
 	}
 
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	return messages, upToDate, nil
 }
 
