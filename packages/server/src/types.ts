@@ -68,6 +68,13 @@ export interface Stream {
   createdAt: number
 
   /**
+   * Timestamp of the last read or write (for TTL renewal).
+   * Initialized to createdAt. Updated on GET reads and POST appends.
+   * HEAD requests do NOT update this field.
+   */
+  lastAccessedAt: number
+
+  /**
    * Producer states for idempotent writes.
    * Maps producer ID to their epoch and sequence state.
    */

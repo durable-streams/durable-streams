@@ -110,7 +110,7 @@ A stream is an append-only sequence of bytes with the following properties:
 - **Immutability by Position**: Bytes at a given offset never change; new data is only appended
 - **Ordering**: Bytes are strictly ordered by offset
 - **Content Type**: Each stream has a MIME content type set at creation
-- **TTL/Expiry**: Streams may have optional time-to-live or absolute expiry times
+- **TTL/Expiry**: Streams may have a sliding time-to-live window (resets on each read or write) or an absolute expiry time
 - **Retention**: Servers **MAY** implement retention policies that drop data older than a certain age while the stream continues. If a stream is deleted a new stream **SHOULD NOT** be created at the same URL.
 - **Stream State**: A stream is either **open** (accepts appends) or **closed** (no further appends permitted). Streams start in the open state and transition to closed via an explicit close operation. This transition is **durable** (persisted) and **monotonic** (once closed, a stream cannot be reopened).
 
@@ -149,7 +149,19 @@ These headers are used on `PUT` requests to create a forked stream:
 - `Stream-Forked-From: <source-path>`: The path component of the source stream's URL, relative to the same server. When present, the `PUT` creates a fork rather than a new empty stream. Cross-service forking is not supported — the source stream must be on the same server as the fork.
 - `Stream-Fork-Offset: <offset>`: The divergence point in the source stream. The fork inherits all data from the source up to (but not including) this offset. If omitted, defaults to the source stream's current tail offset.
 
-When forking, the `Content-Type` header is optional — if omitted, the fork inherits the source stream's content type. If provided, it **MUST** match the source stream's content type; servers **MUST** return `409 Conflict` if it differs. `Stream-TTL` and `Stream-Expires-At` are capped at the source stream's expiry time at the moment of fork creation.
+When forking, the `Content-Type` header is optional — if omitted, the fork inherits the source stream's content type. If provided, it **MUST** match the source stream's content type; servers **MUST** return `409 Conflict` if it differs. Forks have independent lifetimes and can outlive their source stream. Fork TTL/expiry follows this table:
+
+| Source     | Fork request | Fork gets                   | Rationale                                    |
+| ---------- | ------------ | --------------------------- | -------------------------------------------- |
+| No expiry  | No expiry    | No expiry                   | Nothing to inherit or set                    |
+| No expiry  | TTL          | Own TTL                     | Fork's own sliding window                    |
+| No expiry  | Expires-At   | Own Expires-At              | Fork's own hard deadline                     |
+| TTL        | No expiry    | Inherit source's TTL value  | Same sliding window, refreshed independently |
+| TTL        | TTL          | Requested TTL               | Fork's own sliding window                    |
+| TTL        | Expires-At   | Requested Expires-At        | Fork's own hard deadline                     |
+| Expires-At | No expiry    | Inherit source's Expires-At | Prevents unbounded retention                 |
+| Expires-At | TTL          | Requested TTL               | Fork lives independently                     |
+| Expires-At | Expires-At   | Requested Expires-At        | Fork can outlive parent                      |
 
 #### Fork creation errors
 
@@ -217,7 +229,8 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
   - Sets the stream's content type. If omitted, the server **MAY** default to `application/octet-stream`.
 
 - `Stream-TTL: <seconds>`
-  - Sets a relative time-to-live in seconds from creation. The value **MUST** be a non-negative integer in decimal notation without leading zeros, plus signs, decimal points, or scientific notation (e.g., `3600` is valid; `+3600`, `03600`, `3600.0`, and `3.6e3` are not).
+  - Sets a sliding time-to-live window in seconds. The stream expires after being idle (no reads or writes) for this duration. Each read or write operation resets the expiry countdown to this value. `HEAD` requests do **not** reset the countdown. The value **MUST** be a non-negative integer in decimal notation without leading zeros, plus signs, decimal points, or scientific notation (e.g., `3600` is valid; `+3600`, `03600`, `3600.0`, and `3.6e3` are not).
+  - TTL resets are a server-side concern: only requests that reach the origin server reset the countdown. Reads served from intermediate caches (CDN catch-up reads with `Cache-Control: public, max-age=60`) do not reach the server and do not reset the TTL. For live read modes (long-poll, SSE), the TTL resets when the server begins processing the request, not when data is delivered or the response completes. This means a stream with active live readers will not expire, even if no new data is being produced.
 
 - `Stream-Expires-At: <rfc3339>`
   - Sets an absolute expiry time as an RFC 3339 timestamp.
@@ -528,7 +541,7 @@ Where `{stream-url}` is the URL of the stream. Checks stream existence and retur
 
 - `Content-Type: <stream-content-type>`: The stream's content type
 - `Stream-Next-Offset: <offset>`: The tail offset (next offset after the current end)
-- `Stream-TTL: <seconds>` (optional): Remaining time-to-live, if applicable
+- `Stream-TTL: <seconds>` (optional): The stream's time-to-live window. Each read or write resets the expiry countdown to this value.
 - `Stream-Expires-At: <rfc3339>` (optional): Absolute expiry time, if applicable
 - `Stream-Closed: true` (optional): Present when the stream has been closed. Absence indicates the stream is still open.
 - `Cache-Control`: See Section 8
@@ -1091,7 +1104,7 @@ This document requests registration of the following HTTP headers in the "Perman
 
 **Descriptions:**
 
-- `Stream-TTL`: Relative time-to-live for streams (seconds)
+- `Stream-TTL`: Sliding time-to-live window for streams (seconds); resets on read or write
 - `Stream-Expires-At`: Absolute expiry time for streams (RFC 3339 timestamp)
 - `Stream-Seq`: Writer sequence number for coordination (opaque string)
 - `Stream-Cursor`: Cursor for CDN collapsing (opaque string)

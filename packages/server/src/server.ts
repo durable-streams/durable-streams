@@ -747,6 +747,14 @@ export class DurableStreamTestServer {
       headers[STREAM_CLOSED_HEADER] = `true`
     }
 
+    // Include TTL/Expiry metadata
+    if (stream.ttlSeconds !== undefined) {
+      headers[STREAM_TTL_HEADER] = String(stream.ttlSeconds)
+    }
+    if (stream.expiresAt) {
+      headers[STREAM_EXPIRES_AT_HEADER] = stream.expiresAt
+    }
+
     // Generate ETag: {path}:-1:{offset}[:c] (includes closure status)
     // The :c suffix ensures ETag changes when a stream is closed, even without new data
     const closedSuffix = stream.closed ? `:c` : ``
@@ -874,6 +882,7 @@ export class DurableStreamTestServer {
 
     // Read current messages
     let { messages, upToDate } = this.store.read(path, effectiveOffset)
+    this.store.touchAccess(path)
 
     // Only wait in long-poll if:
     // 1. long-poll mode is enabled
@@ -900,6 +909,7 @@ export class DurableStreamTestServer {
         effectiveOffset ?? stream.currentOffset,
         this.options.longPollTimeout
       )
+      this.store.touchAccess(path)
 
       // If stream was closed during wait, return immediately with Stream-Closed
       if (result.streamClosed) {
@@ -1077,6 +1087,7 @@ export class DurableStreamTestServer {
     while (isConnected && !this.isShuttingDown) {
       // Read current messages from offset
       const { messages, upToDate } = this.store.read(path, currentOffset)
+      this.store.touchAccess(path)
 
       // Send data events for each message
       for (const message of messages) {
@@ -1165,6 +1176,7 @@ export class DurableStreamTestServer {
           currentOffset,
           this.options.longPollTimeout
         )
+        this.store.touchAccess(path)
 
         // Check if we should exit after wait returns (values can change during await)
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
@@ -1434,6 +1446,7 @@ export class DurableStreamTestServer {
         this.store.append(path, body, appendOptions)
       )
     }
+    this.store.touchAccess(path)
 
     // Handle AppendResult with producer validation or streamClosed
     if (result && typeof result === `object` && `message` in result) {

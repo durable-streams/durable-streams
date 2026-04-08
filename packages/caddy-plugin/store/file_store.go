@@ -105,37 +105,22 @@ func (s *FileStore) loadCache() error {
 	})
 }
 
-// computeForkExpiry determines the effective expiry for a fork stream,
-// capped at the source stream's expiry.
-func (s *FileStore) computeForkExpiry(opts CreateOptions, sourceMeta StreamMetadata) *time.Time {
-	// Resolve source's absolute expiry
-	var sourceExpiry *time.Time
-	if sourceMeta.ExpiresAt != nil {
-		sourceExpiry = sourceMeta.ExpiresAt
-	} else if sourceMeta.TTLSeconds != nil {
-		t := sourceMeta.CreatedAt.Add(time.Duration(*sourceMeta.TTLSeconds) * time.Second)
-		sourceExpiry = &t
+func (s *FileStore) resolveForkExpiry(opts CreateOptions, sourceMeta StreamMetadata) (*int64, *time.Time) {
+	if opts.TTLSeconds != nil {
+		return opts.TTLSeconds, nil
 	}
-
-	// Resolve fork's requested expiry
-	var forkExpiry *time.Time
 	if opts.ExpiresAt != nil {
-		forkExpiry = opts.ExpiresAt
-	} else if opts.TTLSeconds != nil {
-		t := time.Now().Add(time.Duration(*opts.TTLSeconds) * time.Second)
-		forkExpiry = &t
-	} else {
-		forkExpiry = sourceExpiry // Inherit source expiry
+		return nil, opts.ExpiresAt
 	}
-
-	// Cap at source expiry
-	if sourceExpiry != nil && forkExpiry != nil {
-		if forkExpiry.After(*sourceExpiry) {
-			forkExpiry = sourceExpiry
-		}
+	if sourceMeta.TTLSeconds != nil {
+		ttl := *sourceMeta.TTLSeconds
+		return &ttl, nil
 	}
-
-	return forkExpiry
+	if sourceMeta.ExpiresAt != nil {
+		t := *sourceMeta.ExpiresAt
+		return nil, &t
+	}
+	return nil, nil
 }
 
 // Create creates a new stream
@@ -246,34 +231,27 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		return nil, false, err
 	}
 
-	// Compute effective expiry
-	var effectiveExpiry *time.Time
-	if isFork {
-		effectiveExpiry = s.computeForkExpiry(opts, *sourceMeta)
-	} else {
-		effectiveExpiry = opts.ExpiresAt
-	}
-
 	// Initialize metadata
+	now := time.Now()
 	meta := &StreamMetadata{
-		Path:        path,
-		ContentType: contentType,
-		CreatedAt:   time.Now(),
-		Closed:      opts.Closed, // Support creating stream in closed state
+		Path:           path,
+		ContentType:    contentType,
+		CreatedAt:      now,
+		LastAccessedAt: now,
+		Closed:         opts.Closed, // Support creating stream in closed state
 	}
 
 	if isFork {
+		forkTTL, forkExpiresAt := s.resolveForkExpiry(opts, *sourceMeta)
 		meta.CurrentOffset = forkOffset
 		meta.ForkOffset = forkOffset
 		meta.ForkedFrom = opts.ForkedFrom
-		// For forks, store the computed ExpiresAt (not TTLSeconds) to avoid
-		// TTL being computed relative to CreatedAt which could extend beyond source expiry
-		meta.ExpiresAt = effectiveExpiry
-		meta.TTLSeconds = nil
+		meta.TTLSeconds = forkTTL
+		meta.ExpiresAt = forkExpiresAt
 	} else {
 		meta.CurrentOffset = ZeroOffset
 		meta.TTLSeconds = opts.TTLSeconds
-		meta.ExpiresAt = effectiveExpiry
+		meta.ExpiresAt = opts.ExpiresAt
 	}
 
 	// Handle initial data
@@ -578,6 +556,9 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 		return AppendResult{}, ErrStreamNotFound
 	}
 
+	// Refresh TTL sliding window
+	meta.LastAccessedAt = time.Now()
+
 	// Check if stream is closed
 	if meta.Closed {
 		// Check if this is a duplicate of the closing request (idempotent producer)
@@ -859,6 +840,14 @@ func (s *FileStore) Read(path string, offset Offset) ([]Message, bool, error) {
 	if meta.SoftDeleted {
 		return nil, false, ErrStreamNotFound
 	}
+
+	// Refresh TTL sliding window
+	meta.LastAccessedAt = time.Now()
+	s.metaCacheMu.Lock()
+	if cached, ok := s.metaCache[path]; ok {
+		cached.LastAccessedAt = meta.LastAccessedAt
+	}
+	s.metaCacheMu.Unlock()
 
 	// Check if already at tail
 	if offset.Equal(meta.CurrentOffset) {
