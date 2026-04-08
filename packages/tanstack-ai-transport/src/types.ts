@@ -58,10 +58,42 @@ export type DurableSessionMessage = {
   parts?: Array<DurableSessionMessagePart>
 }
 
+export type ForkPointOptions =
+  | boolean
+  | {
+      enabled?: boolean
+      markerName?: string
+    }
+
 export type ToDurableChatSessionResponseOptions = {
   stream: DurableChatSessionStreamTarget
   newMessages: Array<DurableSessionMessage>
   responseStream: AsyncIterable<TanStackChunk>
   mode?: ToDurableStreamResponseMode
   waitUntil?: WaitUntil
+  includeForkPoints?: ForkPointOptions
 }
+
+export type DurableMessageMetadata = {
+  endOffset?: string
+  forkPoint?: boolean
+  inheritedForkPoint?: boolean
+  sourceStreamPath?: string
+}
+
+export type DurableMessageOffsetMarkerValue = {
+  version: 1
+  messageId: string
+  endOffset: string
+  inherited?: boolean
+  sourceStreamPath?: string
+}
+
+export type DurableMessageOffsetMarker = {
+  type: `CUSTOM`
+  timestamp: number
+  name: string
+  value: DurableMessageOffsetMarkerValue
+}
+
+export const DEFAULT_FORK_POINT_MARKER_NAME = `durable-message-offset`
