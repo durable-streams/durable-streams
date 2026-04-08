@@ -17,6 +17,7 @@ import {
   updateTitle,
 } from "~/lib/chat-tree"
 import { buildChatStreamPath } from "~/lib/durable-streams-config"
+import { forkPointCustomChunkHandler } from "~/lib/fork-points"
 import { getForkPointsFromServer } from "~/routes/chat/$id"
 
 function computeForkMarkers(
@@ -74,6 +75,7 @@ export function Chat({
         sendUrl: `/api/chat?id=${encodeURIComponent(id)}`,
         readUrl: `/api/chat-stream?id=${encodeURIComponent(id)}`,
         initialOffset: resumeOffset,
+        onCustomChunk: forkPointCustomChunkHandler,
       }),
     [id, resumeOffset]
   )

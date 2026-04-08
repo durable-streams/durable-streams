@@ -1,7 +1,7 @@
 import { stream } from "@durable-streams/client"
-import { DEFAULT_FORK_POINT_MARKER_NAME } from "./types"
 import type { StreamResponse } from "@durable-streams/client"
 import type {
+  CustomChunkHandler,
   DurableSessionConnection,
   DurableStreamConnection,
   DurableStreamConnectionOptions,
@@ -93,7 +93,8 @@ export function durableStreamConnection(
         if (!hasEmittedSnapshot) {
           snapshotMessages = applyChunksToMessages(
             snapshotMessages,
-            batch.items
+            batch.items,
+            options.onCustomChunk
           )
 
           if (!batch.upToDate) {
@@ -248,17 +249,10 @@ function findLastTextPartIndex(parts: Array<any>): number {
 
 function applyChunksToMessages(
   currentMessages: Array<any>,
-  chunks: ReadonlyArray<TanStackChunk>
+  chunks: ReadonlyArray<TanStackChunk>,
+  onCustomChunk?: CustomChunkHandler
 ): Array<any> {
   let messages = [...currentMessages]
-  const pendingMarkers = new Map<
-    string,
-    {
-      endOffset: string
-      inherited?: boolean
-      sourceStreamPath?: string
-    }
-  >()
 
   const getOrCreateMessage = (messageId: string, role: string) => {
     const index = messages.findIndex((message) => message?.id === messageId)
@@ -273,41 +267,7 @@ function applyChunksToMessages(
         parts: [],
       },
     ]
-    const newIndex = messages.length - 1
-
-    const buffered = pendingMarkers.get(messageId)
-    if (buffered) {
-      pendingMarkers.delete(messageId)
-      applyMarkerToMessage(newIndex, buffered)
-    }
-
-    return newIndex
-  }
-
-  const applyMarkerToMessage = (
-    index: number,
-    marker: {
-      endOffset: string
-      inherited?: boolean
-      sourceStreamPath?: string
-    }
-  ) => {
-    const message = messages[index]
-    messages[index] = {
-      ...message,
-      metadata: {
-        ...(message.metadata ?? {}),
-        durable: {
-          ...(message.metadata?.durable ?? {}),
-          endOffset: marker.endOffset,
-          forkPoint: true,
-          ...(marker.inherited ? { inheritedForkPoint: true } : {}),
-          ...(marker.sourceStreamPath
-            ? { sourceStreamPath: marker.sourceStreamPath }
-            : {}),
-        },
-      },
-    }
+    return messages.length - 1
   }
 
   for (const chunk of chunks) {
@@ -361,25 +321,10 @@ function applyChunksToMessages(
       continue
     }
 
-    if (chunk.type === `CUSTOM`) {
-      const name = (chunk as { name?: unknown }).name
-      if (name !== DEFAULT_FORK_POINT_MARKER_NAME) continue
-
-      const value = (chunk as { value?: any }).value
-      if (!value || typeof value !== `object`) continue
-      const { messageId, endOffset, inherited, sourceStreamPath } = value
-      if (typeof messageId !== `string` || typeof endOffset !== `string`)
-        continue
-
-      const index = messages.findIndex((m) => m?.id === messageId)
-      if (index >= 0) {
-        applyMarkerToMessage(index, { endOffset, inherited, sourceStreamPath })
-      } else {
-        pendingMarkers.set(messageId, {
-          endOffset,
-          inherited,
-          sourceStreamPath,
-        })
+    if (chunk.type === `CUSTOM` && onCustomChunk) {
+      const result = onCustomChunk(chunk, messages)
+      if (result) {
+        messages = result
       }
       continue
     }
@@ -407,6 +352,7 @@ export async function materializeSnapshotFromDurableStream(options: {
   readUrl: string
   headers?: HeadersInit
   offset?: string
+  onCustomChunk?: CustomChunkHandler
 }): Promise<{ messages: Array<any>; offset?: string }> {
   const streamResponse = await stream<TanStackChunk>({
     url: options.readUrl,
@@ -417,7 +363,7 @@ export async function materializeSnapshotFromDurableStream(options: {
   })
   const chunks = await streamResponse.json<TanStackChunk>()
   return {
-    messages: applyChunksToMessages([], chunks),
+    messages: applyChunksToMessages([], chunks, options.onCustomChunk),
     offset: streamResponse.offset,
   }
 }

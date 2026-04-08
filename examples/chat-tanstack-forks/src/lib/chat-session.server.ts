@@ -4,7 +4,6 @@ import {
   stream,
 } from "@durable-streams/client"
 import {
-  DEFAULT_FORK_POINT_MARKER_NAME,
   ensureDurableChatSessionStream,
   materializeSnapshotFromDurableStream,
 } from "@durable-streams/tanstack-ai-transport"
@@ -15,6 +14,10 @@ import {
   buildReadStreamUrl,
   buildWriteStreamUrl,
 } from "~/lib/durable-streams-config"
+import {
+  FORK_POINT_MARKER_NAME,
+  forkPointCustomChunkHandler,
+} from "~/lib/fork-points"
 
 export async function createRootChatSession(): Promise<{
   id: string
@@ -45,6 +48,7 @@ export async function loadChatSession(chatId: string) {
     const snapshot = await materializeSnapshotFromDurableStream({
       readUrl: buildReadStreamUrl(streamPath),
       headers: DURABLE_STREAMS_READ_HEADERS,
+      onCustomChunk: forkPointCustomChunkHandler,
     })
     return {
       messages: snapshot.messages,
@@ -98,7 +102,7 @@ export async function createFork(opts: {
   })
   const allChunks = await sourceStream.json()
 
-  const markerName = DEFAULT_FORK_POINT_MARKER_NAME
+  const markerName = FORK_POINT_MARKER_NAME
   const markers: Array<{
     messageId: string
     endOffset: string

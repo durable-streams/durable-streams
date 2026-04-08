@@ -17,22 +17,19 @@ export {
 } from "./client"
 
 export type {
+  CustomChunkHandler,
   DurableChatSessionStreamTarget,
-  DurableMessageMetadata,
-  DurableMessageOffsetMarker,
-  DurableMessageOffsetMarkerValue,
   DurableSessionConnection,
   DurableSessionMessage,
   DurableSessionMessagePart,
   DurableStreamConnection,
   DurableStreamConnectionOptions,
   DurableStreamTarget,
-  ForkPointOptions,
+  MessageWrittenInfo,
+  OnMessageWritten,
   TanStackChunk,
   ToDurableStreamResponseMode,
   ToDurableChatSessionResponseOptions,
   ToDurableStreamResponseOptions,
   WaitUntil,
 } from "./types"
-
-export { DEFAULT_FORK_POINT_MARKER_NAME } from "./types"

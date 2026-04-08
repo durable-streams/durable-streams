@@ -20,6 +20,7 @@ export type DurableStreamConnectionOptions = {
   emitSnapshotOnSubscribe?: boolean
   headers?: HeadersInit
   fetchClient?: typeof fetch
+  onCustomChunk?: CustomChunkHandler
 }
 
 export type DurableStreamTarget = {
@@ -58,12 +59,22 @@ export type DurableSessionMessage = {
   parts?: Array<DurableSessionMessagePart>
 }
 
-export type ForkPointOptions =
-  | boolean
-  | {
-      enabled?: boolean
-      markerName?: string
-    }
+export type MessageWrittenInfo = {
+  messageId: string
+  role: string
+  offset: string
+  append: (data: string) => void
+  flush: () => Promise<{ offset: string; duplicate: boolean }>
+}
+
+export type OnMessageWritten = (
+  info: MessageWrittenInfo
+) => void | Promise<void>
+
+export type CustomChunkHandler = (
+  chunk: TanStackChunk,
+  messages: Array<any>
+) => Array<any> | undefined | void
 
 export type ToDurableChatSessionResponseOptions = {
   stream: DurableChatSessionStreamTarget
@@ -71,29 +82,5 @@ export type ToDurableChatSessionResponseOptions = {
   responseStream: AsyncIterable<TanStackChunk>
   mode?: ToDurableStreamResponseMode
   waitUntil?: WaitUntil
-  includeForkPoints?: ForkPointOptions
+  onMessageWritten?: OnMessageWritten
 }
-
-export type DurableMessageMetadata = {
-  endOffset?: string
-  forkPoint?: boolean
-  inheritedForkPoint?: boolean
-  sourceStreamPath?: string
-}
-
-export type DurableMessageOffsetMarkerValue = {
-  version: 1
-  messageId: string
-  endOffset: string
-  inherited?: boolean
-  sourceStreamPath?: string
-}
-
-export type DurableMessageOffsetMarker = {
-  type: `CUSTOM`
-  timestamp: number
-  name: string
-  value: DurableMessageOffsetMarkerValue
-}
-
-export const DEFAULT_FORK_POINT_MARKER_NAME = `durable-message-offset`

@@ -4,12 +4,10 @@ import {
   IdempotentProducer,
 } from "@durable-streams/client"
 import { sanitizeChunkForStorage } from "./client"
-import { DEFAULT_FORK_POINT_MARKER_NAME } from "./types"
 import type { HeadersRecord } from "@durable-streams/client"
 import type {
-  DurableMessageOffsetMarker,
   DurableStreamTarget,
-  ForkPointOptions,
+  OnMessageWritten,
   TanStackChunk,
   ToDurableChatSessionResponseOptions,
   ToDurableStreamResponseOptions,
@@ -258,42 +256,7 @@ export async function toDurableStreamResponse(
   )
 }
 
-function resolveForkPointOptions(opts?: ForkPointOptions): {
-  enabled: boolean
-  markerName: string
-} {
-  if (opts === true)
-    return { enabled: true, markerName: DEFAULT_FORK_POINT_MARKER_NAME }
-  if (opts === false || opts === undefined)
-    return { enabled: false, markerName: DEFAULT_FORK_POINT_MARKER_NAME }
-  return {
-    enabled: opts.enabled !== false,
-    markerName: opts.markerName ?? DEFAULT_FORK_POINT_MARKER_NAME,
-  }
-}
-
-function createForkPointMarker(
-  messageId: string,
-  endOffset: string,
-  markerName: string,
-  inherited?: boolean,
-  sourceStreamPath?: string
-): DurableMessageOffsetMarker {
-  return {
-    type: `CUSTOM`,
-    timestamp: Date.now(),
-    name: markerName,
-    value: {
-      version: 1,
-      messageId,
-      endOffset,
-      ...(inherited ? { inherited: true } : {}),
-      ...(sourceStreamPath ? { sourceStreamPath } : {}),
-    },
-  }
-}
-
-async function writeChatSessionWithForkPoints(
+async function writeChatSessionWithHooks(
   stream: DurableStream,
   newMessages: Array<{
     id?: string
@@ -301,9 +264,9 @@ async function writeChatSessionWithForkPoints(
     parts?: Array<{ type?: string; content?: string; text?: string }>
   }>,
   responseStream: AsyncIterable<TanStackChunk>,
-  markerName: string
+  onMessageWritten: OnMessageWritten
 ): Promise<void> {
-  const producerId = `fork-writer-${crypto.randomUUID()}`
+  const producerId = `chat-writer-${crypto.randomUUID()}`
   const producer = new IdempotentProducer(stream, producerId, {
     autoClaim: true,
     lingerMs: 0,
@@ -313,9 +276,13 @@ async function writeChatSessionWithForkPoints(
   try {
     for (const message of newMessages) {
       const chunks = toMessageEchoChunks(message)
-      const messageId = chunks.find(
-        (c) => c.type === `TEXT_MESSAGE_START`
-      )?.messageId
+      const startChunk = chunks.find((c) => c.type === `TEXT_MESSAGE_START`)
+      const messageId =
+        typeof startChunk?.messageId === `string`
+          ? startChunk.messageId
+          : undefined
+      const role =
+        typeof startChunk?.role === `string` ? startChunk.role : `user`
 
       for (const chunk of chunks) {
         producer.append(JSON.stringify(sanitizeChunkForStorage(chunk)))
@@ -323,17 +290,18 @@ async function writeChatSessionWithForkPoints(
 
       if (messageId) {
         const result = await producer.flush()
-        const marker = createForkPointMarker(
+        await onMessageWritten({
           messageId,
-          result.offset,
-          markerName
-        )
-        producer.append(JSON.stringify(marker))
-        await producer.flush()
+          role,
+          offset: result.offset,
+          append: (data) => producer.append(data),
+          flush: () => producer.flush(),
+        })
       }
     }
 
-    let currentAssistantMessageId: string | null = null
+    let currentMessageId: string | null = null
+    let currentRole = `assistant`
     for await (const chunk of responseStream) {
       producer.append(JSON.stringify(sanitizeChunkForStorage(chunk)))
 
@@ -342,25 +310,26 @@ async function writeChatSessionWithForkPoints(
         typeof chunk === `object` &&
         chunk.type === `TEXT_MESSAGE_START`
       ) {
-        currentAssistantMessageId =
+        currentMessageId =
           typeof chunk.messageId === `string` ? chunk.messageId : null
+        currentRole = typeof chunk.role === `string` ? chunk.role : `assistant`
       }
 
       if (
         chunk &&
         typeof chunk === `object` &&
         chunk.type === `TEXT_MESSAGE_END` &&
-        currentAssistantMessageId
+        currentMessageId
       ) {
         const result = await producer.flush()
-        const marker = createForkPointMarker(
-          currentAssistantMessageId,
-          result.offset,
-          markerName
-        )
-        producer.append(JSON.stringify(marker))
-        await producer.flush()
-        currentAssistantMessageId = null
+        await onMessageWritten({
+          messageId: currentMessageId,
+          role: currentRole,
+          offset: result.offset,
+          append: (data) => producer.append(data),
+          flush: () => producer.flush(),
+        })
+        currentMessageId = null
       }
     }
   } finally {
@@ -375,16 +344,14 @@ export async function toDurableChatSessionResponse(
   const contentType = DEFAULT_CONTENT_TYPE
   const stream = await ensureDurableChatSessionStream(options.stream)
 
-  const forkOpts = resolveForkPointOptions(options.includeForkPoints)
-
   let writeTask: Promise<void>
 
-  if (forkOpts.enabled) {
-    writeTask = writeChatSessionWithForkPoints(
+  if (options.onMessageWritten) {
+    writeTask = writeChatSessionWithHooks(
       stream,
       options.newMessages,
       options.responseStream,
-      forkOpts.markerName
+      options.onMessageWritten
     )
   } else {
     const newMessageChunks = options.newMessages.flatMap((message) =>

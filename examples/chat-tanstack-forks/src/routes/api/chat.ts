@@ -7,6 +7,7 @@ import {
   buildChatStreamPath,
   buildWriteStreamUrl,
 } from "~/lib/durable-streams-config"
+import { onForkPointMessageWritten } from "~/lib/fork-points"
 
 if (!process.env.OPENAI_API_KEY) {
   throw new Error(`OPENAI_API_KEY is not configured`)
@@ -57,7 +58,7 @@ export const Route = createFileRoute(`/api/chat`)({
           },
           newMessages,
           responseStream,
-          includeForkPoints: true,
+          onMessageWritten: onForkPointMessageWritten,
         })
       },
     },
