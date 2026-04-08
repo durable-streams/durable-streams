@@ -33,8 +33,15 @@ jobs:
           cache: pnpm
           registry-url: "https://registry.npmjs.org"
 
+      # Workaround for npm/cli#9151: Node 22.22.2 ships npm 10.9.7 which
+      # crashes during self-upgrade to 11.x (lazy require of promise-retry).
+      # npm 10.9.8 fixes this with an eager require (npm/cli#9152).
+      # TODO: Remove the intermediate install once Node 22 bundles npm >=10.9.8
+      # (track nodejs/node#62463).
       - name: Update npm for OIDC support
-        run: npm install -g npm@latest
+        run: |
+          npm install -g npm@10.9.8
+          npm install -g npm@latest
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
