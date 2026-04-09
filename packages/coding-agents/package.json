@@ -54,6 +54,16 @@
         "default": "./dist/src/protocol/index.cjs"
       }
     },
+    "./agent-db": {
+      "import": {
+        "types": "./dist/src/agent-db-index.d.ts",
+        "default": "./dist/src/agent-db-index.js"
+      },
+      "require": {
+        "types": "./dist/src/agent-db-index.d.cts",
+        "default": "./dist/src/agent-db-index.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -65,7 +75,9 @@
     "src"
   ],
   "dependencies": {
+    "@tanstack/db": "latest",
     "@durable-streams/client": "workspace:*",
+    "@durable-streams/state": "workspace:*",
     "ws": "^8.18.3"
   },
   "devDependencies": {

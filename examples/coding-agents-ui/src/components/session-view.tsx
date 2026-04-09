@@ -1,200 +1,137 @@
-import { useEffect, useMemo, useRef, useState } from "react"
-import { useNavigate } from "@tanstack/react-router"
+import { useEffect, useRef, useState } from "react"
 import type {
-  BridgeEnvelope,
-  StreamEnvelope,
-} from "@durable-streams/coding-agents"
+  AgentTimelineEntry,
+  PermissionRequestRow,
+} from "@durable-streams/coding-agents/agent-db"
 import type { SessionSummary } from "~/lib/session-types"
-import type { DisplayEvent } from "~/hooks/use-session-stream"
-import { createBrowserSessionClient } from "~/lib/browser-session-client"
+import { useAgentDBSession } from "~/hooks/use-agent-db-session"
 import { useBrowserUser } from "~/hooks/use-browser-user"
-import { useSessionStream } from "~/hooks/use-session-stream"
 import { useSessions } from "~/lib/sessions-context"
 
 function stringify(value: unknown): string {
   return JSON.stringify(value, null, 2)
 }
 
-function isBridgeEnvelope(
-  envelope: StreamEnvelope
-): envelope is BridgeEnvelope {
-  return envelope.direction === `bridge`
-}
-
-function summarizeEvent(event: DisplayEvent): {
+function summarizeEntry(entry: AgentTimelineEntry): {
   tone: string
   title: string
   body?: string
 } {
-  if (event.envelope.direction === `user`) {
-    if (event.envelope.raw.type === `user_message`) {
+  switch (entry.kind) {
+    case `user_message`:
       return {
         tone: `user`,
-        title: event.envelope.user.name,
-        body: event.envelope.raw.text,
+        title: entry.participant?.name ?? `user`,
+        body: entry.text,
       }
-    }
-
-    if (event.envelope.raw.type === `interrupt`) {
-      return {
-        tone: `user`,
-        title: event.envelope.user.name,
-        body: `Interrupted the active turn.`,
-      }
-    }
-
-    return {
-      tone: `user`,
-      title: event.envelope.user.name,
-      body: `Sent a control response.`,
-    }
-  }
-
-  if (isBridgeEnvelope(event.envelope)) {
-    return {
-      tone: `bridge`,
-      title: event.envelope.type,
-      body:
-        `source` in event.envelope
-          ? stringify({
-              source: event.envelope.source,
-              raw: event.envelope.raw,
-            })
-          : undefined,
-    }
-  }
-
-  if (!event.normalized) {
-    return {
-      tone: `agent`,
-      title: `raw agent message`,
-      body: stringify(event.envelope.raw),
-    }
-  }
-
-  switch (event.normalized.type) {
     case `assistant_message`:
       return {
         tone: `agent`,
         title: `assistant`,
-        body: event.normalized.content
-          .map((part) => {
-            switch (part.type) {
-              case `text`:
-              case `thinking`:
-                return part.text
-              case `tool_use`:
-                return `[tool:${part.name}] ${stringify(part.input)}`
-              case `tool_result`:
-                return part.output
-            }
-          })
-          .join(`\n`),
+        body: entry.text,
       }
-
     case `permission_request`:
       return {
         tone: `approval`,
-        title: `approval · ${event.normalized.tool}`,
-        body: stringify(event.normalized.input),
+        title: `approval · ${entry.permissionRequest?.toolName ?? `tool`}`,
+        body: stringify(entry.permissionRequest?.input),
       }
-
-    case `stream_delta`:
+    case `approval_response`:
       return {
-        tone: `delta`,
-        title: `delta · ${event.normalized.delta.kind}`,
-        body: event.normalized.delta.text,
+        tone: `user`,
+        title: `${entry.participant?.name ?? `user`} approval`,
+        body: stringify({
+          decision: entry.approvalResponse?.decision,
+          message: entry.approvalResponse?.message,
+          updatedInput: entry.approvalResponse?.updatedInput,
+          effective: entry.approvalResponse?.effective,
+        }),
       }
-
     case `turn_complete`:
       return {
-        tone: event.normalized.success ? `success` : `error`,
-        title: event.normalized.success ? `turn complete` : `turn failed`,
-        body: event.normalized.cost
-          ? stringify(event.normalized.cost)
+        tone: entry.turn?.status === `completed` ? `success` : `error`,
+        title:
+          entry.turn?.status === `completed` ? `turn complete` : `turn failed`,
+        body: stringify({
+          inputTokens: entry.turn?.inputTokens,
+          outputTokens: entry.turn?.outputTokens,
+          cachedInputTokens: entry.turn?.cachedInputTokens,
+          reasoningOutputTokens: entry.turn?.reasoningOutputTokens,
+          costUsd: entry.turn?.costUsd,
+        }),
+      }
+    case `session_event`:
+      if (entry.sessionEvent?.kind === `status_change`) {
+        return {
+          tone: `bridge`,
+          title: `status`,
+          body:
+            typeof entry.sessionEvent.data === `object` &&
+            entry.sessionEvent.data !== null &&
+            `status` in entry.sessionEvent.data
+              ? String(
+                  (entry.sessionEvent.data as { status?: unknown }).status ?? ``
+                )
+              : undefined,
+        }
+      }
+      return {
+        tone: `bridge`,
+        title:
+          entry.sessionEvent?.kind === `session_init`
+            ? `session init`
+            : (entry.sessionEvent?.kind ?? `session event`),
+        body: entry.sessionEvent?.data
+          ? stringify(entry.sessionEvent.data)
           : undefined,
       }
-
-    case `session_init`:
-      return {
-        tone: `bridge`,
-        title: `session init`,
-        body: stringify(event.normalized),
-      }
-
-    case `status_change`:
-      return {
-        tone: `bridge`,
-        title: `status`,
-        body: event.normalized.status,
-      }
-
     case `tool_call`:
       return {
         tone: `agent`,
-        title: `tool call · ${event.normalized.tool}`,
-        body: stringify(event.normalized.input),
-      }
-
-    case `tool_progress`:
-      return {
-        tone: `agent`,
-        title: `tool progress`,
-        body: `${event.normalized.elapsed}ms`,
-      }
-
-    case `unknown`:
-      return {
-        tone: `delta`,
-        title: `unknown · ${event.normalized.rawType}`,
-        body: stringify(event.normalized.raw),
+        title: `tool call · ${entry.toolCall?.toolName ?? `tool`}`,
+        body: stringify(entry.toolCall?.input ?? entry.toolCall?.output),
       }
   }
 
   return {
-    tone: `delta`,
+    tone: `bridge`,
     title: `event`,
+    body: stringify(entry),
   }
 }
 
-function shouldRenderByDefault(event: DisplayEvent): boolean {
-  if (event.envelope.direction === `agent`) {
-    return (
-      event.normalized?.type === `assistant_message` ||
-      event.normalized?.type === `permission_request` ||
-      event.normalized?.type === `turn_complete` ||
-      event.normalized?.type === `session_init` ||
-      event.normalized?.type === `status_change` ||
-      event.normalized?.type === `tool_call`
-    )
-  }
-
-  if (event.envelope.direction === `bridge`) {
-    return (
-      event.envelope.type === `session_started` ||
-      event.envelope.type === `session_resumed` ||
-      event.envelope.type === `session_ended`
-    )
-  }
-
-  return true
+function shouldRenderByDefault(entry: AgentTimelineEntry): boolean {
+  return (
+    entry.kind === `user_message` ||
+    entry.kind === `assistant_message` ||
+    entry.kind === `permission_request` ||
+    entry.kind === `approval_response` ||
+    entry.kind === `turn_complete` ||
+    entry.kind === `tool_call` ||
+    (entry.kind === `session_event` &&
+      (entry.sessionEvent?.kind === `session_started` ||
+        entry.sessionEvent?.kind === `session_resumed` ||
+        entry.sessionEvent?.kind === `session_ended` ||
+        entry.sessionEvent?.kind === `session_init` ||
+        entry.sessionEvent?.kind === `interrupt_requested` ||
+        entry.sessionEvent?.kind === `status_change`))
+  )
 }
 
-function buildAllowResponse(event: DisplayEvent): object {
-  if (event.normalized?.type !== `permission_request`) {
-    return { behavior: `allow` }
-  }
-
-  if (event.envelope.agent === `claude`) {
+function buildAllowResponse(
+  agent: SessionSummary[`agent`],
+  request: PermissionRequestRow
+): object {
+  if (agent === `claude`) {
     return {
       behavior: `allow`,
-      updatedInput: event.normalized.input,
+      updatedInput: request.input,
     }
   }
 
-  if (event.normalized.tool === `permissions`) {
+  if (request.toolName === `permissions`) {
     return {
-      permissions: event.normalized.input,
+      permissions: request.input,
       scope: `turn`,
     }
   }
@@ -202,16 +139,12 @@ function buildAllowResponse(event: DisplayEvent): object {
   return { behavior: `allow` }
 }
 
-function firstChoiceResponse(event: DisplayEvent): object | null {
-  if (event.normalized?.type !== `permission_request`) {
+function firstChoiceResponse(request: PermissionRequestRow): object | null {
+  if (request.toolName !== `request_user_input`) {
     return null
   }
 
-  if (event.normalized.tool !== `request_user_input`) {
-    return null
-  }
-
-  const input = event.normalized.input as {
+  const input = request.input as {
     questions?: Array<Record<string, unknown>>
   }
   const question = Array.isArray(input.questions)
@@ -241,12 +174,11 @@ function firstChoiceResponse(event: DisplayEvent): object | null {
   }
 }
 
-function buildDenyResponse(event: DisplayEvent): object {
-  if (event.normalized?.type !== `permission_request`) {
-    return { behavior: `deny` }
-  }
-
-  if (event.envelope.agent === `claude`) {
+function buildDenyResponse(
+  agent: SessionSummary[`agent`],
+  _request: PermissionRequestRow
+): object {
+  if (agent === `claude`) {
     return {
       behavior: `deny`,
       message: `Denied by user`,
@@ -257,20 +189,20 @@ function buildDenyResponse(event: DisplayEvent): object {
 }
 
 function EventCard({
-  event,
+  entry,
   showRaw,
 }: {
-  event: DisplayEvent
+  entry: AgentTimelineEntry
   showRaw: boolean
 }) {
-  const summary = summarizeEvent(event)
+  const summary = summarizeEntry(entry)
 
   return (
     <article className={`event-card tone-${summary.tone}`}>
       <div className="event-meta">
         <span>{summary.title}</span>
         <span>
-          {new Date(event.envelope.timestamp).toLocaleTimeString([], {
+          {new Date(entry.createdAt).toLocaleTimeString([], {
             hour: `2-digit`,
             minute: `2-digit`,
             second: `2-digit`,
@@ -280,12 +212,42 @@ function EventCard({
       {summary.body && <pre className="event-body">{summary.body}</pre>}
       {showRaw && (
         <details className="raw-details">
-          <summary>raw envelope</summary>
-          <pre className="raw-block">{stringify(event.envelope)}</pre>
+          <summary>raw row</summary>
+          <pre className="raw-block">{stringify(entry)}</pre>
         </details>
       )}
     </article>
   )
+}
+
+function buildPendingApprovalSummary(request: PermissionRequestRow): {
+  title: string
+  body?: string
+} {
+  return {
+    title: `approval · ${request.toolName ?? `tool`}`,
+    body: stringify(request.input),
+  }
+}
+
+function sessionBadge(session: SessionSummary): {
+  tone: string
+  label: string
+} {
+  switch (session.pendingAction) {
+    case `starting`:
+      return { tone: `idle`, label: `starting session` }
+    case `resuming`:
+      return { tone: `live`, label: `resuming bridge` }
+    case `restarting`:
+      return { tone: `live`, label: `restarting bridge` }
+    case `stopping`:
+      return { tone: `idle`, label: `stopping bridge` }
+    default:
+      return session.active
+        ? { tone: `live`, label: `bridge running` }
+        : { tone: `idle`, label: `bridge stopped` }
+  }
 }
 
 export function SessionView({
@@ -293,68 +255,63 @@ export function SessionView({
 }: {
   initialSession: SessionSummary
 }) {
-  const navigate = useNavigate()
-  const { replaceSession } = useSessions()
+  const { sessions, controlSession } = useSessions()
   const { user } = useBrowserUser()
-  const [session, setSession] = useState(initialSession)
   const [prompt, setPrompt] = useState(``)
   const [submitting, setSubmitting] = useState(false)
   const [actionError, setActionError] = useState<string | null>(null)
   const [showRaw, setShowRaw] = useState(false)
   const [showVerbose, setShowVerbose] = useState(false)
   const feedRef = useRef<HTMLDivElement>(null)
+  const session =
+    sessions.find((entry) => entry.id === initialSession.id) ?? initialSession
+  const isStarting = session.pendingAction === `starting`
+  const isPendingControl =
+    session.pendingAction === `resuming` ||
+    session.pendingAction === `restarting` ||
+    session.pendingAction === `stopping`
+  const badge = sessionBadge(session)
 
-  const writer = useMemo(
-    () =>
-      createBrowserSessionClient({
-        agent: session.agent,
-        streamUrl: session.clientStreamUrl,
-        user,
-      }),
-    [session.agent, session.clientStreamUrl, user]
-  )
-
-  useEffect(() => {
-    return () => {
-      void writer.close()
-    }
-  }, [writer])
-
-  const { events, pendingApprovals, error } = useSessionStream(
-    session.agent,
-    session.clientStreamUrl
-  )
+  const {
+    db,
+    timelineEntries,
+    timelineRow,
+    pendingApprovals,
+    sessionHeader,
+    error,
+  } = useAgentDBSession(session.clientStreamUrl, session.id, !isStarting)
 
   useEffect(() => {
     feedRef.current?.scrollTo({
       top: feedRef.current.scrollHeight,
       behavior: `smooth`,
     })
-  }, [events.length, pendingApprovals.length])
+  }, [timelineEntries.length, pendingApprovals.length])
 
-  const visibleEvents = useMemo(
-    () => (showVerbose ? events : events.filter(shouldRenderByDefault)),
-    [events, showVerbose]
-  )
+  const visibleEntries = showVerbose
+    ? timelineEntries
+    : timelineEntries.filter(shouldRenderByDefault)
 
-  const lastLifecycle = useMemo(() => {
-    return [...events]
-      .reverse()
-      .find(
-        (event) =>
-          event.envelope.direction === `bridge` &&
-          (event.envelope.type === `session_started` ||
-            event.envelope.type === `session_resumed` ||
-            event.envelope.type === `session_ended`)
-      )
-  }, [events])
+  const lastLifecycle = [...timelineEntries]
+    .reverse()
+    .find(
+      (entry) =>
+        entry.kind === `session_event` &&
+        (entry.sessionEvent?.kind === `session_started` ||
+          entry.sessionEvent?.kind === `session_resumed` ||
+          entry.sessionEvent?.kind === `session_ended`)
+    )
 
   const sendPrompt = () => {
     if (!prompt.trim()) {
       return
     }
 
-    writer.prompt(prompt.trim())
+    db.actions.prompt({
+      agent: session.agent,
+      user,
+      text: prompt.trim(),
+    })
     setPrompt(``)
   }
 
@@ -363,30 +320,8 @@ export function SessionView({
     setActionError(null)
 
     try {
-      const response = await fetch(`/api/session-control`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-        },
-        body: JSON.stringify({
-          id: session.id,
-          action,
-        }),
-      })
-
-      if (!response.ok) {
-        throw new Error(await response.text())
-      }
-
-      const nextSession = (await response.json()) as SessionSummary
-      setSession(nextSession)
-      replaceSession(nextSession)
-      if (action === `stop`) {
-        await navigate({
-          to: `/session/$id`,
-          params: { id: nextSession.id },
-        })
-      }
+      const transaction = controlSession(session, action)
+      await transaction.isPersisted.promise
     } catch (controlError) {
       setActionError(
         controlError instanceof Error
@@ -414,29 +349,38 @@ export function SessionView({
         </div>
 
         <div className="stage-actions">
-          <span className={`badge ${session.active ? `live` : `idle`}`}>
-            {session.active ? `bridge running` : `bridge stopped`}
-          </span>
+          <span className={`badge ${badge.tone}`}>{badge.label}</span>
           <button
             className="secondary-button"
             onClick={() =>
               void controlBridge(session.active ? `restart` : `resume`)
             }
-            disabled={submitting}
+            disabled={submitting || isStarting || isPendingControl}
           >
-            {session.active ? `Restart Bridge` : `Resume Bridge`}
+            {isStarting
+              ? `Starting…`
+              : session.active
+                ? `Restart Bridge`
+                : `Resume Bridge`}
           </button>
           <button
             className="secondary-button"
-            onClick={() => writer.interrupt()}
-            disabled={submitting}
+            onClick={() =>
+              db.actions.interrupt({
+                agent: session.agent,
+                user,
+              })
+            }
+            disabled={submitting || isStarting || isPendingControl}
           >
             Interrupt
           </button>
           <button
             className="secondary-button"
             onClick={() => void controlBridge(`stop`)}
-            disabled={submitting || !session.active}
+            disabled={
+              submitting || !session.active || isStarting || isPendingControl
+            }
           >
             Stop
           </button>
@@ -450,19 +394,29 @@ export function SessionView({
       </header>
 
       <div className="stage-stats">
-        <span>events {events.length}</span>
+        <span>events {visibleEntries.length}</span>
         <span>pending approvals {pendingApprovals.length}</span>
         <span>
           last lifecycle{` `}
-          {lastLifecycle?.envelope.direction === `bridge`
-            ? lastLifecycle.envelope.type
-            : `none`}
+          {lastLifecycle?.sessionEvent?.kind ?? `none`}
         </span>
+        {isStarting && <span>session creation pending</span>}
+        {sessionHeader?.status && <span>status {sessionHeader.status}</span>}
+        {timelineRow.turns.length > 0 && (
+          <span>turns {timelineRow.turns.length}</span>
+        )}
         {session.debugStream && <span>debug stream on</span>}
       </div>
 
       {(actionError || error) && (
         <div className="inline-error">{actionError ?? error}</div>
+      )}
+
+      {isStarting && !actionError && !error && (
+        <div className="inline-error">
+          Waiting for the session stream to be created before attaching the live
+          reader.
+        </div>
       )}
 
       {pendingApprovals.length > 0 && (
@@ -472,15 +426,15 @@ export function SessionView({
             <span>{pendingApprovals.length}</span>
           </div>
           <div className="approval-list">
-            {pendingApprovals.map((event) => {
-              const summary = summarizeEvent(event)
-              const quickChoice = firstChoiceResponse(event)
+            {pendingApprovals.map((request) => {
+              const summary = buildPendingApprovalSummary(request)
+              const quickChoice = firstChoiceResponse(request)
 
               return (
-                <article key={event.id} className="approval-card">
+                <article key={request.id} className="approval-card">
                   <div className="approval-head">
                     <strong>{summary.title}</strong>
-                    <span>#{event.normalized.id}</span>
+                    <span>#{request.id}</span>
                   </div>
                   <pre className="approval-body">{summary.body}</pre>
                   <div className="approval-actions">
@@ -488,7 +442,12 @@ export function SessionView({
                       <button
                         className="primary-button"
                         onClick={() =>
-                          writer.respond(event.normalized.id, quickChoice)
+                          db.actions.respond({
+                            agent: session.agent,
+                            user,
+                            requestId: request.id,
+                            response: quickChoice,
+                          })
                         }
                       >
                         Answer First Option
@@ -497,25 +456,35 @@ export function SessionView({
                       <button
                         className="primary-button"
                         onClick={() =>
-                          writer.respond(
-                            event.normalized.id,
-                            buildAllowResponse(event)
-                          )
+                          db.actions.respond({
+                            agent: session.agent,
+                            user,
+                            requestId: request.id,
+                            response: buildAllowResponse(
+                              session.agent,
+                              request
+                            ),
+                          })
                         }
                       >
                         Allow
                       </button>
                     )}
 
-                    {event.normalized.tool !== `permissions` &&
-                      event.normalized.tool !== `request_user_input` && (
+                    {request.toolName !== `permissions` &&
+                      request.toolName !== `request_user_input` && (
                         <button
                           className="secondary-button"
                           onClick={() =>
-                            writer.respond(
-                              event.normalized.id,
-                              buildDenyResponse(event)
-                            )
+                            db.actions.respond({
+                              agent: session.agent,
+                              user,
+                              requestId: request.id,
+                              response: buildDenyResponse(
+                                session.agent,
+                                request
+                              ),
+                            })
                           }
                         >
                           Deny
@@ -524,7 +493,13 @@ export function SessionView({
 
                     <button
                       className="secondary-button"
-                      onClick={() => writer.cancelApproval(event.normalized.id)}
+                      onClick={() =>
+                        db.actions.cancel({
+                          agent: session.agent,
+                          user,
+                          requestId: request.id,
+                        })
+                      }
                     >
                       Cancel
                     </button>
@@ -552,21 +527,23 @@ export function SessionView({
             checked={showRaw}
             onChange={(event) => setShowRaw(event.target.checked)}
           />
-          <span>Show raw envelopes</span>
+          <span>Show raw query rows</span>
         </label>
       </div>
 
       <div ref={feedRef} className="event-feed">
-        {visibleEvents.length === 0 ? (
+        {visibleEntries.length === 0 ? (
           <div className="empty-state">
             <h3>No events yet</h3>
             <p>
-              Send a prompt or resume the bridge to start streaming activity.
+              {isStarting
+                ? `The session record exists locally. Stream reads will begin as soon as the server finishes creating the session.`
+                : `Send a prompt or resume the bridge to start streaming activity.`}
             </p>
           </div>
         ) : (
-          visibleEvents.map((event) => (
-            <EventCard key={event.id} event={event} showRaw={showRaw} />
+          visibleEntries.map((entry) => (
+            <EventCard key={entry.id} entry={entry} showRaw={showRaw} />
           ))
         )}
       </div>
@@ -575,14 +552,19 @@ export function SessionView({
         <textarea
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
+          disabled={isStarting || isPendingControl}
           placeholder="Ask the agent to inspect, edit, or explain something…"
         />
         <div className="composer-actions">
           <span className="composer-hint">
             User intents are durable even if the bridge is stopped.
           </span>
-          <button className="primary-button" onClick={() => void sendPrompt()}>
-            Send Prompt
+          <button
+            className="primary-button"
+            onClick={() => void sendPrompt()}
+            disabled={isStarting || isPendingControl}
+          >
+            {isStarting ? `Starting…` : `Send Prompt`}
           </button>
         </div>
       </div>

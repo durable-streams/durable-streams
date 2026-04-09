@@ -1,5 +1,5 @@
 import { createSession } from "@durable-streams/coding-agents"
-import { buildClientStreamUrl } from "./config"
+import { buildClientStreamUrl } from "./client-stream-url"
 import {
   getSessionRecord,
   listSessionRecords,

@@ -1,25 +1,31 @@
-import { createFileRoute, redirect } from "@tanstack/react-router"
-import { createServerFn } from "@tanstack/react-start"
+import { createFileRoute } from "@tanstack/react-router"
 import { SessionView } from "~/components/session-view"
-import { getSessionSummary } from "~/lib/session-manager"
-
-const getSessionData = createServerFn({ method: `GET` })
-  .inputValidator((id: string) => id)
-  .handler(async ({ data }) => getSessionSummary(data))
+import { useSessions } from "~/lib/sessions-context"
 
 export const Route = createFileRoute(`/session/$id`)({
-  loader: async ({ params }) => {
-    const session = await getSessionData({ data: params.id })
-    if (!session) {
-      throw redirect({ to: `/session` })
-    }
-    return session
-  },
+  ssr: false,
   component: SessionPage,
   staleTime: 0,
 })
 
 function SessionPage() {
-  const session = Route.useLoaderData()
+  const { id } = Route.useParams()
+  const { sessions } = useSessions()
+  const session = sessions.find((entry) => entry.id === id)
+
+  if (!session) {
+    return (
+      <section className="session-stage empty-stage">
+        <p className="eyebrow">Session</p>
+        <h2>Session unavailable</h2>
+        <p className="stage-copy">
+          The session does not exist locally. If you just started it, the
+          optimistic row may have rolled back because the server rejected the
+          request.
+        </p>
+      </section>
+    )
+  }
+
   return <SessionView key={session.id} initialSession={session} />
 }

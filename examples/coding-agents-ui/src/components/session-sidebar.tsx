@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useState } from "react"
+import { useEffect, useState } from "react"
 import { Link, useLocation, useNavigate } from "@tanstack/react-router"
 import type { CreateSessionPayload, SessionSummary } from "~/lib/session-types"
 import { useBrowserUser } from "~/hooks/use-browser-user"
@@ -53,7 +53,7 @@ function SessionListItem({ session }: { session: SessionSummary }) {
 
 export function SessionSidebar({ defaultCwd }: { defaultCwd: string }) {
   const navigate = useNavigate()
-  const { sessions, replaceSession } = useSessions()
+  const { sessions, createSession } = useSessions()
   const { user, setUser } = useBrowserUser()
   const [payload, setPayload] = useState<CreateSessionPayload>(() => ({
     ...defaultPayload(),
@@ -73,10 +73,7 @@ export function SessionSidebar({ defaultCwd }: { defaultCwd: string }) {
     )
   }, [defaultCwd])
 
-  const codexFeatures = useMemo(
-    () => new Set(payload.experimentalFeatures ?? []),
-    [payload.experimentalFeatures]
-  )
+  const codexFeatures = new Set(payload.experimentalFeatures ?? [])
 
   const toggleFeature = (feature: string) => {
     setPayload((current) => {
@@ -95,38 +92,32 @@ export function SessionSidebar({ defaultCwd }: { defaultCwd: string }) {
   }
 
   const submit = async () => {
+    const currentPayload = payload
+
     setSubmitting(true)
     setError(null)
 
     try {
-      const response = await fetch(`/api/sessions`, {
-        method: `POST`,
-        headers: {
-          "Content-Type": `application/json`,
-        },
-        body: JSON.stringify(payload),
-      })
+      const { session, transaction } = createSession(currentPayload)
 
-      if (!response.ok) {
-        throw new Error(await response.text())
-      }
-
-      const session = (await response.json()) as SessionSummary
-      startTransition(() => {
-        replaceSession(session)
-      })
-      await navigate({
-        to: `/session/$id`,
-        params: { id: session.id },
-      })
       setPayload({
         ...defaultPayload(),
         cwd: defaultCwd,
       })
+
+      await navigate({
+        to: `/session/$id`,
+        params: { id: session.id },
+      })
+      await transaction.isPersisted.promise
     } catch (submitError) {
+      setPayload(currentPayload)
       setError(
         submitError instanceof Error ? submitError.message : String(submitError)
       )
+      await navigate({
+        to: `/session`,
+      })
     } finally {
       setSubmitting(false)
     }

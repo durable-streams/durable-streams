@@ -30,7 +30,3 @@ export function buildUpstreamStreamUrl(id: string): string {
     `${DURABLE_STREAMS_BASE_URL.replace(/\/+$/, ``)}/`
   ).toString()
 }
-
-export function buildClientStreamUrl(id: string): string {
-  return `/api/stream/${encodeURIComponent(id)}`
-}

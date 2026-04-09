@@ -1,11 +1,19 @@
 import { Outlet, createFileRoute } from "@tanstack/react-router"
+import { useLiveQuery } from "@tanstack/react-db"
 import { createServerFn } from "@tanstack/react-start"
-import { startTransition, useEffect, useState } from "react"
+import { useEffect, useState } from "react"
 import type { SessionSummary } from "~/lib/session-types"
 import { SessionSidebar } from "~/components/session-sidebar"
 import { DEFAULT_AGENT_CWD } from "~/lib/config"
 import { SessionsProvider } from "~/lib/sessions-context"
 import { listSessionSummaries } from "~/lib/session-manager"
+import {
+  createSessionAction,
+  createSessionControlAction,
+  createSessionsCollection,
+  reconcileSessionSummaries,
+  upsertSessionSummary,
+} from "~/lib/sessions-db"
 
 const getLayoutData = createServerFn().handler(async () => ({
   sessions: await listSessionSummaries(),
@@ -13,6 +21,7 @@ const getLayoutData = createServerFn().handler(async () => ({
 }))
 
 export const Route = createFileRoute(`/session`)({
+  ssr: false,
   loader: () => getLayoutData(),
   component: SessionLayout,
   staleTime: 0,
@@ -20,8 +29,21 @@ export const Route = createFileRoute(`/session`)({
 
 function SessionLayout() {
   const loaderData = Route.useLoaderData()
-  const [sessions, setSessions] = useState<Array<SessionSummary>>(
-    loaderData.sessions
+  const [sessionsCollection] = useState(() =>
+    createSessionsCollection(loaderData.sessions)
+  )
+  const [createSession] = useState(() =>
+    createSessionAction(sessionsCollection)
+  )
+  const [controlSessionAction] = useState(() =>
+    createSessionControlAction(sessionsCollection)
+  )
+  const { data: sessions = [] } = useLiveQuery(
+    (q) =>
+      q
+        .from({ session: sessionsCollection })
+        .orderBy(({ session }) => session.updatedAt, `desc`),
+    [sessionsCollection]
   )
 
   const refresh = async () => {
@@ -31,20 +53,11 @@ function SessionLayout() {
     }
 
     const nextSessions = (await response.json()) as Array<SessionSummary>
-    startTransition(() => {
-      setSessions(nextSessions)
-    })
+    reconcileSessionSummaries(sessionsCollection, nextSessions)
   }
 
   const replaceSession = (nextSession: SessionSummary) => {
-    setSessions((current) => {
-      const withoutCurrent = current.filter(
-        (session) => session.id !== nextSession.id
-      )
-      return [nextSession, ...withoutCurrent].sort((a, b) =>
-        b.updatedAt.localeCompare(a.updatedAt)
-      )
-    })
+    upsertSessionSummary(sessionsCollection, nextSession, { optimistic: false })
   }
 
   useEffect(() => {
@@ -56,7 +69,16 @@ function SessionLayout() {
   }, [])
 
   return (
-    <SessionsProvider value={{ sessions, refresh, replaceSession }}>
+    <SessionsProvider
+      value={{
+        sessions,
+        refresh,
+        replaceSession,
+        createSession,
+        controlSession: (session, action) =>
+          controlSessionAction({ session, action }),
+      }}
+    >
       <div className="app-shell">
         <SessionSidebar defaultCwd={loaderData.defaultCwd} />
         <main className="app-main">

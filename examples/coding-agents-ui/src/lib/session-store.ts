@@ -26,7 +26,7 @@ function trimOptional(value: string | undefined): string | undefined {
 export function buildSessionRecord(
   payload: CreateSessionPayload
 ): SessionRecord {
-  const id = randomUUID().slice(0, 8)
+  const id = trimOptional(payload.id) ?? randomUUID().slice(0, 8)
   const now = new Date().toISOString()
   const cwd = payload.cwd.trim()
   const title =

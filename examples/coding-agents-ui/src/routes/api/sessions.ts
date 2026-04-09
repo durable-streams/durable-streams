@@ -1,8 +1,9 @@
 import { createFileRoute } from "@tanstack/react-router"
 import type { CreateSessionPayload } from "~/lib/session-types"
-import { buildClientStreamUrl } from "~/lib/config"
+import { buildClientStreamUrl } from "~/lib/client-stream-url"
 import {
   buildSessionRecord,
+  getSessionRecord,
   saveSessionRecord,
   toSessionSummary,
 } from "~/lib/session-store"
@@ -26,6 +27,10 @@ export const Route = createFileRoute(`/api/sessions`)({
         }
 
         const record = buildSessionRecord(payload)
+        if (await getSessionRecord(record.id)) {
+          return new Response(`session already exists`, { status: 409 })
+        }
+
         await startManagedSession(record, `start`)
         await saveSessionRecord(record)
 

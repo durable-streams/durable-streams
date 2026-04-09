@@ -3,6 +3,38 @@ import { CodexAdapter } from "./adapters/codex.js"
 import { startBridge } from "./bridge.js"
 import type { Session, SessionOptions } from "./types.js"
 
+export { createAgentDB } from "./agent-db.js"
+export type {
+  AgentDB,
+  AgentDBActions,
+  AgentDBCollections,
+  CreateAgentDBOptions,
+} from "./agent-db-types.js"
+export {
+  createAgentTimelineQuery,
+  createParticipantSummaryQuery,
+  createPendingApprovalsQuery,
+  createSessionHeaderQuery,
+  createToolActivityQuery,
+  normalizeAgentTimelineRow,
+} from "./agent-db-queries.js"
+export type {
+  AgentTimelineEntry,
+  AgentTimelineQueryMessage,
+  AgentTimelineQueryRow,
+} from "./agent-db-queries.js"
+export type {
+  ApprovalResponseRow,
+  DebugEventRow,
+  MessagePartRow,
+  MessageRow,
+  ParticipantRow,
+  PermissionRequestRow,
+  SessionEventRow,
+  SessionRow,
+  ToolCallRow,
+  TurnRow,
+} from "./agent-db-types.js"
 export { startBridge } from "./bridge.js"
 export type { BridgeOptions } from "./bridge.js"
 

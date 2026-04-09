@@ -13,6 +13,7 @@
   "dependencies": {
     "@durable-streams/client": "workspace:*",
     "@durable-streams/coding-agents": "workspace:*",
+    "@tanstack/react-db": "latest",
     "@tanstack/react-router": "latest",
     "@tanstack/react-start": "latest",
     "react": "^19.2.1",

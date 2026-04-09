@@ -4,6 +4,7 @@ import {
   FetchError,
   IdempotentProducer,
 } from "@durable-streams/client"
+import { formatApprovalNoteForAgent } from "./prompt-format.js"
 import { getSharedSessionInstructions } from "./shared-session-instructions.js"
 import type { AgentAdapter } from "./adapters/types.js"
 import type {
@@ -247,7 +248,8 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
     connection = await openConnection(undefined)
   }
 
-  const pendingAgentRequestIds = new Set<string | number>()
+  const pendingAgentRequests = new Map<string | number, object>()
+  const forwardedSyntheticUserMessageKeys = new Set<string>()
   const promptQueue: Array<object> = []
   const abortController = new AbortController()
   const controlEventType = shouldResume ? `session_resumed` : `session_started`
@@ -314,7 +316,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
 
     const classification = adapter.parseDirection(raw)
     if (classification.type === `request` && classification.id != null) {
-      pendingAgentRequestIds.add(classification.id)
+      pendingAgentRequests.set(classification.id, raw)
     }
 
     if (!connectionReady && adapter.isReadyMessage?.(raw)) {
@@ -375,6 +377,13 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
         }
 
         if (raw.type === `user_message`) {
+          if (
+            raw.syntheticKey &&
+            forwardedSyntheticUserMessageKeys.has(raw.syntheticKey)
+          ) {
+            continue
+          }
+
           promptQueue.push(
             adapter.translateClientIntent(raw, userEnvelope.user)
           )
@@ -384,16 +393,36 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
 
         if (raw.type === `control_response`) {
           const requestId = raw.response.request_id
-          if (!pendingAgentRequestIds.has(requestId)) {
+          const requestRaw = pendingAgentRequests.get(requestId)
+          if (!requestRaw) {
             continue
           }
 
-          pendingAgentRequestIds.delete(requestId)
+          pendingAgentRequests.delete(requestId)
+          const syntheticKey = `approval-response:${String(requestId)}`
+          const approvalNote: UserEnvelope = {
+            agent: adapter.agentType,
+            direction: `user`,
+            timestamp: Date.now(),
+            user: userEnvelope.user,
+            raw: {
+              type: `user_message`,
+              text: formatApprovalNoteForAgent(raw, requestRaw),
+              syntheticKey,
+              syntheticType: `approval_response`,
+            },
+          }
+
+          forwardedSyntheticUserMessageKeys.add(syntheticKey)
+          writeJson(approvalNote)
           sendToAgent(adapter.translateClientIntent(raw), `client_response`)
+          promptQueue.unshift(
+            adapter.translateClientIntent(approvalNote.raw, userEnvelope.user)
+          )
           continue
         }
 
-        for (const requestId of pendingAgentRequestIds) {
+        for (const requestId of pendingAgentRequests.keys()) {
           const cancellation: ControlResponseIntent = {
             type: `control_response`,
             response: {
@@ -417,7 +446,7 @@ export async function startBridge(options: BridgeOptions): Promise<Session> {
           )
         }
 
-        pendingAgentRequestIds.clear()
+        pendingAgentRequests.clear()
         sendToAgent(adapter.translateClientIntent(raw), `interrupt`)
       }
     } catch (error) {

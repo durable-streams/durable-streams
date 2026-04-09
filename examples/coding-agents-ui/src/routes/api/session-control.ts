@@ -1,6 +1,6 @@
 import { createFileRoute } from "@tanstack/react-router"
 import type { SessionControlPayload } from "~/lib/session-types"
-import { buildClientStreamUrl } from "~/lib/config"
+import { buildClientStreamUrl } from "~/lib/client-stream-url"
 import {
   getSessionRecord,
   toSessionSummary,

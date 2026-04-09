@@ -332,6 +332,139 @@ describe(`startBridge`, () => {
     await session.close()
   })
 
+  it(`should queue an approver-attribution note ahead of later prompts`, async () => {
+    const streamUrl = `${baseUrl}/v1/stream/bridge-approval-attribution-${Date.now()}`
+    const { adapter, connection } = createMockAdapter()
+
+    const session = await startBridge({
+      adapter,
+      streamUrl,
+      cwd: `/tmp`,
+    })
+
+    const clientStream = new DurableStream({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+    const clientProducer = new IdempotentProducer(
+      clientStream,
+      `test-approval-attribution`,
+      {
+        autoClaim: true,
+      }
+    )
+
+    clientProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now(),
+        user: { name: `Alice`, email: `alice@test.com` },
+        raw: { type: `user_message`, text: `show repo highlights` },
+      })
+    )
+    await clientProducer.flush()
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    connection.simulateMessage({
+      type: `control_request`,
+      request_id: `perm-1`,
+      request: {
+        subtype: `can_use_tool`,
+        tool_name: `Bash`,
+        input: { command: `git status` },
+      },
+    })
+    await new Promise((resolve) => setTimeout(resolve, 100))
+
+    clientProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now() + 1,
+        user: { name: `Bob`, email: `bob@test.com` },
+        raw: {
+          type: `control_response`,
+          response: {
+            request_id: `perm-1`,
+            subtype: `success`,
+            response: { behavior: `allow`, updatedInput: {} },
+          },
+        },
+      })
+    )
+    clientProducer.append(
+      JSON.stringify({
+        agent: `claude`,
+        direction: `user`,
+        timestamp: Date.now() + 2,
+        user: { name: `Alice`, email: `alice@test.com` },
+        raw: { type: `user_message`, text: `who approved that request?` },
+      })
+    )
+    await clientProducer.flush()
+    await new Promise((resolve) => setTimeout(resolve, 200))
+
+    connection.simulateMessage({ type: `result` })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+    connection.simulateMessage({ type: `result` })
+    await new Promise((resolve) => setTimeout(resolve, 150))
+
+    expect(connection.sentMessages).toEqual([
+      { type: `user_message`, text: `show repo highlights` },
+      {
+        type: `control_response`,
+        response: {
+          request_id: `perm-1`,
+          subtype: `success`,
+          response: { behavior: `allow`, updatedInput: {} },
+        },
+      },
+      {
+        type: `user_message`,
+        text: [
+          `[Approval response]`,
+          `I approved for Bash command "git status".`,
+          `If anyone later asks who handled this approval, I was the user who responded to request perm-1.`,
+        ].join(`\n`),
+        syntheticKey: `approval-response:perm-1`,
+        syntheticType: `approval_response`,
+      },
+      {
+        type: `user_message`,
+        text: `who approved that request?`,
+      },
+    ])
+
+    const stream = new DurableStream({ url: streamUrl })
+    const response = await stream.stream<StreamEnvelope>({
+      json: true,
+      live: false,
+    })
+    const items = await response.json()
+    expect(items).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          direction: `user`,
+          user: { name: `Bob`, email: `bob@test.com` },
+          raw: {
+            type: `user_message`,
+            text: [
+              `[Approval response]`,
+              `I approved for Bash command "git status".`,
+              `If anyone later asks who handled this approval, I was the user who responded to request perm-1.`,
+            ].join(`\n`),
+            syntheticKey: `approval-response:perm-1`,
+            syntheticType: `approval_response`,
+          },
+        }),
+      ])
+    )
+
+    await clientProducer.detach()
+    await session.close()
+  })
+
   it(`should drop duplicate responses for the same request ID`, async () => {
     const streamUrl = `${baseUrl}/v1/stream/bridge-dedup-${Date.now()}`
     const { adapter, connection } = createMockAdapter()

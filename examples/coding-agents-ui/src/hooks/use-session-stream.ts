@@ -1,4 +1,4 @@
-import { startTransition, useEffect, useMemo, useRef, useState } from "react"
+import { startTransition, useEffect, useRef, useState } from "react"
 import {
   normalizeClaude,
   normalizeCodex,
@@ -118,10 +118,7 @@ export function useSessionStream(agent: AgentType, streamUrl: string) {
     }
   }, [agent, streamUrl])
 
-  const pendingApprovals = useMemo(
-    () => derivePendingApprovals(events),
-    [events]
-  )
+  const pendingApprovals = derivePendingApprovals(events)
 
   return {
     events,

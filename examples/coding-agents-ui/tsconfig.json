@@ -4,10 +4,26 @@
     "moduleResolution": "Bundler",
     "module": "ESNext",
     "target": "ES2022",
+    "baseUrl": ".",
     "skipLibCheck": true,
     "strictNullChecks": true,
     "paths": {
-      "~/*": ["./src/*"]
+      "~/*": ["./src/*"],
+      "@durable-streams/coding-agents": [
+        "../../packages/coding-agents/src/index.ts"
+      ],
+      "@durable-streams/coding-agents/agent-db": [
+        "../../packages/coding-agents/src/agent-db-index.ts"
+      ],
+      "@durable-streams/coding-agents/client": [
+        "../../packages/coding-agents/src/client.ts"
+      ],
+      "@durable-streams/coding-agents/normalize": [
+        "../../packages/coding-agents/src/normalize/index.ts"
+      ],
+      "@durable-streams/coding-agents/protocol": [
+        "../../packages/coding-agents/src/protocol/index.ts"
+      ]
     }
   },
   "include": ["src", "start-dev.ts", "vite.config.ts"]

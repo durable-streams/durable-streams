@@ -11,6 +11,8 @@ export interface User {
 export interface UserMessageIntent {
   type: `user_message`
   text: string
+  syntheticKey?: string
+  syntheticType?: `approval_response`
 }
 
 export interface ControlResponsePayload {
@@ -44,6 +46,7 @@ export interface UserEnvelope<TRaw extends object = ClientIntent> {
   agent: AgentType
   direction: `user`
   timestamp: number
+  txid?: string
   user: User
   raw: TRaw
 }

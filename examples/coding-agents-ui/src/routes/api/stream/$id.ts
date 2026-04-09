@@ -9,7 +9,12 @@ function copyResponseHeaders(response: Response): Headers {
   const headers = new Headers()
   for (const [key, value] of response.headers.entries()) {
     const lowerKey = key.toLowerCase()
-    if (lowerKey === `connection` || lowerKey === `transfer-encoding`) {
+    if (
+      lowerKey === `connection` ||
+      lowerKey === `transfer-encoding` ||
+      lowerKey === `content-encoding` ||
+      lowerKey === `content-length`
+    ) {
       continue
     }
     headers.set(key, value)

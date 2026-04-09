@@ -35,6 +35,15 @@ export default defineConfig({
         ),
       },
       {
+        find: `@durable-streams/coding-agents/agent-db`,
+        replacement: fileURLToPath(
+          new URL(
+            `../../packages/coding-agents/src/agent-db-index.ts`,
+            import.meta.url
+          )
+        ),
+      },
+      {
         find: `@durable-streams/coding-agents`,
         replacement: fileURLToPath(
           new URL(`../../packages/coding-agents/src/index.ts`, import.meta.url)

@@ -193,6 +193,9 @@ importers:
       '@durable-streams/coding-agents':
         specifier: workspace:*
         version: link:../../packages/coding-agents
+      '@tanstack/react-db':
+        specifier: latest
+        version: 0.1.82(react@19.2.4)(typescript@5.9.3)
       '@tanstack/react-router':
         specifier: latest
         version: 1.168.10(react-dom@19.2.4)(react@19.2.4)
@@ -433,7 +436,7 @@ importers:
         version: link:../client
       vitest:
         specifier: ^4.0.0
-        version: 4.1.2(@types/node@22.19.15)(vite@8.0.5)
+        version: 4.1.2(@types/node@22.19.15)(vite@7.3.1)
     devDependencies:
       '@types/node':
         specifier: ^22.15.21
@@ -452,7 +455,7 @@ importers:
         version: link:../server-conformance-tests
       vitest:
         specifier: ^4.0.0
-        version: 4.1.2(@types/node@22.19.15)(vite@8.0.5)
+        version: 4.1.2(@types/node@22.19.15)(vite@7.3.1)
 
   packages/cli:
     dependencies:
@@ -535,6 +538,12 @@ importers:
       '@durable-streams/client':
         specifier: workspace:*
         version: link:../client
+      '@durable-streams/state':
+        specifier: workspace:*
+        version: link:../state
+      '@tanstack/db':
+        specifier: latest
+        version: 0.6.4(typescript@5.9.3)
       ws:
         specifier: ^8.18.3
         version: 8.20.0
@@ -569,7 +578,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.0
-        version: 4.1.2(@types/node@22.19.15)(vite@8.0.5)
+        version: 4.1.2(@types/node@22.19.15)(vite@7.3.1)
 
   packages/server:
     dependencies:
@@ -600,7 +609,7 @@ importers:
         version: 5.9.3
       vitest:
         specifier: ^4.0.0
-        version: 4.1.2(@types/node@22.19.15)(vite@8.0.5)
+        version: 4.1.2(@types/node@22.19.15)(vite@7.3.1)
 
   packages/server-conformance-tests:
     dependencies:
@@ -612,7 +621,7 @@ importers:
         version: 4.6.0
       vitest:
         specifier: ^4.0.0
-        version: 4.1.2(@types/node@22.19.15)(vite@8.0.5)
+        version: 4.1.2(@types/node@22.19.15)(vite@7.3.1)
     devDependencies:
       tsdown:
         specifier: ^0.9.0
@@ -3966,6 +3975,17 @@ packages:
       '@tanstack/pacer-lite': 0.2.1
       typescript: 5.9.3
 
+  /@tanstack/db@0.6.4(typescript@5.9.3):
+    resolution: {integrity: sha512-svDkMfYnVM4PrczZ/X0kJ+9e/1KIFyB8sS+K22tgTuPTDG7bAV7ynpBP/acG8Y0xuhQsT/HXziOK4jsy6C7dig==}
+    peerDependencies:
+      typescript: '>=4.7'
+    dependencies:
+      '@standard-schema/spec': 1.1.0
+      '@tanstack/db-ivm': 0.1.18(typescript@5.9.3)
+      '@tanstack/pacer-lite': 0.2.1
+      typescript: 5.9.3
+    dev: false
+
   /@tanstack/devtools-event-client@0.4.3:
     resolution: {integrity: sha512-OZI6QyULw0FI0wjgmeYzCIfbgPsOEzwJtCpa69XrfLMtNXLGnz3d/dIabk7frg0TmHo+Ah49w5I4KC7Tufwsvw==}
     engines: {node: '>=18'}
@@ -4026,6 +4046,18 @@ packages:
       react: '>=16.8.0'
     dependencies:
       '@tanstack/db': 0.6.1(typescript@5.9.3)
+      react: 19.2.4
+      use-sync-external-store: 1.6.0(react@19.2.4)
+    transitivePeerDependencies:
+      - typescript
+    dev: false
+
+  /@tanstack/react-db@0.1.82(react@19.2.4)(typescript@5.9.3):
+    resolution: {integrity: sha512-lQ5igC7Dgb5HwnfwSyKsuHPYo8wdO0HyHSF3ygBvZ8RZ3KTRtdHbYGsphz7iKJKoZhFmBE/hafq0oichY7m7rQ==}
+    peerDependencies:
+      react: '>=16.8.0'
+    dependencies:
+      '@tanstack/db': 0.6.4(typescript@5.9.3)
       react: 19.2.4
       use-sync-external-store: 1.6.0(react@19.2.4)
     transitivePeerDependencies:
@@ -5130,23 +5162,6 @@ packages:
       estree-walker: 3.0.3
       magic-string: 0.30.21
       vite: 7.3.1(@types/node@22.19.15)(tsx@4.21.0)
-    dev: true
-
-  /@vitest/mocker@4.1.2(vite@8.0.5):
-    resolution: {integrity: sha512-Ize4iQtEALHDttPRCmN+FKqOl2vxTiNUhzobQFFt/BM1lRUTG7zRCLOykG/6Vo4E4hnUdfVLo5/eqKPukcWW7Q==}
-    peerDependencies:
-      msw: ^2.4.9
-      vite: ^6.0.0 || ^7.0.0 || ^8.0.0
-    peerDependenciesMeta:
-      msw:
-        optional: true
-      vite:
-        optional: true
-    dependencies:
-      '@vitest/spy': 4.1.2
-      estree-walker: 3.0.3
-      magic-string: 0.30.21
-      vite: 8.0.5(@emnapi/core@1.9.1)(@emnapi/runtime@1.9.1)(@types/node@22.19.15)(tsx@4.21.0)
 
   /@vitest/pretty-format@3.2.4:
     resolution: {integrity: sha512-IVNZik8IVRJRTr9fxlitMKeJeXFFFN0JaB9PHPGQ8NKQbGpfjlTx9zO4RefN8gp7eqjNy8nyK3NZmBzOPeIxtA==}
@@ -10179,66 +10194,6 @@ packages:
       tinyglobby: 0.2.15
       tinyrainbow: 3.1.0
       vite: 7.3.1(@types/node@22.19.15)(tsx@4.21.0)
-      why-is-node-running: 2.3.0
-    transitivePeerDependencies:
-      - msw
-    dev: true
-
-  /vitest@4.1.2(@types/node@22.19.15)(vite@8.0.5):
-    resolution: {integrity: sha512-xjR1dMTVHlFLh98JE3i/f/WePqJsah4A0FK9cc8Ehp9Udk0AZk6ccpIZhh1qJ/yxVWRZ+Q54ocnD8TXmkhspGg==}
-    engines: {node: ^20.0.0 || ^22.0.0 || >=24.0.0}
-    hasBin: true
-    peerDependencies:
-      '@edge-runtime/vm': '*'
-      '@opentelemetry/api': ^1.9.0
-      '@types/node': ^20.0.0 || ^22.0.0 || >=24.0.0
-      '@vitest/browser-playwright': 4.1.2
-      '@vitest/browser-preview': 4.1.2
-      '@vitest/browser-webdriverio': 4.1.2
-      '@vitest/ui': 4.1.2
-      happy-dom: '*'
-      jsdom: '*'
-      vite: ^6.0.0 || ^7.0.0 || ^8.0.0
-    peerDependenciesMeta:
-      '@edge-runtime/vm':
-        optional: true
-      '@opentelemetry/api':
-        optional: true
-      '@types/node':
-        optional: true
-      '@vitest/browser-playwright':
-        optional: true
-      '@vitest/browser-preview':
-        optional: true
-      '@vitest/browser-webdriverio':
-        optional: true
-      '@vitest/ui':
-        optional: true
-      happy-dom:
-        optional: true
-      jsdom:
-        optional: true
-    dependencies:
-      '@types/node': 22.19.15
-      '@vitest/expect': 4.1.2
-      '@vitest/mocker': 4.1.2(vite@8.0.5)
-      '@vitest/pretty-format': 4.1.2
-      '@vitest/runner': 4.1.2
-      '@vitest/snapshot': 4.1.2
-      '@vitest/spy': 4.1.2
-      '@vitest/utils': 4.1.2
-      es-module-lexer: 2.0.0
-      expect-type: 1.3.0
-      magic-string: 0.30.21
-      obug: 2.1.1
-      pathe: 2.0.3
-      picomatch: 4.0.4
-      std-env: 4.0.0
-      tinybench: 2.9.0
-      tinyexec: 1.0.4
-      tinyglobby: 0.2.15
-      tinyrainbow: 3.1.0
-      vite: 8.0.5(@emnapi/core@1.9.1)(@emnapi/runtime@1.9.1)(@types/node@22.19.15)(tsx@4.21.0)
       why-is-node-running: 2.3.0
     transitivePeerDependencies:
       - msw

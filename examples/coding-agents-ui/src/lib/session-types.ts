@@ -7,6 +7,12 @@ export type ExampleApprovalPolicy =
   | `on-request`
   | `never`
 
+export type SessionPendingAction =
+  | `starting`
+  | `resuming`
+  | `restarting`
+  | `stopping`
+
 export interface SessionRecord {
   id: string
   title: string
@@ -30,9 +36,11 @@ export interface SessionSummary extends Omit<
 > {
   active: boolean
   clientStreamUrl: string
+  pendingAction?: SessionPendingAction
 }
 
 export interface CreateSessionPayload {
+  id?: string
   title?: string
   agent: AgentType
   cwd: string
