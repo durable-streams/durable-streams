@@ -152,6 +152,72 @@ describe(`scenario DSL`, () => {
     })
   })
 
+  it(`forwards structured AskUserQuestion responses`, async () => {
+    const questions = [
+      {
+        question: `What are you looking to work on?`,
+        header: `Task`,
+        options: [
+          { label: `Bug fix`, description: `Fix an issue in the codebase` },
+          {
+            label: `New feature`,
+            description: `Add new functionality`,
+          },
+        ],
+        multiSelect: false,
+      },
+    ]
+
+    const result = await scenario(`ask user question response`)
+      .scriptedAgent(`claude`)
+      .client(`alice`)
+      .injectAgent({
+        type: `control_request`,
+        request_id: `ask-1`,
+        request: {
+          subtype: `can_use_tool`,
+          tool_name: `AskUserQuestion`,
+          input: { questions },
+        },
+      })
+      .waitForPermissionRequest(`AskUserQuestion`)
+      .respondToLatestPermissionRequest(
+        {
+          behavior: `allow`,
+          updatedInput: {
+            questions,
+            answers: {
+              "What are you looking to work on?": `Bug fix`,
+            },
+          },
+        },
+        { matcher: `AskUserQuestion` }
+      )
+      .waitForForwardedCount((event) => event.source === `client_response`, 1)
+      .expectForwardedCount((event) => event.source === `client_response`, 1)
+      .run()
+
+    const forwardedResponse = result.forwardedMessages.find(
+      (event) => event.source === `client_response`
+    )
+
+    expect(
+      (forwardedResponse?.raw as Record<string, unknown>).response
+    ).toEqual({
+      request_id: `ask-1`,
+      subtype: `success`,
+      response: {
+        behavior: `allow`,
+        updatedInput: {
+          questions,
+          answers: {
+            "What are you looking to work on?": `Bug fix`,
+          },
+        },
+      },
+    })
+  })
+
   it(`supports restart and resume scenarios`, async () => {
     const result = await scenario(`restart and resume`)
       .scriptedAgent(`claude`)

@@ -139,38 +139,169 @@ function buildAllowResponse(
   return { behavior: `allow` }
 }
 
-function firstChoiceResponse(request: PermissionRequestRow): object | null {
-  if (request.toolName !== `request_user_input`) {
+interface QuestionOption {
+  label: string
+  value: string
+  description?: string
+}
+
+interface StructuredQuestion {
+  key: string
+  prompt: string
+  header?: string
+  multiSelect: boolean
+  options: Array<QuestionOption>
+}
+
+interface StructuredQuestionAnswer {
+  selected: Array<string>
+  notes: string
+}
+
+function isQuestionRequest(request: PermissionRequestRow): boolean {
+  return (
+    request.toolName === `request_user_input` ||
+    request.toolName === `AskUserQuestion`
+  )
+}
+
+function extractStructuredQuestions(
+  request: PermissionRequestRow
+): Array<StructuredQuestion> {
+  const input =
+    request.input && typeof request.input === `object`
+      ? (request.input as Record<string, unknown>)
+      : {}
+  const rawQuestions = Array.isArray(input.questions)
+    ? (input.questions as Array<Record<string, unknown>>)
+    : []
+
+  return rawQuestions.map((question, index) => {
+    const prompt =
+      (typeof question.question === `string` && question.question) ||
+      (typeof question.prompt === `string` && question.prompt) ||
+      (typeof question.header === `string` && question.header) ||
+      `Question ${index + 1}`
+    const header =
+      typeof question.header === `string` ? question.header : undefined
+    const key =
+      (typeof question.id === `string` && question.id) || prompt || `q${index}`
+    const rawOptions = Array.isArray(question.options)
+      ? (question.options as Array<Record<string, unknown>>)
+      : []
+
+    return {
+      key,
+      prompt,
+      header,
+      multiSelect: question.multiSelect === true,
+      options: rawOptions.flatMap((option) => {
+        const label =
+          (typeof option.label === `string` && option.label) ||
+          (typeof option.value === `string` && option.value)
+        if (!label) {
+          return []
+        }
+
+        return [
+          {
+            label,
+            value: (typeof option.value === `string` && option.value) || label,
+            description:
+              typeof option.description === `string`
+                ? option.description
+                : undefined,
+          } satisfies QuestionOption,
+        ]
+      }),
+    }
+  })
+}
+
+function buildQuestionResponse(
+  agent: SessionSummary[`agent`],
+  request: PermissionRequestRow,
+  answersByKey: Record<string, StructuredQuestionAnswer>
+): object | null {
+  const questions = extractStructuredQuestions(request)
+  if (questions.length === 0) {
     return null
   }
 
-  const input = request.input as {
-    questions?: Array<Record<string, unknown>>
-  }
-  const question = Array.isArray(input.questions)
-    ? input.questions[0]
-    : undefined
-  if (!question || typeof question !== `object`) {
-    return null
+  if (agent === `claude` || request.toolName === `AskUserQuestion`) {
+    const input =
+      request.input && typeof request.input === `object`
+        ? (request.input as Record<string, unknown>)
+        : {}
+    const answersEntries = questions.flatMap((question) => {
+      const answer = answersByKey[question.key] ?? {
+        selected: [],
+        notes: ``,
+      }
+      const selected = answer.selected
+      const notes = answer.notes.trim()
+      if (selected.length === 0 && notes.length === 0) {
+        return []
+      }
+
+      const value = question.multiSelect
+        ? selected.length > 0
+          ? selected
+          : [notes]
+        : (selected[0] ?? notes)
+
+      return [[question.prompt, value] as const]
+    })
+    if (answersEntries.length === 0) {
+      return null
+    }
+
+    const annotationsEntries = questions.flatMap((question) => {
+      const notes = (
+        answersByKey[question.key] ?? {
+          selected: [],
+          notes: ``,
+        }
+      ).notes.trim()
+      if (notes.length === 0) {
+        return []
+      }
+
+      return [[question.prompt, { notes }] as const]
+    })
+
+    return {
+      behavior: `allow`,
+      updatedInput: {
+        ...input,
+        answers: Object.fromEntries(answersEntries),
+        ...(annotationsEntries.length > 0
+          ? { annotations: Object.fromEntries(annotationsEntries) }
+          : {}),
+      },
+    }
   }
 
-  const questionId = typeof question.id === `string` ? question.id : `choice`
-  const options = Array.isArray(question.options) ? question.options : []
-  const option = options[0] as Record<string, unknown> | undefined
-  const value =
-    (typeof option?.value === `string` ? option.value : undefined) ??
-    (typeof option?.label === `string` ? option.label : undefined)
+  const answersEntries = questions.flatMap((question) => {
+    const answer = answersByKey[question.key] ?? {
+      selected: [],
+      notes: ``,
+    }
+    const selected = answer.selected
+    const notes = answer.notes.trim()
+    const values = selected.length > 0 ? selected : notes ? [notes] : []
+    if (values.length === 0) {
+      return []
+    }
 
-  if (!value) {
+    return [[question.key, { answers: values }] as const]
+  })
+  if (answersEntries.length === 0) {
     return null
   }
 
   return {
-    answers: {
-      [questionId]: {
-        answers: [value],
-      },
-    },
+    answers: Object.fromEntries(answersEntries),
   }
 }
 
@@ -217,6 +348,146 @@ function EventCard({
         </details>
       )}
     </article>
+  )
+}
+
+function QuestionApprovalForm({
+  agent,
+  request,
+  onRespond,
+  onCancel,
+}: {
+  agent: SessionSummary[`agent`]
+  request: PermissionRequestRow
+  onRespond: (response: object) => void
+  onCancel: () => void
+}) {
+  const questions = extractStructuredQuestions(request)
+  const [answersByKey, setAnswersByKey] = useState<
+    Record<string, StructuredQuestionAnswer>
+  >({})
+
+  const toggleSelectedValue = (
+    question: StructuredQuestion,
+    value: string,
+    checked: boolean
+  ) => {
+    setAnswersByKey((current) => {
+      const existing = current[question.key] ?? {
+        selected: [],
+        notes: ``,
+      }
+      const nextSelected = question.multiSelect
+        ? checked
+          ? [...existing.selected, value]
+          : existing.selected.filter((entry) => entry !== value)
+        : checked
+          ? [value]
+          : []
+
+      return {
+        ...current,
+        [question.key]: {
+          ...existing,
+          selected: Array.from(new Set(nextSelected)),
+        },
+      }
+    })
+  }
+
+  const updateNotes = (questionKey: string, notes: string) => {
+    setAnswersByKey((current) => ({
+      ...current,
+      [questionKey]: {
+        selected: (current[questionKey] ?? { selected: [], notes: `` })
+          .selected,
+        notes,
+      },
+    }))
+  }
+
+  const canSubmit = questions.every((question) => {
+    const answer = answersByKey[question.key] ?? {
+      selected: [],
+      notes: ``,
+    }
+    return answer.selected.length > 0 || answer.notes.trim().length > 0
+  })
+
+  return (
+    <>
+      <div className="approval-body">
+        {questions.map((question) => {
+          const answer = answersByKey[question.key] ?? {
+            selected: [],
+            notes: ``,
+          }
+
+          return (
+            <div key={question.key} className="approval-question">
+              <strong>{question.header ?? question.prompt}</strong>
+              {question.header ? <p>{question.prompt}</p> : null}
+              {question.options.length > 0 ? (
+                <div className="approval-options">
+                  {question.options.map((option) => {
+                    const checked = answer.selected.includes(option.value)
+                    return (
+                      <label key={option.value} className="checkbox-row">
+                        <input
+                          type={question.multiSelect ? `checkbox` : `radio`}
+                          name={`approval-${request.id}-${question.key}`}
+                          checked={checked}
+                          onChange={(event) =>
+                            toggleSelectedValue(
+                              question,
+                              option.value,
+                              event.target.checked
+                            )
+                          }
+                        />
+                        <span>
+                          {option.label}
+                          {option.description ? ` — ${option.description}` : ``}
+                        </span>
+                      </label>
+                    )
+                  })}
+                </div>
+              ) : null}
+              <label>
+                <span>Notes</span>
+                <textarea
+                  value={answer.notes}
+                  onChange={(event) =>
+                    updateNotes(question.key, event.target.value)
+                  }
+                  placeholder="Optional details or a free-form answer"
+                />
+              </label>
+            </div>
+          )
+        })}
+      </div>
+      <div className="approval-actions">
+        <button
+          className="primary-button"
+          disabled={!canSubmit}
+          onClick={() => {
+            const response = buildQuestionResponse(agent, request, answersByKey)
+            if (!response) {
+              return
+            }
+
+            onRespond(response)
+          }}
+        >
+          Submit Answers
+        </button>
+        <button className="secondary-button" onClick={onCancel}>
+          Cancel
+        </button>
+      </div>
+    </>
   )
 }
 
@@ -428,7 +699,7 @@ export function SessionView({
           <div className="approval-list">
             {pendingApprovals.map((request) => {
               const summary = buildPendingApprovalSummary(request)
-              const quickChoice = firstChoiceResponse(request)
+              const questionRequest = isQuestionRequest(request)
 
               return (
                 <article key={request.id} className="approval-card">
@@ -436,74 +707,81 @@ export function SessionView({
                     <strong>{summary.title}</strong>
                     <span>#{request.id}</span>
                   </div>
-                  <pre className="approval-body">{summary.body}</pre>
-                  <div className="approval-actions">
-                    {quickChoice ? (
-                      <button
-                        className="primary-button"
-                        onClick={() =>
-                          db.actions.respond({
-                            agent: session.agent,
-                            user,
-                            requestId: request.id,
-                            response: quickChoice,
-                          })
-                        }
-                      >
-                        Answer First Option
-                      </button>
-                    ) : (
-                      <button
-                        className="primary-button"
-                        onClick={() =>
-                          db.actions.respond({
-                            agent: session.agent,
-                            user,
-                            requestId: request.id,
-                            response: buildAllowResponse(
-                              session.agent,
-                              request
-                            ),
-                          })
-                        }
-                      >
-                        Allow
-                      </button>
-                    )}
-
-                    {request.toolName !== `permissions` &&
-                      request.toolName !== `request_user_input` && (
-                        <button
-                          className="secondary-button"
-                          onClick={() =>
-                            db.actions.respond({
-                              agent: session.agent,
-                              user,
-                              requestId: request.id,
-                              response: buildDenyResponse(
-                                session.agent,
-                                request
-                              ),
-                            })
-                          }
-                        >
-                          Deny
-                        </button>
-                      )}
-
-                    <button
-                      className="secondary-button"
-                      onClick={() =>
+                  {questionRequest ? (
+                    <QuestionApprovalForm
+                      agent={session.agent}
+                      request={request}
+                      onRespond={(response) =>
+                        db.actions.respond({
+                          agent: session.agent,
+                          user,
+                          requestId: request.id,
+                          response,
+                        })
+                      }
+                      onCancel={() =>
                         db.actions.cancel({
                           agent: session.agent,
                           user,
                           requestId: request.id,
                         })
                       }
-                    >
-                      Cancel
-                    </button>
-                  </div>
+                    />
+                  ) : (
+                    <>
+                      <pre className="approval-body">{summary.body}</pre>
+                      <div className="approval-actions">
+                        <button
+                          className="primary-button"
+                          onClick={() =>
+                            db.actions.respond({
+                              agent: session.agent,
+                              user,
+                              requestId: request.id,
+                              response: buildAllowResponse(
+                                session.agent,
+                                request
+                              ),
+                            })
+                          }
+                        >
+                          Allow
+                        </button>
+
+                        {request.toolName !== `permissions` && (
+                          <button
+                            className="secondary-button"
+                            onClick={() =>
+                              db.actions.respond({
+                                agent: session.agent,
+                                user,
+                                requestId: request.id,
+                                response: buildDenyResponse(
+                                  session.agent,
+                                  request
+                                ),
+                              })
+                            }
+                          >
+                            Deny
+                          </button>
+                        )}
+
+                        <button
+                          className="secondary-button"
+                          onClick={() =>
+                            db.actions.cancel({
+                              agent: session.agent,
+                              user,
+                              requestId: request.id,
+                            })
+                          }
+                        >
+                          Cancel
+                        </button>
+                      </div>
+                    </>
+                  )}
                 </article>
               )
             })}

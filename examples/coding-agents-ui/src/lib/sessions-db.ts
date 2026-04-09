@@ -14,6 +14,13 @@ import { buildClientStreamUrl } from "~/lib/client-stream-url"
 
 export type SessionsCollection = Collection<SessionSummary, string>
 
+function normalizeSessionSummary(session: SessionSummary): SessionSummary {
+  return {
+    ...session,
+    pendingAction: session.pendingAction,
+  }
+}
+
 function trimOptional(value: string | undefined): string | undefined {
   const trimmed = value?.trim()
   return trimmed ? trimmed : undefined
@@ -75,13 +82,15 @@ export function upsertSessionSummary(
   session: SessionSummary,
   options?: { optimistic?: boolean }
 ): Transaction {
+  const normalizedSession = normalizeSessionSummary(session)
+
   if (collection.has(session.id)) {
     return collection.update(session.id, options ?? {}, (draft) => {
-      Object.assign(draft, session)
+      Object.assign(draft, normalizedSession)
     })
   }
 
-  return collection.insert(session, options)
+  return collection.insert(normalizedSession, options)
 }
 
 export function reconcileSessionSummaries(

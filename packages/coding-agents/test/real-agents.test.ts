@@ -525,6 +525,75 @@ describe(`real agent smoke scenarios`, () => {
   )
 
   maybeIt(
+    `Claude can complete an AskUserQuestion round trip`,
+    async () => {
+      await withWorkspaceTempCwd(
+        `coding-agents-claude-ask-user-question-`,
+        async (cwd) => {
+          const result = await scenario(`real claude ask-user-question`)
+            .agent(`claude`, {
+              cwd,
+              permissionMode: `default`,
+            })
+            .client(`kyle`)
+            .prompt(
+              `Before you answer, use the AskUserQuestion tool to ask me whether I prefer option Alpha or option Beta. Do not choose for me and do not answer until I respond. After I answer, reply with exactly CHOSEN:<option>.`
+            )
+            .waitForPermissionRequest(`AskUserQuestion`, REAL_AGENT_TIMEOUT_MS)
+            .respondToLatestPermissionRequest(
+              (request) => {
+                const input = request.event.input as {
+                  questions?: Array<{
+                    question?: string
+                  }>
+                }
+                const question =
+                  Array.isArray(input.questions) && input.questions.length > 0
+                    ? input.questions[0]?.question
+                    : undefined
+
+                if (!question) {
+                  throw new Error(`AskUserQuestion did not include a question`)
+                }
+
+                return {
+                  behavior: `allow`,
+                  updatedInput: {
+                    ...input,
+                    answers: {
+                      [question]: `Alpha`,
+                    },
+                  },
+                }
+              },
+              {
+                matcher: `AskUserQuestion`,
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .waitForTurnComplete(REAL_AGENT_TIMEOUT_MS)
+            .expectPermissionRequest(`AskUserQuestion`, {
+              timeoutMs: REAL_AGENT_TIMEOUT_MS,
+            })
+            .expectForwardedCount(
+              (event) => event.source === `client_response`,
+              1,
+              {
+                timeoutMs: REAL_AGENT_TIMEOUT_MS,
+              }
+            )
+            .run()
+
+          expect(
+            assistantTexts(result).some((text) => text.includes(`CHOSEN:Alpha`))
+          ).toBe(true)
+        }
+      )
+    },
+    180_000
+  )
+
+  maybeIt(
     `Claude deny approval blocks side effects`,
     async () => {
       await withWorkspaceTempCwd(`coding-agents-claude-deny-`, async (cwd) => {

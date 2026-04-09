@@ -137,6 +137,14 @@ interface HarnessClient {
   close: () => Promise<void>
 }
 
+type PermissionResponseBuilder =
+  | object
+  | ((
+      request: NormalizedAgentStreamEvent & {
+        event: PermissionRequestEvent
+      }
+    ) => object)
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -900,7 +908,7 @@ export class ScenarioBuilder {
   }
 
   respondToLatestPermissionRequest(
-    response: object,
+    response: PermissionResponseBuilder,
     options: {
       matcher?: PermissionMatcher
       timeoutMs?: number
@@ -921,10 +929,12 @@ export class ScenarioBuilder {
         options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
         options.count ?? 1
       )
+      const resolvedResponse =
+        typeof response === `function` ? response(permissionRequest) : response
 
       client.respond(
         permissionRequest.event.id,
-        response,
+        resolvedResponse,
         options.subtype ?? `success`
       )
       await client.flush()
