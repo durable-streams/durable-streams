@@ -1,7 +1,9 @@
-import { createFileRoute } from "@tanstack/react-router"
+import { createFileRoute, useNavigate } from "@tanstack/react-router"
 import { createServerFn } from "@tanstack/react-start"
+import { useEffect } from "react"
 import { Chat } from "~/components/chat"
 import { loadChatSession } from "~/lib/chat-session.server"
+import { loadTree } from "~/lib/chat-tree"
 
 const getChatData = createServerFn({ method: `GET` })
   .inputValidator((id: string) => id)
@@ -47,6 +49,17 @@ export const Route = createFileRoute(`/chat/$id`)({
 function ChatPage() {
   const { id } = Route.useParams()
   const chat = Route.useLoaderData()
+  const navigate = useNavigate()
+
+  const knownChat = typeof window !== `undefined` && !!loadTree().chatsById[id]
+
+  useEffect(() => {
+    if (!knownChat) {
+      navigate({ to: `/` })
+    }
+  }, [knownChat, navigate])
+
+  if (!knownChat) return null
 
   return (
     <Chat

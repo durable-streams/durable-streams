@@ -9,14 +9,12 @@ import type { UIMessage } from "@tanstack/ai-react"
 import { ChatHeader } from "~/components/chat-header"
 import { ForkButton, ForkPointMarker } from "~/components/chat-message-actions"
 import {
-  backfillMinimalNode,
   deriveTitleFromMessages,
   loadTree,
   saveTree,
   setActiveChat,
   updateTitle,
 } from "~/lib/chat-tree"
-import { buildChatStreamPath } from "~/lib/durable-streams-config"
 import { forkPointCustomChunkHandler } from "~/lib/fork-points"
 import { getForkPointsFromServer } from "~/routes/chat/$id"
 
@@ -123,9 +121,7 @@ export function Chat({
 
   useEffect(() => {
     const tree = loadTree()
-    const streamPath = buildChatStreamPath(id)
-    let updated = backfillMinimalNode(tree, id, streamPath)
-    updated = setActiveChat(updated, id)
+    const updated = setActiveChat(tree, id)
     saveTree(updated)
     window.dispatchEvent(new CustomEvent(`chat-tree-updated`))
   }, [id])
