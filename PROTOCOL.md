@@ -191,9 +191,9 @@ When a stream with active forks (reference count > 0) is deleted via `DELETE`, i
 - Direct client access to the stream's URL returns `410 Gone` for all operations (`GET`, `HEAD`, `POST`, `DELETE`)
 - The stream's path is blocked from re-creation via `PUT` (`409 Conflict`)
 - The server retains the stream's data internally so that fork reads can stitch inherited data — this is transparent to clients reading from forks
-- When the last fork referencing the stream is deleted, the stream's data is cleaned up
+- When the last fork referencing the stream is deleted, the server cleans up the stream's data. This cleanup **MAY** occur asynchronously — clients **SHOULD NOT** assume the source returns `404` immediately after the fork's `DELETE` response.
 
-Garbage collection cascades: if deleting a fork causes its source's reference count to reach zero and the source is also soft-deleted, the source is cleaned up too. This cascade continues up the fork chain.
+Garbage collection cascades: if deleting a fork causes its source's reference count to reach zero and the source is also soft-deleted, the source is cleaned up too. This cascade continues up the fork chain. Cascade cleanup **MAY** also occur asynchronously.
 
 ## 5. HTTP Operations
 
@@ -516,7 +516,7 @@ Deletes the stream and all its data. In-flight reads may terminate with a `404 N
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Delete not supported for this stream
 
-**Soft-delete:** When a stream has active forks (reference count > 0), the server **MUST** transition the stream to a soft-deleted state rather than fully removing it. A soft-deleted stream returns `410 Gone` for direct operations, blocks path re-creation via `PUT` (`409 Conflict`), and preserves data for fork readers. When the last fork referencing the stream is deleted, the stream's data is cleaned up via cascading garbage collection (see Section 4.2).
+**Soft-delete:** When a stream has active forks (reference count > 0), the server **MUST** transition the stream to a soft-deleted state rather than fully removing it. A soft-deleted stream returns `410 Gone` for direct operations, blocks path re-creation via `PUT` (`409 Conflict`), and preserves data for fork readers. When the last fork referencing the stream is deleted, the server cleans up the stream's data via cascading garbage collection (see Section 4.2). This cleanup **MAY** occur asynchronously.
 
 Deleting an already soft-deleted stream **MUST** return `204 No Content` (idempotent).
 
