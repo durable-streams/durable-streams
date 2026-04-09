@@ -94,13 +94,26 @@ export function ForkButton({
       const messageIndex = messages.findIndex((m) => m.id === message.id)
       const inheritedMessages =
         messageIndex >= 0 ? messages.slice(0, messageIndex + 1) : messages
-      const childTitle = deriveTitleFromMessages(inheritedMessages)
-      const parentTitle = parentNode?.title ?? `Chat`
+      const baseTitle =
+        deriveTitleFromMessages(inheritedMessages) !== `New chat`
+          ? deriveTitleFromMessages(inheritedMessages)
+          : `Fork of ${parentNode?.title ?? `Chat`}`
+
+      const allTitles = new Set(
+        Object.values(tree.chatsById)
+          .map((node) => node?.title)
+          .filter(Boolean)
+      )
+      let childTitle = baseTitle
+      let n = 2
+      while (allTitles.has(childTitle)) {
+        childTitle = `${baseTitle} ${n}`
+        n++
+      }
 
       const childNode: ChatNode = {
         id: childData.id,
-        title:
-          childTitle !== `New chat` ? childTitle : `Fork of ${parentTitle}`,
+        title: childTitle,
         createdAt: childData.createdAt,
         updatedAt: childData.createdAt,
         parentId: chatId,
