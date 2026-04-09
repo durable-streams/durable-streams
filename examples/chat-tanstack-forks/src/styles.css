@@ -666,3 +666,81 @@ body {
   color: var(--color-text-muted);
   font-size: 14px;
 }
+
+/* Sidebar toggle (hamburger) — hidden on desktop */
+.sidebar-toggle {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--color-text);
+  cursor: pointer;
+  padding: 4px;
+  border-radius: var(--radius-sm);
+  flex-shrink: 0;
+}
+
+.sidebar-toggle:hover {
+  background: rgba(0, 0, 0, 0.04);
+}
+
+/* Sidebar overlay — hidden on desktop */
+.sidebar-overlay {
+  display: none;
+}
+
+/* Mobile layout */
+@media (max-width: 768px) {
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    z-index: 100;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    box-shadow: none;
+  }
+
+  .sidebar--open {
+    transform: translateX(0);
+    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.12);
+  }
+
+  .sidebar-overlay {
+    display: block;
+    position: fixed;
+    inset: 0;
+    z-index: 99;
+    background: rgba(0, 0, 0, 0.3);
+  }
+
+  .sidebar-toggle {
+    display: flex;
+  }
+
+  .chat-header {
+    padding: 0 16px;
+  }
+
+  .messages-scroll {
+    padding: 16px;
+  }
+
+  .message-container {
+    max-width: 90%;
+  }
+
+  .composer {
+    padding: 12px 16px;
+  }
+
+  .chat-error {
+    margin: 0 16px 8px;
+  }
+
+  .chat-header-ancestry {
+    display: none;
+  }
+}

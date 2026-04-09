@@ -21,12 +21,15 @@ export function ChatTreeSidebar() {
     return !localStorage.getItem(`about-dismissed`)
   })
 
+  const [sidebarOpen, setSidebarOpen] = useState(false)
+
   const activeChatId = location.pathname.startsWith(`/chat/`)
     ? location.pathname.split(`/`)[2]
     : undefined
 
   useEffect(() => {
     setTree(loadTree())
+    setSidebarOpen(false)
   }, [location.pathname])
 
   useEffect(() => {
@@ -37,6 +40,12 @@ export function ChatTreeSidebar() {
       window.removeEventListener(`chat-tree-updated`, handler)
       window.removeEventListener(`storage`, handler)
     }
+  }, [])
+
+  useEffect(() => {
+    const handler = () => setSidebarOpen((prev) => !prev)
+    window.addEventListener(`toggle-sidebar`, handler)
+    return () => window.removeEventListener(`toggle-sidebar`, handler)
   }, [])
 
   const handleNewChat = useCallback(async () => {
@@ -58,82 +67,90 @@ export function ChatTreeSidebar() {
   const rootNodes = getRootNodes(tree)
 
   return (
-    <aside className="sidebar">
-      <div className="sidebar-header">
-        <span className="sidebar-title">Chats</span>
-        <div className="sidebar-header-actions">
-          <button
-            onClick={() => setAboutOpen(true)}
-            className="sidebar-about-btn"
-            title="About this demo"
-          >
-            ?
-          </button>
-          <button onClick={handleNewChat} className="sidebar-new-btn">
-            New
-          </button>
+    <>
+      {sidebarOpen && (
+        <div
+          className="sidebar-overlay"
+          onClick={() => setSidebarOpen(false)}
+        />
+      )}
+      <aside className={`sidebar ${sidebarOpen ? `sidebar--open` : ``}`}>
+        <div className="sidebar-header">
+          <span className="sidebar-title">Chats</span>
+          <div className="sidebar-header-actions">
+            <button
+              onClick={() => setAboutOpen(true)}
+              className="sidebar-about-btn"
+              title="About this demo"
+            >
+              ?
+            </button>
+            <button onClick={handleNewChat} className="sidebar-new-btn">
+              New
+            </button>
+          </div>
         </div>
-      </div>
 
-      <nav className="sidebar-tree">
-        {rootNodes.length === 0 && (
-          <p
-            style={{
-              padding: `16px 8px`,
-              textAlign: `center`,
-              fontSize: `12px`,
-              color: `var(--color-text-muted)`,
-            }}
-          >
-            No conversations yet
-          </p>
-        )}
-        {rootNodes.map((node, i) => (
-          <TreeNodeItem
-            key={node.id}
-            node={node}
-            tree={tree}
-            activeChatId={activeChatId}
-            isLast={i === rootNodes.length - 1}
-            depth={0}
-            onNavigate={(chatId) => {
-              const updated = setActiveChat(loadTree(), chatId)
-              saveTree(updated)
-              setTree(updated)
-            }}
-          />
-        ))}
-      </nav>
+        <nav className="sidebar-tree">
+          {rootNodes.length === 0 && (
+            <p
+              style={{
+                padding: `16px 8px`,
+                textAlign: `center`,
+                fontSize: `12px`,
+                color: `var(--color-text-muted)`,
+              }}
+            >
+              No conversations yet
+            </p>
+          )}
+          {rootNodes.map((node, i) => (
+            <TreeNodeItem
+              key={node.id}
+              node={node}
+              tree={tree}
+              activeChatId={activeChatId}
+              isLast={i === rootNodes.length - 1}
+              depth={0}
+              onNavigate={(chatId) => {
+                const updated = setActiveChat(loadTree(), chatId)
+                saveTree(updated)
+                setTree(updated)
+              }}
+            />
+          ))}
+        </nav>
 
-      <div className="sidebar-footer">
-        <span className="sidebar-footer-text">
-          Built with{` `}
-          <a
-            href="https://durablestreams.com"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Durable Streams
-          </a>
-          {` `}&{` `}
-          <a
-            href="https://tanstack.com/ai/latest"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            TanStack AI
-          </a>
-        </span>
-      </div>
+        <div className="sidebar-footer">
+          <span className="sidebar-footer-text">
+            Built with{` `}
+            <a
+              href="https://durablestreams.com"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              Durable Streams
+            </a>
+            {` `}&{` `}
+            <a
+              href="https://tanstack.com/ai/latest"
+              target="_blank"
+              rel="noopener noreferrer"
+            >
+              TanStack AI
+            </a>
+          </span>
+        </div>
 
-      <AboutModal
-        open={aboutOpen}
-        onClose={() => {
-          setAboutOpen(false)
-          localStorage.setItem(`about-dismissed`, `1`)
-        }}
-      />
-    </aside>
+        <AboutModal
+          open={aboutOpen}
+          onClose={() => {
+            setAboutOpen(false)
+            localStorage.setItem(`about-dismissed`, `1`)
+          }}
+        />
+      </aside>
+    </>
   )
 }
 
