@@ -8914,6 +8914,20 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     const uniqueId = () =>
       `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
 
+    const waitForStatus = async (
+      url: string,
+      expectedStatus: number,
+      timeoutMs: number = 5000
+    ) => {
+      await vi.waitFor(
+        async () => {
+          const res = await fetch(url, { method: `HEAD` })
+          expect(res.status).toBe(expectedStatus)
+        },
+        { timeout: timeoutMs, interval: 200 }
+      )
+    }
+
     test(`should delete fork without affecting source`, async () => {
       const id = uniqueId()
       const sourcePath = `/v1/stream/fork-del-src-unaffected-src-${id}`
@@ -9190,11 +9204,8 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
       expect(deleteFork.status).toBe(204)
 
-      // Source should now be fully gone (404)
-      const sourceHead2 = await fetch(`${getBaseUrl()}${sourcePath}`, {
-        method: `HEAD`,
-      })
-      expect(sourceHead2.status).toBe(404)
+      // Source should eventually be fully gone (404) — cascade GC timing is not guaranteed by the protocol
+      await waitForStatus(`${getBaseUrl()}${sourcePath}`, 404)
     })
 
     test(`should cascade GC through three levels`, async () => {
@@ -9236,19 +9247,20 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         (await fetch(`${getBaseUrl()}${level1}`, { method: `HEAD` })).status
       ).toBe(410)
 
-      // Delete level2 → cascade should clean up level1 and level0
-      await fetch(`${getBaseUrl()}${level2}`, { method: `DELETE` })
+      // Delete level2 → cascade should eventually clean up level1 and level0
+      const deleteLevel2 = await fetch(`${getBaseUrl()}${level2}`, {
+        method: `DELETE`,
+      })
+      expect(deleteLevel2.status).toBe(204)
 
-      // All should be 404
-      expect(
-        (await fetch(`${getBaseUrl()}${level0}`, { method: `HEAD` })).status
-      ).toBe(404)
-      expect(
-        (await fetch(`${getBaseUrl()}${level1}`, { method: `HEAD` })).status
-      ).toBe(404)
+      // level2 was directly deleted — should be gone immediately
       expect(
         (await fetch(`${getBaseUrl()}${level2}`, { method: `HEAD` })).status
       ).toBe(404)
+
+      // level1 and level0 should eventually be cleaned up via cascade GC
+      await waitForStatus(`${getBaseUrl()}${level1}`, 404)
+      await waitForStatus(`${getBaseUrl()}${level0}`, 404)
     })
 
     test(`should preserve data when deleting middle of chain`, async () => {
