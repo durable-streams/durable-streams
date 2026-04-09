@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react"
 import type {
   AgentTimelineEntry,
   PermissionRequestRow,
+  TurnRow,
 } from "@durable-streams/coding-agents/agent-db"
 import type { SessionSummary } from "~/lib/session-types"
 import { useAgentDBSession } from "~/hooks/use-agent-db-session"
@@ -10,6 +11,74 @@ import { useSessions } from "~/lib/sessions-context"
 
 function stringify(value: unknown): string {
   return JSON.stringify(value, null, 2)
+}
+
+function formatTokenCount(value: number): string {
+  return new Intl.NumberFormat(`en-US`, {
+    notation: value >= 1000 ? `compact` : `standard`,
+    maximumFractionDigits: value >= 1000 ? 1 : 0,
+  }).format(value)
+}
+
+function formatDuration(ms: number): string {
+  const totalSeconds = Math.max(0, Math.floor(ms / 1000))
+  const hours = Math.floor(totalSeconds / 3600)
+  const minutes = Math.floor((totalSeconds % 3600) / 60)
+  const seconds = totalSeconds % 60
+
+  if (hours > 0) {
+    return `${hours}h ${minutes}m`
+  }
+
+  if (minutes > 0) {
+    return `${minutes}m ${seconds}s`
+  }
+
+  return `${seconds}s`
+}
+
+function summarizeTurns(
+  turns: Array<TurnRow>,
+  nowMs: number
+): {
+  totalInputTokens: number
+  totalOutputTokens: number
+  completedTurns: number
+  activeTurn?: TurnRow
+  activeDurationLabel?: string
+} {
+  let totalInputTokens = 0
+  let totalOutputTokens = 0
+  let completedTurns = 0
+
+  for (const turn of turns) {
+    totalInputTokens += turn.inputTokens ?? 0
+    totalOutputTokens += turn.outputTokens ?? 0
+
+    if (turn.status === `completed` || turn.status === `failed`) {
+      completedTurns += 1
+    }
+  }
+
+  const activeTurn = [...turns]
+    .reverse()
+    .find((turn) => turn.status === `active` || turn.status === `queued`)
+
+  let activeDurationLabel: string | undefined
+  if (activeTurn?.startedAt) {
+    const startedAtMs = Date.parse(activeTurn.startedAt)
+    if (Number.isFinite(startedAtMs)) {
+      activeDurationLabel = formatDuration(nowMs - startedAtMs)
+    }
+  }
+
+  return {
+    totalInputTokens,
+    totalOutputTokens,
+    completedTurns,
+    activeTurn,
+    activeDurationLabel,
+  }
 }
 
 function summarizeEntry(entry: AgentTimelineEntry): {
@@ -533,6 +602,7 @@ export function SessionView({
   const [actionError, setActionError] = useState<string | null>(null)
   const [showRaw, setShowRaw] = useState(false)
   const [showVerbose, setShowVerbose] = useState(false)
+  const [nowMs, setNowMs] = useState(() => Date.now())
   const feedRef = useRef<HTMLDivElement>(null)
   const session =
     sessions.find((entry) => entry.id === initialSession.id) ?? initialSession
@@ -562,6 +632,7 @@ export function SessionView({
   const visibleEntries = showVerbose
     ? timelineEntries
     : timelineEntries.filter(shouldRenderByDefault)
+  const turnSummary = summarizeTurns(timelineRow.turns, nowMs)
 
   const lastLifecycle = [...timelineEntries]
     .reverse()
@@ -572,6 +643,21 @@ export function SessionView({
           entry.sessionEvent?.kind === `session_resumed` ||
           entry.sessionEvent?.kind === `session_ended`)
     )
+
+  useEffect(() => {
+    if (!turnSummary.activeTurn) {
+      return
+    }
+
+    setNowMs(Date.now())
+    const intervalId = window.setInterval(() => {
+      setNowMs(Date.now())
+    }, 1000)
+
+    return () => {
+      window.clearInterval(intervalId)
+    }
+  }, [turnSummary.activeTurn?.id])
 
   const sendPrompt = () => {
     if (!prompt.trim()) {
@@ -666,6 +752,19 @@ export function SessionView({
 
       <div className="stage-stats">
         <span>events {visibleEntries.length}</span>
+        <span>turns {timelineRow.turns.length}</span>
+        <span>completed turns {turnSummary.completedTurns}</span>
+        <span>uploaded {formatTokenCount(turnSummary.totalInputTokens)}</span>
+        <span>
+          downloaded {formatTokenCount(turnSummary.totalOutputTokens)}
+        </span>
+        {turnSummary.activeTurn && (
+          <span>
+            {turnSummary.activeTurn.status === `queued` ? `queued` : `thinking`}
+            {` `}
+            {turnSummary.activeDurationLabel ?? `0s`}
+          </span>
+        )}
         <span>pending approvals {pendingApprovals.length}</span>
         <span>
           last lifecycle{` `}
@@ -673,9 +772,6 @@ export function SessionView({
         </span>
         {isStarting && <span>session creation pending</span>}
         {sessionHeader?.status && <span>status {sessionHeader.status}</span>}
-        {timelineRow.turns.length > 0 && (
-          <span>turns {timelineRow.turns.length}</span>
-        )}
         {session.debugStream && <span>debug stream on</span>}
       </div>
 
