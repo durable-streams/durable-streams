@@ -49,6 +49,47 @@ pnpm dev
 
 The app runs on `http://localhost:3002`.
 
+## Deploying to Cloudflare Workers
+
+The app is configured for Cloudflare Workers via Nitro's `cloudflare_module` preset.
+
+### Build and preview locally
+
+```bash
+# Copy and fill in .dev.vars for local Wrangler preview
+cp .dev.vars.example .dev.vars
+# Edit .dev.vars with your secrets
+
+pnpm preview:cloudflare
+```
+
+### Deploy
+
+```bash
+# Login to Cloudflare (one-time)
+pnpm exec wrangler login
+
+# Deploy
+pnpm deploy:cloudflare
+```
+
+### Environment configuration
+
+**Plain vars** are set in `wrangler.jsonc` under `vars`:
+
+- `DURABLE_STREAMS_URL` — base URL for durable streams
+- `OPENAI_MODEL` — model name (default: `gpt-4o-mini`)
+
+**Secrets** must be set via the Cloudflare dashboard or `wrangler secret put`:
+
+- `OPENAI_API_KEY`
+- `DURABLE_STREAMS_WRITE_BEARER_TOKEN`
+- `DURABLE_STREAMS_READ_BEARER_TOKEN`
+
+### Custom domain
+
+Set up a custom domain (e.g. `fork-ai-chat.examples.electric-sql.com`) via the Cloudflare dashboard under Workers & Pages > your worker > Settings > Domains & Routes.
+
 ## Limitations
 
 - Tree organization is browser-local (localStorage). Clearing storage loses the tree but not the message history.

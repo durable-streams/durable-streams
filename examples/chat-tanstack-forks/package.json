@@ -9,6 +9,9 @@
     "dev:streams": "pnpm --filter @durable-streams/cli start:dev",
     "build": "vite build",
     "start": "node .output/server/index.mjs",
+    "preview": "pnpm run preview:cloudflare",
+    "preview:cloudflare": "pnpm run build && pnpm exec wrangler dev --config .output/server/wrangler.json",
+    "deploy:cloudflare": "pnpm run build && pnpm exec wrangler deploy --config .output/server/wrangler.json",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
@@ -28,9 +31,11 @@
     "@types/react": "^19.2.7",
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "latest",
+    "nitro": "npm:nitro-nightly@latest",
     "tsx": "latest",
     "typescript": "~5.9.3",
     "vite": "latest",
-    "vite-tsconfig-paths": "latest"
+    "vite-tsconfig-paths": "latest",
+    "wrangler": "^4.79.0"
   }
 }
