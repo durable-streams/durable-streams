@@ -4,7 +4,7 @@ Yjs provider for Durable Streams - sync Yjs documents over HTTP with automatic s
 
 ## Overview
 
-This package provides a Yjs provider that syncs documents using the Yjs Durable Streams Protocol. Unlike WebSocket-based providers, it uses HTTP long-polling with automatic server-side compaction, making it simpler to deploy and scale.
+This package provides a Yjs provider that syncs documents using the Yjs Durable Streams Protocol. Unlike WebSocket-based providers, it uses standard HTTP (SSE by default, with long-polling as an alternative) plus automatic server-side compaction, making it simpler to deploy and scale.
 
 Key benefits:
 
@@ -135,7 +135,7 @@ class YjsProvider {
 
   // Methods
   connect(): Promise<void>
-  disconnect(): void
+  disconnect(): Promise<void>
   destroy(): void
 
   // Events
@@ -151,11 +151,11 @@ class YjsProvider {
 interface YjsProviderOptions {
   doc: Y.Doc
   baseUrl: string // Yjs server URL, e.g. "http://localhost:4438/v1/yjs/my-service"
-  docId: string // Document identifier
+  docId: string // Document identifier (may contain forward slashes)
   awareness?: Awareness // Optional awareness for presence
-  headers?: HeadersRecord // Optional auth headers
+  headers?: HeadersRecord // Optional auth headers (static strings or () => string)
+  liveMode?: "sse" | "long-poll" // Live update transport (default: "sse")
   connect?: boolean // Auto-connect on construction (default: true)
-  debug?: boolean // Enable debug logging (default: false)
 }
 ```
 
@@ -191,7 +191,7 @@ Note: The "Server Restart" test is skipped when using an external URL since it r
 
 ## Server Protocol API
 
-For the complete protocol specification, see [PROTOCOL.md](./PROTOCOL.md).
+For the complete protocol specification, see [YJS-PROTOCOL.md](./YJS-PROTOCOL.md).
 
 ### Base URL Structure
 
