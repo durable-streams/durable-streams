@@ -209,7 +209,9 @@ Run the Caddy binary with the durable_streams plugin for storage, and reverse-pr
 
 ### Managed (Electric Cloud)
 
-<IntentLink service="yjs">Deploy a Yjs service</IntentLink> on Electric Cloud for managed hosting with no infrastructure to maintain.
+<IntentLink intent="create" serviceType="yjs" />
+
+Deploy on Electric Cloud for managed hosting with no infrastructure to maintain.
 
 ```bash
 npx @electric-sql/cli services create yjs --json
