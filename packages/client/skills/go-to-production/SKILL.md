@@ -237,6 +237,8 @@ See also: durable-streams/writing-data/SKILL.md § Common Mistakes
 
 - [server-deployment](../server-deployment/SKILL.md) — Initial server setup
 - [writing-data](../writing-data/SKILL.md) — Producer configuration for production
+- [vercel-ai-sdk](../../../aisdk-transport/skills/vercel-ai-sdk/SKILL.md) — Vercel AI SDK integration with resumable chat
+- [tanstack-ai](../../../tanstack-ai-transport/skills/tanstack-ai/SKILL.md) — TanStack AI integration with multi-client sync
 
 ## Version
 
