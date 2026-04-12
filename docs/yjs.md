@@ -180,6 +180,44 @@ Each document is accessed via a single URL with query parameters:
 
 Where `docPath` can include forward slashes (e.g., `project/chapter-1`).
 
+## Deployment
+
+### Development
+
+Use `DurableStreamTestServer` + `YjsServer` as shown in the quick start. See the [deployment guide](/deployment) for details.
+
+### Production (self-hosted)
+
+Run the Caddy binary with the durable_streams plugin for storage, and reverse-proxy to YjsServer:
+
+```
+:443 {
+  route /v1/stream/* {
+    durable_streams {
+      data_dir ./data
+    }
+  }
+  route /v1/yjs/* {
+    reverse_proxy localhost:4438 {
+      flush_interval -1
+    }
+  }
+}
+```
+
+`flush_interval -1` is required — without it, Caddy buffers SSE responses and live updates stop working.
+
+### Managed (Electric Cloud)
+
+<IntentLink service="yjs">Deploy a Yjs service</IntentLink> on Electric Cloud for managed hosting with no infrastructure to maintain.
+
+```bash
+npx @electric-sql/cli services create yjs --json
+npx @electric-sql/cli services get-secret <service-id> --json
+```
+
+Point `baseUrl` at the cloud URL and pass the secret as an `Authorization` header. For browser apps, use a server-side proxy to avoid exposing the secret.
+
 ## Best practices
 
 **Always call `destroy()`.** Clean up providers when unmounting components or leaving documents.
@@ -208,6 +246,52 @@ provider.on("error", (error) => {
   showToast("Connection issue — retrying...")
 })
 ```
+
+## Editor integrations
+
+### TipTap v3
+
+```bash
+npm install @tiptap/react @tiptap/starter-kit \
+  @tiptap/extension-collaboration @tiptap/extension-collaboration-caret
+```
+
+> **Important:** Use `@tiptap/extension-collaboration-caret`, not
+> `@tiptap/extension-collaboration-cursor`. The `-cursor` package is a
+> broken v3 stub.
+
+```typescript
+import { useEditor, EditorContent } from "@tiptap/react"
+import StarterKit from "@tiptap/starter-kit"
+import Collaboration from "@tiptap/extension-collaboration"
+import CollaborationCaret from "@tiptap/extension-collaboration-caret"
+
+const editor = useEditor({
+  extensions: [
+    StarterKit.configure({ undoRedo: false }),
+    Collaboration.configure({ document: ydoc }),
+    CollaborationCaret.configure({ provider, user: { name, color } }),
+  ],
+})
+```
+
+### CodeMirror 6
+
+```bash
+npm install codemirror @codemirror/state @codemirror/view y-codemirror.next
+```
+
+```typescript
+import { yCollab } from "y-codemirror.next"
+
+const ytext = ydoc.getText("content")
+const state = EditorState.create({
+  doc: ytext.toString(),
+  extensions: [basicSetup, yCollab(ytext, awareness)],
+})
+```
+
+See the [Yjs demo](https://github.com/durable-streams/durable-streams/tree/main/examples/yjs-demo) for a complete CodeMirror example.
 
 ## Learn more
 
