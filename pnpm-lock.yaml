@@ -478,9 +478,6 @@ importers:
       '@microsoft/fetch-event-source':
         specifier: ^2.0.1
         version: 2.0.1
-      fastq:
-        specifier: ^1.19.1
-        version: 1.19.1
     devDependencies:
       '@durable-streams/server':
         specifier: workspace:*
