@@ -413,6 +413,9 @@ importers:
         specifier: workspace:*
         version: link:../client
     devDependencies:
+      '@tanstack/intent':
+        specifier: latest
+        version: 0.0.29
       ai:
         specifier: latest
         version: 6.0.138(zod@4.3.6)
@@ -627,6 +630,9 @@ importers:
         specifier: workspace:*
         version: link:../client
     devDependencies:
+      '@tanstack/intent':
+        specifier: latest
+        version: 0.0.29
       tsdown:
         specifier: ^0.9.0
         version: 0.9.9(typescript@5.9.3)
@@ -2603,6 +2609,10 @@ packages:
 
   '@tanstack/intent@0.0.23':
     resolution: {integrity: sha512-q5e0sh5e+xBOR5Z7eoZTBcXtakgTwucm2m0bNUkj7h4UagSgIDmPRYbtC7B81AF4FB5rW2OP1zgl7Jd9EH4qEw==}
+    hasBin: true
+
+  '@tanstack/intent@0.0.29':
+    resolution: {integrity: sha512-tJcWapEkXGRLHE7mQYvQS0xIWrzKm2n7fQ/lOy4LCdR1hX0Yxb9QnwRwd0oqmmr54ObP9/5sfiD8vELxL/r30g==}
     hasBin: true
 
   '@tanstack/pacer-lite@0.2.1':
@@ -7900,6 +7910,11 @@ snapshots:
   '@tanstack/history@1.161.6': {}
 
   '@tanstack/intent@0.0.23':
+    dependencies:
+      cac: 6.7.14
+      yaml: 2.8.2
+
+  '@tanstack/intent@0.0.29':
     dependencies:
       cac: 6.7.14
       yaml: 2.8.2
