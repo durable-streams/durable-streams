@@ -413,6 +413,9 @@ importers:
         specifier: workspace:*
         version: link:../client
     devDependencies:
+      '@tanstack/intent':
+        specifier: latest
+        version: 0.0.29
       ai:
         specifier: latest
         version: 6.0.138(zod@4.3.6)
@@ -627,6 +630,9 @@ importers:
         specifier: workspace:*
         version: link:../client
     devDependencies:
+      '@tanstack/intent':
+        specifier: latest
+        version: 0.0.29
       tsdown:
         specifier: ^0.9.0
         version: 0.9.9(typescript@5.9.3)

@@ -215,6 +215,8 @@ Source: packages/client/src/types.ts LiveMode type
 
 - [writing-data](../writing-data/SKILL.md) — IdempotentProducer for production-grade writes
 - [server-deployment](../server-deployment/SKILL.md) — Setting up a server to develop against
+- [vercel-ai-sdk](../../../aisdk-transport/skills/vercel-ai-sdk/SKILL.md) — Vercel AI SDK integration with resumable chat
+- [tanstack-ai](../../../tanstack-ai-transport/skills/tanstack-ai/SKILL.md) — TanStack AI integration with multi-client sync
 
 Note: Streams must be created with `DurableStream.create()` before they can be read. See the writing-data skill for stream creation.
 
