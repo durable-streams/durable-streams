@@ -1,5 +1,19 @@
 # @durable-streams/server
 
+## 0.3.0
+
+### Minor Changes
+
+- feat: TTL sliding window renewal — Stream-TTL now resets on read and write, with conformance tests for expiration, renewal, and fork TTL behavior. Conformance tests hardened against timing flakiness (polling-based expiry checks, wider Expires-At windows, fast-check time limits). ([#321](https://github.com/durable-streams/durable-streams/pull/321))
+
+### Patch Changes
+
+- feat: add stream forking — create forks via PUT with Stream-Forked-From header, transparent read stitching, stream-level refcounting, soft-delete with cascading GC ([#312](https://github.com/durable-streams/durable-streams/pull/312))
+
+- Updated dependencies [[`e2f0586`](https://github.com/durable-streams/durable-streams/commit/e2f05862b7068a9537b1d97fb481799b852581d6)]:
+  - @durable-streams/state@0.2.4
+  - @durable-streams/client@0.2.3
+
 ## 0.2.3
 
 ### Patch Changes
