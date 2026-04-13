@@ -55,9 +55,11 @@ function Chat({ id, initialMessages, resumeOffset }) {
 
 ### Server — POST /api/chat
 
+Use `chat()` from `@tanstack/ai` with the appropriate adapter. **Do NOT call LLM SDKs (Anthropic, OpenAI) directly** — the adapter handles message format conversion, streaming chunks, and error mapping.
+
 ```typescript
 import { chat } from "@tanstack/ai"
-import { openaiText } from "@tanstack/ai-openai"
+import { anthropicText } from "@tanstack/ai-anthropic"
 import { toDurableChatSessionResponse } from "@durable-streams/tanstack-ai-transport"
 
 export async function POST(request: Request) {
@@ -65,7 +67,7 @@ export async function POST(request: Request) {
   const latestUserMessage = messages.findLast((m) => m.role === "user")
 
   const responseStream = chat({
-    adapter: openaiText("gpt-4o-mini"),
+    adapter: anthropicText("claude-sonnet-4-6"),
     messages,
   })
 
@@ -79,6 +81,13 @@ export async function POST(request: Request) {
   })
 }
 ```
+
+**Available adapters:**
+
+- `anthropicText("claude-sonnet-4-6")` from `@tanstack/ai-anthropic` — Anthropic Claude models
+- `openaiText("gpt-4o-mini")` from `@tanstack/ai-openai` — OpenAI models
+
+The adapter reads credentials from standard env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). Do NOT pass API keys from the client.
 
 `mode: "immediate"` (default) returns `202` immediately; writes continue in background. Use `mode: "await"` when the runtime needs an active request to keep running.
 
