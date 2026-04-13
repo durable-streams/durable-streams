@@ -81,8 +81,8 @@ async function main(): Promise<void> {
 
     const token = parseArg(`--token`)
     if (token) {
-      saveToken(token)
-      console.log(`Token saved to ~/.sesh/credentials.json`)
+      saveToken(repoRoot, token)
+      console.log(`Token saved to .sesh/.local/credentials.json`)
     }
 
     console.log(`Initialized sesh in ${repoRoot}`)

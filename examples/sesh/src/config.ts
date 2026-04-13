@@ -1,13 +1,12 @@
 /**
  * sesh config management.
  * .sesh/config.json — checked into git (server URL)
- * ~/.sesh/credentials.json — per-user (token)
+ * .sesh/.local/credentials.json — per-user, gitignored (token)
  * .sesh/.local/ — gitignored (push state)
  */
 
 import * as fs from "node:fs"
 import * as path from "node:path"
-import * as os from "node:os"
 
 export interface SeshConfig {
   server: string
@@ -78,15 +77,15 @@ export function writeConfig(repoRoot: string, config: SeshConfig): void {
 /**
  * Get auth headers for DS requests.
  */
-export function getAuthHeaders(): Record<string, string> {
+export function getAuthHeaders(repoRoot: string): Record<string, string> {
   // Check env var first
   const envToken = process.env.SESH_TOKEN
   if (envToken) {
     return { Authorization: `Bearer ${envToken}` }
   }
 
-  // Check credentials file
-  const credPath = path.join(os.homedir(), `.sesh`, `credentials.json`)
+  // Check credentials file in .sesh/.local/
+  const credPath = path.join(getSeshDir(repoRoot), `.local`, `credentials.json`)
   if (fs.existsSync(credPath)) {
     const creds = JSON.parse(fs.readFileSync(credPath, `utf-8`)) as Credentials
     if (creds.token) {
@@ -98,13 +97,13 @@ export function getAuthHeaders(): Record<string, string> {
 }
 
 /**
- * Save token to credentials file.
+ * Save token to credentials file in .sesh/.local/ (gitignored).
  */
-export function saveToken(token: string): void {
-  const credDir = path.join(os.homedir(), `.sesh`)
-  fs.mkdirSync(credDir, { recursive: true })
+export function saveToken(repoRoot: string, token: string): void {
+  const localDir = path.join(getSeshDir(repoRoot), `.local`)
+  fs.mkdirSync(localDir, { recursive: true })
   fs.writeFileSync(
-    path.join(credDir, `credentials.json`),
+    path.join(localDir, `credentials.json`),
     JSON.stringify({ token }, null, 2) + `\n`
   )
 }

@@ -78,7 +78,7 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
     throw new Error(`sesh not initialized. Run 'sesh init' first.`)
   }
 
-  const headers = getAuthHeaders()
+  const headers = getAuthHeaders(repoRoot)
 
   // Construct the stream URL from the config server + the stream path.
   // The stored streamUrl might point to a different host (e.g., localhost)

@@ -126,7 +126,7 @@ async function pushSession(
   }
 
   const linesToPush = lines.slice(startLine)
-  const headers = getAuthHeaders()
+  const headers = getAuthHeaders(repoRoot)
 
   // Create stream if needed
   let streamUrl = session.streamUrl
