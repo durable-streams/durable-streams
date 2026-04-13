@@ -172,6 +172,27 @@ async function main() {
       `  Forked from commit 1 offset: ${newSession?.forkedFromOffset === afterCommit1?.lastOffset}`
     )
 
+    // === Test: time travel — git checkout workflow ===
+    // Checkout commit 1, then resume without --at. The session file on disk
+    // now has commit 1's entryCount, so resume should truncate to 2 entries.
+    console.log(`\n=== Test: time travel (git checkout workflow) ===`)
+    git(`checkout ${commit1}`, repo)
+    const result3 = await resume({
+      sessionId: fakeSessionId,
+      repoRoot: repo,
+    })
+    console.log(`  New session: ${result3.newSessionId.slice(0, 8)}`)
+    console.log(`  Entries restored: ${result3.entriesRestored}`)
+    console.log(`  Expected 2 entries: ${result3.entriesRestored === 2}`)
+    if (result3.entriesRestored !== 2) {
+      throw new Error(
+        `Git checkout workflow: expected 2 entries but got ${result3.entriesRestored}`
+      )
+    }
+
+    // Go back to latest commit for remaining tests
+    git(`checkout main`, repo)
+
     // === Test: resume from latest (commit 2) ===
     console.log(`\n=== Test: resume from latest ===`)
     const result2 = await resume({

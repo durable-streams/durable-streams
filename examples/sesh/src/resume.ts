@@ -136,9 +136,10 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
     }
   }
 
-  // If resuming at a specific commit, truncate entries to match
-  // the entry count at that point in time.
-  if (atCommit && session.entryCount > 0) {
+  // Truncate entries to match the entry count recorded in the session file.
+  // This handles both --at <commit> and the git checkout workflow, where the
+  // session file on disk has the historical entryCount.
+  if (session.entryCount > 0) {
     entries = entries.slice(0, session.entryCount)
   }
 
