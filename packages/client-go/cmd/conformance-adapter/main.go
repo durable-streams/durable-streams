@@ -133,6 +133,7 @@ type Features struct {
 	LongPoll       bool `json:"longPoll"`
 	Streaming      bool `json:"streaming"`
 	DynamicHeaders bool `json:"dynamicHeaders"`
+	Auto           bool `json:"auto"`
 }
 
 type ReadChunk struct {
@@ -348,6 +349,7 @@ func handleInit(cmd Command) Result {
 			LongPoll:       true,
 			Streaming:      true,
 			DynamicHeaders: true,
+			Auto:           true,
 		},
 	}
 }
@@ -556,7 +558,9 @@ func handleRead(cmd Command) Result {
 			liveMode = durablestreams.LiveModeSSE
 		}
 	case bool:
-		if !v {
+		if v {
+			liveMode = durablestreams.LiveModeLongPoll // true = auto = long-poll
+		} else {
 			liveMode = durablestreams.LiveModeNone
 		}
 	}
@@ -821,10 +825,6 @@ func handleValidate(cmd Command) Result {
 	target := cmd.Target
 
 	switch target.Target {
-	case "retry-options":
-		// Go client doesn't have a separate RetryOptions class
-		return sendError("validate", "NOT_SUPPORTED", "Go client does not have RetryOptions class")
-
 	case "idempotent-producer":
 		// Test IdempotentProducer validation
 		producerID := target.ProducerID

@@ -922,10 +922,6 @@ object HandleValidate(JsonElement root)
 
     switch (targetType)
     {
-        case "retry-options":
-            // C# client doesn't have a separate RetryOptions class with validation
-            return CreateError("validate", "NOT_SUPPORTED", "C# client does not have RetryOptions class");
-
         case "idempotent-producer":
             try
             {
