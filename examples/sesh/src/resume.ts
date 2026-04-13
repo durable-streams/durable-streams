@@ -80,12 +80,17 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
 
   const headers = getAuthHeaders(repoRoot)
 
-  // Construct the stream URL from the config server + the stream path.
+  // Construct the stream URL from the config server + the relative stream path.
   // The stored streamUrl might point to a different host (e.g., localhost)
   // than the current config server (e.g., ngrok or VM IP).
   let streamUrl = session.streamUrl
   const streamPath = new URL(streamUrl).pathname
-  streamUrl = `${config.server}${streamPath}`
+  const serverPath = new URL(config.server).pathname
+  // Strip the server base path to get the relative portion (e.g., /sesh/<id>)
+  const relativePath = streamPath.startsWith(serverPath)
+    ? streamPath.slice(serverPath.length)
+    : streamPath
+  streamUrl = `${config.server}${relativePath}`
 
   // Read from DS — try checkpoint first, fall back to beginning
   const readUrl = `${streamUrl}?offset=compact`
