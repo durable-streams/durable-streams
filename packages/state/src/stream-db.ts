@@ -790,13 +790,6 @@ export function createStreamDB<
       gcTime: 0,
     })
 
-    console.log(`[StreamDB] Created collection "${name}":`, {
-      type: typeof collection,
-      constructor: collection.constructor.name,
-      isCollection: collection instanceof Object,
-      hasSize: `size` in collection,
-    })
-
     collectionInstances[name] = collection
   }
 
@@ -818,22 +811,9 @@ export function createStreamDB<
       signal: abortController.signal,
     })
 
-    // Track batch processing for debugging
-    let batchCount = 0
-    let lastBatchTime = Date.now()
-
     // Process events as they come in
     streamResponse.subscribeJson((batch) => {
       try {
-        batchCount++
-        lastBatchTime = Date.now()
-
-        if (batch.items.length > 0) {
-          console.log(
-            `[StreamDB] Processing batch #${batchCount}: ${batch.items.length} items, upToDate=${batch.upToDate}`
-          )
-        }
-
         for (const event of batch.items) {
           if (isChangeEvent(event)) {
             dispatcher.dispatchChange(event)
@@ -844,15 +824,7 @@ export function createStreamDB<
 
         // Check batch-level up-to-date signal
         if (batch.upToDate) {
-          console.log(
-            `[StreamDB] Marking up-to-date after batch #${batchCount}`
-          )
           dispatcher.markUpToDate()
-          console.log(`[StreamDB] Successfully marked up-to-date`)
-        }
-
-        if (batch.items.length > 0) {
-          console.log(`[StreamDB] Successfully processed batch #${batchCount}`)
         }
       } catch (error) {
         console.error(`[StreamDB] Error processing batch:`, error)
@@ -864,20 +836,6 @@ export function createStreamDB<
         // Don't rethrow - we've already rejected the promise
       }
       return Promise.resolve()
-    })
-
-    // Health check to detect silent stalls
-    const healthCheck = setInterval(() => {
-      const timeSinceLastBatch = Date.now() - lastBatchTime
-      console.log(
-        `[StreamDB] Health: ${batchCount} batches processed, last batch ${(timeSinceLastBatch / 1000).toFixed(1)}s ago`
-      )
-    }, 15000)
-
-    // Clean up health check on abort
-    abortController.signal.addEventListener(`abort`, () => {
-      clearInterval(healthCheck)
-      console.log(`[StreamDB] Aborted - cleaning up health check`)
     })
   }
 
@@ -900,16 +858,10 @@ export function createStreamDB<
   }
 
   // Combine collections with methods
-  console.log(
-    `[StreamDB] Creating db object with collections:`,
-    Object.keys(collectionInstances)
-  )
   const db = {
     collections: collectionInstances,
     ...dbMethods,
   } as unknown as StreamDB<TDef>
-  console.log(`[StreamDB] db.collections:`, Object.keys(db.collections))
-  console.log(`[StreamDB] db.collections.events:`, db.collections.events)
 
   // If actions factory is provided, wrap actions and return db with actions
   if (actionsFactory) {
