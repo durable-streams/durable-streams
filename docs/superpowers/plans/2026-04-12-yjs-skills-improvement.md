@@ -14,26 +14,27 @@
 
 ## File map
 
-| Action | Path | Responsibility |
-|--------|------|----------------|
-| Create | `packages/y-durable-streams/skills/yjs-getting-started/SKILL.md` | First-time full-stack setup |
-| Create | `packages/y-durable-streams/skills/yjs-editors/SKILL.md` | TipTap + CodeMirror integration guides |
-| Create | `packages/y-durable-streams/skills/yjs-server/SKILL.md` | YjsServer, Caddy proxy, Electric Cloud |
-| Modify | `packages/y-durable-streams/skills/yjs-sync/SKILL.md` | Refocus on provider deep-dive |
-| Modify | `docs/yjs.md` | Add editor integrations + Electric Cloud sections |
+| Action | Path                                                             | Responsibility                                    |
+| ------ | ---------------------------------------------------------------- | ------------------------------------------------- |
+| Create | `packages/y-durable-streams/skills/yjs-getting-started/SKILL.md` | First-time full-stack setup                       |
+| Create | `packages/y-durable-streams/skills/yjs-editors/SKILL.md`         | TipTap + CodeMirror integration guides            |
+| Create | `packages/y-durable-streams/skills/yjs-server/SKILL.md`          | YjsServer, Caddy proxy, Electric Cloud            |
+| Modify | `packages/y-durable-streams/skills/yjs-sync/SKILL.md`            | Refocus on provider deep-dive                     |
+| Modify | `docs/yjs.md`                                                    | Add editor integrations + Electric Cloud sections |
 
 ---
 
 ### Task 1: Create `yjs-getting-started` skill
 
 **Files:**
+
 - Create: `packages/y-durable-streams/skills/yjs-getting-started/SKILL.md`
 
 This is the "first 10 minutes" skill. Covers the full stack: install, start servers, create first collaborative doc, verify sync.
 
 - [ ] **Step 1: Create the skill file**
 
-```markdown
+````markdown
 ---
 name: yjs-getting-started
 description: >
@@ -60,6 +61,7 @@ needed — uses standard HTTP with SSE or long-poll transport.
 ```bash
 npm install @durable-streams/y-durable-streams yjs y-protocols lib0
 ```
+````
 
 `yjs`, `y-protocols`, and `lib0` are peer dependencies — missing them causes
 runtime import errors.
@@ -212,7 +214,8 @@ YjsServer proxies all storage operations to the DS server. Start
 - [yjs-editors](../yjs-editors/SKILL.md) — TipTap and CodeMirror integration
 - [yjs-sync](../yjs-sync/SKILL.md) — Provider lifecycle, events, error recovery
 - [yjs-server](../yjs-server/SKILL.md) — Production deployment with Caddy or Electric Cloud
-```
+
+````
 
 - [ ] **Step 2: Verify the file exists and is well-formed**
 
@@ -227,20 +230,21 @@ git commit -m "feat(y-durable-streams): add yjs-getting-started skill
 
 Covers first-time setup: install, dev servers, first collaborative doc,
 awareness for presence."
-```
+````
 
 ---
 
 ### Task 2: Create `yjs-editors` skill
 
 **Files:**
+
 - Create: `packages/y-durable-streams/skills/yjs-editors/SKILL.md`
 
 This is the most critical skill. TipTap section leads with the canonical pattern and documents all 5 recurring bugs. CodeMirror follows the same React lifecycle approach.
 
 - [ ] **Step 1: Create the skill file**
 
-```markdown
+````markdown
 ---
 name: yjs-editors
 description: >
@@ -328,15 +332,16 @@ function CollabEditor({ docId }: { docId: string }) {
   // ...
 }
 ```
+````
 
 ### Why `useState(() => ...)` not `useEffect` + `setState(null)`
 
-|                            | `useEffect` + `useState(null)` | `useState(() => new ...)` |
-| -------------------------- | ------------------------------ | ------------------------- |
-| Provider on first render   | `null`                         | **non-null**              |
-| Editor extensions config   | needs conditional guards       | always gets valid objects  |
-| Editor recreations         | twice (without, then with)     | **once**                  |
-| Cleanup race               | `setState(null)` = stale render| no intermediate null      |
+|                          | `useEffect` + `useState(null)`  | `useState(() => new ...)` |
+| ------------------------ | ------------------------------- | ------------------------- |
+| Provider on first render | `null`                          | **non-null**              |
+| Editor extensions config | needs conditional guards        | always gets valid objects |
+| Editor recreations       | twice (without, then with)      | **once**                  |
+| Cleanup race             | `setState(null)` = stale render | no intermediate null      |
 
 ### Why not `useMemo`
 
@@ -424,6 +429,7 @@ return <EditorContent editor={editor} />
 ```
 
 Key points:
+
 - `undoRedo: false` — Yjs has its own undo manager; StarterKit's conflicts
 - `CollaborationCaret.configure({ provider })` — provider is always non-null
   because of `useState` lazy init. No conditional guard needed.
@@ -457,7 +463,11 @@ useEffect(() => {
   const ytext = ydoc.getText("content")
   const state = EditorState.create({
     doc: ytext.toString(),
-    extensions: [basicSetup, EditorView.lineWrapping, yCollab(ytext, awareness)],
+    extensions: [
+      basicSetup,
+      EditorView.lineWrapping,
+      yCollab(ytext, awareness),
+    ],
   })
 
   const view = new EditorView({ state, parent: editorRef.current })
@@ -469,6 +479,7 @@ return <div ref={editorRef} />
 ```
 
 Key points:
+
 - `yCollab(ytext, awareness)` handles both document sync and cursor rendering
 - Uses `Y.Text` (not `Y.XmlFragment` like TipTap)
 - Editor is created after `synced` to avoid rendering stale empty state
@@ -515,16 +526,20 @@ const [provider, setProvider] = useState<YjsProvider | null>(null)
 useEffect(() => {
   const p = new YjsProvider({ doc: ydoc, baseUrl, docId, awareness })
   setProvider(p)
-  return () => { p.destroy(); setProvider(null) }
+  return () => {
+    p.destroy()
+    setProvider(null)
+  }
 }, [ydoc, awareness, docId])
 
-const editor = useEditor({
-  extensions: [
-    ...(provider
-      ? [CollaborationCaret.configure({ provider })]
-      : []),
-  ],
-}, [provider])
+const editor = useEditor(
+  {
+    extensions: [
+      ...(provider ? [CollaborationCaret.configure({ provider })] : []),
+    ],
+  },
+  [provider]
+)
 ```
 
 Correct: Use the `useState(() => ...)` pattern from the lifecycle section above.
@@ -581,7 +596,8 @@ Yjs objects.
 - [yjs-getting-started](../yjs-getting-started/SKILL.md) — Install and server setup
 - [yjs-sync](../yjs-sync/SKILL.md) — Provider options, events, error recovery
 - [yjs-server](../yjs-server/SKILL.md) — Production deployment
-```
+
+````
 
 - [ ] **Step 2: Verify the file exists and is well-formed**
 
@@ -598,13 +614,14 @@ TipTap v3 and CodeMirror 6 integration guides with canonical React
 lifecycle pattern (useState lazy init). Documents 5 recurring agent
 bugs including -caret vs -cursor, useEffect anti-pattern, useMemo
 lifecycle leak."
-```
+````
 
 ---
 
 ### Task 3: Create `yjs-server` skill
 
 **Files:**
+
 - Create: `packages/y-durable-streams/skills/yjs-server/SKILL.md`
 
 Covers YjsServer options, Caddy reverse proxy setup, compaction, and Electric Cloud as managed alternative.
@@ -641,18 +658,19 @@ Three deployment options: dev server for prototyping, Caddy for self-hosted
 production, Electric Cloud for managed hosting.
 
 ## Architecture
+```
 
-```
 Browser (YjsProvider)
-    │ HTTPS
-    ▼
+│ HTTPS
+▼
 Caddy reverse proxy (:443)
-    ├─ /v1/stream/* → Durable Streams storage
-    └─ /v1/yjs/*   → YjsServer (flush_interval -1)
-                         │ HTTP
-                         ▼
-                    DS Server (storage)
-```
+├─ /v1/stream/_ → Durable Streams storage
+└─ /v1/yjs/_ → YjsServer (flush_interval -1)
+│ HTTP
+▼
+DS Server (storage)
+
+````
 
 YjsServer implements the Yjs wire protocol (snapshot discovery, compaction,
 awareness routing) and proxies all storage operations to a Durable Streams
@@ -674,17 +692,17 @@ const yjsServer = new YjsServer({
   compactionThreshold: 1024 * 1024, // 1MB (default)
 })
 await yjsServer.start()
-```
+````
 
 ### YjsServer options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `port` | — | Listen port |
-| `host` | `"127.0.0.1"` | Listen host |
-| `dsServerUrl` | — | Backing DS server URL |
+| Option                | Default         | Description                                         |
+| --------------------- | --------------- | --------------------------------------------------- |
+| `port`                | —               | Listen port                                         |
+| `host`                | `"127.0.0.1"`   | Listen host                                         |
+| `dsServerUrl`         | —               | Backing DS server URL                               |
 | `compactionThreshold` | `1048576` (1MB) | Trigger compaction after this many bytes of updates |
-| `dsServerHeaders` | `{}` | Headers sent to the DS server (e.g. auth) |
+| `dsServerHeaders`     | `{}`            | Headers sent to the DS server (e.g. auth)           |
 
 ### Compaction
 
@@ -802,6 +820,7 @@ app.all("/api/yjs/*", async (req, res) => {
 ```
 
 Key proxy rules:
+
 - Use a **block-list** for response headers — Yjs protocol uses custom
   headers like `stream-next-offset` that an allow-list would miss
 - Block `content-encoding` and `content-length` — Node's `fetch`
@@ -814,7 +833,7 @@ Then point the provider at your proxy:
 ```typescript
 const provider = new YjsProvider({
   doc,
-  baseUrl: "/api/yjs",  // Must be absolute — use window.location.origin + path
+  baseUrl: "/api/yjs", // Must be absolute — use window.location.origin + path
   docId: "my-doc",
 })
 ```
@@ -854,7 +873,7 @@ Wrong:
 new YjsProvider({
   doc,
   baseUrl: "https://api.electric-sql.cloud/v1/yjs/<service-id>",
-  headers: { Authorization: `Bearer ${cloudSecret}` },  // Leaked!
+  headers: { Authorization: `Bearer ${cloudSecret}` }, // Leaked!
 })
 ```
 
@@ -873,7 +892,8 @@ increase it to avoid excessive compaction I/O.
 - [yjs-sync](../yjs-sync/SKILL.md) — Provider configuration and events
 - [server-deployment](../../../client/skills/server-deployment/SKILL.md) — DS server Caddy config
 - [go-to-production](../../../client/skills/go-to-production/SKILL.md) — HTTPS, TTL, CDN checklist
-```
+
+````
 
 - [ ] **Step 2: Verify the file exists and is well-formed**
 
@@ -889,13 +909,14 @@ git commit -m "feat(y-durable-streams): add yjs-server skill
 Covers YjsServer options, compaction, Caddy reverse proxy with
 flush_interval -1, and Electric Cloud managed deployment with
 server-side proxy pattern."
-```
+````
 
 ---
 
 ### Task 4: Refocus `yjs-sync` skill
 
 **Files:**
+
 - Modify: `packages/y-durable-streams/skills/yjs-sync/SKILL.md`
 
 Remove setup content (now in yjs-getting-started), fix `setLocalState` advice,
@@ -910,7 +931,7 @@ Run: `cat packages/y-durable-streams/skills/yjs-sync/SKILL.md`
 
 Replace the entire file with this refocused version:
 
-```markdown
+````markdown
 ---
 name: yjs-sync
 description: >
@@ -942,12 +963,12 @@ YjsProvider configuration, lifecycle, and error handling beyond the basics.
 ```typescript
 interface YjsProviderOptions {
   doc: Y.Doc
-  baseUrl: string          // e.g. "http://host:port/v1/yjs/{service}"
-  docId: string            // e.g. "my-doc" or "project/chapter-1"
-  awareness?: Awareness    // optional presence
-  headers?: HeadersRecord  // static or () => string | Promise<string>
-  liveMode?: "sse" | "long-poll"  // default "sse"
-  connect?: boolean        // default true
+  baseUrl: string // e.g. "http://host:port/v1/yjs/{service}"
+  docId: string // e.g. "my-doc" or "project/chapter-1"
+  awareness?: Awareness // optional presence
+  headers?: HeadersRecord // static or () => string | Promise<string>
+  liveMode?: "sse" | "long-poll" // default "sse"
+  connect?: boolean // default true
 }
 
 class YjsProvider {
@@ -966,6 +987,7 @@ class YjsProvider {
   on(event: "error", handler: (error: Error) => void): void
 }
 ```
+````
 
 There is no `contentType` option — the provider always uses
 `application/octet-stream` (lib0 VarUint8Array framing).
@@ -979,6 +1001,7 @@ disconnected → connecting → connected → disconnected
 ```
 
 Connection steps:
+
 1. Ensure document exists (PUT)
 2. Discover snapshot offset
 3. Create idempotent producer for writes
@@ -1044,11 +1067,13 @@ configuration upfront.
 ## Error recovery
 
 The provider auto-reconnects on transient errors:
+
 - Network errors → retry with 1s delay
 - 5xx server errors → retry with backoff
 - Snapshot 404 → rediscover snapshot offset
 
 Errors that do NOT trigger reconnect:
+
 - 401/403 auth errors → emits `error` event, stays disconnected
 - Provider was explicitly disconnected → no reconnect
 
@@ -1094,9 +1119,10 @@ sufficient and CRDT overhead isn't needed.
 - [yjs-getting-started](../yjs-getting-started/SKILL.md) — Install and setup
 - [yjs-editors](../yjs-editors/SKILL.md) — TipTap and CodeMirror integration
 - [yjs-server](../yjs-server/SKILL.md) — Deployment and infrastructure
-- [reading-streams](../../../client/skills/reading-streams/SKILL.md) — Raw stream reading (non-CRDT)
-- [YJS-PROTOCOL.md](../../YJS-PROTOCOL.md) — Wire protocol specification
-```
+- reading-streams — Raw stream reading (non-CRDT)
+- YJS-PROTOCOL.md — Wire protocol specification
+
+````
 
 - [ ] **Step 3: Verify the changes**
 
@@ -1112,13 +1138,14 @@ git commit -m "refactor(y-durable-streams): refocus yjs-sync skill
 Remove setup content (moved to yjs-getting-started), add requires field,
 fix setLocalState advice, demote connect:false pattern, add connection
 state machine and error recovery docs, add tension section."
-```
+````
 
 ---
 
 ### Task 5: Update docsite `docs/yjs.md`
 
 **Files:**
+
 - Modify: `docs/yjs.md`
 
 Add editor integrations section (brief — skills have the depth) and Electric Cloud deployment option.
@@ -1131,7 +1158,7 @@ Run: `cat docs/yjs.md`
 
 Insert the following before the "Learn more" section (before line 212):
 
-```markdown
+````markdown
 ## Editor integrations
 
 ### TipTap v3
@@ -1140,6 +1167,7 @@ Insert the following before the "Learn more" section (before line 212):
 npm install @tiptap/react @tiptap/starter-kit \
   @tiptap/extension-collaboration @tiptap/extension-collaboration-caret
 ```
+````
 
 > **Important:** Use `@tiptap/extension-collaboration-caret`, not
 > `@tiptap/extension-collaboration-cursor`. The `-cursor` package is a
@@ -1177,7 +1205,8 @@ const state = EditorState.create({
 ```
 
 See the [Yjs demo](https://github.com/durable-streams/durable-streams/tree/main/examples/yjs-demo) for a complete CodeMirror example.
-```
+
+````
 
 - [ ] **Step 3: Add Electric Cloud deployment option**
 
@@ -1194,20 +1223,22 @@ Use `DurableStreamTestServer` + `YjsServer` as shown in the quick start. See the
 
 Run the Caddy binary with the durable_streams plugin for storage, and reverse-proxy to YjsServer:
 
-```
+````
+
 :443 {
-  route /v1/stream/* {
-    durable_streams {
-      data_dir ./data
-    }
-  }
-  route /v1/yjs/* {
-    reverse_proxy localhost:4438 {
-      flush_interval -1
-    }
-  }
+route /v1/stream/_ {
+durable_streams {
+data_dir ./data
 }
-```
+}
+route /v1/yjs/_ {
+reverse_proxy localhost:4438 {
+flush_interval -1
+}
+}
+}
+
+````
 
 `flush_interval -1` is required — without it, Caddy buffers SSE responses and live updates stop working.
 
@@ -1220,10 +1251,11 @@ Deploy on Electric Cloud for managed hosting with no infrastructure to maintain.
 ```bash
 npx @electric-sql/cli services create yjs --json
 npx @electric-sql/cli services get-secret <service-id> --json
-```
+````
 
 Point `baseUrl` at the cloud URL and pass the secret as an `Authorization` header. For browser apps, use a server-side proxy to avoid exposing the secret.
-```
+
+````
 
 - [ ] **Step 4: Verify the updated file renders correctly**
 
@@ -1239,13 +1271,14 @@ git commit -m "docs(yjs): add editor integrations and deployment sections
 Add TipTap v3 and CodeMirror 6 quick examples with -caret vs -cursor
 warning. Add deployment section with self-hosted Caddy and Electric
 Cloud options."
-```
+````
 
 ---
 
 ## Self-review
 
 **Spec coverage:**
+
 - ✅ 3 new skills (yjs-getting-started, yjs-editors, yjs-server)
 - ✅ Refocused yjs-sync with corrections
 - ✅ TipTap canonical pattern with all 5 documented bugs
