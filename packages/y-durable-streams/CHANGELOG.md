@@ -1,5 +1,14 @@
 # @durable-streams/y-durable-streams
 
+## 0.2.4
+
+### Patch Changes
+
+- Fix stale skill and README API docs, add intent CLI bin entry ([#330](https://github.com/durable-streams/durable-streams/pull/330))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.3
+
 ## 0.2.3
 
 ### Patch Changes

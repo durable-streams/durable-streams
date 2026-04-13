@@ -1,5 +1,14 @@
 # @durable-streams/tanstack-ai-transport
 
+## 0.0.3
+
+### Patch Changes
+
+- Add AI agent skills and intent CLI bin entry ([#331](https://github.com/durable-streams/durable-streams/pull/331))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.3
+
 ## 0.0.2
 
 ### Patch Changes

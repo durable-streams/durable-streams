@@ -1,5 +1,14 @@
 # @durable-streams/state
 
+## 0.2.4
+
+### Patch Changes
+
+- Remove verbose debug logging from StreamDB stream consumer ([#328](https://github.com/durable-streams/durable-streams/pull/328))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.3
+
 ## 0.2.3
 
 ### Patch Changes
