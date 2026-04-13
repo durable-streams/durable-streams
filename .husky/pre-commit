@@ -1,5 +1,5 @@
 # sesh pre-commit hook — pushes session data to DS and stages updated files
-node /Users/kevin/Documents/Electric/development/durable-streams/examples/sesh/dist/cli.js push 2>&1
+node examples/sesh/dist/cli.js push 2>&1
 git add .sesh/sessions/ 2>/dev/null || true
 
 pnpm lint-staged
