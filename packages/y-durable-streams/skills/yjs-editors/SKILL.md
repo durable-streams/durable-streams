@@ -2,11 +2,12 @@
 name: yjs-editors
 description: >
   Integrate Yjs collaborative editing with TipTap v3 and CodeMirror 6 over
-  durable streams. Canonical React patterns using useState lazy init (not
-  useEffect+setState). TipTap: Collaboration + CollaborationCaret extensions,
-  -caret not -cursor package. CodeMirror: yCollab binding. Covers awareness
-  wiring, multi-document navigation with key={docId}, SSR ssr:false
-  requirement. Critical anti-patterns that crash agents documented.
+  durable streams. Canonical React pattern: doc+awareness in useState,
+  provider in useEffect with connect:false (listeners before connect).
+  TipTap: Collaboration + CollaborationCaret extensions, -caret not -cursor
+  package. CodeMirror: yCollab binding. Covers awareness wiring,
+  multi-document navigation with key={docId}, SSR ssr:false requirement.
+  Critical anti-patterns that crash agents documented.
 type: core
 library: durable-streams
 library_version: "0.2.3"
@@ -29,71 +30,112 @@ the binding setup.
 
 ## React lifecycle pattern (shared by all editors)
 
-All editor integrations MUST use this pattern. The `useState` lazy
-initializer constructs objects synchronously on first render. The cleanup
-effect destroys them on unmount. No null guards, no intermediate states.
+All editor integrations MUST use this pattern. It matches the working
+`examples/yjs-demo/src/components/yjs-provider.tsx` in this repository.
+
+**Key principle:** Doc and awareness are created once via `useState` (stable
+references). The provider is created in `useEffect` with `connect: false` so
+that event listeners are attached BEFORE the first network request. This
+prevents the race condition where `synced` fires between construction and
+listener attachment.
 
 ```typescript
+import { useState, useEffect, useRef } from "react"
 import { YjsProvider } from "@durable-streams/y-durable-streams"
 import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 
 function CollabEditor({ docId }: { docId: string }) {
-  // 1. Construct ALL Yjs objects via useState lazy init — never useEffect
-  const [ydoc] = useState(() => new Y.Doc())
-  const [awareness] = useState(() => {
-    const aw = new Awareness(ydoc)
-    aw.setLocalStateField("user", {
-      name: localStorage.getItem("userName") || "Anonymous",
-      color: localStorage.getItem("userColor") || "#d0bcff",
+  // 1. Doc + awareness: stable, created once via useState lazy init.
+  //    Use setLocalState (not setLocalStateField) because a new
+  //    Awareness starts with null state.
+  const [{ doc, awareness }] = useState(() => {
+    const d = new Y.Doc()
+    const aw = new Awareness(d)
+    aw.setLocalState({
+      user: {
+        name: localStorage.getItem("userName") || "Anonymous",
+        color: localStorage.getItem("userColor") || "#d0bcff",
+      },
     })
-    return aw
+    return { doc: d, awareness: aw }
   })
-  const [provider] = useState(
-    () =>
-      new YjsProvider({
-        doc: ydoc,
-        baseUrl: "https://your-server.com/v1/yjs/my-service",
-        docId,
-        awareness,
-        // connect defaults to true — no need for connect:false + connect()
-      })
-  )
 
-  // 2. Single cleanup effect — destroy in reverse order
-  useEffect(() => {
-    return () => {
-      provider.destroy()
-      awareness.destroy()
-      ydoc.destroy()
-    }
-  }, [provider, awareness, ydoc])
-
-  // 3. Track sync state
+  // 2. Provider: created in useEffect with connect:false.
+  //    Listeners are attached BEFORE connect() so events are never missed.
+  const [provider, setProvider] = useState<YjsProvider | null>(null)
   const [synced, setSynced] = useState(false)
+
   useEffect(() => {
-    const handler = (s: boolean) => {
+    // Re-set awareness if React strict mode cleanup cleared it
+    if (awareness.getLocalState() === null) {
+      awareness.setLocalState({
+        user: {
+          name: localStorage.getItem("userName") || "Anonymous",
+          color: localStorage.getItem("userColor") || "#d0bcff",
+        },
+      })
+    }
+
+    const p = new YjsProvider({
+      doc,
+      baseUrl: "https://your-server.com/v1/yjs/my-service",
+      docId,
+      awareness,
+      connect: false, // listeners first, then connect
+    })
+
+    // Attach listeners BEFORE connect()
+    p.on("synced", (s: boolean) => {
       if (s) setSynced(true)
-    }
-    provider.on("synced", handler)
+    })
+    p.on("error", (err: Error) => {
+      console.error("[YjsProvider] error:", err)
+    })
+
+    setProvider(p)
+    p.connect()
+
     return () => {
-      provider.off("synced", handler)
+      p.destroy()
+      setProvider(null)
     }
-  }, [provider])
+  }, [doc, awareness, docId])
+
+  // 3. Clean up doc + awareness on component unmount
+  useEffect(() => {
+    return () => {
+      awareness.destroy()
+      doc.destroy()
+    }
+  }, [doc, awareness])
 
   // 4. Editor setup goes here (see TipTap / CodeMirror sections below)
   // ...
 }
 ```
 
-### Why `useState(() => ...)` not `useEffect` + `setState(null)`
+### Why `connect: false` is required
 
-|                            | `useEffect` + `useState(null)` | `useState(() => new ...)` |
-| -------------------------- | ------------------------------ | ------------------------- |
-| Provider on first render   | `null`                         | **non-null**              |
-| Editor extensions config   | needs conditional guards       | always gets valid objects  |
-| Editor recreations         | twice (without, then with)     | **once**                  |
-| Cleanup race               | `setState(null)` = stale render| no intermediate null      |
+The provider starts its async connection flow immediately in the constructor
+when `connect` is `true` (the default). This means:
+- `ensureDocument` (PUT), `discoverSnapshot` (GET with 307 handling), and
+  `startUpdatesStream` all fire before React's `useEffect` runs
+- The `synced` event can fire before any listener is attached
+- React strict mode double-renders make this race worse — the first render's
+  provider is destroyed, and the event is lost
+
+With `connect: false`, the provider is inert until `p.connect()` is called
+explicitly — after all listeners are attached. No race, no missed events.
+
+### Why doc/awareness are in `useState` but provider is in `useEffect`
+
+|                            | Doc + Awareness              | Provider                    |
+| -------------------------- | ---------------------------- | --------------------------- |
+| Created via                | `useState(() => ...)`        | `useEffect` + `connect:false` |
+| Stable across re-renders   | Yes (useState is stable)     | Recreated when docId changes |
+| Event listeners            | None needed before creation  | Must be attached before connect |
+| Cleanup                    | Separate unmount effect      | Effect cleanup destroys it  |
 
 ### Why not `useMemo`
 
@@ -147,7 +189,10 @@ creates duplicate `ySyncPluginKey` singletons that crash the editor.
 
 ### Editor setup
 
-Using the shared lifecycle pattern above, add the editor:
+Using the shared lifecycle pattern above, add the editor. Note: provider
+starts as `null` and becomes non-null after the `useEffect` runs. Use a
+conditional spread for `CollaborationCaret` and `[provider]` as a dep so
+the editor recreates when the provider arrives:
 
 ```tsx
 import { useEditor, EditorContent } from "@tiptap/react"
@@ -157,24 +202,31 @@ import CollaborationCaret from "@tiptap/extension-collaboration-caret"
 
 // Inside CollabEditor component, after the shared lifecycle code:
 
-const editor = useEditor({
-  extensions: [
-    StarterKit.configure({ undoRedo: false }),
-    Collaboration.configure({ document: ydoc }),
-    CollaborationCaret.configure({
-      provider,
-      user: {
-        name: localStorage.getItem("userName") || "Anonymous",
-        color: localStorage.getItem("userColor") || "#d0bcff",
+const editor = useEditor(
+  {
+    extensions: [
+      StarterKit.configure({ undoRedo: false }),
+      Collaboration.configure({ document: doc }),
+      ...(provider
+        ? [
+            CollaborationCaret.configure({
+              provider,
+              user: {
+                name: localStorage.getItem("userName") || "Anonymous",
+                color: localStorage.getItem("userColor") || "#d0bcff",
+              },
+            }),
+          ]
+        : []),
+    ],
+    editorProps: {
+      attributes: {
+        class: "prose max-w-none min-h-[60vh] focus:outline-none",
       },
-    }),
-  ],
-  editorProps: {
-    attributes: {
-      class: "prose max-w-none min-h-[60vh] focus:outline-none",
     },
   },
-})
+  [provider], // recreate editor when provider becomes available
+)
 
 if (!synced) return <p>Connecting...</p>
 return <EditorContent editor={editor} />
@@ -182,8 +234,9 @@ return <EditorContent editor={editor} />
 
 Key points:
 - `undoRedo: false` — Yjs has its own undo manager; StarterKit's conflicts
-- `CollaborationCaret.configure({ provider })` — provider is always non-null
-  because of `useState` lazy init. No conditional guard needed.
+- `CollaborationCaret` uses a conditional spread because `provider` is
+  `null` on first render (before the effect). The `[provider]` dep array
+  on `useEditor` recreates the editor when the provider arrives.
 - The `document` option takes the `Y.Doc` directly — TipTap creates the
   `Y.XmlFragment` internally
 
@@ -211,7 +264,7 @@ const editorRef = useRef<HTMLDivElement>(null)
 useEffect(() => {
   if (!editorRef.current || !synced) return
 
-  const ytext = ydoc.getText("content")
+  const ytext = doc.getText("content")
   const state = EditorState.create({
     doc: ytext.toString(),
     extensions: [basicSetup, EditorView.lineWrapping, yCollab(ytext, awareness)],
@@ -219,7 +272,7 @@ useEffect(() => {
 
   const view = new EditorView({ state, parent: editorRef.current })
   return () => view.destroy()
-}, [synced, ydoc, awareness])
+}, [synced, doc, awareness])
 
 if (!synced) return <p>Connecting...</p>
 return <div ref={editorRef} />
@@ -262,36 +315,32 @@ undefined (reading 'doc')`.
 
 Source: TipTap v3 migration, @tiptap/extension-collaboration-caret package
 
-### CRITICAL Using `useEffect` + `useState(null)` for provider (all editors)
+### CRITICAL Auto-connecting provider without listeners
 
 Wrong:
 
 ```tsx
-const [provider, setProvider] = useState<YjsProvider | null>(null)
+// Provider auto-connects in constructor — synced event fires before
+// useEffect attaches the listener → stuck on "Connecting..." forever
+const [provider] = useState(
+  () => new YjsProvider({ doc, baseUrl, docId, awareness })
+)
 
 useEffect(() => {
-  const p = new YjsProvider({ doc: ydoc, baseUrl, docId, awareness })
-  setProvider(p)
-  return () => { p.destroy(); setProvider(null) }
-}, [ydoc, awareness, docId])
-
-const editor = useEditor({
-  extensions: [
-    ...(provider
-      ? [CollaborationCaret.configure({ provider })]
-      : []),
-  ],
+  provider.on("synced", (s) => { if (s) setSynced(true) })
+  // TOO LATE — synced already fired during construction
 }, [provider])
 ```
 
-Correct: Use the `useState(() => ...)` pattern from the lifecycle section above.
+Correct: Use the `useEffect` + `connect: false` pattern from the lifecycle
+section above. Listeners are attached before `connect()` is called.
 
-On first render `provider` is null. The conditional spread omits the caret
-extension. When the effect fires and sets the provider, the editor recreates —
-but the teardown/init race crashes intermittently with
-`TypeError: Cannot read properties of null (reading 'awareness')`.
+This is the #1 cause of "stuck Connecting" in agent-built apps. The provider
+connects, syncs, emits `synced: true`, but no listener is attached yet.
+React's `useEffect` runs after the render cycle, by which time the async
+connection has already completed.
 
-Source: Documented in 5+ agent sessions building TipTap + y-durable-streams
+Source: Documented in 5+ agent sessions; matches examples/yjs-demo pattern
 
 ### HIGH Using `useMemo` for Y.Doc or Awareness (all editors)
 

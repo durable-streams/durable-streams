@@ -123,10 +123,11 @@ provider.on("error", handleError)
 await provider.connect()
 ```
 
-Only use `connect: false` when you need to configure the provider before
-any network activity. With the `useState(() => ...)` React pattern from
-yjs-editors, this is unnecessary — the provider is constructed with all
-configuration upfront.
+**In React, always use `connect: false`.** The provider's async connection
+flow starts immediately in the constructor, which means events like `synced`
+can fire before React's `useEffect` attaches listeners. With `connect: false`,
+you attach listeners first, then call `connect()` — see the yjs-editors
+skill for the canonical React pattern.
 
 ## Error recovery
 
