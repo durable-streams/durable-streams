@@ -64,13 +64,13 @@ await yjsServer.start()
 
 ### YjsServer options
 
-| Option | Default | Description |
-|--------|---------|-------------|
-| `port` | — | Listen port |
-| `host` | `"127.0.0.1"` | Listen host |
-| `dsServerUrl` | — | Backing DS server URL |
+| Option                | Default         | Description                                         |
+| --------------------- | --------------- | --------------------------------------------------- |
+| `port`                | —               | Listen port                                         |
+| `host`                | `"127.0.0.1"`   | Listen host                                         |
+| `dsServerUrl`         | —               | Backing DS server URL                               |
 | `compactionThreshold` | `1048576` (1MB) | Trigger compaction after this many bytes of updates |
-| `dsServerHeaders` | `{}` | Headers sent to the DS server (e.g. auth) |
+| `dsServerHeaders`     | `{}`            | Headers sent to the DS server (e.g. auth)           |
 
 ### Compaction
 
@@ -188,6 +188,7 @@ app.all("/api/yjs/*", async (req, res) => {
 ```
 
 Key proxy rules:
+
 - Use a **block-list** for response headers — Yjs protocol uses custom
   headers like `stream-next-offset` that an allow-list would miss
 - Block `content-encoding` and `content-length` — Node's `fetch`
@@ -200,7 +201,7 @@ Then point the provider at your proxy:
 ```typescript
 const provider = new YjsProvider({
   doc,
-  baseUrl: "/api/yjs",  // Must be absolute — use window.location.origin + path
+  baseUrl: "/api/yjs", // Must be absolute — use window.location.origin + path
   docId: "my-doc",
 })
 ```
@@ -240,7 +241,7 @@ Wrong:
 new YjsProvider({
   doc,
   baseUrl: "https://api.electric-sql.cloud/v1/yjs/<service-id>",
-  headers: { Authorization: `Bearer ${cloudSecret}` },  // Leaked!
+  headers: { Authorization: `Bearer ${cloudSecret}` }, // Leaked!
 })
 ```
 

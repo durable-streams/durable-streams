@@ -29,12 +29,12 @@ YjsProvider configuration, lifecycle, and error handling beyond the basics.
 ```typescript
 interface YjsProviderOptions {
   doc: Y.Doc
-  baseUrl: string          // e.g. "http://host:port/v1/yjs/{service}"
-  docId: string            // e.g. "my-doc" or "project/chapter-1"
-  awareness?: Awareness    // optional presence
-  headers?: HeadersRecord  // static or () => string | Promise<string>
-  liveMode?: "sse" | "long-poll"  // default "sse"
-  connect?: boolean        // default true
+  baseUrl: string // e.g. "http://host:port/v1/yjs/{service}"
+  docId: string // e.g. "my-doc" or "project/chapter-1"
+  awareness?: Awareness // optional presence
+  headers?: HeadersRecord // static or () => string | Promise<string>
+  liveMode?: "sse" | "long-poll" // default "sse"
+  connect?: boolean // default true
 }
 
 class YjsProvider {
@@ -66,6 +66,7 @@ disconnected → connecting → connected → disconnected
 ```
 
 Connection steps:
+
 1. Ensure document exists (PUT)
 2. Discover snapshot offset
 3. Create idempotent producer for writes
@@ -132,11 +133,13 @@ skill for the canonical React pattern.
 ## Error recovery
 
 The provider auto-reconnects on transient errors:
+
 - Network errors → retry with 1s delay
 - 5xx server errors → retry with backoff
 - Snapshot 404 → rediscover snapshot offset
 
 Errors that do NOT trigger reconnect:
+
 - 401/403 auth errors → emits `error` event, stays disconnected
 - Provider was explicitly disconnected → no reconnect
 

@@ -119,6 +119,7 @@ function CollabEditor({ docId }: { docId: string }) {
 
 The provider starts its async connection flow immediately in the constructor
 when `connect` is `true` (the default). This means:
+
 - `ensureDocument` (PUT), `discoverSnapshot` (GET with 307 handling), and
   `startUpdatesStream` all fire before React's `useEffect` runs
 - The `synced` event can fire before any listener is attached
@@ -130,12 +131,12 @@ explicitly — after all listeners are attached. No race, no missed events.
 
 ### Why doc/awareness are in `useState` but provider is in `useEffect`
 
-|                            | Doc + Awareness              | Provider                    |
-| -------------------------- | ---------------------------- | --------------------------- |
-| Created via                | `useState(() => ...)`        | `useEffect` + `connect:false` |
-| Stable across re-renders   | Yes (useState is stable)     | Recreated when docId changes |
-| Event listeners            | None needed before creation  | Must be attached before connect |
-| Cleanup                    | Separate unmount effect      | Effect cleanup destroys it  |
+|                          | Doc + Awareness             | Provider                        |
+| ------------------------ | --------------------------- | ------------------------------- |
+| Created via              | `useState(() => ...)`       | `useEffect` + `connect:false`   |
+| Stable across re-renders | Yes (useState is stable)    | Recreated when docId changes    |
+| Event listeners          | None needed before creation | Must be attached before connect |
+| Cleanup                  | Separate unmount effect     | Effect cleanup destroys it      |
 
 ### Why not `useMemo`
 
@@ -225,7 +226,7 @@ const editor = useEditor(
       },
     },
   },
-  [provider], // recreate editor when provider becomes available
+  [provider] // recreate editor when provider becomes available
 )
 
 if (!synced) return <p>Connecting...</p>
@@ -233,6 +234,7 @@ return <EditorContent editor={editor} />
 ```
 
 Key points:
+
 - `undoRedo: false` — Yjs has its own undo manager; StarterKit's conflicts
 - `CollaborationCaret` uses a conditional spread because `provider` is
   `null` on first render (before the effect). The `[provider]` dep array
@@ -267,7 +269,11 @@ useEffect(() => {
   const ytext = doc.getText("content")
   const state = EditorState.create({
     doc: ytext.toString(),
-    extensions: [basicSetup, EditorView.lineWrapping, yCollab(ytext, awareness)],
+    extensions: [
+      basicSetup,
+      EditorView.lineWrapping,
+      yCollab(ytext, awareness),
+    ],
   })
 
   const view = new EditorView({ state, parent: editorRef.current })
@@ -279,6 +285,7 @@ return <div ref={editorRef} />
 ```
 
 Key points:
+
 - `yCollab(ytext, awareness)` handles both document sync and cursor rendering
 - Uses `Y.Text` (not `Y.XmlFragment` like TipTap)
 - Editor is created after `synced` to avoid rendering stale empty state
@@ -327,7 +334,9 @@ const [provider] = useState(
 )
 
 useEffect(() => {
-  provider.on("synced", (s) => { if (s) setSynced(true) })
+  provider.on("synced", (s) => {
+    if (s) setSynced(true)
+  })
   // TOO LATE — synced already fired during construction
 }, [provider])
 ```
