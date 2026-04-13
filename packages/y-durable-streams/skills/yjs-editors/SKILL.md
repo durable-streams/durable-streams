@@ -242,6 +242,51 @@ Key points:
 - The `document` option takes the `Y.Doc` directly — TipTap creates the
   `Y.XmlFragment` internally
 
+### Required CSS for collaboration carets
+
+**The CollaborationCaret extension does not include default styles.** Without
+the CSS below, carets render as unstyled inline elements that occupy the full
+line instead of appearing as thin cursor indicators. Add this to your global
+stylesheet:
+
+```css
+.collaboration-carets__caret {
+  border-left: 1px solid;
+  border-right: 1px solid;
+  margin-left: -1px;
+  margin-right: -1px;
+  pointer-events: none;
+  position: relative;
+  word-break: normal;
+}
+
+.collaboration-carets__label {
+  border-radius: 3px 3px 3px 0;
+  color: #0d0d0d;
+  font-size: 12px;
+  font-style: normal;
+  font-weight: 600;
+  left: -1px;
+  line-height: normal;
+  padding: 0.1rem 0.3rem;
+  position: absolute;
+  top: -1.4em;
+  user-select: none;
+  white-space: nowrap;
+}
+```
+
+The class names are `collaboration-carets__caret` and
+`collaboration-carets__label` (plural **carets**, not "cursor"). The border
+and background colors are set inline by the extension's default `render`
+function using each user's `color` field — the CSS above only handles
+positioning and sizing.
+
+For dark themes, change the label `color` to match your foreground
+(e.g. `color: #1b1b1f` for dark-on-light labels).
+
+See: https://tiptap.dev/docs/editor/extensions/functionality/collaboration-cursor
+
 ## CodeMirror 6
 
 ### Install
