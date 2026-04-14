@@ -1,5 +1,16 @@
 # @durable-streams/tanstack-ai-transport
 
+## 0.0.4
+
+### Patch Changes
+
+- docs(tanstack-ai): show anthropicText adapter, warn against raw SDK usage ([#333](https://github.com/durable-streams/durable-streams/pull/333))
+
+  Updated the skill to use `anthropicText` from `@tanstack/ai-anthropic` as the primary example instead of `openaiText`. Added explicit warning against calling LLM SDKs directly — agents were bypassing the adapter and getting 400 errors from message format mismatches.
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.3
+
 ## 0.0.3
 
 ### Patch Changes

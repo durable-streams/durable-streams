@@ -1,5 +1,16 @@
 # @durable-streams/state
 
+## 0.2.5
+
+### Patch Changes
+
+- docs(stream-db): show list query pattern for useLiveQuery ([#333](https://github.com/durable-streams/durable-streams/pull/333))
+
+  Added list query example with `{ data }` destructuring and default empty array alongside the existing findOne pattern. Prevents agents from writing `allSessions.map(...)` instead of `const { data: allSessions = [] } = useLiveQuery(...)`.
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.3
+
 ## 0.2.4
 
 ### Patch Changes
