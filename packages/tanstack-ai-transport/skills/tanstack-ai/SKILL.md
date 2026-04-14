@@ -117,6 +117,26 @@ Always proxy reads through an app route so write credentials stay server-side. S
 
 ## Common Mistakes
 
+### CRITICAL Not awaiting toDurableChatSessionResponse
+
+Wrong — returns a Promise object, causing header conflicts (500):
+
+```typescript
+return toDurableChatSessionResponse({ stream, newMessages, responseStream })
+```
+
+Correct — await the response:
+
+```typescript
+return await toDurableChatSessionResponse({
+  stream,
+  newMessages,
+  responseStream,
+})
+```
+
+In TanStack Start server handlers, returning an unresolved Promise causes Node to serialize it incorrectly, producing both `Content-Length` and `Transfer-Encoding: chunked` headers simultaneously — which HTTP/1.1 forbids.
+
 ### CRITICAL Sending full message history as newMessages
 
 Wrong: `newMessages: messages` — echoes the entire conversation again.
