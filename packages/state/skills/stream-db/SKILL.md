@@ -77,22 +77,34 @@ const messages = db.collections.messages
 
 ### Reactive queries with TanStack DB
 
-StreamDB collections are TanStack DB collections. Use framework adapters for reactive queries:
+StreamDB collections are TanStack DB collections. Use framework adapters for reactive queries.
+
+**IMPORTANT**: `useLiveQuery` returns `{ data }`, NOT the array directly. Always destructure with a default:
 
 ```typescript
 import { useLiveQuery } from "@tanstack/react-db"
 import { eq } from "@durable-streams/state"
 
+// List query — destructure { data } with a default empty array
+function UserList() {
+  const { data: users = [] } = useLiveQuery((q) =>
+    q.from({ users: db.collections.users })
+  )
+
+  return users.map(u => <div key={u.id}>{u.name}</div>)
+}
+
+// Single item query — use findOne(), data is T | undefined
 function UserProfile({ userId }: { userId: string }) {
-  const userQuery = useLiveQuery((q) =>
+  const { data: user } = useLiveQuery((q) =>
     q
       .from({ users: db.collections.users })
       .where(({ users }) => eq(users.id, userId))
       .findOne()
   )
 
-  if (!userQuery.data) return null
-  return <div>{userQuery.data.name}</div>
+  if (!user) return null
+  return <div>{user.name}</div>
 }
 ```
 
