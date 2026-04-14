@@ -45,6 +45,12 @@ interface StreamMetadata {
   ttlSeconds?: number
   expiresAt?: string
   createdAt: number
+  /**
+   * Timestamp of the last read or write (for TTL renewal).
+   * Optional for backward-compatible deserialization from LMDB (old records won't have it).
+   * Falls back to createdAt when missing.
+   */
+  lastAccessedAt?: number
   segmentCount: number
   totalBytes: number
   /**
@@ -413,7 +419,7 @@ export class FileBackedStreamStore {
       ttlSeconds: meta.ttlSeconds,
       expiresAt: meta.expiresAt,
       createdAt: meta.createdAt,
-      lastAccessedAt: meta.createdAt,
+      lastAccessedAt: meta.lastAccessedAt ?? meta.createdAt,
       producers,
       closed: meta.closed,
       closedBy: meta.closedBy,
@@ -568,6 +574,21 @@ export class FileBackedStreamStore {
   }
 
   /**
+   * Update lastAccessedAt to now. Called on reads and appends (not HEAD).
+   */
+  touchAccess(streamPath: string): void {
+    const key = `stream:${streamPath}`
+    const meta = this.db.get(key) as StreamMetadata | undefined
+    if (meta) {
+      const updatedMeta: StreamMetadata = {
+        ...meta,
+        lastAccessedAt: Date.now(),
+      }
+      this.db.putSync(key, updatedMeta)
+    }
+  }
+
+  /**
    * Check if a stream is expired based on TTL or Expires-At.
    */
   private isExpired(meta: StreamMetadata): boolean {
@@ -582,9 +603,10 @@ export class FileBackedStreamStore {
       }
     }
 
-    // Check TTL (relative to creation time)
+    // Check TTL (sliding window from last access)
     if (meta.ttlSeconds !== undefined) {
-      const expiryTime = meta.createdAt + meta.ttlSeconds * 1000
+      const lastAccessed = meta.lastAccessedAt ?? meta.createdAt
+      const expiryTime = lastAccessed + meta.ttlSeconds * 1000
       if (now >= expiryTime) {
         return true
       }
@@ -622,43 +644,33 @@ export class FileBackedStreamStore {
   }
 
   /**
-   * Compute the effective expiry for a fork stream, capped at the source's expiry.
+   * Resolve fork expiry per the decision table.
+   * Forks have independent lifetimes — no capping at source expiry.
    */
-  private computeForkExpiry(
+  private resolveForkExpiry(
     opts: { ttlSeconds?: number; expiresAt?: string },
     sourceMeta: StreamMetadata
-  ): string | undefined {
-    // Resolve source's absolute expiry
-    let sourceExpiryMs: number | undefined
-    if (sourceMeta.expiresAt) {
-      sourceExpiryMs = new Date(sourceMeta.expiresAt).getTime()
-    } else if (sourceMeta.ttlSeconds !== undefined) {
-      sourceExpiryMs = sourceMeta.createdAt + sourceMeta.ttlSeconds * 1000
+  ): { ttlSeconds?: number; expiresAt?: string } {
+    // Fork explicitly requests TTL — use it
+    if (opts.ttlSeconds !== undefined) {
+      return { ttlSeconds: opts.ttlSeconds }
     }
 
-    // Resolve fork's requested expiry
-    let forkExpiryMs: number | undefined
+    // Fork explicitly requests Expires-At — use it
     if (opts.expiresAt) {
-      forkExpiryMs = new Date(opts.expiresAt).getTime()
-    } else if (opts.ttlSeconds !== undefined) {
-      forkExpiryMs = Date.now() + opts.ttlSeconds * 1000
-    } else {
-      forkExpiryMs = sourceExpiryMs // Inherit source expiry
+      return { expiresAt: opts.expiresAt }
     }
 
-    // Cap at source expiry
-    if (
-      sourceExpiryMs !== undefined &&
-      forkExpiryMs !== undefined &&
-      forkExpiryMs > sourceExpiryMs
-    ) {
-      forkExpiryMs = sourceExpiryMs
+    // No expiry requested — inherit from source
+    if (sourceMeta.ttlSeconds !== undefined) {
+      return { ttlSeconds: sourceMeta.ttlSeconds }
+    }
+    if (sourceMeta.expiresAt) {
+      return { expiresAt: sourceMeta.expiresAt }
     }
 
-    if (forkExpiryMs !== undefined) {
-      return new Date(forkExpiryMs).toISOString()
-    }
-    return undefined
+    // Source has no expiry either
+    return {}
   }
 
   /**
@@ -801,8 +813,9 @@ export class FileBackedStreamStore {
     let effectiveExpiresAt = options.expiresAt
     let effectiveTtlSeconds = options.ttlSeconds
     if (isFork) {
-      effectiveExpiresAt = this.computeForkExpiry(options, sourceMeta!)
-      effectiveTtlSeconds = undefined // Forks store expiresAt, not TTL
+      const resolved = this.resolveForkExpiry(options, sourceMeta!)
+      effectiveExpiresAt = resolved.expiresAt
+      effectiveTtlSeconds = resolved.ttlSeconds
     }
 
     // Define key for LMDB operations
@@ -819,6 +832,7 @@ export class FileBackedStreamStore {
       ttlSeconds: effectiveTtlSeconds,
       expiresAt: effectiveExpiresAt,
       createdAt: Date.now(),
+      lastAccessedAt: Date.now(),
       segmentCount: 1,
       totalBytes: 0,
       directoryName: generateUniqueDirectoryName(streamPath),
@@ -1766,6 +1780,7 @@ export class FileBackedStreamStore {
 
   private notifyLongPolls(streamPath: string): void {
     const toNotify = this.pendingLongPolls.filter((p) => p.path === streamPath)
+
     for (const pending of toNotify) {
       const { messages } = this.read(streamPath, pending.offset)
       if (messages.length > 0) {
