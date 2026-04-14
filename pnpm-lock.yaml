@@ -451,6 +451,31 @@ importers:
         specifier: ^7.2.4
         version: 7.3.1(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.2)
 
+  packages/agent-session-protocol:
+    dependencies:
+      '@durable-streams/client':
+        specifier: workspace:*
+        version: link:../client
+    devDependencies:
+      '@durable-streams/server':
+        specifier: workspace:*
+        version: link:../server
+      '@types/node':
+        specifier: ^22.15.21
+        version: 22.19.7
+      tsdown:
+        specifier: ^0.9.0
+        version: 0.9.9(typescript@5.9.3)
+      tsx:
+        specifier: ^4.19.2
+        version: 4.21.0
+      typescript:
+        specifier: ^5.5.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.1.3
+        version: 3.2.4(@types/debug@4.1.13)(@types/node@22.19.7)(jiti@2.6.1)(lightningcss@1.32.0)(tsx@4.21.0)(yaml@2.8.2)
+
   packages/aisdk-transport:
     dependencies:
       '@durable-streams/client':
