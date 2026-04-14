@@ -45,12 +45,6 @@ interface StreamMetadata {
   ttlSeconds?: number
   expiresAt?: string
   createdAt: number
-  /**
-   * Timestamp of the last read or write (for TTL renewal).
-   * Optional for backward-compatible deserialization from LMDB (old records won't have it).
-   * Falls back to createdAt when missing.
-   */
-  lastAccessedAt?: number
   segmentCount: number
   totalBytes: number
   /**
@@ -227,6 +221,11 @@ export class FileBackedStreamStore {
   private fileHandlePool: FileHandlePool
   private pendingLongPolls: Array<PendingLongPoll> = []
   private dataDir: string
+  /**
+   * Per-stream locks for serializing append operations.
+   * Key: "{streamPath}"
+   */
+  private streamLocks = new Map<string, Promise<unknown>>()
   /**
    * Per-producer locks for serializing validation+append operations.
    * Key: "{streamPath}:{producerId}"
@@ -414,7 +413,7 @@ export class FileBackedStreamStore {
       ttlSeconds: meta.ttlSeconds,
       expiresAt: meta.expiresAt,
       createdAt: meta.createdAt,
-      lastAccessedAt: meta.lastAccessedAt ?? meta.createdAt,
+      lastAccessedAt: meta.createdAt,
       producers,
       closed: meta.closed,
       closedBy: meta.closedBy,
@@ -536,6 +535,27 @@ export class FileBackedStreamStore {
   }
 
   /**
+   * Acquire a lock for serialized stream append operations.
+   * Returns a release function.
+   */
+  private async acquireStreamLock(streamPath: string): Promise<() => void> {
+    while (this.streamLocks.has(streamPath)) {
+      await this.streamLocks.get(streamPath)
+    }
+
+    let releaseLock: () => void
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve
+    })
+    this.streamLocks.set(streamPath, lockPromise)
+
+    return () => {
+      this.streamLocks.delete(streamPath)
+      releaseLock!()
+    }
+  }
+
+  /**
    * Get the current epoch for a producer on a stream.
    * Returns undefined if the producer doesn't exist or stream not found.
    */
@@ -545,21 +565,6 @@ export class FileBackedStreamStore {
       return undefined
     }
     return meta.producers[producerId]?.epoch
-  }
-
-  /**
-   * Update lastAccessedAt to now. Called on reads and appends (not HEAD).
-   */
-  touchAccess(streamPath: string): void {
-    const key = `stream:${streamPath}`
-    const meta = this.db.get(key) as StreamMetadata | undefined
-    if (meta) {
-      const updatedMeta: StreamMetadata = {
-        ...meta,
-        lastAccessedAt: Date.now(),
-      }
-      this.db.putSync(key, updatedMeta)
-    }
   }
 
   /**
@@ -577,10 +582,9 @@ export class FileBackedStreamStore {
       }
     }
 
-    // Check TTL (sliding window from last access)
+    // Check TTL (relative to creation time)
     if (meta.ttlSeconds !== undefined) {
-      const lastAccessed = meta.lastAccessedAt ?? meta.createdAt
-      const expiryTime = lastAccessed + meta.ttlSeconds * 1000
+      const expiryTime = meta.createdAt + meta.ttlSeconds * 1000
       if (now >= expiryTime) {
         return true
       }
@@ -618,33 +622,43 @@ export class FileBackedStreamStore {
   }
 
   /**
-   * Resolve fork expiry per the decision table.
-   * Forks have independent lifetimes — no capping at source expiry.
+   * Compute the effective expiry for a fork stream, capped at the source's expiry.
    */
-  private resolveForkExpiry(
+  private computeForkExpiry(
     opts: { ttlSeconds?: number; expiresAt?: string },
     sourceMeta: StreamMetadata
-  ): { ttlSeconds?: number; expiresAt?: string } {
-    // Fork explicitly requests TTL — use it
-    if (opts.ttlSeconds !== undefined) {
-      return { ttlSeconds: opts.ttlSeconds }
-    }
-
-    // Fork explicitly requests Expires-At — use it
-    if (opts.expiresAt) {
-      return { expiresAt: opts.expiresAt }
-    }
-
-    // No expiry requested — inherit from source
-    if (sourceMeta.ttlSeconds !== undefined) {
-      return { ttlSeconds: sourceMeta.ttlSeconds }
-    }
+  ): string | undefined {
+    // Resolve source's absolute expiry
+    let sourceExpiryMs: number | undefined
     if (sourceMeta.expiresAt) {
-      return { expiresAt: sourceMeta.expiresAt }
+      sourceExpiryMs = new Date(sourceMeta.expiresAt).getTime()
+    } else if (sourceMeta.ttlSeconds !== undefined) {
+      sourceExpiryMs = sourceMeta.createdAt + sourceMeta.ttlSeconds * 1000
     }
 
-    // Source has no expiry either
-    return {}
+    // Resolve fork's requested expiry
+    let forkExpiryMs: number | undefined
+    if (opts.expiresAt) {
+      forkExpiryMs = new Date(opts.expiresAt).getTime()
+    } else if (opts.ttlSeconds !== undefined) {
+      forkExpiryMs = Date.now() + opts.ttlSeconds * 1000
+    } else {
+      forkExpiryMs = sourceExpiryMs // Inherit source expiry
+    }
+
+    // Cap at source expiry
+    if (
+      sourceExpiryMs !== undefined &&
+      forkExpiryMs !== undefined &&
+      forkExpiryMs > sourceExpiryMs
+    ) {
+      forkExpiryMs = sourceExpiryMs
+    }
+
+    if (forkExpiryMs !== undefined) {
+      return new Date(forkExpiryMs).toISOString()
+    }
+    return undefined
   }
 
   /**
@@ -787,9 +801,8 @@ export class FileBackedStreamStore {
     let effectiveExpiresAt = options.expiresAt
     let effectiveTtlSeconds = options.ttlSeconds
     if (isFork) {
-      const resolved = this.resolveForkExpiry(options, sourceMeta!)
-      effectiveExpiresAt = resolved.expiresAt
-      effectiveTtlSeconds = resolved.ttlSeconds
+      effectiveExpiresAt = this.computeForkExpiry(options, sourceMeta!)
+      effectiveTtlSeconds = undefined // Forks store expiresAt, not TTL
     }
 
     // Define key for LMDB operations
@@ -806,7 +819,6 @@ export class FileBackedStreamStore {
       ttlSeconds: effectiveTtlSeconds,
       expiresAt: effectiveExpiresAt,
       createdAt: Date.now(),
-      lastAccessedAt: Date.now(),
       segmentCount: 1,
       totalBytes: 0,
       directoryName: generateUniqueDirectoryName(streamPath),
@@ -986,6 +998,19 @@ export class FileBackedStreamStore {
   }
 
   async append(
+    streamPath: string,
+    data: Uint8Array,
+    options: AppendOptions & { isInitialCreate?: boolean } = {}
+  ): Promise<StreamMessage | AppendResult | null> {
+    const releaseLock = await this.acquireStreamLock(streamPath)
+    try {
+      return await this.appendUnlocked(streamPath, data, options)
+    } finally {
+      releaseLock()
+    }
+  }
+
+  private async appendUnlocked(
     streamPath: string,
     data: Uint8Array,
     options: AppendOptions & { isInitialCreate?: boolean } = {}
@@ -1741,7 +1766,6 @@ export class FileBackedStreamStore {
 
   private notifyLongPolls(streamPath: string): void {
     const toNotify = this.pendingLongPolls.filter((p) => p.path === streamPath)
-
     for (const pending of toNotify) {
       const { messages } = this.read(streamPath, pending.offset)
       if (messages.length > 0) {
