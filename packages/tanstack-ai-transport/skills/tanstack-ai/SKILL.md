@@ -250,8 +250,6 @@ const latestUserMessage = messages.findLast((m) => m.role === "user")
 newMessages: latestUserMessage ? [latestUserMessage] : []
 ```
 
-Source: examples/chat-tanstack/src/routes/api/chat.ts
-
 ### CRITICAL Exposing write URLs to the client
 
 Wrong: setting `readUrl` to the durable stream write URL with credentials.

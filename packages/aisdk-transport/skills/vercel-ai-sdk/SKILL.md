@@ -108,15 +108,13 @@ The transport defaults to `${api}/${chatId}/stream`. Pass `reconnectApi` to over
 
 ### Read proxy
 
-Always proxy reads through an app route so write credentials stay server-side. See `examples/chat-aisdk/app/api/chat-stream/route.ts` for the full implementation. Pass the proxy URL as `readUrl` in `toDurableStreamResponse()`.
+Always proxy reads through an app route so write credentials stay server-side. Pass the proxy URL as `readUrl` in `toDurableStreamResponse()`. The proxy should forward query params (offset, live) to the upstream DS URL and strip hop-by-hop headers (`connection`, `transfer-encoding`, `content-encoding`, `content-length`) from the response.
 
 ## Common Mistakes
 
 ### CRITICAL Not persisting activeStreamId for resume
 
 Save the active stream path before returning and clear it in `onFinish`. Without it, the reconnect endpoint has nothing to return and `resume: true` silently fails. See the server setup above for the correct pattern.
-
-Source: examples/chat-aisdk/app/api/chat/route.ts
 
 ### CRITICAL Exposing write URLs to the client
 
@@ -136,8 +134,6 @@ Source: packages/aisdk-transport/src/server.ts
 ### HIGH Not clearing activeStreamId on finish
 
 A stale `activeStreamId` causes the reconnect endpoint to return a completed stream. Always clear it in `onFinish`. See the server setup above.
-
-Source: examples/chat-aisdk/app/api/chat/route.ts
 
 ### MEDIUM Missing reconnect endpoint
 
