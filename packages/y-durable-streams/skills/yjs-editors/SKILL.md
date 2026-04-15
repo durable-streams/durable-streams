@@ -30,8 +30,7 @@ the binding setup.
 
 ## React lifecycle pattern (shared by all editors)
 
-All editor integrations MUST use this pattern. It matches the working
-`examples/yjs-demo/src/components/yjs-provider.tsx` in this repository.
+All editor integrations MUST use this pattern.
 
 **Key principle:** Doc and awareness are created once via `useState` (stable
 references). The provider is created in `useEffect` with `connect: false` so
@@ -393,8 +392,6 @@ This is the #1 cause of "stuck Connecting" in agent-built apps. The provider
 connects, syncs, emits `synced: true`, but no listener is attached yet.
 React's `useEffect` runs after the render cycle, by which time the async
 connection has already completed.
-
-Source: Documented in 5+ agent sessions; matches examples/yjs-demo pattern
 
 ### HIGH Using `useMemo` for Y.Doc or Awareness (all editors)
 

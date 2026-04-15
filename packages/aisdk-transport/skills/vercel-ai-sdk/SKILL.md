@@ -108,7 +108,55 @@ The transport defaults to `${api}/${chatId}/stream`. Pass `reconnectApi` to over
 
 ### Read proxy
 
-Always proxy reads through an app route so write credentials stay server-side. Pass the proxy URL as `readUrl` in `toDurableStreamResponse()`. The proxy should forward query params (offset, live) to the upstream DS URL and strip hop-by-hop headers (`connection`, `transfer-encoding`, `content-encoding`, `content-length`) from the response.
+Always proxy reads through an app route so write credentials stay server-side. Pass the proxy URL as `readUrl` in `toDurableStreamResponse()`.
+
+```typescript
+// app/api/chat-stream/route.ts (Next.js) or equivalent server route
+function copyHeaders(response: Response): Headers {
+  const headers = new Headers()
+  for (const [key, value] of response.headers.entries()) {
+    const k = key.toLowerCase()
+    if (
+      k === "connection" ||
+      k === "transfer-encoding" ||
+      k === "content-encoding" ||
+      k === "content-length"
+    )
+      continue
+    headers.set(key, value)
+  }
+  headers.set("Cache-Control", "no-store")
+  return headers
+}
+
+export async function GET(request: Request) {
+  const url = new URL(request.url)
+  const streamPath = url.searchParams.get("path")
+  if (!streamPath)
+    return Response.json({ error: "Missing stream path" }, { status: 400 })
+
+  const upstreamUrl = new URL(buildReadStreamUrl(streamPath))
+  for (const [key, value] of url.searchParams) {
+    if (key === "path") continue
+    upstreamUrl.searchParams.append(key, value)
+  }
+
+  const response = await fetch(upstreamUrl, {
+    headers: {
+      Authorization: `Bearer ${process.env.DS_SECRET}`,
+      ...(request.headers.get("accept")
+        ? { Accept: request.headers.get("accept")! }
+        : {}),
+    },
+  })
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: copyHeaders(response),
+  })
+}
+```
 
 ## Common Mistakes
 

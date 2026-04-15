@@ -231,8 +231,6 @@ route /v1/yjs/* {
 Without this, Caddy buffers SSE responses. Live updates appear to hang —
 clients connect but never receive data.
 
-Source: examples/yjs-demo/Caddyfile
-
 ### HIGH Exposing Electric Cloud secret to browser clients
 
 Wrong:
