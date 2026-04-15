@@ -53,6 +53,27 @@ function Chat({ id, initialMessages, resumeOffset }) {
 }
 ```
 
+**Custom headers** (e.g. API keys from the client) go on `durableStreamConnection`, NOT on `useChat`:
+
+```typescript
+// WRONG — useChat headers are NOT forwarded by the connection
+const { messages } = useChat({
+  connection,
+  headers: { "x-api-key": apiKey }, // ❌ not sent to sendUrl
+})
+
+// RIGHT — headers on the connection are sent with every sendUrl POST
+const connection = useMemo(
+  () =>
+    durableStreamConnection({
+      sendUrl: `/api/chat?id=${encodeURIComponent(id)}`,
+      readUrl: `/api/chat-stream?id=${encodeURIComponent(id)}`,
+      headers: { "x-api-key": apiKey }, // ✅ sent on every request
+    }),
+  [id, apiKey]
+)
+```
+
 ### Server — POST /api/chat
 
 Use `chat()` from `@tanstack/ai` with the appropriate adapter. **Do NOT call LLM SDKs (Anthropic, OpenAI) directly** — the adapter handles message format conversion, streaming chunks, and error mapping.
@@ -111,9 +132,67 @@ export async function loader({ params }) {
 }
 ```
 
-### Read proxy
+### Read proxy — GET /api/chat-stream
 
-Always proxy reads through an app route so write credentials stay server-side. See `examples/chat-tanstack/src/routes/api/chat-stream.ts` for the full implementation.
+Always proxy reads through an app route so credentials stay server-side. The `readUrl` in `durableStreamConnection` points here.
+
+```typescript
+// Build the upstream DS URL from env vars
+function buildReadStreamUrl(streamPath: string): string {
+  const dsServiceId = process.env.DS_SERVICE_ID
+  const electricUrl =
+    process.env.ELECTRIC_URL || "https://api.electric-sql.cloud"
+  return `${electricUrl}/v1/stream/${dsServiceId}/${streamPath}`
+}
+
+export async function GET({ request }: { request: Request }) {
+  const url = new URL(request.url)
+  const chatId = url.searchParams.get("id")
+  if (!chatId)
+    return Response.json({ error: "Missing chat id" }, { status: 400 })
+
+  const streamPath = `chat/${chatId}`
+  const upstream = new URL(buildReadStreamUrl(streamPath))
+
+  // Forward query params (offset, live, etc.) from the browser's DS client
+  for (const [key, value] of url.searchParams) {
+    if (key === "id") continue
+    upstream.searchParams.set(key, value)
+  }
+
+  const response = await fetch(upstream, {
+    headers: {
+      Authorization: `Bearer ${process.env.DS_SECRET}`,
+      ...(request.headers.get("accept")
+        ? { Accept: request.headers.get("accept")! }
+        : {}),
+    },
+  })
+
+  // Strip hop-by-hop headers, always drop content-length + content-encoding
+  const headers = new Headers()
+  for (const [key, value] of response.headers) {
+    const k = key.toLowerCase()
+    if (
+      k === "connection" ||
+      k === "transfer-encoding" ||
+      k === "content-encoding" ||
+      k === "content-length"
+    )
+      continue
+    headers.set(key, value)
+  }
+  headers.set("Cache-Control", "no-store")
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers,
+  })
+}
+```
+
+Use the chat id as a **query parameter** (`/api/chat-stream?id=...`), not a dynamic route segment. Dynamic segments like `/api/ds-stream/$streamId` cause issues with TanStack Router when the stream path contains slashes.
 
 ## Common Mistakes
 
