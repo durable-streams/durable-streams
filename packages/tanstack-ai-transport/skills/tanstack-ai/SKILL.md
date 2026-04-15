@@ -53,27 +53,6 @@ function Chat({ id, initialMessages, resumeOffset }) {
 }
 ```
 
-**Custom headers** (e.g. API keys from the client) go on `durableStreamConnection`, NOT on `useChat`:
-
-```typescript
-// WRONG — useChat headers are NOT forwarded by the connection
-const { messages } = useChat({
-  connection,
-  headers: { "x-api-key": apiKey }, // ❌ not sent to sendUrl
-})
-
-// RIGHT — headers on the connection are sent with every sendUrl POST
-const connection = useMemo(
-  () =>
-    durableStreamConnection({
-      sendUrl: `/api/chat?id=${encodeURIComponent(id)}`,
-      readUrl: `/api/chat-stream?id=${encodeURIComponent(id)}`,
-      headers: { "x-api-key": apiKey }, // ✅ sent on every request
-    }),
-  [id, apiKey]
-)
-```
-
 ### Server — POST /api/chat
 
 Use `chat()` from `@tanstack/ai` with the appropriate adapter. **Do NOT call LLM SDKs (Anthropic, OpenAI) directly** — the adapter handles message format conversion, streaming chunks, and error mapping.
@@ -92,10 +71,10 @@ export async function POST(request: Request) {
     messages,
   })
 
-  return toDurableChatSessionResponse({
+  return await toDurableChatSessionResponse({
     stream: {
       writeUrl: buildWriteStreamUrl(`chat/${id}`),
-      headers: WRITE_HEADERS,
+      headers: DS_WRITE_HEADERS, // Durable Streams auth — server-side only
     },
     newMessages: latestUserMessage ? [latestUserMessage] : [],
     responseStream,
@@ -108,9 +87,54 @@ export async function POST(request: Request) {
 - `anthropicText("claude-sonnet-4-6")` from `@tanstack/ai-anthropic` — Anthropic Claude models
 - `openaiText("gpt-4o-mini")` from `@tanstack/ai-openai` — OpenAI models
 
-The adapter reads credentials from standard env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`). Do NOT pass API keys from the client.
-
 `mode: "immediate"` (default) returns `202` immediately; writes continue in background. Use `mode: "await"` when the runtime needs an active request to keep running.
+
+### Auth: two separate concerns
+
+There are two independent auth layers. Keep them distinct:
+
+| Auth                | What                     | Where                                                               | How                                                                                                                              |
+| ------------------- | ------------------------ | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
+| **Durable Streams** | `DS_SECRET`              | Server-side only — both POST `/api/chat` and GET `/api/chat-stream` | Read from `process.env.DS_SECRET`, inject as `Authorization: Bearer` header on upstream DS requests. NEVER expose to the client. |
+| **AI model**        | `ANTHROPIC_API_KEY` etc. | Server-side only                                                    | Read from `process.env`. The adapter picks it up automatically.                                                                  |
+
+**Default pattern (recommended):** API keys are server-side env vars. The client sends only the chat message — no secrets in the browser.
+
+**User-supplied API key pattern:** If the app lets users enter their own AI key in a settings UI (stored in localStorage), the client must send it to the server on every request. In this case:
+
+Client — pass the key via `headers` on `durableStreamConnection` (NOT on `useChat` — those headers are not forwarded):
+
+```typescript
+const connection = useMemo(
+  () =>
+    durableStreamConnection({
+      sendUrl: `/api/chat?id=${encodeURIComponent(id)}`,
+      readUrl: `/api/chat-stream?id=${encodeURIComponent(id)}`,
+      headers: { "x-api-key": apiKey }, // sent on every POST to sendUrl
+    }),
+  [id, apiKey]
+)
+
+const { messages, sendMessage } = useChat({ id, connection, live: true })
+```
+
+Server — read the key from the request header and set it for the adapter:
+
+```typescript
+export async function POST({ request }) {
+  const apiKey = request.headers.get("x-api-key")
+  if (!apiKey)
+    return Response.json({ error: "Missing API key" }, { status: 401 })
+
+  // Set for the adapter (adapter reads process.env.ANTHROPIC_API_KEY)
+  process.env.ANTHROPIC_API_KEY = apiKey
+
+  const { messages, id } = await request.json()
+  // ... rest of handler same as above
+}
+```
+
+Note: setting `process.env` per-request is a quick hack for single-user apps. For multi-user apps, pass the key via the adapter's constructor options instead.
 
 ### SSR hydration
 
