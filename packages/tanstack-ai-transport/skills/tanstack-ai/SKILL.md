@@ -266,6 +266,18 @@ export async function GET({ request }: { request: Request }) {
     },
   })
 
+  // Stream doesn't exist yet (created on first message send).
+  // Return empty SSE so the client doesn't show a console error.
+  if (response.status === 404) {
+    return new Response("", {
+      status: 200,
+      headers: {
+        "Content-Type": "text/event-stream",
+        "Cache-Control": "no-cache, no-store, must-revalidate",
+      },
+    })
+  }
+
   // Strip hop-by-hop headers, always drop content-length + content-encoding
   const headers = new Headers()
   for (const [key, value] of response.headers) {
