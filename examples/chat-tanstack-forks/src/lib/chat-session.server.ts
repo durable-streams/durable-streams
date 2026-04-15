@@ -154,11 +154,14 @@ export async function createFork(opts: {
   const childWriteUrl = buildWriteStreamUrl(childStreamPath)
   const writeHeaders = mergeHeaders(DURABLE_STREAMS_WRITE_HEADERS)
 
+  const sourceWriteUrl = buildWriteStreamUrl(sourceStreamPath)
+  const forkSourcePath = new URL(sourceWriteUrl).pathname
+
   const childStream = new DurableStream({
     url: childWriteUrl,
     headers: {
       ...writeHeaders,
-      "Stream-Forked-From": `/${sourceStreamPath}`,
+      "Stream-Forked-From": forkSourcePath,
       "Stream-Fork-Offset": forkOffset,
     },
     contentType: `application/json`,
