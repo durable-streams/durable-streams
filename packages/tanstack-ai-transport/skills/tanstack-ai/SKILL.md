@@ -273,15 +273,14 @@ export async function GET({ request }: { request: Request }) {
   })
 
   // Stream doesn't exist yet (created on first message send).
-  // Return empty SSE so the client doesn't show a console error.
+  // Forward the 404 as-is — the DS client handles retries internally.
+  // Do NOT return a fake 200 with empty SSE body, as the client will
+  // treat it as "stream closed" and reconnect in a tight loop.
   if (response.status === 404) {
-    return new Response("", {
-      status: 200,
-      headers: {
-        "Content-Type": "text/event-stream",
-        "Cache-Control": "no-cache, no-store, must-revalidate",
-      },
-    })
+    return Response.json(
+      { error: "Stream not found", code: "STREAM_NOT_FOUND" },
+      { status: 404 }
+    )
   }
 
   // Strip hop-by-hop headers, always drop content-length + content-encoding
