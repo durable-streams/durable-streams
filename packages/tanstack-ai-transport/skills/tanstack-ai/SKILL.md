@@ -24,6 +24,51 @@ This skill builds on durable-streams/getting-started. Read it first for setup an
 
 Connection adapter for TanStack AI's `useChat()`. Uses one stream per chat session: user messages are echoed into the stream alongside model responses, making it a complete transcript that supports multi-client sync and SSR hydration.
 
+## Prerequisites: Durable Streams Service
+
+Before writing any code, you need a Durable Streams service. On Electric Cloud:
+
+1. **Provision the service** using the Electric CLI (the token should already be in your secrets):
+
+```bash
+export ELECTRIC_CLI_TOKEN=$(get_secret ELECTRIC_CLI_TOKEN)
+npx @electric-sql/cli services create streams --environment <env-id> --name chat-streams
+npx @electric-sql/cli services get-secret <service-id>
+```
+
+2. **Store the credentials** via `set_secret`:
+
+```
+set_secret(key: "DS_SERVICE_ID", value: "<service_id from CLI>")
+set_secret(key: "DS_SECRET", value: "<secret from CLI>")
+```
+
+3. **Write them to `.env`** so server routes can read them:
+
+```bash
+echo "DS_SERVICE_ID=<service_id>" >> .env
+echo "DS_SECRET=<secret>" >> .env
+echo "ELECTRIC_URL=https://api.electric-sql.cloud" >> .env
+```
+
+The server routes below read these env vars to construct stream URLs and auth headers. Without them, every DS operation returns 401.
+
+**URL construction pattern** — use this helper in your server routes:
+
+```typescript
+function buildStreamUrl(streamPath: string): string {
+  const dsServiceId = process.env.DS_SERVICE_ID
+  const electricUrl =
+    process.env.ELECTRIC_URL || "https://api.electric-sql.cloud"
+  return `${electricUrl}/v1/stream/${dsServiceId}/${streamPath}`
+}
+
+const DS_WRITE_HEADERS = {
+  Authorization: `Bearer ${process.env.DS_SECRET}`,
+  "Content-Type": "application/json",
+}
+```
+
 ## Setup
 
 ### Client
