@@ -125,7 +125,13 @@ import { anthropicText } from "@tanstack/ai-anthropic"
 import { toDurableChatSessionResponse } from "@durable-streams/tanstack-ai-transport"
 
 export async function POST(request: Request) {
-  const { messages, id } = await request.json()
+  const url = new URL(request.url)
+  const body = await request.json()
+  const messages = body.messages
+  // id comes from the query string (sendUrl) or body — check both
+  const id = url.searchParams.get("id") ?? body.id
+  if (!id) return Response.json({ error: "Missing chat id" }, { status: 400 })
+
   const latestUserMessage = messages.findLast((m) => m.role === "user")
 
   const responseStream = chat({
