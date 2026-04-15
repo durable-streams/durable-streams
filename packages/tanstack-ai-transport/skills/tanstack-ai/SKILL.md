@@ -69,22 +69,20 @@ Use this in your server routes. It works with both self-hosted (`DS_URL` set dir
 
 ```typescript
 function buildStreamUrl(streamPath: string): string {
-  if (process.env.DS_URL) {
-    return `${process.env.DS_URL}/${streamPath}`
-  }
-  const dsServiceId = process.env.DS_SERVICE_ID
-  const electricUrl =
-    process.env.ELECTRIC_URL || "https://api.electric-sql.cloud"
-  return `${electricUrl}/v1/stream/${dsServiceId}/${streamPath}`
+  const base =
+    process.env.DS_URL ??
+    `${process.env.ELECTRIC_URL || "https://api.electric-sql.cloud"}/v1/stream/${process.env.DS_SERVICE_ID}`
+  // Use URL constructor to avoid double-slash from trailing slash in base
+  return new URL(streamPath, base.replace(/\/+$/, "") + "/").toString()
 }
 
-const DS_HEADERS = {
-  Authorization: `Bearer ${process.env.DS_SECRET}`,
-  "Content-Type": "application/json",
+function dsAuthHeaders(): Record<string, string> {
+  const secret = process.env.DS_SECRET
+  return secret ? { Authorization: `Bearer ${secret}` } : {}
 }
 ```
 
-Without these env vars, every DS operation returns 401.
+Without `DS_SECRET`, requests go unauthenticated (fine for local dev). On Electric Cloud, every DS operation requires the secret or returns 401.
 
 ## Setup
 
@@ -139,24 +137,14 @@ export async function POST(request: Request) {
     messages,
   })
 
-  const dsResponse = await toDurableChatSessionResponse({
+  return await toDurableChatSessionResponse({
     stream: {
-      writeUrl: buildWriteStreamUrl(`chat/${id}`),
-      headers: DS_WRITE_HEADERS, // Durable Streams auth — server-side only
+      writeUrl: buildStreamUrl(`chat/${id}`),
+      headers: { ...dsAuthHeaders(), "Content-Type": "application/json" },
       createIfMissing: true,
     },
     newMessages: latestUserMessage ? [latestUserMessage] : [],
     responseStream,
-  })
-
-  // Reconstruct response — strip content-length to avoid conflicts
-  // with transfer-encoding (Node rejects responses with both)
-  const headers = new Headers(dsResponse.headers)
-  headers.delete("content-length")
-  headers.delete("content-encoding")
-  return new Response(dsResponse.body, {
-    status: dsResponse.status,
-    headers,
   })
 }
 ```
@@ -255,7 +243,7 @@ export async function GET({ request }: { request: Request }) {
     return Response.json({ error: "Missing chat id" }, { status: 400 })
 
   const streamPath = `chat/${chatId}`
-  const upstream = new URL(buildReadStreamUrl(streamPath))
+  const upstream = new URL(buildStreamUrl(streamPath))
 
   // Forward query params (offset, live, etc.) from the browser's DS client
   for (const [key, value] of url.searchParams) {
@@ -265,7 +253,7 @@ export async function GET({ request }: { request: Request }) {
 
   const response = await fetch(upstream, {
     headers: {
-      Authorization: `Bearer ${process.env.DS_SECRET}`,
+      ...dsAuthHeaders(),
       ...(request.headers.get("accept")
         ? { Accept: request.headers.get("accept")! }
         : {}),
@@ -310,11 +298,15 @@ Use the chat id as a **query parameter** (`/api/chat-stream?id=...`), not a dyna
 
 ## Common Mistakes
 
-### CRITICAL Returning toDurableChatSessionResponse directly
+### HIGH Not awaiting toDurableChatSessionResponse
 
-The response from `toDurableChatSessionResponse` may contain both `Content-Length` and `Transfer-Encoding` headers from the upstream DS service. Node's HTTP layer rejects this combination — you'll see `Parse Error: Content-Length can't be present with Transfer-Encoding`.
+Wrong — returns a Promise, not a Response:
 
-Wrong:
+```typescript
+return toDurableChatSessionResponse({ stream, newMessages, responseStream })
+```
+
+Correct:
 
 ```typescript
 return await toDurableChatSessionResponse({
@@ -324,19 +316,7 @@ return await toDurableChatSessionResponse({
 })
 ```
 
-Correct — reconstruct the response, stripping content-length:
-
-```typescript
-const dsResponse = await toDurableChatSessionResponse({
-  stream,
-  newMessages,
-  responseStream,
-})
-const headers = new Headers(dsResponse.headers)
-headers.delete("content-length")
-headers.delete("content-encoding")
-return new Response(dsResponse.body, { status: dsResponse.status, headers })
-```
+Note: `toDurableChatSessionResponse` currently returns a null-body `202` (immediate mode) or `200` (await mode), so `Content-Length`/`Transfer-Encoding` conflicts don't occur. If you use `toDurableStreamResponse` (the generic variant for Vercel AI SDK), that function returns a JSON body — in that case you may need to strip `content-length` from the response headers.
 
 ### CRITICAL Sending full message history as newMessages
 
