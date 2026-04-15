@@ -133,13 +133,24 @@ export async function POST(request: Request) {
     messages,
   })
 
-  return await toDurableChatSessionResponse({
+  const dsResponse = await toDurableChatSessionResponse({
     stream: {
       writeUrl: buildWriteStreamUrl(`chat/${id}`),
       headers: DS_WRITE_HEADERS, // Durable Streams auth — server-side only
+      createIfMissing: true,
     },
     newMessages: latestUserMessage ? [latestUserMessage] : [],
     responseStream,
+  })
+
+  // Reconstruct response — strip content-length to avoid conflicts
+  // with transfer-encoding (Node rejects responses with both)
+  const headers = new Headers(dsResponse.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  return new Response(dsResponse.body, {
+    status: dsResponse.status,
+    headers,
   })
 }
 ```
@@ -282,15 +293,11 @@ Use the chat id as a **query parameter** (`/api/chat-stream?id=...`), not a dyna
 
 ## Common Mistakes
 
-### CRITICAL Not awaiting toDurableChatSessionResponse
+### CRITICAL Returning toDurableChatSessionResponse directly
 
-Wrong — returns a Promise object, causing header conflicts (500):
+The response from `toDurableChatSessionResponse` may contain both `Content-Length` and `Transfer-Encoding` headers from the upstream DS service. Node's HTTP layer rejects this combination — you'll see `Parse Error: Content-Length can't be present with Transfer-Encoding`.
 
-```typescript
-return toDurableChatSessionResponse({ stream, newMessages, responseStream })
-```
-
-Correct — await the response:
+Wrong:
 
 ```typescript
 return await toDurableChatSessionResponse({
@@ -300,7 +307,19 @@ return await toDurableChatSessionResponse({
 })
 ```
 
-In TanStack Start server handlers, returning an unresolved Promise causes Node to serialize it incorrectly, producing both `Content-Length` and `Transfer-Encoding: chunked` headers simultaneously — which HTTP/1.1 forbids.
+Correct — reconstruct the response, stripping content-length:
+
+```typescript
+const dsResponse = await toDurableChatSessionResponse({
+  stream,
+  newMessages,
+  responseStream,
+})
+const headers = new Headers(dsResponse.headers)
+headers.delete("content-length")
+headers.delete("content-encoding")
+return new Response(dsResponse.body, { status: dsResponse.status, headers })
+```
 
 ### CRITICAL Sending full message history as newMessages
 
