@@ -26,24 +26,29 @@ Connection adapter for TanStack AI's `useChat()`. Uses one stream per chat sessi
 
 ## Prerequisites: Durable Streams Service
 
-Before writing any code, you need a Durable Streams service. On Electric Cloud:
+Before writing any code, you need a running Durable Streams service. Two options:
 
-1. **Provision the service** using the Electric CLI (the token should already be in your secrets):
+### Option A: Self-hosted
+
+Run the Caddy-based server locally or on your own infrastructure. See `node_modules/@durable-streams/client/skills/server-deployment/SKILL.md` for the full setup (dev server, production Caddyfile, persistence).
+
+Set these env vars to point at your server:
 
 ```bash
-export ELECTRIC_CLI_TOKEN=$(get_secret ELECTRIC_CLI_TOKEN)
+DS_URL=http://localhost:4437/v1/stream    # your server's stream endpoint
+DS_SECRET=                                 # empty for local dev, or your auth token
+```
+
+### Option B: Electric Cloud (hosted)
+
+Provision a managed Durable Streams service via the Electric CLI:
+
+```bash
 npx @electric-sql/cli services create streams --environment <env-id> --name chat-streams
 npx @electric-sql/cli services get-secret <service-id>
 ```
 
-2. **Store the credentials** via `set_secret`:
-
-```
-set_secret(key: "DS_SERVICE_ID", value: "<service_id from CLI>")
-set_secret(key: "DS_SECRET", value: "<secret from CLI>")
-```
-
-3. **Write them to `.env`** so server routes can read them:
+This returns a `service_id` and `secret`. Store them:
 
 ```bash
 echo "DS_SERVICE_ID=<service_id>" >> .env
@@ -51,23 +56,35 @@ echo "DS_SECRET=<secret>" >> .env
 echo "ELECTRIC_URL=https://api.electric-sql.cloud" >> .env
 ```
 
-The server routes below read these env vars to construct stream URLs and auth headers. Without them, every DS operation returns 401.
+If you're inside the Electric Studio agent sandbox, use `set_secret` to persist them for other agents:
 
-**URL construction pattern** — use this helper in your server routes:
+```
+set_secret(key: "DS_SERVICE_ID", value: "<service_id>")
+set_secret(key: "DS_SECRET", value: "<secret>")
+```
+
+### URL construction helper
+
+Use this in your server routes. It works with both self-hosted (`DS_URL` set directly) and Electric Cloud (`DS_SERVICE_ID` + `ELECTRIC_URL`):
 
 ```typescript
 function buildStreamUrl(streamPath: string): string {
+  if (process.env.DS_URL) {
+    return `${process.env.DS_URL}/${streamPath}`
+  }
   const dsServiceId = process.env.DS_SERVICE_ID
   const electricUrl =
     process.env.ELECTRIC_URL || "https://api.electric-sql.cloud"
   return `${electricUrl}/v1/stream/${dsServiceId}/${streamPath}`
 }
 
-const DS_WRITE_HEADERS = {
+const DS_HEADERS = {
   Authorization: `Bearer ${process.env.DS_SECRET}`,
   "Content-Type": "application/json",
 }
 ```
+
+Without these env vars, every DS operation returns 401.
 
 ## Setup
 
