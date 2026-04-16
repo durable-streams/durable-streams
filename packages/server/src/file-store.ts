@@ -11,6 +11,7 @@ import { SieveCache } from "@neophi/sieve-cache"
 import { StreamFileManager } from "./file-manager"
 import { encodeStreamPath } from "./path-encoding"
 import {
+  evaluateCheckpointRules,
   formatJsonResponse,
   normalizeContentType,
   processJsonAppend,
@@ -18,6 +19,7 @@ import {
 import type { AppendOptions, AppendResult } from "./store"
 import type { Database } from "lmdb"
 import type {
+  CheckpointRule,
   PendingLongPoll,
   ProducerState,
   ProducerValidationResult,
@@ -64,6 +66,10 @@ interface StreamMetadata {
    * Stored as a plain object for LMDB serialization.
    */
   producers?: Record<string, SerializableProducerState>
+  /**
+   * Named checkpoints mapping name → offset.
+   */
+  checkpoints?: Record<string, string>
   /**
    * Whether the stream is closed (no further appends permitted).
    * Once set to true, this is permanent and durable.
@@ -203,6 +209,7 @@ class FileHandlePool {
 export interface FileBackedStreamStoreOptions {
   dataDir: string
   maxFileHandles?: number
+  checkpointRules?: Array<CheckpointRule>
 }
 
 /**
@@ -232,9 +239,11 @@ export class FileBackedStreamStore {
    * Key: "{streamPath}:{producerId}"
    */
   private producerLocks = new Map<string, Promise<unknown>>()
+  private checkpointRules: Array<CheckpointRule>
 
   constructor(options: FileBackedStreamStoreOptions) {
     this.dataDir = options.dataDir
+    this.checkpointRules = options.checkpointRules ?? []
 
     // Initialize LMDB
     this.db = openLMDB({
@@ -405,6 +414,12 @@ export class FileBackedStreamStore {
       }
     }
 
+    // Convert checkpoints from object to Map if present
+    let checkpoints: Map<string, string> | undefined
+    if (meta.checkpoints) {
+      checkpoints = new Map(Object.entries(meta.checkpoints))
+    }
+
     return {
       path: meta.path,
       contentType: meta.contentType,
@@ -416,6 +431,7 @@ export class FileBackedStreamStore {
       createdAt: meta.createdAt,
       lastAccessedAt: meta.lastAccessedAt ?? meta.createdAt,
       producers,
+      checkpoints,
       closed: meta.closed,
       closedBy: meta.closedBy,
       forkedFrom: meta.forkedFrom,
@@ -901,6 +917,12 @@ export class FileBackedStreamStore {
     return true
   }
 
+  getCheckpoint(streamPath: string, name: string): string | undefined {
+    const meta = this.getMetaIfNotExpired(streamPath)
+    if (!meta) return undefined
+    return meta.checkpoints?.[name]
+  }
+
   delete(streamPath: string): boolean {
     const key = `stream:${streamPath}`
     const streamMeta = this.db.get(key) as StreamMetadata | undefined
@@ -1152,12 +1174,39 @@ export class FileBackedStreamStore {
       }
     }
 
+    // Evaluate checkpoint rules on JSON-mode appends
+    let updatedCheckpoints = streamMeta.checkpoints
+    if (
+      normalizeContentType(streamMeta.contentType) === `application/json` &&
+      this.checkpointRules.length > 0
+    ) {
+      const text = new TextDecoder().decode(data)
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(text)
+      } catch {
+        // skip
+      }
+      if (parsed !== undefined) {
+        const items: Array<string> = Array.isArray(parsed)
+          ? parsed.map((item: unknown) => JSON.stringify(item))
+          : [JSON.stringify(parsed)]
+        for (const itemJson of items) {
+          const name = evaluateCheckpointRules(this.checkpointRules, itemJson)
+          if (name) {
+            updatedCheckpoints = { ...updatedCheckpoints, [name]: newOffset }
+          }
+        }
+      }
+    }
+
     const updatedMeta: StreamMetadata = {
       ...streamMeta,
       currentOffset: newOffset,
       lastSeq: options.seq ?? streamMeta.lastSeq,
       totalBytes: streamMeta.totalBytes + processedData.length + 5, // +4 for length, +1 for newline
       producers: updatedProducers,
+      checkpoints: updatedCheckpoints,
       closed: options.close ? true : streamMeta.closed,
       closedBy: closedBy ?? streamMeta.closedBy,
     }

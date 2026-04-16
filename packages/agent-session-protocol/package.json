@@ -1,0 +1,69 @@
+{
+  "name": "@durable-streams/agent-session-protocol",
+  "description": "Normalized format for agent coding sessions — serialize and deserialize between Claude Code, Codex, and a portable interchange format",
+  "version": "0.0.1",
+  "author": "Durable Stream contributors",
+  "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/agent-session-protocol"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
+  },
+  "keywords": [
+    "agent",
+    "session",
+    "protocol",
+    "claude",
+    "codex",
+    "normalize"
+  ],
+  "type": "module",
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "sideEffects": false,
+  "bin": {
+    "asp": "./bin/asp.mjs"
+  },
+  "files": [
+    "dist",
+    "bin",
+    "skills"
+  ],
+  "dependencies": {
+    "@durable-streams/client": "workspace:*"
+  },
+  "devDependencies": {
+    "@durable-streams/server": "workspace:*",
+    "@types/node": "^22.15.21",
+    "tsdown": "^0.9.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.5.2",
+    "vitest": "^3.1.3"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "dev": "tsdown --watch",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
