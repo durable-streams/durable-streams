@@ -220,9 +220,9 @@ async function streamInternal<TJson = unknown>(
     // For subsequent requests, set live mode unless resuming from pause
     // (resuming from pause needs immediate response for UI status)
     if (!resumingFromPause) {
-      if (live === `sse`) {
+      if (live === `sse` || live === true) {
         nextUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
-      } else if (live === true || live === `long-poll`) {
+      } else if (live === `long-poll`) {
         nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
       }
     }
@@ -254,7 +254,7 @@ async function streamInternal<TJson = unknown>(
 
   // Create SSE start function (for SSE mode reconnection)
   const startSSE =
-    live === `sse`
+    live !== false && live !== `long-poll`
       ? async (
           offset: Offset,
           cursor: string | undefined,
