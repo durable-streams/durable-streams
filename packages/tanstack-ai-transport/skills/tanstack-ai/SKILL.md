@@ -337,21 +337,23 @@ Use the chat id as a **query parameter** (`/api/chat-stream?id=...`), not a dyna
 
 ## Common Mistakes
 
-### CRITICAL Returning toDurableChatSessionResponse without stripping headers
+### CRITICAL Node 22 Parse Error with Content-Length + Transfer-Encoding
 
-The upstream DS service sends both `Content-Length` and `Transfer-Encoding` headers. Node rejects this with `Parse Error: Content-Length can't be present with Transfer-Encoding`.
+The Electric Cloud DS service may send responses with both `Content-Length` and `Transfer-Encoding` headers. Node 22 rejects this at the socket level with `Parse Error: Content-Length can't be present with Transfer-Encoding` — this crashes **inside** `toDurableChatSessionResponse` before your code can strip headers.
 
-Wrong:
+**Workaround:** Start the app with `--insecure-http-parser` to relax Node's strict HTTP parsing:
 
-```typescript
-return await toDurableChatSessionResponse({
-  stream,
-  newMessages,
-  responseStream,
-})
+```json
+// package.json scripts
+{
+  "dev:start": "NODE_OPTIONS='--insecure-http-parser' pnpm dev:start",
+  "dev": "NODE_OPTIONS='--insecure-http-parser' vinxi dev"
+}
 ```
 
-Correct — always reconstruct the response:
+Or set it in the Vite config's server options. This is a known issue with the upstream DS service and will be fixed in a future release.
+
+Even with this workaround, always reconstruct the response from `toDurableChatSessionResponse` to strip headers before returning:
 
 ```typescript
 const dsResponse = await toDurableChatSessionResponse({
