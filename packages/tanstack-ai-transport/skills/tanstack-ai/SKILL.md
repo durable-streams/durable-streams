@@ -110,8 +110,39 @@ function Chat({ id, initialMessages, resumeOffset }) {
     connection,
     live: true, // keep subscription open for multi-client sync
   })
+
+  // Render messages — TanStack AI uses `parts` array, NOT `content` string
+  return messages.map((msg) => (
+    <div key={msg.id}>
+      {msg.parts
+        .filter((p) => p.type === "text")
+        .map((p, i) => <p key={i}>{p.text}</p>)}
+    </div>
+  ))
 }
 ```
+
+**CRITICAL: TanStack AI message format.** `useChat()` returns `UIMessage` objects with a `parts` array, NOT a `content` string:
+
+```typescript
+// WRONG — crashes with "Cannot read properties of undefined (reading 'slice')"
+message.content
+
+// RIGHT — TanStack AI UIMessage uses parts array
+function getTextContent(message: {
+  parts: Array<{ type: string; text?: string }>
+}): string {
+  return message.parts
+    .filter((p) => p.type === "text")
+    .map((p) => p.text ?? "")
+    .join("")
+}
+
+// Use it for rendering, titles, etc.
+const title = getTextContent(messages[0]).slice(0, 50)
+```
+
+````
 
 ### Server — POST /api/chat
 
@@ -147,7 +178,7 @@ export async function POST(request: Request) {
     responseStream,
   })
 }
-```
+````
 
 **Available adapters:**
 
