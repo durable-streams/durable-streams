@@ -22,3 +22,16 @@ ALLOWED_DS_HOSTS = "api.electric-sql.cloud"
 
 # Default TTL for short URL entries (seconds). Set to 0 for no expiration.
 DEFAULT_TTL_SECONDS = "2592000"  # 30 days
+
+# Bundle the SPA viewer as static assets served by the worker.
+# Run `pnpm --filter @durable-streams/example-asp-shortener-viewer build` first.
+#
+# Note: we deliberately do NOT set `not_found_handling = "single-page-application"`.
+# With that setting, the assets binding intercepts all non-asset paths and serves
+# index.html directly — bypassing the worker entirely. We want the worker to
+# handle routing for short URLs (/:shortId), so we leave it as default ("none"):
+# the worker is invoked for any path that doesn't match a bundled asset, and
+# decides for itself when to serve the SPA via env.ASSETS.fetch(/index.html).
+[assets]
+directory = "./viewer/dist"
+binding = "ASSETS"

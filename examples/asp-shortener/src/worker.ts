@@ -19,6 +19,7 @@ interface Env {
   SHORTENER_KV: KVNamespace
   ALLOWED_DS_HOSTS: string
   DEFAULT_TTL_SECONDS: string
+  ASSETS?: Fetcher
 }
 
 interface ShortUrlEntry {
@@ -27,6 +28,7 @@ interface ShortUrlEntry {
   entryCount: number
   agent: `claude` | `codex`
   createdAt: number
+  live?: boolean
 }
 
 interface CreateRequest {
@@ -35,6 +37,11 @@ interface CreateRequest {
   entryCount: number
   agent: `claude` | `codex`
   token: string
+  live?: boolean
+}
+
+function sessionLiveIndexKey(sessionId: string): string {
+  return `session:${sessionId}:live`
 }
 
 const SHORT_ID_LENGTH = 8
@@ -428,7 +435,7 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ error: `invalid JSON body` }, 400)
   }
 
-  const { fullUrl, sessionId, entryCount, agent, token } = body
+  const { fullUrl, sessionId, entryCount, agent, token, live } = body
 
   if (!fullUrl || !sessionId || typeof entryCount !== `number` || !agent || !token) {
     return jsonResponse(
@@ -457,6 +464,25 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
     return jsonResponse({ error: `token not valid for URL` }, 403)
   }
 
+  const url = new URL(request.url)
+  const ttlSeconds = parseInt(env.DEFAULT_TTL_SECONDS, 10)
+
+  // For live shares: idempotent registration. If a live share already exists
+  // for this session, return the existing short URL.
+  if (live === true) {
+    const existingId = await env.SHORTENER_KV.get(sessionLiveIndexKey(sessionId))
+    if (existingId) {
+      const existingRaw = await env.SHORTENER_KV.get(existingId)
+      if (existingRaw) {
+        return jsonResponse({
+          shortId: existingId,
+          shortUrl: `${url.origin}/${existingId}`,
+        })
+      }
+      // Stale index — fall through to create a new entry
+    }
+  }
+
   // Generate a unique short ID
   let shortId: string | null = null
   for (let attempt = 0; attempt < MAX_CREATE_ATTEMPTS; attempt++) {
@@ -481,17 +507,33 @@ async function handleCreate(request: Request, env: Env): Promise<Response> {
     entryCount,
     agent,
     createdAt: Date.now(),
+    live: live === true,
   }
 
-  const ttlSeconds = parseInt(env.DEFAULT_TTL_SECONDS, 10)
   await env.SHORTENER_KV.put(shortId, JSON.stringify(entry), {
     expirationTtl: ttlSeconds > 0 ? ttlSeconds : undefined,
   })
 
-  const url = new URL(request.url)
-  const shortUrl = `${url.origin}/${shortId}`
+  // For live shares, also write the secondary index for cross-linking.
+  if (live === true) {
+    await env.SHORTENER_KV.put(sessionLiveIndexKey(sessionId), shortId, {
+      expirationTtl: ttlSeconds > 0 ? ttlSeconds : undefined,
+    })
+  }
 
-  return jsonResponse({ shortId, shortUrl })
+  return jsonResponse({ shortId, shortUrl: `${url.origin}/${shortId}` })
+}
+
+async function lookupLiveShareForSession(
+  sessionId: string,
+  selfShortId: string,
+  env: Env
+): Promise<string | null> {
+  const liveShortId = await env.SHORTENER_KV.get(sessionLiveIndexKey(sessionId))
+  if (!liveShortId || liveShortId === selfShortId) return null
+  const entryRaw = await env.SHORTENER_KV.get(liveShortId)
+  if (!entryRaw) return null
+  return liveShortId
 }
 
 async function handleResolve(
@@ -507,6 +549,13 @@ async function handleResolve(
   const entry = JSON.parse(raw) as ShortUrlEntry
   const url = new URL(request.url)
 
+  // Look up live share for cross-linking (only relevant on snapshot pages)
+  const liveShortId =
+    entry.live === true
+      ? null
+      : await lookupLiveShareForSession(entry.sessionId, shortId, env)
+  const liveShareUrl = liveShortId ? `${url.origin}/${liveShortId}` : null
+
   // Content negotiation: JSON for CLI/API, HTML for browsers
   const accept = request.headers.get(`accept`) ?? ``
   const wantsJson =
@@ -520,9 +569,22 @@ async function handleResolve(
       entryCount: entry.entryCount,
       agent: entry.agent,
       createdAt: entry.createdAt,
+      live: entry.live === true,
+      liveShareUrl,
     })
   }
 
+  // Browser request: serve the SPA (viewer/dist/index.html) if assets are
+  // bound; otherwise fall back to the legacy server-rendered landing page.
+  //
+  // Note: we fetch `/` (not `/index.html`) because the assets binding's
+  // default `html_handling = "auto-trailing-slash"` will 307-redirect
+  // `/index.html` → `/`, and we'd pass that redirect through to the user
+  // (whose URL bar shows /<shortId>, so they'd land on / and lose context).
+  if (env.ASSETS) {
+    const indexUrl = new URL(`/`, url.origin)
+    return env.ASSETS.fetch(new Request(indexUrl, request))
+  }
   return renderLandingPage(shortId, entry, url)
 }
 

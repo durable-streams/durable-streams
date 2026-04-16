@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, symlinkSync } from "node:fs"
+import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, watch } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { execSync } from "node:child_process"
 import { homedir } from "node:os"
@@ -218,25 +218,29 @@ async function exportSession(
   }
 
   agent = session.agent
+  const live = args.live === true
 
-  console.error(`Exporting ${agent} session: ${session.sessionId}`)
+  console.error(
+    `Exporting ${agent} session ${live ? `(live)` : `(snapshot)`}: ${session.sessionId}`
+  )
   console.error(`  Path: ${session.path}`)
 
   const content = readFileSync(session.path, `utf8`)
   const rawLines = content.split(`\n`).filter((l) => l.trim())
-
-  // 1. Push normalized stream
   const events = normalize(rawLines, agent)
 
-  // Each share gets a unique ID: {entryCount}-{uuid}
-  // Entry count gives monotonic ordering/size; uuid guarantees uniqueness
-  // even if the user shares the same state multiple times.
-  const shareId = `${events.length}-${randomUUID()}`
+  // URL pattern:
+  //  - snapshot: /asp/{sessionId}/{entryCount}-{uuid}      (unique per share)
+  //  - live:     /asp/{sessionId}/live                     (one per session)
+  const shareId = live ? `live` : `${events.length}-${randomUUID()}`
   const baseUrl = `${server.replace(/\/$/, ``)}/asp/${session.sessionId}/${shareId}`
+  const nativeUrl = `${baseUrl}/native/${agent}`
 
   const normalizedLines = events.map((e) => JSON.stringify(e))
 
-  console.error(`  Share ID: ${shareId}`)
+  if (!live) {
+    console.error(`  Share ID: ${shareId}`)
+  }
   console.error(`  Normalized: ${events.length} events`)
   const newNormalized = await pushLines(
     baseUrl,
@@ -249,8 +253,6 @@ async function exportSession(
       : `  Normalized stream up to date`
   )
 
-  // 2. Push native stream (raw JSONL for same-agent resume)
-  const nativeUrl = `${baseUrl}/native/${agent}`
   const newNative = await pushLines(
     nativeUrl,
     `asp-native-${session.sessionId}-${shareId}`,
@@ -270,6 +272,7 @@ async function exportSession(
     process.env.ASP_TOKEN ??
     process.env.DS_TOKEN
 
+  let outputUrl = baseUrl
   if (shortener) {
     const shortUrl = await createShortUrl(shortener, {
       fullUrl: baseUrl,
@@ -277,16 +280,198 @@ async function exportSession(
       entryCount: events.length,
       agent,
       token: token ?? ``,
+      live,
     })
     if (shortUrl) {
       console.error(`  Short URL: ${shortUrl}`)
-      console.log(shortUrl)
-      return
+      outputUrl = shortUrl
+    } else {
+      console.error(`  Shortener failed, using full URL`)
     }
-    console.error(`  Shortener failed, printing full URL`)
   }
 
-  console.log(baseUrl)
+  if (!live) {
+    console.log(outputUrl)
+    return
+  }
+
+  // Live mode: print the URL now, then watch the source file forever
+  console.log(outputUrl)
+  console.error(``)
+  console.error(`Watching ${session.path}`)
+  console.error(`Press Ctrl-C to stop sharing.`)
+
+  await watchAndPushLive({
+    sourcePath: session.path,
+    nativeUrl,
+    normalizedUrl: baseUrl,
+    agent,
+  })
+}
+
+interface WatchOptions {
+  sourcePath: string
+  nativeUrl: string
+  normalizedUrl: string
+  agent: AgentType
+}
+
+/**
+ * Read bytes [start, end) from the source file.
+ */
+function readByteRange(path: string, start: number, end: number): Promise<string> {
+  return new Promise((resolve, reject) => {
+    if (end <= start) {
+      resolve(``)
+      return
+    }
+    const chunks: Array<Buffer> = []
+    const stream = createReadStream(path, {
+      start,
+      end: end - 1, // createReadStream end is inclusive
+      encoding: `utf8`,
+    })
+    stream.on(`data`, (chunk) => {
+      chunks.push(typeof chunk === `string` ? Buffer.from(chunk) : chunk)
+    })
+    stream.on(`end`, () => resolve(Buffer.concat(chunks).toString(`utf8`)))
+    stream.on(`error`, reject)
+  })
+}
+
+async function watchAndPushLive(opts: WatchOptions): Promise<void> {
+  let lastByteOffset = statSync(opts.sourcePath).size
+  // Buffer for a trailing partial line (no \n yet) — held until next tick.
+  let partialLineBuffer = ``
+  let busy = false
+  let pending = false
+  let stopping = false
+
+  const nativeStream = await createOrConnectStream(
+    opts.nativeUrl,
+    `application/json`
+  )
+  const normalizedStream = await createOrConnectStream(
+    opts.normalizedUrl,
+    `application/json`
+  )
+
+  async function processChanges(): Promise<void> {
+    if (stopping) return
+    if (busy) {
+      pending = true
+      return
+    }
+    busy = true
+    try {
+      const stat = statSync(opts.sourcePath)
+      // File was truncated/replaced — re-read from start
+      if (stat.size < lastByteOffset) {
+        lastByteOffset = 0
+        partialLineBuffer = ``
+      }
+      if (stat.size === lastByteOffset) return
+
+      // Read only the new bytes since the last tick
+      const newBytes = await readByteRange(
+        opts.sourcePath,
+        lastByteOffset,
+        stat.size
+      )
+      lastByteOffset = stat.size
+
+      // Combine with any partial line carried over from last tick
+      const combined = partialLineBuffer + newBytes
+      const lastNewlineIdx = combined.lastIndexOf(`\n`)
+      let completeChunk: string
+      if (lastNewlineIdx === -1) {
+        // No newline at all — entire chunk is partial
+        partialLineBuffer = combined
+        completeChunk = ``
+      } else {
+        completeChunk = combined.slice(0, lastNewlineIdx)
+        partialLineBuffer = combined.slice(lastNewlineIdx + 1)
+      }
+
+      const newRawLines = completeChunk.split(`\n`).filter((l) => l.trim())
+      if (newRawLines.length === 0) return
+
+      // Push new native lines as-is
+      await Promise.all(
+        newRawLines.map((line) => nativeStream.append(line))
+      )
+
+      // Incrementally normalize ONLY the new lines.
+      // - fromCompaction: false → don't try to find a compaction boundary
+      //   (we want to process every new line as a continuation)
+      // - filter out synthetic session_init that the normalizer auto-injects
+      //   when no system/init is present in the input (we already emitted one
+      //   on the first push)
+      const newEvents = normalize(newRawLines, opts.agent, {
+        fromCompaction: false,
+      }).filter((e) => e.type !== `session_init`)
+
+      if (newEvents.length > 0) {
+        await Promise.all(
+          newEvents.map((event) =>
+            normalizedStream.append(JSON.stringify(event))
+          )
+        )
+      }
+
+      const ts = new Date().toISOString().slice(11, 19)
+      console.error(
+        `[${ts}] +${newRawLines.length} native, +${newEvents.length} normalized`
+      )
+    } catch (error) {
+      console.error(
+        `  Watcher error: ${error instanceof Error ? error.message : error}`
+      )
+    } finally {
+      busy = false
+      if (pending && !stopping) {
+        pending = false
+        void processChanges()
+      }
+    }
+  }
+
+  const watcher = watch(opts.sourcePath, () => {
+    void processChanges()
+  })
+
+  // Also poll periodically as a safety net (fs.watch can miss events on macOS/NFS)
+  const pollInterval = setInterval(() => {
+    void processChanges()
+  }, 2000)
+
+  await new Promise<void>((resolve) => {
+    const handleSignal = async (): Promise<void> => {
+      stopping = true
+      clearInterval(pollInterval)
+      watcher.close()
+      console.error(``)
+      console.error(`Stopping live share — emitting session_end`)
+      try {
+        const endEvent: NormalizedEvent = {
+          v: 1,
+          ts: Date.now(),
+          type: `session_end`,
+        }
+        await normalizedStream.append(JSON.stringify(endEvent))
+      } catch (error) {
+        console.error(
+          `  Failed to emit session_end: ${
+            error instanceof Error ? error.message : error
+          }`
+        )
+      }
+      resolve()
+    }
+
+    process.once(`SIGINT`, () => void handleSignal())
+    process.once(`SIGTERM`, () => void handleSignal())
+  })
 }
 
 async function createShortUrl(
@@ -297,6 +482,7 @@ async function createShortUrl(
     entryCount: number
     agent: AgentType
     token: string
+    live?: boolean
   }
 ): Promise<string | null> {
   try {
@@ -504,7 +690,7 @@ function showHelp(): void {
   console.log(`asp - Agent Session Protocol CLI
 
 Usage:
-  asp export --server <url> [--agent claude|codex] [--session <id>] [--token <token>] [--shortener <url>]
+  asp export --server <url> [--agent claude|codex] [--session <id>] [--token <token>] [--shortener <url>] [--live]
   asp import <stream-or-short-url> --agent claude|codex [--cwd <dir>] [--resume] [--token <token>]
   asp install-skills [--claude] [--codex]
 
@@ -527,6 +713,9 @@ Options:
   --resume           After importing, immediately resume the session in the target agent
   --token <token>    Auth token for the DS server (or set ASP_TOKEN / DS_TOKEN env var)
   --shortener <url>  URL of an asp-shortener instance; registers a short URL for the export
+  --live             Live mode: keep watching the source session and stream updates
+                     to the same URL until Ctrl-C. Re-running --live for the same
+                     session reuses the existing live URL.
 
 Environment variables:
   ASP_SERVER         Default Durable Streams server URL

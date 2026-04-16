@@ -5,6 +5,9 @@
   "description": "Cloudflare Worker that creates short URLs for asp (agent-session-protocol) shared sessions",
   "type": "module",
   "scripts": {
+    "build:viewer": "pnpm --filter @durable-streams/example-asp-shortener-viewer build",
+    "predev": "pnpm build:viewer",
+    "predeploy": "pnpm build:viewer",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"

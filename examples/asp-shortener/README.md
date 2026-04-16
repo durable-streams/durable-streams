@@ -4,11 +4,16 @@ Cloudflare Worker that creates short URLs for agent coding sessions shared via [
 
 ## How it works
 
-- **POST `/api/create`** — client provides `{fullUrl, sessionId, entryCount, agent, token}`. The worker validates the URL host against `ALLOWED_DS_HOSTS`, validates the auth token by making a HEAD request to the DS URL, then generates a random short ID and stores the mapping in KV. Returns `{shortId, shortUrl}`.
+- **POST `/api/create`** — client provides `{fullUrl, sessionId, entryCount, agent, token, live?}`. The worker validates the URL host against `ALLOWED_DS_HOSTS`, validates the auth token by making a HEAD request to the DS URL, then generates a random short ID and stores the mapping in KV. Returns `{shortId, shortUrl}`. For live shares (`live: true`), registration is idempotent per session — re-registering returns the existing short URL.
 - **GET `/:shortId`** — resolves the short URL:
-  - Browsers (`Accept: text/html`) get a landing page with metadata and CLI instructions.
-  - API clients (`Accept: application/json`) get the full DS URL as JSON.
+  - Browsers (`Accept: text/html`) get the SPA — a landing page with metadata + install/resume commands, plus a "Watch in browser" button. With a valid auth token (provided via the prompt or via `#t=...` URL fragment), the SPA switches into a live conversation viewer.
+  - API clients (`Accept: application/json`) get the full DS URL + metadata as JSON, including a `live: boolean` flag and a `liveShareUrl` cross-link if the same session has a live share registered.
 - **GET `/`** — info page.
+
+## Snapshot vs Live
+
+- **Snapshot** (`asp export`): one URL per export, frozen in time. Safe to share.
+- **Live** (`asp export --live`): one URL per session, kept up to date by a long-running watcher. Anyone with the URL can watch the conversation unfold in the browser. Stop with Ctrl-C.
 
 ## Security model
 
@@ -50,7 +55,17 @@ DEFAULT_TTL_SECONDS = "7776000"  # 90 days
 
 Add any other DS hosts you want to allow (comma-separated).
 
-### 4. Deploy
+### 4. Build the viewer SPA
+
+The browser viewer is bundled as static assets served by the worker. Build it before deploying:
+
+```bash
+pnpm --filter @durable-streams/example-asp-shortener-viewer build
+```
+
+(This is also run automatically as a `predeploy` hook.)
+
+### 5. Deploy
 
 ```bash
 npx wrangler deploy
@@ -66,12 +81,12 @@ custom_domain = true
 
 Or configure it in the Cloudflare dashboard under **Workers & Pages → asp-shortener → Custom Domains**.
 
-### 5. Test it
+### 6. Test it
 
-Local dev:
+Local dev (also rebuilds the viewer first via the `predev` hook):
 
 ```bash
-npx wrangler dev
+pnpm dev
 ```
 
 In another terminal, try creating a short URL:
@@ -110,4 +125,5 @@ asp import https://share.example.com/abc12345 --agent claude --token <token> --r
 
 - `src/worker.ts` — the Worker
 - `wrangler.toml` — CF config (update with your KV namespace ID)
-- `package.json` — dependencies
+- `viewer/` — Vite + React SPA (landing page + live conversation viewer)
+- `package.json` — root scripts (chains viewer build into deploy)
