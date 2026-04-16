@@ -261,6 +261,66 @@ newMessages: latestUserMessage ? [latestUserMessage] : []
 
 Setting `readUrl` on the server stream config to the durable stream's write URL leaks the secret in the `Location` header. Always use a read proxy route for `readUrl`.
 
+### CRITICAL First assistant response invisible until refresh — dead subscription
+
+`durableStreamConnection` opens its live SSE read on mount. If the stream doesn't exist yet (new conversation), the read fails with `STREAM_NOT_FOUND` and **the subscription terminates — it does NOT retry on 404**. When the user's first POST then creates the stream and the server streams chunks, nothing is listening. After a refresh, the subscription is re-opened against an existing stream and everything works — which is exactly what the user describes when they say "the first response only shows after refresh".
+
+**Fix**: create the stream eagerly when you create the conversation row, so the client's subscription has something to attach to. PUT is idempotent — catch `CONFLICT_EXISTS` / `CONFLICT_SEQ` and treat as success.
+
+```ts
+// src/routes/api/conversations.ts — after inserting the conversation row
+import { DurableStream, DurableStreamError } from "@durable-streams/client"
+
+async function ensureChatStream(streamId: string): Promise<void> {
+  try {
+    const stream = new DurableStream({
+      url: `${DS_BASE}/chat-${streamId}`,
+      headers: DS_AUTH,
+      contentType: "application/json",
+    })
+    await stream.create({ contentType: "application/json" })
+  } catch (err) {
+    if (
+      err instanceof DurableStreamError &&
+      err.status === 409 &&
+      (err.code === "CONFLICT_EXISTS" || err.code === "CONFLICT_SEQ")
+    ) {
+      return // already exists — fine
+    }
+    throw err
+  }
+}
+```
+
+Do NOT rely on `toDurableChatSessionResponse`'s `createIfMissing` to cover this case. That handler runs during the first POST, which is AFTER the client's read subscription has already died.
+
+### CRITICAL Switching conversations shows stale data — missing useLiveQuery deps + missing component key
+
+Two separate React pitfalls compound into the same symptom (header/messages don't update when the user clicks a different conversation):
+
+1. `useLiveQuery` needs explicit deps — without them, the query closure captures the initial id and never re-runs:
+
+   ```ts
+   // WRONG — no deps, closure captures initial conversationId forever
+   const { data } = useLiveQuery((q) =>
+     q.from({ conv }).where(({ conv }) => eq(conv.id, conversationId))
+   )
+
+   // RIGHT — deps array pins re-evaluation to the param
+   const { data } = useLiveQuery(
+     (q) => q.from({ conv }).where(({ conv }) => eq(conv.id, conversationId)),
+     [conversationId]
+   )
+   ```
+
+2. `useChat`'s internal `ChatClient` is memoized per-hook and keeps previous messages in a ref even when the `id` prop changes. Force a full remount by keying the component on the stream id:
+
+   ```tsx
+   return (
+     <ChatInner key={streamId} streamId={streamId} connection={connection} />
+   )
+   ```
+
 ### CRITICAL Wrong field on UIMessage parts — empty bubbles
 
 TanStack AI's `UIMessage` has `parts: Array<MessagePart>`. The `TextPart` interface puts the text in `.content` — **not** `.text`, **not** `message.content`. Reading the wrong field renders empty strings silently (no error), so bubbles just show "…" or blank.
