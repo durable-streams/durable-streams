@@ -122,6 +122,28 @@ function Chat({ id, initialMessages, resumeOffset }) {
 }
 ```
 
+**CRITICAL: Share apiKey state via Context, not per-hook useState.** If multiple components read the API key from settings, each `useState`-based hook has isolated state. When the user saves the key in Settings, only that component sees it — other components still have `""`. Requests go out with `x-api-key: ""` and the server returns 401.
+
+```typescript
+// WRONG — each useSettings() call has isolated state
+export function useSettings() {
+  const [apiKey, setApiKey] = useState("")
+  useEffect(() => { setApiKey(localStorage.getItem("api-key") ?? "") }, [])
+  return { apiKey, setApiKey }
+}
+
+// RIGHT — use Context so all components see the same value
+const SettingsContext = createContext<{ apiKey: string; setApiKey: (k: string) => void }>(...)
+export function SettingsProvider({ children }) {
+  const [apiKey, setApiKey] = useState(() => localStorage.getItem("api-key") ?? "")
+  const save = useCallback((k: string) => { localStorage.setItem("api-key", k); setApiKey(k) }, [])
+  return <SettingsContext.Provider value={{ apiKey, setApiKey: save }}>{children}</SettingsContext.Provider>
+}
+export const useSettings = () => useContext(SettingsContext)
+```
+
+Wrap your root layout in `<SettingsProvider>` so both the `SettingsDialog` (writer) and the `durableStreamConnection` consumer see the same value.
+
 **CRITICAL: TanStack AI message format.** `useChat()` returns `UIMessage` objects with a `parts` array, NOT a `content` string:
 
 ```typescript
