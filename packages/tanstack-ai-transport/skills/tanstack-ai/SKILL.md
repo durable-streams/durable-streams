@@ -321,6 +321,30 @@ Two separate React pitfalls compound into the same symptom (header/messages don'
    )
    ```
 
+### CRITICAL sendMessage signature — crash on submit
+
+`useChat().sendMessage` takes either a string **or** `{ content: Array<ContentPart>, id? }` (for multimodal). The intuitive-looking `{ text: "hi" }` form is NOT supported — it normalizes to `{ content: undefined }` and crashes inside `StreamProcessor.addUserMessage` with:
+
+```
+TypeError: Cannot read properties of undefined (reading 'map')
+```
+
+```ts
+// WRONG — passes { text } which is neither a string nor a valid object shape
+sendMessage({ text: input.trim() })
+
+// RIGHT — pass the string directly
+sendMessage(input.trim())
+
+// RIGHT — multimodal (explicit content parts)
+sendMessage({
+  content: [
+    { type: "text", content: input.trim() },
+    { type: "image", source: { type: "url", value: imageUrl } },
+  ],
+})
+```
+
 ### CRITICAL Wrong field on UIMessage parts — empty bubbles
 
 TanStack AI's `UIMessage` has `parts: Array<MessagePart>`. The `TextPart` interface puts the text in `.content` — **not** `.text`, **not** `message.content`. Reading the wrong field renders empty strings silently (no error), so bubbles just show "…" or blank.
