@@ -4,8 +4,7 @@
  * Following the Electric Durable Stream Protocol specification.
  */
 
-import fastq from "fastq"
-
+import { AsyncQueue } from "./async-queue"
 import {
   InvalidSignalError,
   MissingStreamUrlError,
@@ -32,7 +31,6 @@ import {
   warnIfUsingHttpInBrowser,
 } from "./utils"
 import type { BackoffOptions } from "./fetch"
-import type { queueAsPromised } from "fastq"
 import type {
   AppendOptions,
   CloseOptions,
@@ -151,7 +149,7 @@ export class DurableStream {
 
   // Batching infrastructure
   #batchingEnabled: boolean
-  #queue?: queueAsPromised<Array<QueuedMessage>>
+  #queue?: AsyncQueue<Array<QueuedMessage>>
   #buffer: Array<QueuedMessage> = []
 
   /**
@@ -174,7 +172,7 @@ export class DurableStream {
     this.#batchingEnabled = opts.batching !== false
 
     if (this.#batchingEnabled) {
-      this.#queue = fastq.promise(this.#batchWorker.bind(this), 1)
+      this.#queue = new AsyncQueue(this.#batchWorker.bind(this), 1)
     }
 
     this.#baseFetchClient =

@@ -8,8 +8,7 @@
  * - Automatic batching and pipelining for throughput
  */
 
-import fastq from "fastq"
-
+import { AsyncQueue } from "./async-queue"
 import { DurableStreamError, FetchError } from "./error"
 import {
   PRODUCER_EPOCH_HEADER,
@@ -20,7 +19,6 @@ import {
   STREAM_CLOSED_HEADER,
   STREAM_OFFSET_HEADER,
 } from "./constants"
-import type { queueAsPromised } from "fastq"
 import type { DurableStream } from "./stream"
 import type { CloseResult, IdempotentProducerOptions, Offset } from "./types"
 
@@ -135,8 +133,7 @@ export class IdempotentProducer {
   #batchBytes = 0
   #lingerTimeout: ReturnType<typeof setTimeout> | null = null
 
-  // Pipelining via fastq
-  readonly #queue: queueAsPromised<BatchTask>
+  readonly #queue: AsyncQueue<BatchTask>
   readonly #maxInFlight: number
   #closed = false
   #closeResult: CloseResult | null = null
@@ -209,8 +206,10 @@ export class IdempotentProducer {
     // We block pipelining until then to avoid racing with the claim
     this.#epochClaimed = !this.#autoClaim
 
-    // Initialize fastq with maxInFlight concurrency
-    this.#queue = fastq.promise(this.#batchWorker.bind(this), this.#maxInFlight)
+    this.#queue = new AsyncQueue(
+      this.#batchWorker.bind(this),
+      this.#maxInFlight
+    )
 
     // Handle signal abort (use { once: true } to auto-cleanup)
     if (this.#signal) {
@@ -544,7 +543,6 @@ export class IdempotentProducer {
         })
       })
     } else {
-      // Push to fastq - it handles concurrency automatically
       this.#queue.push({ batch, seq }).catch(() => {
         // Error handling is done in #batchWorker
       })
@@ -552,7 +550,7 @@ export class IdempotentProducer {
   }
 
   /**
-   * Batch worker - processes batches via fastq.
+   * Batch worker - processes one batch task.
    */
   async #batchWorker(task: BatchTask): Promise<void> {
     const { batch, seq } = task
