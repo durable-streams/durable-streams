@@ -108,15 +108,61 @@ The transport defaults to `${api}/${chatId}/stream`. Pass `reconnectApi` to over
 
 ### Read proxy
 
-Always proxy reads through an app route so write credentials stay server-side. See `examples/chat-aisdk/app/api/chat-stream/route.ts` for the full implementation. Pass the proxy URL as `readUrl` in `toDurableStreamResponse()`.
+Always proxy reads through an app route so write credentials stay server-side. Pass the proxy URL as `readUrl` in `toDurableStreamResponse()`.
+
+```typescript
+// app/api/chat-stream/route.ts (Next.js) or equivalent server route
+function copyHeaders(response: Response): Headers {
+  const headers = new Headers()
+  for (const [key, value] of response.headers.entries()) {
+    const k = key.toLowerCase()
+    if (
+      k === "connection" ||
+      k === "transfer-encoding" ||
+      k === "content-encoding" ||
+      k === "content-length"
+    )
+      continue
+    headers.set(key, value)
+  }
+  headers.set("Cache-Control", "no-store")
+  return headers
+}
+
+export async function GET(request: Request) {
+  const url = new URL(request.url)
+  const streamPath = url.searchParams.get("path")
+  if (!streamPath)
+    return Response.json({ error: "Missing stream path" }, { status: 400 })
+
+  const upstreamUrl = new URL(buildReadStreamUrl(streamPath))
+  for (const [key, value] of url.searchParams) {
+    if (key === "path") continue
+    upstreamUrl.searchParams.append(key, value)
+  }
+
+  const response = await fetch(upstreamUrl, {
+    headers: {
+      Authorization: `Bearer ${process.env.DS_SECRET}`,
+      ...(request.headers.get("accept")
+        ? { Accept: request.headers.get("accept")! }
+        : {}),
+    },
+  })
+
+  return new Response(response.body, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: copyHeaders(response),
+  })
+}
+```
 
 ## Common Mistakes
 
 ### CRITICAL Not persisting activeStreamId for resume
 
 Save the active stream path before returning and clear it in `onFinish`. Without it, the reconnect endpoint has nothing to return and `resume: true` silently fails. See the server setup above for the correct pattern.
-
-Source: examples/chat-aisdk/app/api/chat/route.ts
 
 ### CRITICAL Exposing write URLs to the client
 
@@ -136,8 +182,6 @@ Source: packages/aisdk-transport/src/server.ts
 ### HIGH Not clearing activeStreamId on finish
 
 A stale `activeStreamId` causes the reconnect endpoint to return a completed stream. Always clear it in `onFinish`. See the server setup above.
-
-Source: examples/chat-aisdk/app/api/chat/route.ts
 
 ### MEDIUM Missing reconnect endpoint
 

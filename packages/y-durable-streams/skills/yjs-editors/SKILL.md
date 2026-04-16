@@ -30,8 +30,7 @@ the binding setup.
 
 ## React lifecycle pattern (shared by all editors)
 
-All editor integrations MUST use this pattern. It matches the working
-`examples/yjs-demo/src/components/yjs-provider.tsx` in this repository.
+All editor integrations MUST use this pattern.
 
 **Key principle:** Doc and awareness are created once via `useState` (stable
 references). The provider is created in `useEffect` with `connect: false` so
@@ -171,6 +170,161 @@ export const Route = createFileRoute("/doc/$docId")({
   component: DocPage,
 })
 ```
+
+### Sharing doc/awareness via Context (multi-consumer apps)
+
+When several sibling components need the same doc and awareness (an editor,
+a presence list, a save button), wrap them in a Context Provider instead of
+prop-drilling. The Provider owns the lifecycle; children consume via a hook.
+
+```tsx
+import { createContext, useContext, useEffect, useRef, useState } from "react"
+import type { ReactNode } from "react"
+import * as Y from "yjs"
+import { Awareness } from "y-protocols/awareness"
+import { YjsProvider } from "@durable-streams/y-durable-streams"
+import type { YjsProviderStatus } from "@durable-streams/y-durable-streams"
+
+interface YjsRoomContextValue {
+  doc: Y.Doc
+  awareness: Awareness
+  roomId: string
+  isLoading: boolean
+  isSynced: boolean
+  error: Error | null
+  setUsername: (name: string) => void
+  username: string
+}
+
+const YjsRoomContext = createContext<YjsRoomContextValue | null>(null)
+
+export function useYjsRoom(): YjsRoomContextValue {
+  const ctx = useContext(YjsRoomContext)
+  if (!ctx) throw new Error("useYjsRoom must be used inside YjsRoomProvider")
+  return ctx
+}
+
+export function YjsRoomProvider({
+  roomId,
+  baseUrl,
+  initialUser,
+  children,
+}: {
+  roomId: string
+  baseUrl: string
+  initialUser: { name: string; color: string; colorLight: string }
+  children: ReactNode
+}) {
+  const [username, setUsernameState] = useState(initialUser.name)
+  const usernameRef = useRef(username)
+  usernameRef.current = username
+
+  // Doc + awareness: stable across renders, with initial local state so the
+  // first awareness broadcast already has the user info (no null-state flash).
+  const [{ doc, awareness }] = useState(() => {
+    const d = new Y.Doc()
+    const a = new Awareness(d)
+    a.setLocalState({ user: initialUser })
+    return { doc: d, awareness: a }
+  })
+
+  // Destroy doc + awareness on unmount
+  useEffect(
+    () => () => {
+      awareness.destroy()
+      doc.destroy()
+    },
+    [doc, awareness]
+  )
+
+  const [isLoading, setIsLoading] = useState(true)
+  const [isSynced, setIsSynced] = useState(false)
+  const [error, setError] = useState<Error | null>(null)
+
+  // Mutation path for username — merge into existing awareness state so
+  // other fields (cursor, selection) aren't clobbered.
+  const setUsername = (name: string) => {
+    setUsernameState(name)
+    const current = awareness.getLocalState() || {}
+    awareness.setLocalState({
+      ...current,
+      user: { ...initialUser, name },
+    })
+  }
+
+  useEffect(() => {
+    const provider = new YjsProvider({
+      doc,
+      baseUrl,
+      docId: roomId,
+      awareness,
+      connect: false, // attach listeners BEFORE connecting
+    })
+
+    provider.on("synced", (s: boolean) => {
+      setIsSynced(s)
+      if (s) setIsLoading(false)
+    })
+    provider.on("status", (s: YjsProviderStatus) => {
+      if (s === "connected") setIsLoading(false)
+    })
+    provider.on("error", (err: Error) => {
+      setError(err)
+      setIsLoading(false)
+    })
+
+    // Strict Mode's effect cleanup may have wiped local state when the
+    // previous provider was destroyed. Re-seed before connecting so the
+    // first broadcast has user info (uses usernameRef, not the stale closure).
+    if (awareness.getLocalState() === null) {
+      awareness.setLocalState({
+        user: { ...initialUser, name: usernameRef.current },
+      })
+    }
+
+    provider.connect()
+    return () => provider.destroy()
+  }, [roomId, doc, awareness, baseUrl, initialUser])
+
+  return (
+    <YjsRoomContext.Provider
+      value={{
+        doc,
+        awareness,
+        roomId,
+        isLoading,
+        isSynced,
+        error,
+        setUsername,
+        username,
+      }}
+    >
+      {children}
+    </YjsRoomContext.Provider>
+  )
+}
+```
+
+Usage — key the Provider on roomId so navigating between rooms fully
+tears down and rebuilds the CRDT:
+
+```tsx
+<YjsRoomProvider
+  key={roomId}
+  roomId={roomId}
+  baseUrl={baseUrl}
+  initialUser={user}
+>
+  <Editor /> {/* consumes via useYjsRoom() */}
+  <PresenceList />
+  <SaveButton />
+</YjsRoomProvider>
+```
+
+Three things to notice: (1) `status` + `synced` + `error` events are all
+attached before `connect()`, (2) the `usernameRef` is read at connect time
+to survive Strict Mode's double-invocation cleanup, (3) `setUsername`
+merges into existing local state instead of overwriting it.
 
 ## TipTap v3
 
@@ -393,8 +547,6 @@ This is the #1 cause of "stuck Connecting" in agent-built apps. The provider
 connects, syncs, emits `synced: true`, but no listener is attached yet.
 React's `useEffect` runs after the render cycle, by which time the async
 connection has already completed.
-
-Source: Documented in 5+ agent sessions; matches examples/yjs-demo pattern
 
 ### HIGH Using `useMemo` for Y.Doc or Awareness (all editors)
 

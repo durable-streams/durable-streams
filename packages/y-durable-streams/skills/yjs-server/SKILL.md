@@ -62,6 +62,85 @@ const yjsServer = new YjsServer({
 await yjsServer.start()
 ```
 
+### Single-origin dev server (HTTP/2 multiplexing)
+
+For local development you usually want one origin the browser hits so HTTP/2
+can multiplex the DS stream, Yjs stream, and the Vite dev server over a
+single connection. Spawn Caddy from a Node script alongside YjsServer:
+
+```typescript
+// server.ts
+import { spawn } from "node:child_process"
+import { resolve } from "node:path"
+import { YjsServer } from "@durable-streams/y-durable-streams/server"
+
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = "0" // trust Caddy's self-signed cert
+
+const CADDY_PORT = 4443
+const YJS_PORT = 4438
+
+const yjsServer = new YjsServer({
+  port: YJS_PORT,
+  host: "127.0.0.1",
+  dsServerUrl: `https://localhost:${CADDY_PORT}`, // go through Caddy for TLS
+  compactionThreshold: 1024 * 1024,
+})
+await yjsServer.start()
+
+const caddy = spawn(
+  resolve(import.meta.dirname, "./durable-streams-server"),
+  ["run", "--config", resolve(import.meta.dirname, "./Caddyfile")],
+  { stdio: ["ignore", "pipe", "pipe"] }
+)
+
+// Wait for Caddy's ready line before returning control
+await new Promise<void>((ok, fail) => {
+  const t = setTimeout(() => fail(new Error("Caddy start timeout")), 10_000)
+  caddy.stderr.on("data", (buf: Buffer) => {
+    if (buf.toString().includes("serving initial configuration")) {
+      clearTimeout(t)
+      ok()
+    }
+  })
+  caddy.on("exit", (code) => {
+    clearTimeout(t)
+    if (code && code !== 0) fail(new Error(`Caddy exited ${code}`))
+  })
+})
+
+process.on("SIGINT", async () => {
+  await yjsServer.stop()
+  caddy.kill("SIGTERM")
+  process.exit(0)
+})
+```
+
+And the matching dev Caddyfile — DS at `/v1/stream/*`, Yjs proxied to the
+internal YjsServer, everything else to Vite:
+
+```caddy
+{
+  admin off
+}
+
+localhost:4443 {
+  route /v1/stream/* {
+    durable_streams
+  }
+
+  route /v1/yjs/* {
+    reverse_proxy localhost:4438 {
+      flush_interval -1
+    }
+  }
+
+  reverse_proxy localhost:3001   # Vite dev server
+}
+```
+
+The `flush_interval -1` on the Yjs route is mandatory (see Common Mistakes
+below). Keep the dev and production Caddyfiles consistent on this flag.
+
 ### YjsServer options
 
 | Option                | Default         | Description                                         |
@@ -230,8 +309,6 @@ route /v1/yjs/* {
 
 Without this, Caddy buffers SSE responses. Live updates appear to hang —
 clients connect but never receive data.
-
-Source: examples/yjs-demo/Caddyfile
 
 ### HIGH Exposing Electric Cloud secret to browser clients
 
