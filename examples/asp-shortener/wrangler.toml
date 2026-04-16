@@ -1,0 +1,24 @@
+name = "asp-shortener"
+main = "src/worker.ts"
+compatibility_date = "2025-01-09"
+
+# Bind the KV namespace for short ID → full URL mapping.
+# Create via: wrangler kv:namespace create ASP_SHORTENER
+# Then replace <YOUR_KV_NAMESPACE_ID> below with the returned ID.
+[[kv_namespaces]]
+binding = "SHORTENER_KV"
+id = "96cb164773be45c4b06be87a576f335c"
+
+# Custom domain route. Configure this in the Cloudflare dashboard or set up
+# a custom domain for the worker and uncomment the routes block below.
+[[routes]]
+pattern = "share.electric-sql.cloud"
+custom_domain = true
+
+[vars]
+# Comma-separated list of allowed DS hosts. Only URLs with these hosts can
+# be registered as short URLs.
+ALLOWED_DS_HOSTS = "api.electric-sql.cloud"
+
+# Default TTL for short URL entries (seconds). Set to 0 for no expiration.
+DEFAULT_TTL_SECONDS = "2592000"  # 30 days
