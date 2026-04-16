@@ -75,6 +75,7 @@ export default defineConfig({
             collapsed: false,
           },
           { text: "JSON mode", link: "/json-mode" },
+          { text: "Fork", link: "/fork" },
           { text: "Durable Proxy", link: "/durable-proxy" },
           { text: "Durable State", link: "/durable-state" },
           { text: "StreamDB", link: "/stream-db" },
