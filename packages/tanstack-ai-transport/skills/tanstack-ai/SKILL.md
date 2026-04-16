@@ -168,7 +168,7 @@ export async function POST(request: Request) {
     messages,
   })
 
-  return await toDurableChatSessionResponse({
+  const dsResponse = await toDurableChatSessionResponse({
     stream: {
       writeUrl: buildStreamUrl(`chat/${id}`),
       headers: { ...dsAuthHeaders(), "Content-Type": "application/json" },
@@ -177,6 +177,14 @@ export async function POST(request: Request) {
     newMessages: latestUserMessage ? [latestUserMessage] : [],
     responseStream,
   })
+
+  // CRITICAL: reconstruct the response — the upstream DS service may send
+  // both Content-Length and Transfer-Encoding headers, which Node rejects
+  // with "Parse Error: Content-Length can't be present with Transfer-Encoding"
+  const headers = new Headers(dsResponse.headers)
+  headers.delete("content-length")
+  headers.delete("content-encoding")
+  return new Response(dsResponse.body, { status: dsResponse.status, headers })
 }
 ````
 
@@ -329,15 +337,11 @@ Use the chat id as a **query parameter** (`/api/chat-stream?id=...`), not a dyna
 
 ## Common Mistakes
 
-### HIGH Not awaiting toDurableChatSessionResponse
+### CRITICAL Returning toDurableChatSessionResponse without stripping headers
 
-Wrong — returns a Promise, not a Response:
+The upstream DS service sends both `Content-Length` and `Transfer-Encoding` headers. Node rejects this with `Parse Error: Content-Length can't be present with Transfer-Encoding`.
 
-```typescript
-return toDurableChatSessionResponse({ stream, newMessages, responseStream })
-```
-
-Correct:
+Wrong:
 
 ```typescript
 return await toDurableChatSessionResponse({
@@ -347,7 +351,19 @@ return await toDurableChatSessionResponse({
 })
 ```
 
-Note: `toDurableChatSessionResponse` currently returns a null-body `202` (immediate mode) or `200` (await mode), so `Content-Length`/`Transfer-Encoding` conflicts don't occur. If you use `toDurableStreamResponse` (the generic variant for Vercel AI SDK), that function returns a JSON body — in that case you may need to strip `content-length` from the response headers.
+Correct — always reconstruct the response:
+
+```typescript
+const dsResponse = await toDurableChatSessionResponse({
+  stream,
+  newMessages,
+  responseStream,
+})
+const headers = new Headers(dsResponse.headers)
+headers.delete("content-length")
+headers.delete("content-encoding")
+return new Response(dsResponse.body, { status: dsResponse.status, headers })
+```
 
 ### CRITICAL Sending full message history as newMessages
 
