@@ -1,0 +1,26 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fork-ai-chat",
+  "compatibility_date": "2026-03-31",
+  "compatibility_flags": [
+    "nodejs_compat",
+    "nodejs_compat_populate_process_env"
+  ],
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1
+  },
+  "vars": {
+    "DURABLE_STREAMS_URL": "https://api.electric-sql.cloud/v1/stream/svc-unnecessary-cheetah-a26to97z8m",
+    "DURABLE_STREAMS_WRITE_URL": "https://api.electric-sql.cloud/v1/stream/svc-unnecessary-cheetah-a26to97z8m",
+    "DURABLE_STREAMS_READ_URL": "https://api.electric-sql.cloud/v1/stream/svc-unnecessary-cheetah-a26to97z8m",
+    "OPENAI_MODEL": "gpt-4o-mini"
+  },
+  "secrets": {
+    "required": [
+      "OPENAI_API_KEY",
+      "DURABLE_STREAMS_WRITE_BEARER_TOKEN",
+      "DURABLE_STREAMS_READ_BEARER_TOKEN"
+    ]
+  }
+}

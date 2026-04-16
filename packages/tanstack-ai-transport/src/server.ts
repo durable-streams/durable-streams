@@ -1,8 +1,13 @@
-import { DurableStream, DurableStreamError } from "@durable-streams/client"
+import {
+  DurableStream,
+  DurableStreamError,
+  IdempotentProducer,
+} from "@durable-streams/client"
 import { sanitizeChunkForStorage } from "./client"
 import type { HeadersRecord } from "@durable-streams/client"
 import type {
   DurableStreamTarget,
+  OnMessageWritten,
   TanStackChunk,
   ToDurableChatSessionResponseOptions,
   ToDurableStreamResponseOptions,
@@ -36,12 +41,17 @@ async function ensureStreamExists(
 
   try {
     await stream.create({ contentType })
-  } catch (error) {
-    if (
-      error instanceof DurableStreamError &&
-      error.status === 409 &&
-      (error.code === `CONFLICT_EXISTS` || error.code === `CONFLICT_SEQ`)
-    ) {
+  } catch (error: unknown) {
+    const status =
+      error instanceof DurableStreamError
+        ? error.status
+        : error != null &&
+            typeof error === `object` &&
+            `status` in error &&
+            typeof (error as { status: unknown }).status === `number`
+          ? (error as { status: number }).status
+          : undefined
+    if (status === 409) {
       return
     }
     throw error
@@ -246,6 +256,87 @@ export async function toDurableStreamResponse(
   )
 }
 
+async function writeChatSessionWithHooks(
+  stream: DurableStream,
+  newMessages: Array<{
+    id?: string
+    role?: string
+    parts?: Array<{ type?: string; content?: string; text?: string }>
+  }>,
+  responseStream: AsyncIterable<TanStackChunk>,
+  onMessageWritten: OnMessageWritten
+): Promise<void> {
+  const producerId = `chat-writer-${crypto.randomUUID()}`
+  const producer = new IdempotentProducer(stream, producerId, {
+    autoClaim: true,
+    lingerMs: 0,
+    maxInFlight: 1,
+  })
+
+  try {
+    for (const message of newMessages) {
+      const chunks = toMessageEchoChunks(message)
+      const startChunk = chunks.find((c) => c.type === `TEXT_MESSAGE_START`)
+      const messageId =
+        typeof startChunk?.messageId === `string`
+          ? startChunk.messageId
+          : undefined
+      const role =
+        typeof startChunk?.role === `string` ? startChunk.role : `user`
+
+      for (const chunk of chunks) {
+        producer.append(JSON.stringify(sanitizeChunkForStorage(chunk)))
+      }
+
+      if (messageId) {
+        const result = await producer.flush()
+        await onMessageWritten({
+          messageId,
+          role,
+          offset: result.offset,
+          append: (data) => producer.append(data),
+          flush: () => producer.flush(),
+        })
+      }
+    }
+
+    let currentMessageId: string | null = null
+    let currentRole = `assistant`
+    for await (const chunk of responseStream) {
+      producer.append(JSON.stringify(sanitizeChunkForStorage(chunk)))
+
+      if (
+        chunk &&
+        typeof chunk === `object` &&
+        chunk.type === `TEXT_MESSAGE_START`
+      ) {
+        currentMessageId =
+          typeof chunk.messageId === `string` ? chunk.messageId : null
+        currentRole = typeof chunk.role === `string` ? chunk.role : `assistant`
+      }
+
+      if (
+        chunk &&
+        typeof chunk === `object` &&
+        chunk.type === `TEXT_MESSAGE_END` &&
+        currentMessageId
+      ) {
+        const result = await producer.flush()
+        await onMessageWritten({
+          messageId: currentMessageId,
+          role: currentRole,
+          offset: result.offset,
+          append: (data) => producer.append(data),
+          flush: () => producer.flush(),
+        })
+        currentMessageId = null
+      }
+    }
+  } finally {
+    await producer.detach()
+  }
+}
+
 export async function toDurableChatSessionResponse(
   options: ToDurableChatSessionResponseOptions
 ): Promise<Response> {
@@ -253,26 +344,36 @@ export async function toDurableChatSessionResponse(
   const contentType = DEFAULT_CONTENT_TYPE
   const stream = await ensureDurableChatSessionStream(options.stream)
 
-  const newMessageChunks = options.newMessages.flatMap((message) =>
-    toMessageEchoChunks(message)
-  )
-  await appendSanitizedChunksToStream(stream, newMessageChunks, contentType)
+  let writeTask: Promise<void>
 
-  const writeAssistant = pipeSanitizedChunksToStream(
-    options.responseStream,
-    stream,
-    contentType
-  )
+  if (options.onMessageWritten) {
+    writeTask = writeChatSessionWithHooks(
+      stream,
+      options.newMessages,
+      options.responseStream,
+      options.onMessageWritten
+    )
+  } else {
+    const newMessageChunks = options.newMessages.flatMap((message) =>
+      toMessageEchoChunks(message)
+    )
+    await appendSanitizedChunksToStream(stream, newMessageChunks, contentType)
+    writeTask = pipeSanitizedChunksToStream(
+      options.responseStream,
+      stream,
+      contentType
+    )
+  }
 
   if (mode === `await`) {
-    await writeAssistant
+    await writeTask
     return new Response(null, {
       status: 200,
       headers: { "Cache-Control": `no-store` },
     })
   }
 
-  const backgroundTask = writeAssistant.catch((error) => {
+  const backgroundTask = writeTask.catch((error) => {
     console.error(`Durable chat session write failed`, error)
   })
   options.waitUntil?.(backgroundTask)
