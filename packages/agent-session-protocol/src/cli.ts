@@ -262,15 +262,88 @@ async function exportSession(
       : `  Native ${agent} stream up to date`
   )
 
+  // Optionally shorten the URL via a shortener service
+  const shortener =
+    (args.shortener as string) ?? process.env.ASP_SHORTENER
+  const token =
+    (args.token as string) ??
+    process.env.ASP_TOKEN ??
+    process.env.DS_TOKEN
+
+  if (shortener) {
+    const shortUrl = await createShortUrl(shortener, {
+      fullUrl: baseUrl,
+      sessionId: session.sessionId,
+      entryCount: events.length,
+      agent,
+      token: token ?? ``,
+    })
+    if (shortUrl) {
+      console.error(`  Short URL: ${shortUrl}`)
+      console.log(shortUrl)
+      return
+    }
+    console.error(`  Shortener failed, printing full URL`)
+  }
+
   console.log(baseUrl)
+}
+
+async function createShortUrl(
+  shortener: string,
+  payload: {
+    fullUrl: string
+    sessionId: string
+    entryCount: number
+    agent: AgentType
+    token: string
+  }
+): Promise<string | null> {
+  try {
+    const endpoint = `${shortener.replace(/\/$/, ``)}/api/create`
+    const response = await fetch(endpoint, {
+      method: `POST`,
+      headers: { "content-type": `application/json` },
+      body: JSON.stringify(payload),
+    })
+    if (!response.ok) {
+      const text = await response.text()
+      console.error(`  Shortener error (${response.status}): ${text}`)
+      return null
+    }
+    const data = (await response.json()) as { shortUrl: string }
+    return data.shortUrl
+  } catch (error) {
+    console.error(
+      `  Shortener request failed: ${error instanceof Error ? error.message : error}`
+    )
+    return null
+  }
+}
+
+async function resolveShortUrl(url: string): Promise<string | null> {
+  // Short URLs are registered on a shortener service and return JSON
+  // with the actual DS URL when fetched with Accept: application/json.
+  try {
+    const response = await fetch(url, {
+      headers: { accept: `application/json` },
+    })
+    if (!response.ok) return null
+    const contentType = response.headers.get(`content-type`) ?? ``
+    if (!contentType.includes(`application/json`)) return null
+    const data = (await response.json()) as { fullUrl?: string }
+    return data.fullUrl ?? null
+  } catch {
+    return null
+  }
 }
 
 async function importSession(
   args: Record<string, string | boolean>,
   positional: Array<string>
 ): Promise<void> {
-  const streamUrl = positional[0]
-  if (!streamUrl) {
+  const inputUrl = positional[0]
+  if (!inputUrl) {
     console.error(
       `Usage: asp import <stream-url> --agent claude|codex [--cwd <dir>] [--resume]`
     )
@@ -281,6 +354,15 @@ async function importSession(
   if (!agent || (agent !== `claude` && agent !== `codex`)) {
     console.error(`--agent is required (claude or codex)`)
     process.exit(1)
+  }
+
+  // Try resolving as a short URL first. If the URL returns JSON with a
+  // fullUrl field, use that; otherwise treat the input as a direct DS URL.
+  let streamUrl = inputUrl
+  const resolved = await resolveShortUrl(inputUrl)
+  if (resolved) {
+    streamUrl = resolved
+    console.error(`Resolved short URL → ${streamUrl}`)
   }
 
   const cwd = (args.cwd as string) ?? process.cwd()
@@ -422,14 +504,16 @@ function showHelp(): void {
   console.log(`asp - Agent Session Protocol CLI
 
 Usage:
-  asp export --server <url> [--agent claude|codex] [--session <id>] [--token <token>]
-  asp import <stream-url> --agent claude|codex [--cwd <dir>] [--resume] [--token <token>]
+  asp export --server <url> [--agent claude|codex] [--session <id>] [--token <token>] [--shortener <url>]
+  asp import <stream-or-short-url> --agent claude|codex [--cwd <dir>] [--resume] [--token <token>]
   asp install-skills [--claude] [--codex]
 
 Commands:
   export           Export an agent session to Durable Streams
                    Pushes both a normalized stream and a native (raw) stream.
+                   Optionally registers a short URL via --shortener.
   import           Import a session from Durable Streams
+                   Accepts either a full DS URL or a short URL (auto-resolved).
                    Prefers native stream for same-agent (lossless) resume.
                    Falls back to normalized stream for cross-agent resume.
   install-skills   Symlink the share skill into Claude Code and/or Codex
@@ -442,10 +526,12 @@ Options:
   --cwd <dir>        Working directory for imported session (defaults to current)
   --resume           After importing, immediately resume the session in the target agent
   --token <token>    Auth token for the DS server (or set ASP_TOKEN / DS_TOKEN env var)
+  --shortener <url>  URL of an asp-shortener instance; registers a short URL for the export
 
 Environment variables:
   ASP_SERVER         Default Durable Streams server URL
-  ASP_TOKEN          Auth token (same as --token)`)
+  ASP_TOKEN          Auth token (same as --token)
+  ASP_SHORTENER      Default shortener URL (same as --shortener)`)
 }
 
 async function main(): Promise<void> {
