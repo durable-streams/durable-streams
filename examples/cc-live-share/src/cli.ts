@@ -23,7 +23,7 @@ function usage(): void {
   cods fork [--session <id>] --server <url>            Fork (export) a CC session
   cods clone <fork-url> [--resume] [--fast]             Clone (import) a forked session
   cods merge <session-id-A> <session-id-B>              Merge two local sessions
-  cods install-skills [--global]                         Install /share, /fork and /merge skills into .claude/skills/
+  cods install-skills [--global]                         Install /live-share, /fork and /merge skills into .claude/skills/
 
 Examples:
   cods share --server http://localhost:4437
@@ -133,7 +133,7 @@ async function main(): Promise<void> {
       : path.resolve(`.claude`, `skills`)
     fs.mkdirSync(targetDir, { recursive: true })
 
-    for (const skill of [`share`, `fork`, `merge`]) {
+    for (const skill of [`live-share`, `fork`, `merge`]) {
       const target = path.join(targetDir, skill)
       const source = path.join(skillsSource, skill)
       if (fs.existsSync(target)) {
@@ -144,7 +144,7 @@ async function main(): Promise<void> {
       }
     }
     console.log(
-      `\nSkills installed${global ? ` globally` : ``}. Use /share, /fork and /merge in Claude Code.`
+      `\nSkills installed${global ? ` globally` : ``}. Use /live-share, /fork and /merge in Claude Code.`
     )
   } else {
     console.error(`Unknown command: ${command}\n`)

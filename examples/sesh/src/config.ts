@@ -11,6 +11,7 @@ import * as path from "node:path"
 export interface SeshConfig {
   server: string
   version: number
+  agent?: `claude` | `codex`
 }
 
 export interface Credentials {

@@ -209,6 +209,9 @@ importers:
 
   examples/sesh:
     dependencies:
+      '@durable-streams/agent-session-protocol':
+        specifier: workspace:^
+        version: link:../../packages/agent-session-protocol
       '@durable-streams/client':
         specifier: workspace:^
         version: link:../../packages/client

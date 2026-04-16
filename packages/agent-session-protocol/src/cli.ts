@@ -1,6 +1,9 @@
-import { readFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, symlinkSync } from "node:fs"
 import { randomUUID } from "node:crypto"
 import { execSync } from "node:child_process"
+import { homedir } from "node:os"
+import { dirname, join } from "node:path"
+import { fileURLToPath } from "node:url"
 import { DurableStream, FetchError } from "@durable-streams/client"
 import { normalize, denormalize } from "./index.js"
 import {
@@ -98,13 +101,18 @@ async function pushLines(
   _producerId: string,
   lines: Array<string>
 ): Promise<number> {
-  // Check how many items already exist in the stream
+  // Delta logic: only push new lines that don't already exist in the stream.
+  // Previously this was important because each share reused the same stream URL
+  // (based on session ID), so re-exporting needed to avoid duplicates.
+  // Now each share gets a unique URL ({sessionId}/{entryCount}-{uuid}), so the
+  // stream is always empty on first push and this check is effectively a no-op.
+  // Kept as defensive behavior in case someone calls pushLines() with an
+  // already-populated stream URL.
   const existingCount = await getStreamItemCount(streamUrl)
   if (existingCount >= lines.length) {
     return 0 // already up to date
   }
 
-  // Only push new lines (delta)
   const newLines = lines.slice(existingCount)
   if (newLines.length === 0) return 0
 
@@ -171,11 +179,13 @@ async function exportSession(
   args: Record<string, string | boolean>,
   positional: Array<string>
 ): Promise<void> {
-  const server = (args.server as string) ?? positional[0]
+  const server =
+    (args.server as string) ?? positional[0] ?? process.env.ASP_SERVER
   if (!server) {
     console.error(
       `Usage: asp export --server <url> [--agent claude|codex] [--session <id>]`
     )
+    console.error(`  Or set the ASP_SERVER environment variable.`)
     process.exit(1)
   }
 
@@ -217,19 +227,25 @@ async function exportSession(
 
   // 1. Push normalized stream
   const events = normalize(rawLines, agent)
-  const baseUrl = `${server.replace(/\/$/, ``)}/asp/${session.sessionId}`
+
+  // Each share gets a unique ID: {entryCount}-{uuid}
+  // Entry count gives monotonic ordering/size; uuid guarantees uniqueness
+  // even if the user shares the same state multiple times.
+  const shareId = `${events.length}-${randomUUID()}`
+  const baseUrl = `${server.replace(/\/$/, ``)}/asp/${session.sessionId}/${shareId}`
 
   const normalizedLines = events.map((e) => JSON.stringify(e))
 
+  console.error(`  Share ID: ${shareId}`)
   console.error(`  Normalized: ${events.length} events`)
   const newNormalized = await pushLines(
     baseUrl,
-    `asp-normalized-${session.sessionId}`,
+    `asp-normalized-${session.sessionId}-${shareId}`,
     normalizedLines
   )
   console.error(
     newNormalized > 0
-      ? `  Pushed ${newNormalized} new normalized events`
+      ? `  Pushed ${newNormalized} normalized events`
       : `  Normalized stream up to date`
   )
 
@@ -237,12 +253,12 @@ async function exportSession(
   const nativeUrl = `${baseUrl}/native/${agent}`
   const newNative = await pushLines(
     nativeUrl,
-    `asp-native-${session.sessionId}`,
+    `asp-native-${session.sessionId}-${shareId}`,
     rawLines
   )
   console.error(
     newNative > 0
-      ? `  Pushed ${newNative} new native ${agent} lines`
+      ? `  Pushed ${newNative} native ${agent} lines`
       : `  Native ${agent} stream up to date`
   )
 
@@ -341,19 +357,83 @@ async function importSession(
   }
 }
 
+function installSkills(args: Record<string, string | boolean>): void {
+  // Locate the skills directory bundled with the package
+  const cliDir = dirname(fileURLToPath(import.meta.url))
+  // When running from dist/, skills is two levels up; when running from src/,
+  // it's one level up. Check both.
+  const candidates = [
+    join(cliDir, `..`, `skills`),
+    join(cliDir, `..`, `..`, `skills`),
+  ]
+  const skillsSource = candidates.find((p) => existsSync(p))
+  if (!skillsSource) {
+    console.error(`Could not find skills directory`)
+    process.exit(1)
+  }
+
+  const targets: Array<{ agent: string; path: string }> = []
+  const claudeOnly = args.claude === true
+  const codexOnly = args.codex === true
+  const installClaude = !codexOnly
+  const installCodex = !claudeOnly
+
+  if (installClaude) {
+    targets.push({
+      agent: `claude`,
+      path: join(homedir(), `.claude`, `skills`),
+    })
+  }
+  if (installCodex) {
+    targets.push({
+      agent: `codex`,
+      path: join(homedir(), `.codex`, `skills`),
+    })
+  }
+
+  for (const target of targets) {
+    mkdirSync(target.path, { recursive: true })
+    const skillTarget = join(target.path, `share`)
+    const skillSource = join(skillsSource, `share`)
+
+    if (existsSync(skillTarget)) {
+      console.log(`  ${target.agent}: share skill already exists, skipping`)
+      continue
+    }
+
+    try {
+      symlinkSync(skillSource, skillTarget)
+      console.log(`  ${target.agent}: share skill linked → ${skillSource}`)
+    } catch (error) {
+      console.error(
+        `  ${target.agent}: failed to link skill: ${
+          error instanceof Error ? error.message : error
+        }`
+      )
+    }
+  }
+
+  console.log(
+    `\nSkills installed. Use the "share" skill from within an agent session.`
+  )
+}
+
 function showHelp(): void {
   console.log(`asp - Agent Session Protocol CLI
 
 Usage:
   asp export --server <url> [--agent claude|codex] [--session <id>] [--token <token>]
   asp import <stream-url> --agent claude|codex [--cwd <dir>] [--resume] [--token <token>]
+  asp install-skills [--claude] [--codex]
 
 Commands:
-  export    Export an agent session to Durable Streams
-            Pushes both a normalized stream and a native (raw) stream.
-  import    Import a session from Durable Streams
-            Prefers native stream for same-agent (lossless) resume.
-            Falls back to normalized stream for cross-agent resume.
+  export           Export an agent session to Durable Streams
+                   Pushes both a normalized stream and a native (raw) stream.
+  import           Import a session from Durable Streams
+                   Prefers native stream for same-agent (lossless) resume.
+                   Falls back to normalized stream for cross-agent resume.
+  install-skills   Symlink the share skill into Claude Code and/or Codex
+                   skill directories so it can be invoked from within a session.
 
 Options:
   --server <url>     Durable Streams server URL (export)
@@ -361,13 +441,18 @@ Options:
   --session <id>     Session/thread ID (defaults to active/most recent)
   --cwd <dir>        Working directory for imported session (defaults to current)
   --resume           After importing, immediately resume the session in the target agent
-  --token <token>    Auth token for the DS server (or set DS_TOKEN env var)`)
+  --token <token>    Auth token for the DS server (or set ASP_TOKEN / DS_TOKEN env var)
+
+Environment variables:
+  ASP_SERVER         Default Durable Streams server URL
+  ASP_TOKEN          Auth token (same as --token)`)
 }
 
 async function main(): Promise<void> {
   const { command, args, positional } = parseArgs(process.argv.slice(2))
 
-  const token = (args.token as string) ?? process.env.DS_TOKEN
+  const token =
+    (args.token as string) ?? process.env.ASP_TOKEN ?? process.env.DS_TOKEN
   if (token) {
     globalHeaders = { Authorization: `Bearer ${token}` }
   }
@@ -378,6 +463,9 @@ async function main(): Promise<void> {
       break
     case `import`:
       await importSession(args, positional)
+      break
+    case `install-skills`:
+      installSkills(args)
       break
     case `help`:
     case `--help`:

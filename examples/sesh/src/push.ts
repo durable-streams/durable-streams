@@ -6,6 +6,8 @@
 import * as fs from "node:fs"
 import * as path from "node:path"
 import { DurableStream } from "@durable-streams/client"
+import { normalize } from "@durable-streams/agent-session-protocol"
+import type { AgentType } from "@durable-streams/agent-session-protocol"
 import {
   getAuthHeaders,
   readConfig,
@@ -176,6 +178,49 @@ async function pushSession(
     }
   }
 
+  // Push normalized stream (for cross-agent resume)
+  const agent = (session.agent ?? `claude`) as AgentType
+  if (agent === `claude` || agent === `codex`) {
+    const sanitizedLines = lines
+      .map((l) => sanitizeJsonLine(l))
+      .filter((l): l is string => l !== null)
+    const events = normalize(sanitizedLines, agent)
+    if (events.length > 0) {
+      const normalizedUrl = `${streamUrl}/normalized`
+      try {
+        await DurableStream.create({
+          url: normalizedUrl,
+          contentType: `application/json`,
+          headers,
+        })
+      } catch {
+        // 409 = already exists
+      }
+      const normalizedStream = new DurableStream({
+        url: normalizedUrl,
+        contentType: `application/json`,
+        headers,
+      })
+
+      // Check how many already pushed
+      const normalizedHead = await fetch(normalizedUrl, {
+        method: `HEAD`,
+        headers,
+      })
+      const existingNormalized = parseInt(
+        normalizedHead.headers.get(`stream-total-size`) ?? `0`,
+        10
+      )
+      const newEvents = events.slice(existingNormalized)
+      if (newEvents.length > 0) {
+        const promises = newEvents.map((e) =>
+          normalizedStream.append(JSON.stringify(e))
+        )
+        await Promise.all(promises)
+      }
+    }
+  }
+
   // Update local state
   writeLocalState(repoRoot, session.sessionId, { lastPushedUuid })
 
@@ -192,6 +237,7 @@ async function pushSession(
     sessionId: session.sessionId,
     entriesPushed: linesToPush.length,
     newOffset: lastOffset,
+    skipped: false,
   }
 }
 

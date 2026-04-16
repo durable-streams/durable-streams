@@ -25,11 +25,11 @@ const command = args[0]
 
 function usage(): void {
   console.log(`Usage:
-  sesh init --server <url> [--token <token>]     Initialize sesh for this repo
-  sesh checkin [--session <id>] [--name <name>]  Mark a session for tracking
+  sesh init --server <url> [--token <token>] [--agent claude|codex]  Initialize sesh
+  sesh checkin [--session <id>] [--name <name>] [--agent claude|codex]  Mark a session
   sesh push                                       Push session deltas to DS
   sesh list                                       List tracked sessions
-  sesh resume [<session-id>] [--no-checkin] [--at <commit>]  Fork and resume a session
+  sesh resume [<session-id>] [--agent claude|codex] [--no-checkin] [--at <commit>]  Fork and resume
   sesh merge <session-A> <session-B>               Merge two sessions
   sesh install-hooks                              Install git pre-commit hook
   sesh install-skills [--global]                  Install /checkin skill for Claude Code
@@ -77,7 +77,8 @@ async function main(): Promise<void> {
     }
 
     const repoRoot = requireRepoRoot()
-    writeConfig(repoRoot, { server, version: 1 })
+    const agent = (parseArg(`--agent`) ?? `claude`) as `claude` | `codex`
+    writeConfig(repoRoot, { server, version: 1, agent })
 
     const token = parseArg(`--token`)
     if (token) {
@@ -87,6 +88,7 @@ async function main(): Promise<void> {
 
     console.log(`Initialized sesh in ${repoRoot}`)
     console.log(`  Config: .sesh/config.json`)
+    console.log(`  Default agent: ${agent}`)
     console.log(
       `  Add to git: git add .sesh/config.json .sesh/sessions/ .sesh/.local/.gitignore`
     )
@@ -157,6 +159,9 @@ async function main(): Promise<void> {
       process.exit(0)
     }
 
+    const config = readConfig(repoRoot)
+    const checkinAgent = (parseArg(`--agent`) ?? config?.agent ?? `claude`) as string
+
     writeSessionFile(repoRoot, {
       sessionId,
       parentSessionId: null,
@@ -165,7 +170,7 @@ async function main(): Promise<void> {
       entryCount: 0,
       name,
       cwd: relativeCwd,
-      agent: `claude`,
+      agent: checkinAgent,
       createdBy: getGitUser(),
       forkedFromOffset: null,
     })
@@ -269,6 +274,8 @@ async function main(): Promise<void> {
 
     const noCheckin = hasFlag(`--no-checkin`)
     const atCommit = parseArg(`--at`)
+    const config = readConfig(repoRoot)
+    const targetAgent = (parseArg(`--agent`) ?? config?.agent ?? `claude`) as `claude` | `codex`
 
     console.log(`Forking session ${sessionId.slice(0, 8)}...`)
 
@@ -277,17 +284,25 @@ async function main(): Promise<void> {
       repoRoot,
       noCheckin,
       atCommit,
+      targetAgent,
     })
 
     console.log(`  New session: ${result.newSessionId}`)
     console.log(`  Restored ${result.entriesRestored} entries`)
+    console.log(`  Agent: ${targetAgent}`)
     if (!noCheckin) {
       console.log(`  Checked in: .sesh/sessions/${result.newSessionId}.json`)
     }
 
-    console.log(
-      `\nResume with: cd ${result.cwd} && claude --resume ${result.newSessionId}`
-    )
+    if (targetAgent === `codex`) {
+      console.log(
+        `\nResume with: cd ${result.cwd} && codex resume ${result.newSessionId}`
+      )
+    } else {
+      console.log(
+        `\nResume with: cd ${result.cwd} && claude --resume ${result.newSessionId}`
+      )
+    }
   } else if (command === `merge`) {
     const repoRoot = requireRepoRoot()
     requireConfig(repoRoot)

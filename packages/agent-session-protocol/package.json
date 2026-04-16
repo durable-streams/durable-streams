@@ -43,7 +43,8 @@
   },
   "files": [
     "dist",
-    "bin"
+    "bin",
+    "skills"
   ],
   "dependencies": {
     "@durable-streams/client": "workspace:*"

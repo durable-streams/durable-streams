@@ -8,6 +8,14 @@ import * as path from "node:path"
 import * as os from "node:os"
 import * as crypto from "node:crypto"
 import { execSync } from "node:child_process"
+import {
+  denormalize,
+  writeCodexSession,
+} from "@durable-streams/agent-session-protocol"
+import type {
+  AgentType,
+  NormalizedEvent,
+} from "@durable-streams/agent-session-protocol"
 import { getAuthHeaders, readConfig } from "./config.js"
 import {
   encodeCwd,
@@ -23,6 +31,7 @@ interface ResumeOptions {
   repoRoot: string
   noCheckin?: boolean
   atCommit?: string
+  targetAgent?: AgentType
 }
 
 interface ResumeResult {
@@ -51,7 +60,7 @@ function readSessionAtCommit(
 }
 
 export async function resume(options: ResumeOptions): Promise<ResumeResult> {
-  const { sessionId, repoRoot, noCheckin, atCommit } = options
+  const { sessionId, repoRoot, noCheckin, atCommit, targetAgent } = options
 
   // Read session file (from specific commit if --at specified)
   let session: SessionFile | null
@@ -155,33 +164,88 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
   // Make cwd absolute relative to repo root
   const absoluteCwd = path.isAbsolute(cwd) ? cwd : path.join(repoRoot, cwd)
 
-  // Write JSONL to CC's expected location
-  const projectDir = path.join(
-    os.homedir(),
-    `.claude`,
-    `projects`,
-    encodeCwd(absoluteCwd)
-  )
-  fs.mkdirSync(projectDir, { recursive: true })
+  const sourceAgent = (session.agent ?? `claude`) as AgentType
+  const resolvedTargetAgent = targetAgent ?? sourceAgent
 
-  const jsonlPath = path.join(projectDir, `${newSessionId}.jsonl`)
-  const jsonlContent =
-    entries
-      .map((entry) => {
+  if (sourceAgent === resolvedTargetAgent) {
+    // Same-agent resume: use native stream with string rewrites (lossless)
+    const projectDir = path.join(
+      os.homedir(),
+      `.claude`,
+      `projects`,
+      encodeCwd(absoluteCwd)
+    )
+
+    if (resolvedTargetAgent === `claude`) {
+      fs.mkdirSync(projectDir, { recursive: true })
+      const jsonlPath = path.join(projectDir, `${newSessionId}.jsonl`)
+      const jsonlContent =
+        entries
+          .map((entry) => {
+            const line = JSON.stringify(entry)
+            return line
+              .replaceAll(
+                `"sessionId":"${session.sessionId}"`,
+                `"sessionId":"${newSessionId}"`
+              )
+              .replaceAll(`"cwd":"${session.cwd}"`, `"cwd":"${absoluteCwd}"`)
+          })
+          .map((line) => sanitizeJsonLine(line))
+          .filter(Boolean)
+          .join(`\n`) + `\n`
+      fs.writeFileSync(jsonlPath, jsonlContent)
+    } else if (resolvedTargetAgent === `codex`) {
+      const rewrittenLines = entries.map((entry) => {
         const line = JSON.stringify(entry)
-        // Rewrite sessionId and cwd
         return line
-          .replaceAll(
-            `"sessionId":"${session.sessionId}"`,
-            `"sessionId":"${newSessionId}"`
-          )
-          .replaceAll(`"cwd":"${session.cwd}"`, `"cwd":"${absoluteCwd}"`)
+          .replaceAll(session.sessionId, newSessionId)
+          .replaceAll(session.cwd, absoluteCwd)
       })
-      .map((line) => sanitizeJsonLine(line))
-      .filter(Boolean)
-      .join(`\n`) + `\n`
+      writeCodexSession(newSessionId, rewrittenLines)
+    }
+  } else {
+    // Cross-agent resume: read from normalized stream, denormalize to target
+    const normalizedUrl = `${streamUrl}/normalized`
+    const normalizedRes = await fetch(
+      `${normalizedUrl}?offset=-1`,
+      { headers }
+    )
 
-  fs.writeFileSync(jsonlPath, jsonlContent)
+    let normalizedEvents: Array<NormalizedEvent> = []
+    if (normalizedRes.ok) {
+      const normalizedBody = await normalizedRes.text()
+      if (normalizedBody.trim()) {
+        const parsed = JSON.parse(normalizedBody)
+        normalizedEvents = Array.isArray(parsed) ? parsed : [parsed]
+      }
+    }
+
+    if (normalizedEvents.length === 0) {
+      throw new Error(
+        `No normalized stream found for cross-agent resume. ` +
+          `Push the session first with a version that supports cross-agent export.`
+      )
+    }
+
+    const targetLines = denormalize(normalizedEvents, resolvedTargetAgent, {
+      sessionId: newSessionId,
+      cwd: absoluteCwd,
+    })
+
+    if (resolvedTargetAgent === `claude`) {
+      const projectDir = path.join(
+        os.homedir(),
+        `.claude`,
+        `projects`,
+        encodeCwd(absoluteCwd)
+      )
+      fs.mkdirSync(projectDir, { recursive: true })
+      const jsonlPath = path.join(projectDir, `${newSessionId}.jsonl`)
+      fs.writeFileSync(jsonlPath, targetLines.join(`\n`) + `\n`)
+    } else if (resolvedTargetAgent === `codex`) {
+      writeCodexSession(newSessionId, targetLines)
+    }
+  }
 
   // Create session file in index (unless --no-checkin)
   if (!noCheckin) {
@@ -193,7 +257,7 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
       entryCount: 0,
       name: `${session.name} (resumed)`,
       cwd: session.cwd,
-      agent: session.agent,
+      agent: resolvedTargetAgent,
       createdBy: getGitUser(),
       forkedFromOffset: session.lastOffset,
     }

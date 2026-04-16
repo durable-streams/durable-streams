@@ -1,5 +1,5 @@
 ---
-name: share
+name: live-share
 description: Live-share this CC session so others can follow along in real-time
 ---
 
