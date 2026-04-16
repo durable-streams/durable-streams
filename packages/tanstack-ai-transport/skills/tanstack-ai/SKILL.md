@@ -18,159 +18,103 @@ sources:
   - "durable-streams/durable-streams:packages/tanstack-ai-transport/src/types.ts"
 ---
 
-This skill builds on durable-streams/getting-started. Read it first for setup and offset basics.
-
 # Durable Streams — TanStack AI
 
 Connection adapter for TanStack AI's `useChat()`. Uses one stream per chat session: user messages are echoed into the stream alongside model responses, making it a complete transcript that supports multi-client sync and SSR hydration.
 
-## Prerequisites: Durable Streams Service
+## The two auth layers — keep them separate
 
-Before writing any code, you need a running Durable Streams service. Two options:
+| Auth                | What                                   | Where                                                   | How                                                         |
+| ------------------- | -------------------------------------- | ------------------------------------------------------- | ----------------------------------------------------------- |
+| **Durable Streams** | `DS_SECRET`                            | Server-only — POST `/api/chat` + GET `/api/chat-stream` | `Authorization: Bearer <DS_SECRET>` on upstream DS requests |
+| **AI model**        | `ANTHROPIC_API_KEY` / `OPENAI_API_KEY` | Server-only (read by the adapter)                       | `process.env.ANTHROPIC_API_KEY` is picked up automatically  |
 
-### Option A: Self-hosted
+NEVER mix these. The DS secret authenticates your server to the DS service. The AI key authenticates your server to Anthropic/OpenAI. The client NEVER sees either.
 
-Run the Caddy-based server locally or on your own infrastructure. See `node_modules/@durable-streams/client/skills/server-deployment/SKILL.md` for the full setup (dev server, production Caddyfile, persistence).
+For apps that let users supply their own AI key, see "User-supplied AI key" below.
 
-Set these env vars to point at your server:
+## Prerequisites
 
-```bash
-DS_URL=http://localhost:4437/v1/stream    # your server's stream endpoint
-DS_SECRET=                                 # empty for local dev, or your auth token
-```
-
-### Option B: Electric Cloud (hosted)
-
-Provision a managed Durable Streams service via the Electric CLI:
+Install the DS client + this package:
 
 ```bash
-npx @electric-sql/cli services create streams --environment <env-id> --name chat-streams
-npx @electric-sql/cli services get-secret <service-id>
+pnpm add @durable-streams/client @durable-streams/tanstack-ai-transport @tanstack/ai-react @tanstack/ai-anthropic
 ```
 
-This returns a `service_id` and `secret`. Store them:
+Set env vars. You need a running Durable Streams service — self-hosted (see `server-deployment` skill) or Electric Cloud (see blog post for setup).
 
 ```bash
-echo "DS_SERVICE_ID=<service_id>" >> .env
-echo "DS_SECRET=<secret>" >> .env
-echo "ELECTRIC_URL=https://api.electric-sql.cloud" >> .env
+ELECTRIC_URL=          # e.g. https://api.electric-sql.cloud (root API URL)
+DS_SERVICE_ID=         # Durable Streams service id, e.g. svc-abc-123
+DS_SECRET=             # Bearer token for DS auth
+ANTHROPIC_API_KEY=     # AI model auth (OR let user supply their own, see below)
 ```
 
-If you're inside the Electric Studio agent sandbox, use `set_secret` to persist them for other agents:
+Build the stream base URL from `ELECTRIC_URL + DS_SERVICE_ID` rather than trusting a single `DS_URL` env var — different environments populate it differently, and a mismatch silently 404s your PUT.
 
-```
-set_secret(key: "DS_SERVICE_ID", value: "<service_id>")
-set_secret(key: "DS_SECRET", value: "<secret>")
-```
-
-### URL construction helper
-
-Use this in your server routes. It works with both self-hosted (`DS_URL` set directly) and Electric Cloud (`DS_SERVICE_ID` + `ELECTRIC_URL`):
-
-```typescript
-function buildStreamUrl(streamPath: string): string {
-  const base =
-    process.env.DS_URL ??
-    `${process.env.ELECTRIC_URL || "https://api.electric-sql.cloud"}/v1/stream/${process.env.DS_SERVICE_ID}`
-  // Use URL constructor to avoid double-slash from trailing slash in base
-  return new URL(streamPath, base.replace(/\/+$/, "") + "/").toString()
-}
-
-function dsAuthHeaders(): Record<string, string> {
-  const secret = process.env.DS_SECRET
-  return secret ? { Authorization: `Bearer ${secret}` } : {}
-}
+```ts
+// src/lib/ds-stream.ts
+const electricUrl = process.env.ELECTRIC_URL || "https://api.electric-sql.cloud"
+const serviceId = process.env.DS_SERVICE_ID
+if (!serviceId) throw new Error("DS_SERVICE_ID is required")
+export const DS_BASE = `${electricUrl.replace(/\/+$/, "")}/v1/stream/${serviceId}`
+export const DS_AUTH = { Authorization: `Bearer ${process.env.DS_SECRET}` }
 ```
 
-Without `DS_SECRET`, requests go unauthenticated (fine for local dev). On Electric Cloud, every DS operation requires the secret or returns 401.
+## Client
 
-## Setup
-
-### Client
-
-```typescript
+```tsx
 import { useMemo } from "react"
 import { useChat } from "@tanstack/ai-react"
 import { durableStreamConnection } from "@durable-streams/tanstack-ai-transport"
 
-function Chat({ id, initialMessages, resumeOffset }) {
+function Chat({
+  id,
+  initialMessages,
+  resumeOffset,
+}: {
+  id: string
+  initialMessages?: Array<any>
+  resumeOffset?: string
+}) {
   const connection = useMemo(
     () =>
       durableStreamConnection({
         sendUrl: `/api/chat?id=${encodeURIComponent(id)}`,
         readUrl: `/api/chat-stream?id=${encodeURIComponent(id)}`,
-        initialOffset: resumeOffset, // from SSR loader, prevents replay
+        initialOffset: resumeOffset, // from SSR loader, skips replay
       }),
     [id, resumeOffset]
   )
 
-  const { messages, sendMessage, isLoading } = useChat({
+  const { messages, sendMessage } = useChat({
     id,
     initialMessages,
     connection,
-    live: true, // keep subscription open for multi-client sync
+    live: true, // keeps read subscription open for multi-client sync
   })
 
-  // Render messages — TanStack AI uses `parts` array, NOT `content` string
-  return messages.map((msg) => (
-    <div key={msg.id}>
-      {msg.parts
-        .filter((p) => p.type === "text")
-        .map((p, i) => <p key={i}>{p.text}</p>)}
-    </div>
-  ))
+  // TanStack AI UIMessage has `parts: Array<MessagePart>`. TextPart uses
+  // `.content` (NOT `.text` — that silently renders empty strings).
+  return (
+    <>
+      {messages.map((m) => (
+        <div key={m.id}>
+          {m.parts
+            .filter((p) => p.type === "text")
+            .map((p, i) => (
+              <span key={i}>{p.content}</span>
+            ))}
+        </div>
+      ))}
+    </>
+  )
 }
 ```
 
-**CRITICAL: Share apiKey state via Context, not per-hook useState.** If multiple components read the API key from settings, each `useState`-based hook has isolated state. When the user saves the key in Settings, only that component sees it — other components still have `""`. Requests go out with `x-api-key: ""` and the server returns 401.
+## Server — POST /api/chat
 
-```typescript
-// WRONG — each useSettings() call has isolated state
-export function useSettings() {
-  const [apiKey, setApiKey] = useState("")
-  useEffect(() => { setApiKey(localStorage.getItem("api-key") ?? "") }, [])
-  return { apiKey, setApiKey }
-}
-
-// RIGHT — use Context so all components see the same value
-const SettingsContext = createContext<{ apiKey: string; setApiKey: (k: string) => void }>(...)
-export function SettingsProvider({ children }) {
-  const [apiKey, setApiKey] = useState(() => localStorage.getItem("api-key") ?? "")
-  const save = useCallback((k: string) => { localStorage.setItem("api-key", k); setApiKey(k) }, [])
-  return <SettingsContext.Provider value={{ apiKey, setApiKey: save }}>{children}</SettingsContext.Provider>
-}
-export const useSettings = () => useContext(SettingsContext)
-```
-
-Wrap your root layout in `<SettingsProvider>` so both the `SettingsDialog` (writer) and the `durableStreamConnection` consumer see the same value.
-
-**CRITICAL: TanStack AI message format.** `useChat()` returns `UIMessage` objects with a `parts` array, NOT a `content` string:
-
-```typescript
-// WRONG — crashes with "Cannot read properties of undefined (reading 'slice')"
-message.content
-
-// RIGHT — TanStack AI UIMessage uses parts array
-function getTextContent(message: {
-  parts: Array<{ type: string; text?: string }>
-}): string {
-  return message.parts
-    .filter((p) => p.type === "text")
-    .map((p) => p.text ?? "")
-    .join("")
-}
-
-// Use it for rendering, titles, etc.
-const title = getTextContent(messages[0]).slice(0, 50)
-```
-
-````
-
-### Server — POST /api/chat
-
-Use `chat()` from `@tanstack/ai` with the appropriate adapter. **Do NOT call LLM SDKs (Anthropic, OpenAI) directly** — the adapter handles message format conversion, streaming chunks, and error mapping.
-
-```typescript
+```ts
 import { chat } from "@tanstack/ai"
 import { anthropicText } from "@tanstack/ai-anthropic"
 import { toDurableChatSessionResponse } from "@durable-streams/tanstack-ai-transport"
@@ -178,253 +122,201 @@ import { toDurableChatSessionResponse } from "@durable-streams/tanstack-ai-trans
 export async function POST(request: Request) {
   const url = new URL(request.url)
   const body = await request.json()
-  const messages = body.messages
-  // id comes from the query string (sendUrl) or body — check both
   const id = url.searchParams.get("id") ?? body.id
   if (!id) return Response.json({ error: "Missing chat id" }, { status: 400 })
 
-  const latestUserMessage = messages.findLast((m) => m.role === "user")
+  const latestUserMessage = body.messages.findLast(
+    (m: any) => m.role === "user"
+  )
 
   const responseStream = chat({
     adapter: anthropicText("claude-sonnet-4-6"),
-    messages,
+    messages: body.messages,
   })
 
-  const dsResponse = await toDurableChatSessionResponse({
+  return await toDurableChatSessionResponse({
     stream: {
-      writeUrl: buildStreamUrl(`chat/${id}`),
-      headers: { ...dsAuthHeaders(), "Content-Type": "application/json" },
+      writeUrl: `${DS_BASE}/chat-${id}`,
+      headers: DS_AUTH,
       createIfMissing: true,
     },
     newMessages: latestUserMessage ? [latestUserMessage] : [],
     responseStream,
   })
-
-  // CRITICAL: reconstruct the response — the upstream DS service may send
-  // both Content-Length and Transfer-Encoding headers, which Node rejects
-  // with "Parse Error: Content-Length can't be present with Transfer-Encoding"
-  const headers = new Headers(dsResponse.headers)
-  headers.delete("content-length")
-  headers.delete("content-encoding")
-  return new Response(dsResponse.body, { status: dsResponse.status, headers })
 }
-````
+```
 
 **Available adapters:**
 
-- `anthropicText("claude-sonnet-4-6")` from `@tanstack/ai-anthropic` — Anthropic Claude models
-- `openaiText("gpt-4o-mini")` from `@tanstack/ai-openai` — OpenAI models
+- `anthropicText("claude-sonnet-4-6")` from `@tanstack/ai-anthropic`
+- `openaiText("gpt-4o-mini")` from `@tanstack/ai-openai`
 
-`mode: "immediate"` (default) returns `202` immediately; writes continue in background. Use `mode: "await"` when the runtime needs an active request to keep running.
+Both read credentials from their standard env vars (`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`).
 
-### Auth: two separate concerns
+## Server — GET /api/chat-stream (read proxy)
 
-There are two independent auth layers. Keep them distinct:
+Never expose the DS write URL to the client. Proxy reads through your server so the DS secret stays server-side.
 
-| Auth                | What                     | Where                                                               | How                                                                                                                              |
-| ------------------- | ------------------------ | ------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------- |
-| **Durable Streams** | `DS_SECRET`              | Server-side only — both POST `/api/chat` and GET `/api/chat-stream` | Read from `process.env.DS_SECRET`, inject as `Authorization: Bearer` header on upstream DS requests. NEVER expose to the client. |
-| **AI model**        | `ANTHROPIC_API_KEY` etc. | Server-side only                                                    | Read from `process.env`. The adapter picks it up automatically.                                                                  |
+```ts
+export async function GET(request: Request) {
+  const url = new URL(request.url)
+  const id = url.searchParams.get("id")
+  if (!id) return Response.json({ error: "Missing id" }, { status: 400 })
 
-**Default pattern (recommended):** API keys are server-side env vars. The client sends only the chat message — no secrets in the browser.
+  const upstream = new URL(`${DS_BASE}/chat-${id}`)
+  // Forward offset/live/sse params from the browser's DS client
+  for (const [k, v] of url.searchParams) {
+    if (k !== "id") upstream.searchParams.set(k, v)
+  }
 
-**User-supplied API key pattern:** If the app lets users enter their own AI key in a settings UI (stored in localStorage), the client must send it to the server on every request. In this case:
+  const response = await fetch(upstream, {
+    headers: {
+      ...DS_AUTH,
+      ...(request.headers.get("accept") && {
+        Accept: request.headers.get("accept")!,
+      }),
+    },
+  })
 
-Client — pass the key via `headers` on `durableStreamConnection` (NOT on `useChat` — those headers are not forwarded):
+  // Strip hop-by-hop headers before forwarding
+  const headers = new Headers()
+  for (const [k, v] of response.headers) {
+    const lk = k.toLowerCase()
+    if (
+      lk === "connection" ||
+      lk === "transfer-encoding" ||
+      lk === "content-length" ||
+      lk === "content-encoding"
+    )
+      continue
+    headers.set(k, v)
+  }
+  return new Response(response.body, { status: response.status, headers })
+}
+```
 
-```typescript
+Use the chat id as a **query parameter** — not a dynamic route segment. Segments like `/api/chat-stream/$id` break when the stream path contains slashes.
+
+## SSR hydration + resume
+
+In your route loader, materialize the snapshot server-side and pass the offset down:
+
+```ts
+import { materializeSnapshotFromDurableStream } from "@durable-streams/tanstack-ai-transport"
+
+export const loader = async ({ params }: { params: { id: string } }) => {
+  const snapshot = await materializeSnapshotFromDurableStream({
+    readUrl: `${DS_BASE}/chat-${params.id}`,
+    headers: DS_AUTH,
+  })
+  return { messages: snapshot.messages, resumeOffset: snapshot.offset }
+}
+```
+
+Pass `resumeOffset` to `durableStreamConnection` — this skips replaying the history on first subscribe.
+
+## User-supplied AI key
+
+If users enter their own AI key in a settings UI:
+
+1. Store the key in a shared store (Context, Zustand, Jotai) — NOT per-hook `useState`, otherwise different components see different values.
+2. Pass it via `headers` on `durableStreamConnection` (NOT on `useChat` — those headers aren't forwarded):
+
+```tsx
+const { apiKey } = useSettings() // from Context/store, shared across components
 const connection = useMemo(
   () =>
     durableStreamConnection({
       sendUrl: `/api/chat?id=${encodeURIComponent(id)}`,
       readUrl: `/api/chat-stream?id=${encodeURIComponent(id)}`,
-      headers: { "x-api-key": apiKey }, // sent on every POST to sendUrl
+      headers: { "x-api-key": apiKey },
     }),
   [id, apiKey]
 )
-
-const { messages, sendMessage } = useChat({ id, connection, live: true })
 ```
 
-Server — read the key from the request header and set it for the adapter:
+Server reads the header and sets it for the adapter:
 
-```typescript
-export async function POST({ request }) {
-  const apiKey = request.headers.get("x-api-key")
-  if (!apiKey)
-    return Response.json({ error: "Missing API key" }, { status: 401 })
-
-  // Set for the adapter (adapter reads process.env.ANTHROPIC_API_KEY)
-  process.env.ANTHROPIC_API_KEY = apiKey
-
-  const { messages, id } = await request.json()
-  // ... rest of handler same as above
-}
+```ts
+const apiKey = request.headers.get("x-api-key")
+if (!apiKey) return Response.json({ error: "Missing API key" }, { status: 401 })
+process.env.ANTHROPIC_API_KEY = apiKey
+// ... rest of handler
 ```
-
-Note: setting `process.env` per-request is a quick hack for single-user apps. For multi-user apps, pass the key via the adapter's constructor options instead.
-
-### SSR hydration
-
-Use `materializeSnapshotFromDurableStream()` in your server loader to build initial state and capture a resume offset:
-
-```typescript
-import { materializeSnapshotFromDurableStream } from "@durable-streams/tanstack-ai-transport"
-
-export async function loader({ params }) {
-  const snapshot = await materializeSnapshotFromDurableStream({
-    readUrl: buildReadStreamUrl(`chat/${params.id}`),
-    headers: READ_HEADERS,
-  })
-
-  return {
-    messages: snapshot.messages,
-    resumeOffset: snapshot.offset, // pass as initialOffset to skip replay
-  }
-}
-```
-
-### Read proxy — GET /api/chat-stream
-
-Always proxy reads through an app route so credentials stay server-side. The `readUrl` in `durableStreamConnection` points here.
-
-```typescript
-// Build the upstream DS URL from env vars
-function buildReadStreamUrl(streamPath: string): string {
-  const dsServiceId = process.env.DS_SERVICE_ID
-  const electricUrl =
-    process.env.ELECTRIC_URL || "https://api.electric-sql.cloud"
-  return `${electricUrl}/v1/stream/${dsServiceId}/${streamPath}`
-}
-
-export async function GET({ request }: { request: Request }) {
-  const url = new URL(request.url)
-  const chatId = url.searchParams.get("id")
-  if (!chatId)
-    return Response.json({ error: "Missing chat id" }, { status: 400 })
-
-  const streamPath = `chat/${chatId}`
-  const upstream = new URL(buildStreamUrl(streamPath))
-
-  // Forward query params (offset, live, etc.) from the browser's DS client
-  for (const [key, value] of url.searchParams) {
-    if (key === "id") continue
-    upstream.searchParams.set(key, value)
-  }
-
-  const response = await fetch(upstream, {
-    headers: {
-      ...dsAuthHeaders(),
-      ...(request.headers.get("accept")
-        ? { Accept: request.headers.get("accept")! }
-        : {}),
-    },
-  })
-
-  // Stream doesn't exist yet (created on first message send).
-  // Forward the 404 as-is — the DS client handles retries internally.
-  // Do NOT return a fake 200 with empty SSE body, as the client will
-  // treat it as "stream closed" and reconnect in a tight loop.
-  if (response.status === 404) {
-    return Response.json(
-      { error: "Stream not found", code: "STREAM_NOT_FOUND" },
-      { status: 404 }
-    )
-  }
-
-  // Strip hop-by-hop headers, always drop content-length + content-encoding
-  const headers = new Headers()
-  for (const [key, value] of response.headers) {
-    const k = key.toLowerCase()
-    if (
-      k === "connection" ||
-      k === "transfer-encoding" ||
-      k === "content-encoding" ||
-      k === "content-length"
-    )
-      continue
-    headers.set(key, value)
-  }
-  headers.set("Cache-Control", "no-store")
-
-  return new Response(response.body, {
-    status: response.status,
-    statusText: response.statusText,
-    headers,
-  })
-}
-```
-
-Use the chat id as a **query parameter** (`/api/chat-stream?id=...`), not a dynamic route segment. Dynamic segments like `/api/ds-stream/$streamId` cause issues with TanStack Router when the stream path contains slashes.
 
 ## Common Mistakes
 
-### CRITICAL Node 22 Parse Error with Content-Length + Transfer-Encoding
-
-The Electric Cloud DS service may send responses with both `Content-Length` and `Transfer-Encoding` headers. Node 22 rejects this at the socket level with `Parse Error: Content-Length can't be present with Transfer-Encoding` — this crashes **inside** `toDurableChatSessionResponse` before your code can strip headers.
-
-**Workaround:** Start the app with `--insecure-http-parser` to relax Node's strict HTTP parsing:
-
-```json
-// package.json scripts
-{
-  "dev:start": "NODE_OPTIONS='--insecure-http-parser' pnpm dev:start",
-  "dev": "NODE_OPTIONS='--insecure-http-parser' vinxi dev"
-}
-```
-
-Or set it in the Vite config's server options. This is a known issue with the upstream DS service and will be fixed in a future release.
-
-Even with this workaround, always reconstruct the response from `toDurableChatSessionResponse` to strip headers before returning:
-
-```typescript
-const dsResponse = await toDurableChatSessionResponse({
-  stream,
-  newMessages,
-  responseStream,
-})
-const headers = new Headers(dsResponse.headers)
-headers.delete("content-length")
-headers.delete("content-encoding")
-return new Response(dsResponse.body, { status: dsResponse.status, headers })
-```
-
 ### CRITICAL Sending full message history as newMessages
 
-Wrong: `newMessages: messages` — echoes the entire conversation again.
-Fix: only pass messages that are new since the last request:
+Wrong: `newMessages: messages` — echoes the entire conversation every request.
 
-```typescript
+Correct: only pass what's new since the last request:
+
+```ts
 const latestUserMessage = messages.findLast((m) => m.role === "user")
 newMessages: latestUserMessage ? [latestUserMessage] : []
 ```
 
-### CRITICAL Exposing write URLs to the client
+### CRITICAL Exposing the DS write URL to the client
 
-Wrong: setting `readUrl` to the durable stream write URL with credentials.
-Fix: always use a read proxy route for `readUrl` in the connection options.
+Setting `readUrl` on the server stream config to the durable stream's write URL leaks the secret in the `Location` header. Always use a read proxy route for `readUrl`.
 
-Source: packages/tanstack-ai-transport/src/client.ts
+### CRITICAL Wrong field on UIMessage parts — empty bubbles
 
-### HIGH Not passing initialOffset for SSR hydration
+TanStack AI's `UIMessage` has `parts: Array<MessagePart>`. The `TextPart` interface puts the text in `.content` — **not** `.text`, **not** `message.content`. Reading the wrong field renders empty strings silently (no error), so bubbles just show "…" or blank.
 
-Without `initialOffset`, the subscriber replays the entire stream history on first subscribe and materializes a `MESSAGES_SNAPSHOT` from scratch. For long conversations this wastes bandwidth and processing. Pass the offset from `materializeSnapshotFromDurableStream()`.
+```ts
+// WRONG — message.content does not exist on UIMessage
+message.content.slice(0, 50)
 
-Source: packages/tanstack-ai-transport/src/client.ts
+// WRONG — p.text is undefined on TextPart (silently empty)
+message.parts
+  .filter((p) => p.type === "text")
+  .map((p) => p.text)
+  .join("")
 
-### HIGH Not using waitUntil on serverless runtimes
+// RIGHT
+const text = message.parts
+  .filter((p) => p.type === "text")
+  .map((p) => p.content)
+  .join("")
+```
 
-In `immediate` mode, the response returns before writes finish. Without `waitUntil`, serverless runtimes may kill the process and drop chunks.
+Reference: `@tanstack/ai` `TextPart { type: "text"; content: string }` in `src/types.ts`.
 
-Fix: pass `waitUntil: ctx.waitUntil.bind(ctx)` to `toDurableChatSessionResponse()`.
+### HIGH useChat headers are not forwarded
 
-Source: packages/tanstack-ai-transport/src/server.ts
+`headers` on `useChat({ headers })` are NOT sent by `durableStreamConnection`. Put them on the connection:
 
-### MEDIUM Using readUrl as sendUrl
+```ts
+durableStreamConnection({ sendUrl, readUrl, headers: { "x-api-key": key } })
+```
 
-`sendUrl` is the POST endpoint that triggers model generation. `readUrl` is the GET/SSE endpoint for subscribing. These are different routes. Swapping them causes silent failures.
+### HIGH Missing initialOffset for SSR
 
-Source: packages/tanstack-ai-transport/src/client.ts
+Without `initialOffset`, the client replays the entire stream history on first subscribe and re-materializes a `MESSAGES_SNAPSHOT`. For long conversations this wastes bandwidth. Always pass the offset from `materializeSnapshotFromDurableStream()` to the connection.
+
+### HIGH Missing waitUntil on serverless
+
+In `immediate` mode (default), the response returns before background writes finish. Without `waitUntil`, serverless runtimes kill the process and drop chunks:
+
+```ts
+return await toDurableChatSessionResponse({
+  stream,
+  newMessages,
+  responseStream,
+  waitUntil: ctx.waitUntil.bind(ctx),
+})
+```
+
+### MEDIUM Swapping readUrl and sendUrl
+
+`sendUrl` is the POST endpoint that triggers model generation. `readUrl` is the GET/SSE endpoint for subscribing. Different routes — swapping causes silent failures.
+
+## Response contract
+
+- `toDurableChatSessionResponse({ mode: "immediate" })` (default) → `202`, empty body, writes continue in background
+- `toDurableChatSessionResponse({ mode: "await" })` → `200`, empty body, returns after writes finish
 
 ## See also
 
