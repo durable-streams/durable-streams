@@ -71,6 +71,59 @@ describe(`Path Encoding`, () => {
   })
 })
 
+describe(`Concurrent appends`, () => {
+  test(`should serialize append metadata updates per stream without producer headers`, async () => {
+    server.store.create(`/test`, { contentType: `text/plain` })
+
+    const store = server.store as any
+    const fileHandlePool = store.fileHandlePool
+    const originalFsyncFile = fileHandlePool.fsyncFile.bind(fileHandlePool)
+
+    let signalFirstFsyncReached: (() => void) | undefined
+    const firstFsyncReached = new Promise<void>((resolve) => {
+      signalFirstFsyncReached = resolve
+    })
+
+    let releaseFirstFsync: (() => void) | undefined
+    const unblockFirstFsync = new Promise<void>((resolve) => {
+      releaseFirstFsync = resolve
+    })
+
+    let fsyncCallCount = 0
+    fileHandlePool.fsyncFile = async (segmentPath: string) => {
+      fsyncCallCount += 1
+      if (fsyncCallCount === 1) {
+        signalFirstFsyncReached?.()
+        await unblockFirstFsync
+      }
+      return originalFsyncFile(segmentPath)
+    }
+
+    try {
+      const firstAppend = server.store.append(`/test`, encode(`abc`))
+      await firstFsyncReached
+
+      const secondAppend = server.store.append(`/test`, encode(`def`))
+      releaseFirstFsync?.()
+
+      await Promise.all([firstAppend, secondAppend])
+
+      expect(server.store.getCurrentOffset(`/test`)).toBe(
+        `0000000000000000_0000000000000006`
+      )
+
+      const { messages } = server.store.read(`/test`)
+      expect(messages).toHaveLength(2)
+      expect(messages.map((message) => decode(message.data))).toEqual([
+        `abc`,
+        `def`,
+      ])
+    } finally {
+      fileHandlePool.fsyncFile = originalFsyncFile
+    }
+  })
+})
+
 // ============================================================================
 // Server Close Tests (Server Implementation Detail)
 // ============================================================================

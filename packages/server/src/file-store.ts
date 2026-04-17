@@ -228,6 +228,11 @@ export class FileBackedStreamStore {
   private pendingLongPolls: Array<PendingLongPoll> = []
   private dataDir: string
   /**
+   * Per-stream locks for serializing append operations.
+   * Key: "{streamPath}"
+   */
+  private streamLocks = new Map<string, Promise<unknown>>()
+  /**
    * Per-producer locks for serializing validation+append operations.
    * Key: "{streamPath}:{producerId}"
    */
@@ -531,6 +536,27 @@ export class FileBackedStreamStore {
 
     return () => {
       this.producerLocks.delete(lockKey)
+      releaseLock!()
+    }
+  }
+
+  /**
+   * Acquire a lock for serialized stream append operations.
+   * Returns a release function.
+   */
+  private async acquireStreamLock(streamPath: string): Promise<() => void> {
+    while (this.streamLocks.has(streamPath)) {
+      await this.streamLocks.get(streamPath)
+    }
+
+    let releaseLock: () => void
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve
+    })
+    this.streamLocks.set(streamPath, lockPromise)
+
+    return () => {
+      this.streamLocks.delete(streamPath)
       releaseLock!()
     }
   }
@@ -986,6 +1012,19 @@ export class FileBackedStreamStore {
   }
 
   async append(
+    streamPath: string,
+    data: Uint8Array,
+    options: AppendOptions & { isInitialCreate?: boolean } = {}
+  ): Promise<StreamMessage | AppendResult | null> {
+    const releaseLock = await this.acquireStreamLock(streamPath)
+    try {
+      return await this.appendUnlocked(streamPath, data, options)
+    } finally {
+      releaseLock()
+    }
+  }
+
+  private async appendUnlocked(
     streamPath: string,
     data: Uint8Array,
     options: AppendOptions & { isInitialCreate?: boolean } = {}
