@@ -578,13 +578,12 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 		w.Header().Set(HeaderStreamSSEDataEncoding, "base64")
 	}
 
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		return newHTTPError(http.StatusInternalServerError, "streaming not supported")
-	}
+	rc := http.NewResponseController(w)
 
 	w.WriteHeader(http.StatusOK)
-	flusher.Flush()
+	if err := rc.Flush(); err != nil {
+		return newHTTPError(http.StatusInternalServerError, "streaming not supported")
+	}
 
 	ctx := r.Context()
 	reconnectTimer := time.NewTimer(time.Duration(h.SSEReconnectInterval))
@@ -659,7 +658,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				fmt.Fprintf(w, "event: control\n")
 				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
 
-				flusher.Flush()
+				rc.Flush()
 				sentInitialControl = true
 
 				// Close SSE connection after sending streamClosed
@@ -688,7 +687,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				fmt.Fprintf(w, "event: control\n")
 				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
 
-				flusher.Flush()
+				rc.Flush()
 				sentInitialControl = true
 
 				// Close connection if stream is closed
@@ -712,7 +711,7 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				controlJSON, _ := json.Marshal(control)
 				fmt.Fprintf(w, "event: control\n")
 				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
-				flusher.Flush()
+				rc.Flush()
 				return nil
 			}
 		}
