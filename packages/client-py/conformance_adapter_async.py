@@ -196,6 +196,7 @@ async def handle_init(cmd: dict[str, Any]) -> dict[str, Any]:
             "streaming": True,
             "dynamicHeaders": True,
             "strictZeroValidation": True,
+            "auto": True,
         },
     }
 
@@ -350,6 +351,8 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
     elif cmd_live == "sse":
         live = "sse"
         is_sse = True
+    elif cmd_live is True:  # auto mode = long-poll
+        live = "long-poll"
     elif cmd_live is False:
         live = False
     else:
@@ -1042,16 +1045,7 @@ def handle_validate(cmd: dict[str, Any]) -> dict[str, Any]:
     target_type = target["target"]
 
     try:
-        if target_type == "retry-options":
-            # Python client does not have a separate RetryOptions class
-            return {
-                "type": "error",
-                "success": False,
-                "commandType": "validate",
-                "errorCode": ERROR_CODES["NOT_SUPPORTED"],
-                "message": "Python client does not have RetryOptions class",
-            }
-        elif target_type == "idempotent-producer":
+        if target_type == "idempotent-producer":
             # Test IdempotentProducer validation by attempting to create one
             producer_id = target.get("producerId", "test-producer")
             epoch = target.get("epoch", 0)

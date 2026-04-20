@@ -175,7 +175,8 @@ def handle_init(cmd)
       "longPoll" => true,
       "streaming" => true,
       "dynamicHeaders" => true,
-      "sseBase64Encoding" => true
+      "sseBase64Encoding" => true,
+      "auto" => true
     }
   }
 end
@@ -297,6 +298,7 @@ def handle_read(cmd)
   live = case cmd["live"]
          when "long-poll" then :long_poll
          when "sse" then :sse
+         when true then :long_poll # auto mode = long-poll
          when false then false
          else false # Default to catch-up only
          end
@@ -934,19 +936,6 @@ def handle_validate(cmd)
 
     return validation_error("epoch must be non-negative, got: #{epoch}") if epoch < 0
     return validation_error("maxBatchBytes must be positive, got: #{max_batch_bytes}") if max_batch_bytes < 1
-
-    validation_success
-
-  when "retry-options"
-    max_retries = target["maxRetries"] || 3
-    initial_delay_ms = target["initialDelayMs"] || 100
-    max_delay_ms = target["maxDelayMs"] || 5000
-    multiplier = target["multiplier"] || 2.0
-
-    return validation_error("maxRetries must be non-negative, got: #{max_retries}") if max_retries < 0
-    return validation_error("initialDelayMs must be positive, got: #{initial_delay_ms}") if initial_delay_ms < 1
-    return validation_error("maxDelayMs must be positive, got: #{max_delay_ms}") if max_delay_ms < 1
-    return validation_error("multiplier must be >= 1.0, got: #{multiplier}") if multiplier < 1.0
 
     validation_success
 
