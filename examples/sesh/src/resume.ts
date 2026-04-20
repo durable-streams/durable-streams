@@ -3,27 +3,21 @@
  * Reads from DS, creates a local CC session.
  */
 
-import * as fs from "node:fs"
 import * as path from "node:path"
-import * as os from "node:os"
 import * as crypto from "node:crypto"
 import { execSync } from "node:child_process"
 import {
   denormalize,
+  writeClaudeSession,
   writeCodexSession,
 } from "@durable-streams/agent-session-protocol"
+import { getAuthHeaders, readConfig } from "./config.js"
+import { getGitUser, readSessionFile, writeSessionFile } from "./sessions.js"
+import { sanitizeJsonLine } from "./sanitize.js"
 import type {
   AgentType,
   NormalizedEvent,
 } from "@durable-streams/agent-session-protocol"
-import { getAuthHeaders, readConfig } from "./config.js"
-import {
-  encodeCwd,
-  getGitUser,
-  readSessionFile,
-  writeSessionFile,
-} from "./sessions.js"
-import { sanitizeJsonLine } from "./sanitize.js"
 import type { SessionFile } from "./sessions.js"
 
 interface ResumeOptions {
@@ -38,6 +32,7 @@ interface ResumeResult {
   newSessionId: string
   cwd: string
   entriesRestored: number
+  agent: AgentType
 }
 
 /**
@@ -89,17 +84,33 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
 
   const headers = getAuthHeaders(repoRoot)
 
-  // Construct the stream URL from the config server + the relative stream path.
-  // The stored streamUrl might point to a different host (e.g., localhost)
-  // than the current config server (e.g., ngrok or VM IP).
-  let streamUrl = session.streamUrl
-  const streamPath = new URL(streamUrl).pathname
-  const serverPath = new URL(config.server).pathname
-  // Strip the server base path to get the relative portion (e.g., /sesh/<id>)
-  const relativePath = streamPath.startsWith(serverPath)
-    ? streamPath.slice(serverPath.length)
-    : streamPath
-  streamUrl = `${config.server}${relativePath}`
+  // The stored streamUrl might point to a different host than the current
+  // config server (e.g. ngrok restart, moved VM). Only rewrite when origins
+  // actually differ — otherwise use the stored URL as-is to preserve its
+  // exact path (including server-specific quirks like double slashes that
+  // some servers treat as distinct resources).
+  const baseWithSlash = config.server.endsWith(`/`)
+    ? config.server
+    : `${config.server}/`
+  const configOrigin = new URL(baseWithSlash).origin
+  const storedOrigin = new URL(session.streamUrl).origin
+  let streamUrl: string
+  if (configOrigin === storedOrigin) {
+    streamUrl = session.streamUrl
+  } else {
+    // Server moved: extract the path suffix after the server's base and
+    // resolve it against the new base. Leading slashes stripped so
+    // `new URL(rel, base)` doesn't treat rel as absolute and drop base's
+    // path prefix.
+    const streamPath = new URL(session.streamUrl).pathname
+    const serverBasePath = new URL(baseWithSlash).pathname
+    const relativePath = (
+      streamPath.startsWith(serverBasePath)
+        ? streamPath.slice(serverBasePath.length)
+        : streamPath
+    ).replace(/^\/+/, ``)
+    streamUrl = new URL(relativePath, baseWithSlash).toString()
+  }
 
   // Read from DS — try checkpoint first, fall back to beginning
   const readUrl = `${streamUrl}?offset=compact`
@@ -164,37 +175,25 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
   // Make cwd absolute relative to repo root
   const absoluteCwd = path.isAbsolute(cwd) ? cwd : path.join(repoRoot, cwd)
 
-  const sourceAgent = (session.agent ?? `claude`) as AgentType
+  const sourceAgent = session.agent
   const resolvedTargetAgent = targetAgent ?? sourceAgent
 
   if (sourceAgent === resolvedTargetAgent) {
     // Same-agent resume: use native stream with string rewrites (lossless)
-    const projectDir = path.join(
-      os.homedir(),
-      `.claude`,
-      `projects`,
-      encodeCwd(absoluteCwd)
-    )
-
     if (resolvedTargetAgent === `claude`) {
-      fs.mkdirSync(projectDir, { recursive: true })
-      const jsonlPath = path.join(projectDir, `${newSessionId}.jsonl`)
-      const jsonlContent =
-        entries
-          .map((entry) => {
-            const line = JSON.stringify(entry)
-            return line
-              .replaceAll(
-                `"sessionId":"${session.sessionId}"`,
-                `"sessionId":"${newSessionId}"`
-              )
-              .replaceAll(`"cwd":"${session.cwd}"`, `"cwd":"${absoluteCwd}"`)
-          })
-          .map((line) => sanitizeJsonLine(line))
-          .filter(Boolean)
-          .join(`\n`) + `\n`
-      fs.writeFileSync(jsonlPath, jsonlContent)
-    } else if (resolvedTargetAgent === `codex`) {
+      const lines = entries
+        .map((entry) => {
+          const line = JSON.stringify(entry)
+          return line
+            .replaceAll(
+              `"sessionId":"${session.sessionId}"`,
+              `"sessionId":"${newSessionId}"`
+            )
+            .replaceAll(`"cwd":"${session.cwd}"`, `"cwd":"${absoluteCwd}"`)
+        })
+        .map((line) => sanitizeJsonLine(line))
+      writeClaudeSession(newSessionId, absoluteCwd, lines)
+    } else {
       const rewrittenLines = entries.map((entry) => {
         const line = JSON.stringify(entry)
         return line
@@ -206,10 +205,7 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
   } else {
     // Cross-agent resume: read from normalized stream, denormalize to target
     const normalizedUrl = `${streamUrl}/normalized`
-    const normalizedRes = await fetch(
-      `${normalizedUrl}?offset=-1`,
-      { headers }
-    )
+    const normalizedRes = await fetch(`${normalizedUrl}?offset=-1`, { headers })
 
     let normalizedEvents: Array<NormalizedEvent> = []
     if (normalizedRes.ok) {
@@ -233,16 +229,8 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
     })
 
     if (resolvedTargetAgent === `claude`) {
-      const projectDir = path.join(
-        os.homedir(),
-        `.claude`,
-        `projects`,
-        encodeCwd(absoluteCwd)
-      )
-      fs.mkdirSync(projectDir, { recursive: true })
-      const jsonlPath = path.join(projectDir, `${newSessionId}.jsonl`)
-      fs.writeFileSync(jsonlPath, targetLines.join(`\n`) + `\n`)
-    } else if (resolvedTargetAgent === `codex`) {
+      writeClaudeSession(newSessionId, absoluteCwd, targetLines)
+    } else {
       writeCodexSession(newSessionId, targetLines)
     }
   }
@@ -268,5 +256,6 @@ export async function resume(options: ResumeOptions): Promise<ResumeResult> {
     newSessionId,
     cwd: absoluteCwd,
     entriesRestored: entries.length,
+    agent: resolvedTargetAgent,
   }
 }

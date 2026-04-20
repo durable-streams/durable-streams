@@ -4,21 +4,18 @@
  */
 
 import * as fs from "node:fs"
-import * as path from "node:path"
 import { DurableStream } from "@durable-streams/client"
-import { normalize } from "@durable-streams/agent-session-protocol"
-import type { AgentType } from "@durable-streams/agent-session-protocol"
+import {
+  findSessionPath,
+  normalize,
+} from "@durable-streams/agent-session-protocol"
 import {
   getAuthHeaders,
   readConfig,
   readLocalState,
   writeLocalState,
 } from "./config.js"
-import {
-  getLocalJsonlPath,
-  listSessionFiles,
-  writeSessionFile,
-} from "./sessions.js"
+import { listSessionFiles, writeSessionFile } from "./sessions.js"
 import { sanitizeJsonLine } from "./sanitize.js"
 import type { SessionFile } from "./sessions.js"
 
@@ -81,14 +78,10 @@ async function pushSession(
     }
   }
 
-  // Find local JSONL — resolve relative cwd against repo root
-  // Use realpath to handle macOS /tmp → /private/tmp symlinks
-  const resolvedCwd = path.isAbsolute(session.cwd)
-    ? session.cwd
-    : path.join(repoRoot, session.cwd)
-  const absoluteCwd = fs.realpathSync(resolvedCwd)
-  const jsonlPath = getLocalJsonlPath(session.sessionId, absoluteCwd)
-  if (!fs.existsSync(jsonlPath)) {
+  // Find local JSONL via ASP (agent-aware — knows Claude's per-cwd layout
+  // and Codex's date-partitioned layout). Falls back to null if missing.
+  const jsonlPath = await findSessionPath(session.agent, session.sessionId)
+  if (!jsonlPath) {
     return {
       sessionId: session.sessionId,
       entriesPushed: 0,
@@ -133,7 +126,10 @@ async function pushSession(
   // Create stream if needed
   let streamUrl = session.streamUrl
   if (!streamUrl) {
-    streamUrl = `${config.server}/sesh/${session.sessionId}`
+    // Strip any trailing slashes so we don't produce `.../base//sesh/...`,
+    // which is a separate resource on most servers.
+    const base = config.server.replace(/\/+$/, ``)
+    streamUrl = `${base}/sesh/${session.sessionId}`
     try {
       await DurableStream.create({
         url: streamUrl,
@@ -179,45 +175,40 @@ async function pushSession(
   }
 
   // Push normalized stream (for cross-agent resume)
-  const agent = (session.agent ?? `claude`) as AgentType
-  if (agent === `claude` || agent === `codex`) {
-    const sanitizedLines = lines
-      .map((l) => sanitizeJsonLine(l))
-      .filter((l): l is string => l !== null)
-    const events = normalize(sanitizedLines, agent)
-    if (events.length > 0) {
-      const normalizedUrl = `${streamUrl}/normalized`
-      try {
-        await DurableStream.create({
-          url: normalizedUrl,
-          contentType: `application/json`,
-          headers,
-        })
-      } catch {
-        // 409 = already exists
-      }
-      const normalizedStream = new DurableStream({
+  const sanitizedLines = lines.map((l) => sanitizeJsonLine(l))
+  const events = normalize(sanitizedLines, session.agent)
+  if (events.length > 0) {
+    const normalizedUrl = `${streamUrl}/normalized`
+    try {
+      await DurableStream.create({
         url: normalizedUrl,
         contentType: `application/json`,
         headers,
       })
+    } catch {
+      // 409 = already exists
+    }
+    const normalizedStream = new DurableStream({
+      url: normalizedUrl,
+      contentType: `application/json`,
+      headers,
+    })
 
-      // Check how many already pushed
-      const normalizedHead = await fetch(normalizedUrl, {
-        method: `HEAD`,
-        headers,
-      })
-      const existingNormalized = parseInt(
-        normalizedHead.headers.get(`stream-total-size`) ?? `0`,
-        10
+    // Check how many already pushed
+    const normalizedHead = await fetch(normalizedUrl, {
+      method: `HEAD`,
+      headers,
+    })
+    const existingNormalized = parseInt(
+      normalizedHead.headers.get(`stream-total-size`) ?? `0`,
+      10
+    )
+    const newEvents = events.slice(existingNormalized)
+    if (newEvents.length > 0) {
+      const promises = newEvents.map((e) =>
+        normalizedStream.append(JSON.stringify(e))
       )
-      const newEvents = events.slice(existingNormalized)
-      if (newEvents.length > 0) {
-        const promises = newEvents.map((e) =>
-          normalizedStream.append(JSON.stringify(e))
-        )
-        await Promise.all(promises)
-      }
+      await Promise.all(promises)
     }
   }
 

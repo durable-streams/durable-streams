@@ -11,7 +11,6 @@ import * as path from "node:path"
 export interface SeshConfig {
   server: string
   version: number
-  agent?: `claude` | `codex`
 }
 
 export interface Credentials {
@@ -20,6 +19,14 @@ export interface Credentials {
 
 export interface LocalSessionState {
   lastPushedUuid?: string
+}
+
+/**
+ * Per-user preferences stored in .sesh/.local/ (gitignored) so that one
+ * dev's agent choice doesn't leak to teammates via the shared config.json.
+ */
+export interface SeshPreferences {
+  agent?: `claude` | `codex`
 }
 
 /**
@@ -138,5 +145,37 @@ export function writeLocalState(
   fs.writeFileSync(
     path.join(localDir, `${sessionId}.json`),
     JSON.stringify(state, null, 2) + `\n`
+  )
+}
+
+/**
+ * Read per-user preferences from .sesh/.local/preferences.json.
+ */
+export function readPreferences(repoRoot: string): SeshPreferences {
+  const prefsPath = path.join(
+    getSeshDir(repoRoot),
+    `.local`,
+    `preferences.json`
+  )
+  if (!fs.existsSync(prefsPath)) return {}
+  try {
+    return JSON.parse(fs.readFileSync(prefsPath, `utf-8`)) as SeshPreferences
+  } catch {
+    return {}
+  }
+}
+
+/**
+ * Write per-user preferences to .sesh/.local/preferences.json.
+ */
+export function writePreferences(
+  repoRoot: string,
+  prefs: SeshPreferences
+): void {
+  const localDir = path.join(getSeshDir(repoRoot), `.local`)
+  fs.mkdirSync(localDir, { recursive: true })
+  fs.writeFileSync(
+    path.join(localDir, `preferences.json`),
+    JSON.stringify(prefs, null, 2) + `\n`
   )
 }

@@ -7,18 +7,23 @@
 import * as fs from "node:fs"
 import * as os from "node:os"
 import * as path from "node:path"
-import { findRepoRoot, readConfig, saveToken, writeConfig } from "./config.js"
+import { discoverSessions } from "@durable-streams/agent-session-protocol"
 import {
-  findActiveSessions,
-  getCwdFromJsonl,
-  getGitUser,
-  getSessionSlug,
-  listSessionFiles,
-  writeSessionFile,
-} from "./sessions.js"
+  findRepoRoot,
+  readConfig,
+  readPreferences,
+  saveToken,
+  writeConfig,
+  writePreferences,
+} from "./config.js"
+import { getGitUser, listSessionFiles, writeSessionFile } from "./sessions.js"
 import { pushAll } from "./push.js"
 import { resume } from "./resume.js"
 import { merge } from "./merge.js"
+import type {
+  AgentType,
+  DiscoveredSession,
+} from "@durable-streams/agent-session-protocol"
 
 const args = process.argv.slice(2)
 const command = args[0]
@@ -62,6 +67,54 @@ function requireConfig(repoRoot: string): void {
   }
 }
 
+/**
+ * Resolve the agent to use for a command. Checks --agent first, then the
+ * user's local preference (.sesh/.local/preferences.json, gitignored so it
+ * doesn't leak across teammates). When `required`, errors out if neither
+ * is set — no silent default, since a mismatched default would bite
+ * codex-only users.
+ */
+function resolveAgent(
+  repoRoot: string,
+  required: boolean
+): AgentType | undefined {
+  const flag = parseArg(`--agent`)
+  const prefs = readPreferences(repoRoot)
+  const resolved = (flag ?? prefs.agent) as AgentType | undefined
+  if (!resolved && required) {
+    console.error(`No agent specified and no preferred agent configured.`)
+    console.error(`Either:`)
+    console.error(`  - pass --agent claude|codex to this command, or`)
+    console.error(
+      `  - set a local preference: sesh init --agent claude|codex --server <url>`
+    )
+    process.exit(1)
+  }
+  return resolved
+}
+
+/**
+ * Read the Claude session slug from the first entry that has one.
+ * Claude-only — codex sessions don't have slugs.
+ */
+function readClaudeSlug(jsonlPath: string): string | null {
+  try {
+    const content = fs.readFileSync(jsonlPath, `utf-8`)
+    for (const line of content.split(`\n`)) {
+      if (!line.trim()) continue
+      try {
+        const entry = JSON.parse(line) as Record<string, unknown>
+        if (typeof entry.slug === `string`) return entry.slug
+      } catch {
+        continue
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
 async function main(): Promise<void> {
   if (!command || command === `--help` || command === `-h`) {
     usage()
@@ -77,8 +130,14 @@ async function main(): Promise<void> {
     }
 
     const repoRoot = requireRepoRoot()
-    const agent = (parseArg(`--agent`) ?? `claude`) as `claude` | `codex`
-    writeConfig(repoRoot, { server, version: 1, agent })
+    writeConfig(repoRoot, { server, version: 1 })
+
+    const agent = parseArg(`--agent`) as AgentType | undefined
+    if (agent) {
+      // Preference is per-user, not per-repo: stored in .sesh/.local/ so
+      // teammates aren't silently nudged toward one dev's chosen agent.
+      writePreferences(repoRoot, { agent })
+    }
 
     const token = parseArg(`--token`)
     if (token) {
@@ -87,69 +146,84 @@ async function main(): Promise<void> {
     }
 
     console.log(`Initialized sesh in ${repoRoot}`)
-    console.log(`  Config: .sesh/config.json`)
-    console.log(`  Default agent: ${agent}`)
+    console.log(`  Config: .sesh/config.json (shared)`)
+    if (agent) {
+      console.log(
+        `  Preferred agent: ${agent} (local only — .sesh/.local/preferences.json)`
+      )
+    } else {
+      console.log(
+        `  No preferred agent set. Pass --agent to checkin/resume, or re-init with --agent.`
+      )
+    }
     console.log(
       `  Add to git: git add .sesh/config.json .sesh/sessions/ .sesh/.local/.gitignore`
     )
   } else if (command === `checkin`) {
     const repoRoot = requireRepoRoot()
     requireConfig(repoRoot)
+    const checkinAgent = resolveAgent(repoRoot, true)!
 
     let sessionId = parseArg(`--session`)
-    let cwd: string
+    let cwd: string | undefined
+    let match: DiscoveredSession | undefined
 
     if (!sessionId) {
-      // Auto-detect
-      let sessions = findActiveSessions(process.cwd())
-      if (sessions.length === 0) {
-        sessions = findActiveSessions()
-      }
-      if (sessions.length === 0) {
-        console.error(`No active CC sessions found.`)
+      // Auto-detect — only claude has a process registry, so for codex this
+      // will return nothing active and the user has to pass --session.
+      const all = await discoverSessions(checkinAgent)
+      const active = all.filter((s) => s.active)
+      let candidates = active.filter((s) => s.cwd === process.cwd())
+      if (candidates.length === 0) candidates = active
+      if (candidates.length === 0) {
+        console.error(`No active ${checkinAgent} sessions found.`)
         console.error(`Use --session <id> to specify one explicitly.`)
         process.exit(1)
       }
-      if (sessions.length > 1) {
+      if (candidates.length > 1) {
         console.error(`Multiple active sessions found:`)
-        for (const s of sessions) {
-          console.error(`  ${s.sessionId} (cwd: ${s.cwd}, pid: ${s.pid})`)
+        for (const s of candidates) {
+          console.error(`  ${s.sessionId} (cwd: ${s.cwd ?? `?`})`)
         }
         console.error(`\nUse --session <id> to specify which one.`)
         process.exit(1)
       }
-      sessionId = sessions[0].sessionId
-      cwd = sessions[0].cwd
+      match = candidates[0]
+      sessionId = match.sessionId
+      cwd = match.cwd
     } else {
-      // Find cwd from active sessions, or read from JSONL, or fall back to current dir
-      const all = findActiveSessions()
-      const match = all.find((s) => s.sessionId === sessionId)
-      if (match) {
-        cwd = match.cwd
-      } else {
-        // Session might not be active — read cwd from its JSONL file
-        cwd = getCwdFromJsonl(sessionId) ?? process.cwd()
-      }
+      // Explicit session: find it in discovery to learn its cwd
+      const all = await discoverSessions(checkinAgent)
+      match = all.find((s) => s.sessionId === sessionId)
+      cwd = match?.cwd
     }
 
+    const resolvedCwd = cwd ?? process.cwd()
+
     // Make cwd relative to repo root (handle symlinks via realpath)
-    const realCwd = fs.existsSync(cwd) ? fs.realpathSync(cwd) : cwd
+    const realCwd = fs.existsSync(resolvedCwd)
+      ? fs.realpathSync(resolvedCwd)
+      : resolvedCwd
     const realRoot = fs.realpathSync(repoRoot)
     let relativeCwd: string
     if (realCwd.startsWith(realRoot)) {
       const rel = realCwd.slice(realRoot.length + 1)
       relativeCwd = rel ? `./${rel}` : `.`
-    } else if (cwd.startsWith(repoRoot)) {
-      const rel = cwd.slice(repoRoot.length + 1)
+    } else if (resolvedCwd.startsWith(repoRoot)) {
+      const rel = resolvedCwd.slice(repoRoot.length + 1)
       relativeCwd = rel ? `./${rel}` : `.`
     } else {
-      relativeCwd = cwd
+      relativeCwd = resolvedCwd
     }
 
-    // Get name
+    // Get name. Claude sessions may have an embedded slug; codex doesn't.
     let name = parseArg(`--name`)
     if (!name) {
-      name = getSessionSlug(sessionId, cwd) ?? sessionId.slice(0, 8)
+      if (checkinAgent === `claude` && match?.path) {
+        name = readClaudeSlug(match.path) ?? sessionId.slice(0, 8)
+      } else {
+        name = sessionId.slice(0, 8)
+      }
     }
 
     // Check if already checked in
@@ -158,9 +232,6 @@ async function main(): Promise<void> {
       console.log(`Session ${sessionId} is already checked in.`)
       process.exit(0)
     }
-
-    const config = readConfig(repoRoot)
-    const checkinAgent = (parseArg(`--agent`) ?? config?.agent ?? `claude`) as string
 
     writeSessionFile(repoRoot, {
       sessionId,
@@ -177,6 +248,7 @@ async function main(): Promise<void> {
 
     console.log(`Checked in session: ${name} (${sessionId})`)
     console.log(`  cwd: ${relativeCwd}`)
+    console.log(`  agent: ${checkinAgent}`)
     console.log(`  File: .sesh/sessions/${sessionId}.json`)
   } else if (command === `push`) {
     const repoRoot = requireRepoRoot()
@@ -274,8 +346,9 @@ async function main(): Promise<void> {
 
     const noCheckin = hasFlag(`--no-checkin`)
     const atCommit = parseArg(`--at`)
-    const config = readConfig(repoRoot)
-    const targetAgent = (parseArg(`--agent`) ?? config?.agent ?? `claude`) as `claude` | `codex`
+    // Resolve target agent: --agent > local preference > fall through to
+    // source agent (determined inside resume()). No silent claude default.
+    const targetAgent = resolveAgent(repoRoot, false)
 
     console.log(`Forking session ${sessionId.slice(0, 8)}...`)
 
@@ -289,12 +362,12 @@ async function main(): Promise<void> {
 
     console.log(`  New session: ${result.newSessionId}`)
     console.log(`  Restored ${result.entriesRestored} entries`)
-    console.log(`  Agent: ${targetAgent}`)
+    console.log(`  Agent: ${result.agent}`)
     if (!noCheckin) {
       console.log(`  Checked in: .sesh/sessions/${result.newSessionId}.json`)
     }
 
-    if (targetAgent === `codex`) {
+    if (result.agent === `codex`) {
       console.log(
         `\nResume with: cd ${result.cwd} && codex resume ${result.newSessionId}`
       )
@@ -327,13 +400,19 @@ async function main(): Promise<void> {
     const hooksDir = `${repoRoot}/.git/hooks`
     const hookPath = `${hooksDir}/pre-commit`
 
-    // Get the path to sesh CLI
-    const seshCliPath = new URL(`./cli.ts`, import.meta.url).pathname
+    // Resolve the compiled CLI (dist/cli.js). When sesh is invoked via the
+    // globally linked `sesh` bin, import.meta.url points at dist/cli.js, so
+    // `./cli.js` resolves correctly alongside it. We invoke via plain node
+    // so the hook doesn't need tsx at commit time.
+    const seshCliPath = new URL(`./cli.js`, import.meta.url).pathname
 
     const hookContent = `#!/bin/sh
 # sesh pre-commit hook — pushes session data to DS and stages updated files
-npx tsx ${seshCliPath} push 2>&1
-# Stage any updated session files
+# set -e so a failing push aborts the commit (better to catch problems early
+# than silently ship an unpushed session).
+set -e
+node ${seshCliPath} push
+# Stage any updated session files (best-effort — no sessions is fine).
 git add .sesh/sessions/ 2>/dev/null || true
 `
 

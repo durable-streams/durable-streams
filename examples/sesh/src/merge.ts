@@ -13,12 +13,26 @@ import { findRepoRoot } from "./config.js"
 import {
   encodeCwd,
   getGitUser,
-  getLocalJsonlPath,
   readSessionFile,
   writeSessionFile,
 } from "./sessions.js"
 import { sanitizeJsonLine } from "./sanitize.js"
 import type { SessionFile } from "./sessions.js"
+
+/**
+ * Resolve the Claude JSONL path for a session. Merge is Claude-specific
+ * (JSONL shape is baked into the conflict-resolution flow), so hardcoding
+ * the Claude layout here is intentional.
+ */
+function claudeJsonlPath(sessionId: string, cwd: string): string {
+  return path.join(
+    os.homedir(),
+    `.claude`,
+    `projects`,
+    encodeCwd(cwd),
+    `${sessionId}.jsonl`
+  )
+}
 
 interface MergeOptions {
   sessionA: string
@@ -88,7 +102,7 @@ function extractMessages(
   const realCwd = fs.existsSync(absoluteCwd)
     ? fs.realpathSync(absoluteCwd)
     : absoluteCwd
-  const jsonlPath = getLocalJsonlPath(sessionId, realCwd)
+  const jsonlPath = claudeJsonlPath(sessionId, realCwd)
   if (!fs.existsSync(jsonlPath)) return `(session JSONL not found locally)`
 
   const content = fs.readFileSync(jsonlPath, `utf-8`)
@@ -269,7 +283,7 @@ export function merge(options: MergeOptions): void {
   const realCwdA = fs.existsSync(absoluteCwdA)
     ? fs.realpathSync(absoluteCwdA)
     : absoluteCwdA
-  const jsonlPathA = getLocalJsonlPath(sessionA.sessionId, realCwdA)
+  const jsonlPathA = claudeJsonlPath(sessionA.sessionId, realCwdA)
 
   let jsonlLines: Array<string> = []
   if (fs.existsSync(jsonlPathA)) {
@@ -380,7 +394,7 @@ function getGitBranchFromJsonl(
   const realCwd = fs.existsSync(absoluteCwd)
     ? fs.realpathSync(absoluteCwd)
     : absoluteCwd
-  const jsonlPath = getLocalJsonlPath(session.sessionId, realCwd)
+  const jsonlPath = claudeJsonlPath(session.sessionId, realCwd)
   if (!fs.existsSync(jsonlPath)) return null
 
   const content = fs.readFileSync(jsonlPath, `utf-8`)
