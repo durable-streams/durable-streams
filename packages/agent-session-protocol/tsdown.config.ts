@@ -1,7 +1,7 @@
 import type { Options } from "tsdown"
 
 const config: Options = {
-  entry: ["src/index.ts", "src/cli.ts"],
+  entry: ["src/index.ts", "src/cli.ts", "src/queue-channel.ts"],
   format: ["esm", "cjs"],
   platform: "node",
   dts: true,

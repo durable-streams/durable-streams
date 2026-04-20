@@ -39,7 +39,8 @@
   },
   "sideEffects": false,
   "bin": {
-    "asp": "./bin/asp.mjs"
+    "asp": "./bin/asp.mjs",
+    "asp-queue-channel": "./bin/queue-channel.mjs"
   },
   "files": [
     "dist",
@@ -47,7 +48,8 @@
     "skills"
   ],
   "dependencies": {
-    "@durable-streams/client": "workspace:*"
+    "@durable-streams/client": "workspace:*",
+    "@modelcontextprotocol/sdk": "^1.29.0"
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",

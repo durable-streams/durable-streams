@@ -26,6 +26,15 @@ The Durable Streams server URL must be configured via the `ASP_SERVER` environme
 
 Optionally, a shortener URL can be configured via `ASP_SHORTENER` or `--shortener` — when set, the output is a short, human-friendly URL instead of the raw DS URL.
 
+### One-time setup for live collaboration (optional)
+
+Live mode can also accept prompts from viewers in the browser — they type a prompt on the share page and Claude picks it up and responds. This requires a one-time setup on the user's machine:
+
+1. Register the channel MCP server: `asp install-channel`
+2. From then on, start Claude with `claude --dangerously-load-development-channels server:queue` (aliasable). Plain `claude` still works, but `/share live` won't accept viewer prompts in that session.
+
+If the user hasn't done this setup, `/share live` still works for read-only live viewing — just no bidirectional prompt submission.
+
 ## Steps
 
 1. Determine the current session ID from your own context. For Claude Code it's typically a UUID in the session metadata. For Codex it's the thread ID.
@@ -33,11 +42,13 @@ Optionally, a shortener URL can be configured via `ASP_SHORTENER` or `--shortene
 2. Run the appropriate command:
 
    **Snapshot** (`/share`):
+
    ```bash
    asp export --session <current-session-id>
    ```
 
    **Live** (`/share live`) — must be backgrounded with `&` so the agent session can continue:
+
    ```bash
    asp export --session <current-session-id> --live &
    ```
@@ -63,6 +74,7 @@ Optionally, a shortener URL can be configured via `ASP_SHORTENER` or `--shortene
    **Live mode:**
    - This session is now being **live-shared** at: **\<share-url\>**
    - The share will keep updating as the conversation grows. Anyone with the URL can open it in a browser to watch the session unfold in real-time (with a valid auth token).
+   - **If Claude was started with `--dangerously-load-development-channels server:queue`**: viewers can also type prompts on the share page; they arrive as `<channel source="queue" user="...">` events and Claude responds to them automatically. See [One-time setup for live collaboration](#one-time-setup-for-live-collaboration-optional).
    - To stop sharing, kill the background `asp export --live` process.
    - To resume the current state from the CLI in Claude Code:
      ```bash

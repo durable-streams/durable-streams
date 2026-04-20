@@ -660,3 +660,79 @@ h2 {
   .meta dt { margin-top: 0.5rem; }
   .meta dt:first-child { margin-top: 0; }
 }
+
+/* Prompt input — lets live viewers submit prompts back to the active session. */
+.prompt-input {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding: 0.75rem 1rem;
+  border-top: 1px solid var(--c-border);
+  background: rgba(255, 255, 255, 0.02);
+}
+.prompt-input-name-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  font-size: 0.8rem;
+  color: var(--c-text-muted);
+}
+.prompt-input-name-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+.prompt-input-name {
+  background: transparent;
+  border: 1px solid var(--c-border);
+  border-radius: 4px;
+  color: var(--c-text);
+  font-size: 0.8rem;
+  padding: 0.2rem 0.4rem;
+  max-width: 160px;
+}
+.prompt-input-name:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+.prompt-input-status {
+  font-weight: 500;
+}
+.prompt-input-status.sending { color: var(--c-text-muted); }
+.prompt-input-status.sent { color: var(--c-ok, #4ade80); }
+.prompt-input-status.error { color: var(--c-warn, #fbbf24); }
+.prompt-input-form {
+  display: flex;
+  gap: 0.5rem;
+  align-items: stretch;
+}
+.prompt-input-textarea {
+  flex: 1;
+  resize: vertical;
+  min-height: 2.5rem;
+  max-height: 10rem;
+  padding: 0.5rem 0.65rem;
+  font-family: inherit;
+  font-size: 0.9rem;
+  line-height: 1.4;
+  background: var(--c-surface);
+  color: var(--c-text);
+  border: 1px solid var(--c-border);
+  border-radius: 6px;
+}
+.prompt-input-textarea:focus {
+  outline: none;
+  border-color: var(--c-accent);
+}
+.prompt-input-textarea:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.prompt-input-submit {
+  align-self: stretch;
+}
+@media (max-width: 520px) {
+  .prompt-input-name-row { flex-direction: column; align-items: flex-start; }
+  .prompt-input-form { flex-direction: column; }
+}

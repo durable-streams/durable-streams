@@ -1,7 +1,8 @@
 import { useLayoutEffect, useRef, useState } from "react"
 import { useNormalizedStream } from "../lib/stream"
-import type { ResolvedEntry } from "../lib/types"
 import { Conversation } from "./Conversation"
+import { PromptInput } from "./PromptInput"
+import type { ResolvedEntry } from "../lib/types"
 
 interface Props {
   entry: ResolvedEntry
@@ -167,6 +168,13 @@ function SessionStream({
           <Conversation events={state.events} embedded />
         )}
       </div>
+      {entry.live && (
+        <PromptInput
+          fullUrl={entry.fullUrl}
+          token={token}
+          disabled={state.status === `ended` || state.status === `error`}
+        />
+      )}
     </section>
   )
 }

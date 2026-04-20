@@ -1,11 +1,20 @@
-import { createReadStream, existsSync, mkdirSync, readFileSync, statSync, symlinkSync, watch } from "node:fs"
+import {
+  createReadStream,
+  existsSync,
+  mkdirSync,
+  readFileSync,
+  statSync,
+  symlinkSync,
+  unlinkSync,
+  watch,
+  writeFileSync,
+} from "node:fs"
 import { randomUUID } from "node:crypto"
 import { execSync } from "node:child_process"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
 import { DurableStream, FetchError } from "@durable-streams/client"
-import { normalize, denormalize } from "./index.js"
 import {
   discoverSessions,
   findClaudeSession,
@@ -13,6 +22,7 @@ import {
   writeClaudeSession,
   writeCodexSession,
 } from "./sessions.js"
+import { denormalize, normalize } from "./index.js"
 import type { HeadersRecord } from "@durable-streams/client"
 import type { AgentType, NormalizedEvent } from "./types.js"
 
@@ -128,7 +138,11 @@ async function pushLines(
 
 async function streamExists(url: string): Promise<boolean> {
   try {
-    const stream = new DurableStream({ url, contentType: `application/json`, headers: globalHeaders })
+    const stream = new DurableStream({
+      url,
+      contentType: `application/json`,
+      headers: globalHeaders,
+    })
     const response = await stream.stream({ json: true, live: false })
     const items = await response.json()
     return items.length > 0
@@ -138,7 +152,11 @@ async function streamExists(url: string): Promise<boolean> {
 }
 
 async function readStream<T>(url: string): Promise<Array<T>> {
-  const stream = new DurableStream({ url, contentType: `application/json`, headers: globalHeaders })
+  const stream = new DurableStream({
+    url,
+    contentType: `application/json`,
+    headers: globalHeaders,
+  })
   const response = await stream.stream<T>({ json: true, live: false })
   return response.json()
 }
@@ -180,7 +198,9 @@ async function exportSession(
   positional: Array<string>
 ): Promise<void> {
   const server =
-    (args.server as string) ?? positional[0] ?? process.env.ASP_SERVER
+    (args.server as string | undefined) ??
+    positional[0] ??
+    process.env.ASP_SERVER
   if (!server) {
     console.error(
       `Usage: asp export --server <url> [--agent claude|codex] [--session <id>]`
@@ -189,14 +209,15 @@ async function exportSession(
     process.exit(1)
   }
 
-  let agent = (args.agent as AgentType) ?? detectAgent()
+  let agent: AgentType | undefined =
+    (args.agent as AgentType | undefined) ?? detectAgent() ?? undefined
   const sessionId = args.session as string | undefined
 
-  const sessions = await discoverSessions(agent ?? undefined)
+  const sessions = await discoverSessions(agent)
 
   let session = sessionId
     ? sessions.find((s) => s.sessionId === sessionId)
-    : sessions.find((s) => s.active) ?? sessions[sessions.length - 1]
+    : (sessions.find((s) => s.active) ?? sessions[sessions.length - 1])
 
   // Fallback: search for JSONL file directly when session ID is provided
   // but not found via metadata (e.g., older or continued sessions)
@@ -266,9 +287,9 @@ async function exportSession(
 
   // Optionally shorten the URL via a shortener service
   const shortener =
-    (args.shortener as string) ?? process.env.ASP_SHORTENER
+    (args.shortener as string | undefined) ?? process.env.ASP_SHORTENER
   const token =
-    (args.token as string) ??
+    (args.token as string | undefined) ??
     process.env.ASP_TOKEN ??
     process.env.DS_TOKEN
 
@@ -301,12 +322,41 @@ async function exportSession(
   console.error(`Watching ${session.path}`)
   console.error(`Press Ctrl-C to stop sharing.`)
 
-  await watchAndPushLive({
-    sourcePath: session.path,
-    nativeUrl,
-    normalizedUrl: baseUrl,
-    agent,
+  // Create the prompt queue stream now so viewers can POST to it. Without
+  // this the first POST from the viewer would 404.
+  const queueUrl = `${baseUrl}/prompts`
+  try {
+    await createOrConnectStream(queueUrl, `application/json`)
+    console.error(`  Queue stream ready: ${queueUrl}`)
+  } catch (error) {
+    console.error(
+      `  Failed to create queue stream (collab disabled):`,
+      error instanceof Error ? error.message : error
+    )
+  }
+
+  // Publish the collab config file so the queue-channel MCP subprocess
+  // (already running under CC if the user started claude with
+  // --dangerously-load-development-channels server:queue) can pick up
+  // the session's queue URL and start forwarding prompts.
+  const collabPath = writeCollabConfig({
+    sessionId: session.sessionId,
+    dsBase: server,
+    queueUrl,
+    token,
   })
+  console.error(`  Collab config: ${collabPath}`)
+
+  try {
+    await watchAndPushLive({
+      sourcePath: session.path,
+      nativeUrl,
+      normalizedUrl: baseUrl,
+      agent,
+    })
+  } finally {
+    removeCollabConfig()
+  }
 }
 
 interface WatchOptions {
@@ -319,7 +369,11 @@ interface WatchOptions {
 /**
  * Read bytes [start, end) from the source file.
  */
-function readByteRange(path: string, start: number, end: number): Promise<string> {
+function readByteRange(
+  path: string,
+  start: number,
+  end: number
+): Promise<string> {
   return new Promise((resolve, reject) => {
     if (end <= start) {
       resolve(``)
@@ -397,9 +451,7 @@ async function watchAndPushLive(opts: WatchOptions): Promise<void> {
       if (newRawLines.length === 0) return
 
       // Push new native lines as-is
-      await Promise.all(
-        newRawLines.map((line) => nativeStream.append(line))
-      )
+      await Promise.all(newRawLines.map((line) => nativeStream.append(line)))
 
       // Incrementally normalize ONLY the new lines.
       // - fromCompaction: false → don't try to find a compaction boundary
@@ -429,6 +481,9 @@ async function watchAndPushLive(opts: WatchOptions): Promise<void> {
       )
     } finally {
       busy = false
+      // eslint can't see that `stopping` is reassigned inside the SIGINT
+      // handler closure below, so it thinks `!stopping` is always true.
+      // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
       if (pending && !stopping) {
         pending = false
         void processChanges()
@@ -536,11 +591,12 @@ async function importSession(
     process.exit(1)
   }
 
-  const agent = args.agent as AgentType
-  if (!agent || (agent !== `claude` && agent !== `codex`)) {
+  const agentArg = args.agent as string | undefined
+  if (agentArg !== `claude` && agentArg !== `codex`) {
     console.error(`--agent is required (claude or codex)`)
     process.exit(1)
   }
+  const agent: AgentType = agentArg
 
   // Try resolving as a short URL first. If the URL returns JSON with a
   // fullUrl field, use that; otherwise treat the input as a direct DS URL.
@@ -551,7 +607,7 @@ async function importSession(
     console.error(`Resolved short URL → ${streamUrl}`)
   }
 
-  const cwd = (args.cwd as string) ?? process.cwd()
+  const cwd = (args.cwd as string | undefined) ?? process.cwd()
   const shouldResume = args.resume === true
   const newSessionId = randomUUID()
 
@@ -591,7 +647,9 @@ async function importSession(
       sessionPath = writeCodexSession(newSessionId, rewrittenLines)
     }
   } else {
-    console.error(`  No native ${agent} stream — using normalized (cross-agent)`)
+    console.error(
+      `  No native ${agent} stream — using normalized (cross-agent)`
+    )
     const events = await readStream<NormalizedEvent>(streamUrl)
     console.error(`  Read ${events.length} normalized events`)
 
@@ -686,6 +744,111 @@ function installSkills(args: Record<string, string | boolean>): void {
   )
 }
 
+/**
+ * Install the queue-channel MCP server into Claude Code's global MCP
+ * config (~/.claude.json). Safe to run repeatedly; overwrites the
+ * existing `queue` entry. The MCP subprocess sits idle until a live
+ * share writes ~/.sesh/active-collab.json, so global registration
+ * doesn't do anything risky by default.
+ */
+function installChannel(): void {
+  const queueBinPath = fileURLToPath(
+    new URL(`../bin/queue-channel.mjs`, import.meta.url)
+  )
+
+  if (!existsSync(queueBinPath)) {
+    console.error(`Channel binary not found at ${queueBinPath}`)
+    console.error(
+      `Make sure the agent-session-protocol package is built (pnpm build).`
+    )
+    process.exit(1)
+  }
+
+  const claudeConfigPath = join(homedir(), `.claude.json`)
+  interface ClaudeConfig {
+    mcpServers?: Record<string, unknown>
+    [key: string]: unknown
+  }
+  let config: ClaudeConfig = {}
+  if (existsSync(claudeConfigPath)) {
+    try {
+      config = JSON.parse(
+        readFileSync(claudeConfigPath, `utf8`)
+      ) as ClaudeConfig
+    } catch (error) {
+      console.error(
+        `Failed to parse ${claudeConfigPath}:`,
+        error instanceof Error ? error.message : error
+      )
+      process.exit(1)
+    }
+  }
+
+  config.mcpServers ??= {}
+  config.mcpServers[`queue`] = {
+    command: `node`,
+    args: [queueBinPath],
+  }
+
+  writeFileSync(claudeConfigPath, JSON.stringify(config, null, 2) + `\n`)
+  console.log(`Registered queue channel in ${claudeConfigPath}`)
+  console.log(`  command: node ${queueBinPath}`)
+  console.log(``)
+  console.log(
+    `To enable live-collaboration for new CC sessions, start claude with:`
+  )
+  console.log(``)
+  console.log(`  claude --dangerously-load-development-channels server:queue`)
+  console.log(``)
+  console.log(
+    `You can alias this in your shell. Once CC is running with channels,`
+  )
+  console.log(
+    `every \`/share live\` in that session enables remote prompt submission`
+  )
+  console.log(`from the share URL — no CC restart needed.`)
+}
+
+/**
+ * Write the per-session collab config so the queue-channel MCP
+ * subprocess (already running under CC) picks up the session's DS
+ * queue URL and auth token. The subprocess watches
+ * ~/.sesh/active-collab.json via fs.watch.
+ */
+function writeCollabConfig(opts: {
+  sessionId: string
+  dsBase: string
+  queueUrl: string
+  token: string | undefined
+}): string {
+  const dir = join(homedir(), `.sesh`)
+  mkdirSync(dir, { recursive: true })
+  const path = join(dir, `active-collab.json`)
+  const payload = {
+    sessionId: opts.sessionId,
+    dsBase: opts.dsBase,
+    queueUrl: opts.queueUrl,
+    dsToken: opts.token,
+    // Include the watcher's PID so a new CC session's queue-channel MCP
+    // can detect stale configs (previous watcher crashed or was killed
+    // without running its SIGINT handler) and refuse to use them.
+    pid: process.pid,
+  }
+  writeFileSync(path, JSON.stringify(payload, null, 2) + `\n`)
+  return path
+}
+
+function removeCollabConfig(): void {
+  const path = join(homedir(), `.sesh`, `active-collab.json`)
+  if (existsSync(path)) {
+    try {
+      unlinkSync(path)
+    } catch {
+      // best-effort on shutdown
+    }
+  }
+}
+
 function showHelp(): void {
   console.log(`asp - Agent Session Protocol CLI
 
@@ -693,6 +856,7 @@ Usage:
   asp export --server <url> [--agent claude|codex] [--session <id>] [--token <token>] [--shortener <url>] [--live]
   asp import <stream-or-short-url> --agent claude|codex [--cwd <dir>] [--resume] [--token <token>]
   asp install-skills [--claude] [--codex]
+  asp install-channel
 
 Commands:
   export           Export an agent session to Durable Streams
@@ -704,6 +868,10 @@ Commands:
                    Falls back to normalized stream for cross-agent resume.
   install-skills   Symlink the share skill into Claude Code and/or Codex
                    skill directories so it can be invoked from within a session.
+  install-channel  Register the queue-channel MCP server in ~/.claude.json so
+                   Claude Code can inject prompts from live-share viewers.
+                   One-time setup; after this, start claude with
+                   --dangerously-load-development-channels server:queue.
 
 Options:
   --server <url>     Durable Streams server URL (export)
@@ -727,7 +895,9 @@ async function main(): Promise<void> {
   const { command, args, positional } = parseArgs(process.argv.slice(2))
 
   const token =
-    (args.token as string) ?? process.env.ASP_TOKEN ?? process.env.DS_TOKEN
+    (args.token as string | undefined) ??
+    process.env.ASP_TOKEN ??
+    process.env.DS_TOKEN
   if (token) {
     globalHeaders = { Authorization: `Bearer ${token}` }
   }
@@ -741,6 +911,9 @@ async function main(): Promise<void> {
       break
     case `install-skills`:
       installSkills(args)
+      break
+    case `install-channel`:
+      installChannel()
       break
     case `help`:
     case `--help`:
