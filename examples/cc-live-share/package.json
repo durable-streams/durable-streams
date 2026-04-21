@@ -1,0 +1,23 @@
+{
+  "name": "@durable-streams/example-cc-live-share",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "bin": {
+    "cods": "./dist/cli.js"
+  },
+  "scripts": {
+    "build": "tsdown src/cli.ts --format esm",
+    "dev": "tsx src/cli.ts"
+  },
+  "dependencies": {
+    "@durable-streams/client": "workspace:^"
+  },
+  "devDependencies": {
+    "@durable-streams/server": "workspace:^",
+    "@types/node": "^22.0.0",
+    "tsdown": "^0.9.0",
+    "tsx": "^4.21.0",
+    "typescript": "~5.9.3"
+  }
+}

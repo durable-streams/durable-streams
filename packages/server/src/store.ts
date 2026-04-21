@@ -3,6 +3,7 @@
  */
 
 import type {
+  CheckpointRule,
   PendingLongPoll,
   ProducerValidationResult,
   Stream,
@@ -87,6 +88,56 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
 }
 
 /**
+ * Get a value at a dot-separated JSON path (e.g., ".type", ".metadata.kind").
+ */
+function getJsonPathValue(obj: unknown, path: string): unknown {
+  if (typeof obj !== `object` || obj === null) return undefined
+  // Strip leading dot
+  const keys = path.startsWith(`.`) ? path.slice(1).split(`.`) : path.split(`.`)
+  let current: unknown = obj
+  for (const key of keys) {
+    if (typeof current !== `object` || current === null) return undefined
+    current = (current as Record<string, unknown>)[key]
+  }
+  return current
+}
+
+/**
+ * Evaluate checkpoint rules against a JSON message.
+ * Returns the name of the checkpoint if a rule matches, undefined otherwise.
+ */
+export function evaluateCheckpointRules(
+  rules: Array<CheckpointRule>,
+  jsonText: string
+): string | undefined {
+  let parsed: unknown
+  try {
+    parsed = JSON.parse(jsonText)
+  } catch {
+    return undefined
+  }
+
+  // For arrays, we don't evaluate checkpoints on array containers,
+  // only on individual elements (which are evaluated separately after flattening)
+  if (Array.isArray(parsed)) return undefined
+
+  for (const rule of rules) {
+    let allMatch = true
+    for (const condition of rule.conditions) {
+      const value = getJsonPathValue(parsed, condition.path)
+      if (value !== condition.value) {
+        allMatch = false
+        break
+      }
+    }
+    if (allMatch) {
+      return rule.name
+    }
+  }
+  return undefined
+}
+
+/**
  * In-memory store for durable streams.
  */
 /**
@@ -118,6 +169,11 @@ export class StreamStore {
    * Key: "{streamPath}:{producerId}"
    */
   private producerLocks = new Map<string, Promise<unknown>>()
+  private checkpointRules: Array<CheckpointRule>
+
+  constructor(options?: { checkpointRules?: Array<CheckpointRule> }) {
+    this.checkpointRules = options?.checkpointRules ?? []
+  }
 
   /**
    * Check if a stream is expired based on TTL or Expires-At.
@@ -1176,6 +1232,16 @@ export class StreamStore {
     return Array.from(this.streams.keys())
   }
 
+  /**
+   * Get the offset for a named checkpoint on a stream.
+   * Returns undefined if the stream doesn't exist or the checkpoint doesn't exist.
+   */
+  getCheckpoint(path: string, name: string): string | undefined {
+    const stream = this.getIfNotExpired(path)
+    if (!stream) return undefined
+    return stream.checkpoints?.get(name)
+  }
+
   // ============================================================================
   // Private helpers
   // ============================================================================
@@ -1186,8 +1252,10 @@ export class StreamStore {
     isInitialCreate = false
   ): StreamMessage | null {
     // Process JSON mode data (throws on invalid JSON or empty arrays for appends)
+    const isJson =
+      normalizeContentType(stream.contentType) === `application/json`
     let processedData = data
-    if (normalizeContentType(stream.contentType) === `application/json`) {
+    if (isJson) {
       processedData = processJsonAppend(data, isInitialCreate)
       // If empty array in create mode, return null (empty stream created successfully)
       if (processedData.length === 0) {
@@ -1213,7 +1281,48 @@ export class StreamStore {
     stream.messages.push(message)
     stream.currentOffset = newOffset
 
+    // Evaluate checkpoint rules on JSON-mode appends
+    if (isJson && this.checkpointRules.length > 0) {
+      this.evaluateCheckpoints(stream, data, newOffset)
+    }
+
     return message
+  }
+
+  /**
+   * Evaluate checkpoint rules against appended JSON data.
+   * Uses the original (pre-processed) data to evaluate individual JSON values.
+   */
+  private evaluateCheckpoints(
+    stream: Stream,
+    originalData: Uint8Array,
+    offset: string
+  ): void {
+    const text = new TextDecoder().decode(originalData)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(text)
+    } catch {
+      return
+    }
+
+    // For arrays, evaluate each element individually
+    const items: Array<string> = Array.isArray(parsed)
+      ? parsed.map((item) => JSON.stringify(item))
+      : [JSON.stringify(parsed)]
+
+    for (const itemJson of items) {
+      const checkpointName = evaluateCheckpointRules(
+        this.checkpointRules,
+        itemJson
+      )
+      if (checkpointName) {
+        if (!stream.checkpoints) {
+          stream.checkpoints = new Map()
+        }
+        stream.checkpoints.set(checkpointName, offset)
+      }
+    }
   }
 
   private findOffsetIndex(stream: Stream, offset: string): number {
