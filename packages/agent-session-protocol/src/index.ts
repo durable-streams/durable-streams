@@ -5,8 +5,8 @@ import { denormalizeCodex } from "./denormalize/codex.js"
 import type {
   AgentType,
   DenormalizeOptions,
-  NormalizedEvent,
   NormalizeOptions,
+  NormalizedEvent,
 } from "./types.js"
 
 export function normalize(
@@ -47,6 +47,11 @@ export {
   writeClaudeSession,
   writeCodexSession,
 } from "./sessions.js"
+
+export {
+  filterSkillInvocations,
+  SkillInvocationFilter,
+} from "./filter-skill-invocations.js"
 
 export type {
   AgentType,

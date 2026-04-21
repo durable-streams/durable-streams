@@ -22,6 +22,7 @@ import {
   writeClaudeSession,
   writeCodexSession,
 } from "./sessions.js"
+import { SkillInvocationFilter } from "./filter-skill-invocations.js"
 import { denormalize, normalize } from "./index.js"
 import type { HeadersRecord } from "@durable-streams/client"
 import type { AgentType, NormalizedEvent } from "./types.js"
@@ -247,7 +248,13 @@ async function exportSession(
   console.error(`  Path: ${session.path}`)
 
   const content = readFileSync(session.path, `utf8`)
-  const rawLines = content.split(`\n`).filter((l) => l.trim())
+  const unfilteredLines = content.split(`\n`).filter((l) => l.trim())
+  // Strip out /share skill-invocation rounds so resumed sessions don't
+  // show the share plumbing at the tail. Filter is stateful so that
+  // skill-execution machinery spanning the initial snapshot and later
+  // incremental live-watcher batches is handled as one contiguous round.
+  const skillFilter = new SkillInvocationFilter(agent)
+  const rawLines = skillFilter.feed(unfilteredLines)
   const events = normalize(rawLines, agent)
 
   // URL pattern:
@@ -353,6 +360,7 @@ async function exportSession(
       nativeUrl,
       normalizedUrl: baseUrl,
       agent,
+      skillFilter,
     })
   } finally {
     removeCollabConfig()
@@ -364,6 +372,10 @@ interface WatchOptions {
   nativeUrl: string
   normalizedUrl: string
   agent: AgentType
+  // Shared across the initial export and the watcher so a skill round
+  // that spans the boundary (invocation in the snapshot, machinery in
+  // later batches) is stripped as a single contiguous round.
+  skillFilter: SkillInvocationFilter
 }
 
 /**
@@ -447,7 +459,15 @@ async function watchAndPushLive(opts: WatchOptions): Promise<void> {
         partialLineBuffer = combined.slice(lastNewlineIdx + 1)
       }
 
-      const newRawLines = completeChunk.split(`\n`).filter((l) => l.trim())
+      const unfilteredNewLines = completeChunk
+        .split(`\n`)
+        .filter((l) => l.trim())
+      if (unfilteredNewLines.length === 0) return
+
+      // Run the batch through the stateful skill-invocation filter.
+      // State is shared with the initial export, so a /share round that
+      // straddles the snapshot boundary is stripped as a single round.
+      const newRawLines = opts.skillFilter.feed(unfilteredNewLines)
       if (newRawLines.length === 0) return
 
       // Push new native lines as-is
