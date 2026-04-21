@@ -47,8 +47,7 @@
     "!skills/_artifacts"
   ],
   "dependencies": {
-    "@microsoft/fetch-event-source": "^2.0.1",
-    "fastq": "^1.19.1"
+    "@microsoft/fetch-event-source": "^2.0.1"
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
