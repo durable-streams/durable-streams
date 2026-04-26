@@ -131,15 +131,48 @@ function getTestRunnerPath(): string {
   return runnerInSrc
 }
 
+// Get the path to the bundled vitest config
+function getVitestConfigPath(): string {
+  const packageRoot = getPackageRoot()
+
+  // The config is always in src/ (shipped with the package)
+  // vitest can load TypeScript configs directly
+  const configPath = join(packageRoot, `src`, `vitest.config.ts`)
+
+  if (existsSync(configPath)) {
+    return configPath
+  }
+
+  // Fallback: check if running from src directory directly (development)
+  const configInSameDir = join(__dirname, `vitest.config.ts`)
+  if (existsSync(configInSameDir)) {
+    return configInSameDir
+  }
+
+  throw new Error(
+    `Could not find vitest.config.ts. This is a bug in the conformance test package.`
+  )
+}
+
+// Get the package root directory (parent of src/ or dist/)
+function getPackageRoot(): string {
+  return join(__dirname, `..`)
+}
+
 // Find vitest binary in various possible locations
 function findVitestBinary(): string {
+  const packageRoot = getPackageRoot()
+
   const possiblePaths = [
-    // Package's own node_modules (bundled dependency)
-    join(__dirname, `..`, `node_modules`, `.bin`, `vitest`),
-    // Hoisted location for scoped packages (@scope/package-name/dist -> node_modules/.bin)
-    join(__dirname, `..`, `..`, `..`, `..`, `.bin`, `vitest`),
+    // Package's own node_modules (when installed as a dependency or via npx)
+    join(packageRoot, `node_modules`, `.bin`, `vitest`),
+    // npx cache structure: .npm/_npx/<hash>/node_modules/@scope/pkg/dist
+    // vitest would be at: .npm/_npx/<hash>/node_modules/.bin/vitest
+    join(packageRoot, `..`, `..`, `.bin`, `vitest`),
+    // Hoisted location for scoped packages (@scope/package-name -> node_modules/.bin)
+    join(packageRoot, `..`, `..`, `.bin`, `vitest`),
     // Monorepo root node_modules (for development)
-    join(__dirname, `..`, `..`, `..`, `node_modules`, `.bin`, `vitest`),
+    join(packageRoot, `..`, `..`, `node_modules`, `.bin`, `vitest`),
   ]
 
   for (const vitestPath of possiblePaths) {
@@ -156,10 +189,16 @@ function runTests(baseUrl: string): Promise<number> {
   return new Promise((resolvePromise) => {
     const runnerPath = getTestRunnerPath()
     const vitestPath = findVitestBinary()
+    const configPath = getVitestConfigPath()
+    const packageRoot = getPackageRoot()
 
     const args = [
       `run`,
       runnerPath,
+      `--config`,
+      configPath,
+      `--root`,
+      packageRoot,
       `--no-coverage`,
       `--reporter=default`,
       `--passWithNoTests=false`,
@@ -203,10 +242,16 @@ async function runWatch(
   const spawnTests = (): ChildProcess => {
     const runnerPath = getTestRunnerPath()
     const vitestPath = findVitestBinary()
+    const configPath = getVitestConfigPath()
+    const packageRoot = getPackageRoot()
 
     const args = [
       `run`,
       runnerPath,
+      `--config`,
+      configPath,
+      `--root`,
+      packageRoot,
       `--no-coverage`,
       `--reporter=default`,
       `--passWithNoTests=false`,
