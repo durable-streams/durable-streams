@@ -156,6 +156,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   private pendingAwareness: AwarenessUpdate | null = null
 
   private awarenessHeartbeat: ReturnType<typeof setInterval> | null = null
+  private awarenessSubscription: (() => void) | null = null
 
   constructor(options: YjsProviderOptions) {
     super()
@@ -309,6 +310,11 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     if (this.updatesSubscription) {
       this.updatesSubscription()
       this.updatesSubscription = null
+    }
+
+    if (this.awarenessSubscription) {
+      this.awarenessSubscription()
+      this.awarenessSubscription = null
     }
 
     // Flush and close producer before aborting
@@ -863,8 +869,9 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       // Ensure closed promise is handled to avoid unhandled rejections.
       void response.closed.catch(() => {})
 
+      this.awarenessSubscription?.()
       // eslint-disable-next-line @typescript-eslint/require-await
-      response.subscribeBytes(async (chunk) => {
+      this.awarenessSubscription = response.subscribeBytes(async (chunk) => {
         if (signal.aborted) return
 
         if (chunk.data.length > 0) {
