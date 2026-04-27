@@ -232,6 +232,13 @@ export class FileBackedStreamStore {
    * Key: "{streamPath}:{producerId}"
    */
   private producerLocks = new Map<string, Promise<unknown>>()
+  /**
+   * Per-stream append locks. Serializes the read-modify-write of currentOffset
+   * across all concurrent appenders on the same stream so the LMDB-tracked
+   * offset cannot drift behind the file's actual byte position.
+   * Key: streamPath
+   */
+  private streamAppendLocks = new Map<string, Promise<unknown>>()
 
   constructor(options: FileBackedStreamStoreOptions) {
     this.dataDir = options.dataDir
@@ -531,6 +538,33 @@ export class FileBackedStreamStore {
 
     return () => {
       this.producerLocks.delete(lockKey)
+      releaseLock!()
+    }
+  }
+
+  /**
+   * Acquire a per-stream append lock that serializes the read-modify-write
+   * of currentOffset across all concurrent appenders on the same stream.
+   * Without this, two concurrent appends can read the same starting
+   * currentOffset, both compute their newOffset, both write a frame to the
+   * file, but only one of their LMDB updates wins — leaving currentOffset
+   * lagging the file's actual byte position. Returns a release function.
+   */
+  private async acquireStreamAppendLock(
+    streamPath: string
+  ): Promise<() => void> {
+    while (this.streamAppendLocks.has(streamPath)) {
+      await this.streamAppendLocks.get(streamPath)
+    }
+
+    let releaseLock: () => void
+    const lockPromise = new Promise<void>((resolve) => {
+      releaseLock = resolve
+    })
+    this.streamAppendLocks.set(streamPath, lockPromise)
+
+    return () => {
+      this.streamAppendLocks.delete(streamPath)
       releaseLock!()
     }
   }
@@ -985,7 +1019,25 @@ export class FileBackedStreamStore {
     }
   }
 
+  /**
+   * Public append entry point. Serializes concurrent appends to the same
+   * stream so the read-modify-write of currentOffset cannot interleave —
+   * see acquireStreamAppendLock for the underlying race.
+   */
   async append(
+    streamPath: string,
+    data: Uint8Array,
+    options: AppendOptions & { isInitialCreate?: boolean } = {}
+  ): Promise<StreamMessage | AppendResult | null> {
+    const releaseLock = await this.acquireStreamAppendLock(streamPath)
+    try {
+      return await this.appendInner(streamPath, data, options)
+    } finally {
+      releaseLock()
+    }
+  }
+
+  private async appendInner(
     streamPath: string,
     data: Uint8Array,
     options: AppendOptions & { isInitialCreate?: boolean } = {}

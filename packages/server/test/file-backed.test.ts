@@ -276,3 +276,47 @@ describe(`Recovery and Crash Consistency`, () => {
     await server2.stop()
   })
 })
+
+// ============================================================================
+// Concurrent Append Tests
+// ============================================================================
+
+describe(`Concurrent appends`, () => {
+  test(`currentOffset stays in sync with file under concurrent appends to the same stream`, async () => {
+    // Regression test: without per-stream serialization in append(), two
+    // concurrent appends can both read the same starting currentOffset,
+    // both compute their newOffset, both write a frame to the file, but
+    // only one's LMDB update wins — leaving currentOffset lagging the
+    // file's actual byte position. The next append/read then sees an
+    // offset that the LMDB-tracked tail doesn't acknowledge, which on the
+    // server side surfaces as INVALID_OFFSET ack rejections.
+    server.store.create(`/concurrent`, { contentType: `text/plain` })
+
+    const N = 50
+    const payload = encode(`x`.repeat(64))
+    const results = await Promise.all(
+      Array.from({ length: N }, () =>
+        server.store.append(`/concurrent`, payload)
+      )
+    )
+
+    // Every append must have produced a message with a unique offset.
+    const offsets = results
+      .map((r) => (r && `offset` in r ? r.offset : null))
+      .filter((o): o is string => o !== null)
+    expect(offsets).toHaveLength(N)
+    expect(new Set(offsets).size).toBe(N)
+
+    // The file must contain N messages — read() walks the file directly.
+    const { messages } = server.store.read(`/concurrent`)
+    expect(messages).toHaveLength(N)
+
+    // The LMDB-tracked currentOffset must equal the offset of the last
+    // frame in the file. Otherwise the server's stream-next-offset header
+    // (and getTailOffset) would lag the actual stream contents and reject
+    // valid acks.
+    const meta = (server.store as any).db.get(`stream:/concurrent`)
+    const lastMessageOffset = messages[messages.length - 1].offset
+    expect(meta.currentOffset).toBe(lastMessageOffset)
+  })
+})
