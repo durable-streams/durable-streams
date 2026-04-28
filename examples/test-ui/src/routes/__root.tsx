@@ -1,8 +1,8 @@
 import { Link, Outlet, createRootRoute } from "@tanstack/react-router"
-import { useEffect, useState } from "react"
+import { useEffect, useMemo, useState } from "react"
 import { DurableStream } from "@durable-streams/client"
-import { and, eq, gt, useLiveQuery } from "@tanstack/react-db"
 import { useStreamDB } from "../lib/stream-db-context"
+import { useCollectionData } from "../hooks/useCollectionData"
 import { usePresence } from "../hooks/usePresence"
 import type { StreamMetadata } from "../lib/schemas"
 import "../styles.css"
@@ -12,6 +12,7 @@ const SERVER_URL = `http://${window.location.hostname}:4437`
 function StreamListItem({ stream }: { stream: StreamMetadata }) {
   const { presenceDB } = useStreamDB()
   const [now, setNow] = useState(Date.now())
+  const presence = useCollectionData(presenceDB.collections.presence)
 
   // Update "now" every 5 seconds to re-evaluate stale indicators
   useEffect(() => {
@@ -21,33 +22,23 @@ function StreamListItem({ stream }: { stream: StreamMetadata }) {
     return () => clearInterval(interval)
   }, [])
 
-  // Query viewers for this stream
-  const { data: viewers = [] } = useLiveQuery(
-    (q) =>
-      q
-        .from({ presence: presenceDB.collections.presence })
-        .where(({ presence }) =>
-          and(
-            eq(presence.streamPath, stream.path),
-            gt(presence.lastSeen, now - 60000)
-          )
-        ),
-    [stream.path, now]
+  const viewers = useMemo(
+    () =>
+      presence.filter(
+        (item) => item.streamPath === stream.path && item.lastSeen > now - 60000
+      ),
+    [now, presence, stream.path]
   )
 
-  // Query typing users for this stream
-  const { data: typingUsers = [] } = useLiveQuery(
-    (q) =>
-      q
-        .from({ presence: presenceDB.collections.presence })
-        .where(({ presence }) =>
-          and(
-            eq(presence.streamPath, stream.path),
-            eq(presence.isTyping, true),
-            gt(presence.lastSeen, now - 60000)
-          )
-        ),
-    [stream.path, now]
+  const typingUsers = useMemo(
+    () =>
+      presence.filter(
+        (item) =>
+          item.streamPath === stream.path &&
+          item.isTyping &&
+          item.lastSeen > now - 60000
+      ),
+    [now, presence, stream.path]
   )
 
   return (
@@ -84,6 +75,7 @@ function StreamListItem({ stream }: { stream: StreamMetadata }) {
 
 function RootLayout() {
   const { registryDB } = useStreamDB()
+  const streams = useCollectionData(registryDB.collections.streams)
   const [newStreamPath, setNewStreamPath] = useState(``)
   const [newStreamContentType, setNewStreamContentType] = useState(`text/plain`)
   const [error, setError] = useState<string | null>(null)
@@ -91,11 +83,6 @@ function RootLayout() {
 
   // Use presence hook for heartbeat and cleanup
   usePresence()
-
-  // Query all streams from registry
-  const { data: streams = [] } = useLiveQuery((q) =>
-    q.from({ streams: registryDB.collections.streams })
-  )
 
   const createStream = async () => {
     if (!newStreamPath.trim()) {

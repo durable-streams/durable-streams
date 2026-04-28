@@ -8,10 +8,10 @@ import * as path from "node:path"
 import { randomBytes } from "node:crypto"
 import { open as openLMDB } from "lmdb"
 import { SieveCache } from "@neophi/sieve-cache"
-import { StreamFileManager } from "./file-manager"
+import { serverLog } from "./log"
 import { encodeStreamPath } from "./path-encoding"
 import {
-  formatJsonResponse,
+  formatJsonMessages,
   normalizeContentType,
   processJsonAppend,
 } from "./store"
@@ -54,7 +54,7 @@ interface StreamMetadata {
   segmentCount: number
   totalBytes: number
   /**
-   * Unique directory name for this stream instance.
+   * Unique file stem for this stream instance.
    * Format: {encoded_path}~{timestamp}~{random_hex}
    * This allows safe async deletion and immediate reuse of stream paths.
    */
@@ -104,6 +104,15 @@ interface StreamMetadata {
  */
 interface PooledHandle {
   stream: fs.WriteStream
+  /**
+   * Coalesced fsync leader. When set and `scheduled` is true, new fsync callers
+   * piggyback on this batch; when `scheduled` is false the batch has already
+   * entered its syscall and new callers must start a new batch.
+   */
+  syncLeader: {
+    promise: Promise<void>
+    scheduled: boolean
+  } | null
 }
 
 class FileHandlePool {
@@ -114,7 +123,7 @@ class FileHandlePool {
       evictHook: (_key: string, handle: PooledHandle) => {
         // Close the handle when evicted (sync version - fire and forget)
         this.closeHandle(handle).catch((err: Error) => {
-          console.error(`[FileHandlePool] Error closing evicted handle:`, err)
+          serverLog.error(`[FileHandlePool] Error closing evicted handle:`, err)
         })
       },
     })
@@ -125,7 +134,7 @@ class FileHandlePool {
 
     if (!handle) {
       const stream = fs.createWriteStream(filePath, { flags: `a` })
-      handle = { stream }
+      handle = { stream, syncLeader: null }
       this.cache.set(filePath, handle)
     }
 
@@ -133,41 +142,72 @@ class FileHandlePool {
   }
 
   /**
-   * Flush a specific file to disk immediately.
-   * This is called after each append to ensure durability.
+   * Open a write stream eagerly so the first write does not pay the lazy
+   * `open()` stall. Resolves once the underlying fd is ready.
    */
-  async fsyncFile(filePath: string): Promise<void> {
-    const handle = this.cache.get(filePath)
-    if (!handle) return
-
-    return new Promise<void>((resolve, reject) => {
-      // Use fdatasync (faster than fsync, skips metadata)
-      // Cast to any to access fd property (exists at runtime but not in types)
-      const fd = (handle.stream as any).fd
-
-      // If fd is null, stream hasn't been opened yet - wait for open event
-      if (typeof fd !== `number`) {
-        const onOpen = (openedFd: number): void => {
-          handle.stream.off(`error`, onError)
-          fs.fdatasync(openedFd, (err) => {
-            if (err) reject(err)
-            else resolve()
-          })
-        }
-        const onError = (err: Error): void => {
-          handle.stream.off(`open`, onOpen)
-          reject(err)
-        }
-        handle.stream.once(`open`, onOpen)
-        handle.stream.once(`error`, onError)
-        return
-      }
-
-      fs.fdatasync(fd, (err) => {
-        if (err) reject(err)
-        else resolve()
-      })
+  async openWriteStream(filePath: string): Promise<fs.WriteStream> {
+    const stream = this.getWriteStream(filePath)
+    const fd = (stream as unknown as { fd: number | null }).fd
+    if (typeof fd === `number`) return stream
+    await new Promise<void>((resolve, reject) => {
+      stream.once(`open`, () => resolve())
+      stream.once(`error`, (err) => reject(err))
     })
+    return stream
+  }
+
+  /**
+   * Flush a specific file to disk immediately.
+   * Concurrent callers on the same fd share one in-flight fdatasync: the
+   * first caller issues the syscall, later arrivals during that window wait
+   * for it to finish and then issue a fresh syscall (because their writes
+   * may have landed after the in-flight syscall started). This preserves
+   * durability without adding scheduling latency.
+   */
+  fsyncFile(filePath: string): Promise<void> {
+    const handle = this.cache.get(filePath)
+    if (!handle) {
+      return Promise.reject(
+        new Error(
+          `[FileHandlePool] Cannot fsync: handle not found for ${filePath}`
+        )
+      )
+    }
+
+    const existing = handle.syncLeader
+    if (existing && existing.scheduled) {
+      return existing.promise
+    }
+
+    let resolveFn!: () => void
+    let rejectFn!: (err: Error) => void
+    const promise = new Promise<void>((res, rej) => {
+      resolveFn = res
+      rejectFn = rej
+    })
+    const leader = { promise, scheduled: true }
+    handle.syncLeader = leader
+
+    const runSyscall = (fd: number): void => {
+      leader.scheduled = false
+      fs.fdatasync(fd, (err) => {
+        if (handle.syncLeader === leader) handle.syncLeader = null
+        if (err) rejectFn(err)
+        else resolveFn()
+      })
+    }
+
+    const fd = (handle.stream as unknown as { fd: number | null }).fd
+    if (typeof fd === `number`) {
+      runSyscall(fd)
+    } else {
+      handle.stream.once(`open`, (openedFd: number) => runSyscall(openedFd))
+      handle.stream.once(`error`, (err: Error) => {
+        if (handle.syncLeader === leader) handle.syncLeader = null
+        rejectFn(err)
+      })
+    }
+    return promise
   }
 
   async closeAll(): Promise<void> {
@@ -212,9 +252,13 @@ export interface FileBackedStreamStoreOptions {
  */
 function generateUniqueDirectoryName(streamPath: string): string {
   const encoded = encodeStreamPath(streamPath)
-  const timestamp = Date.now().toString(36) // Base36 for shorter strings
-  const random = randomBytes(4).toString(`hex`) // 8 chars hex
+  const timestamp = Date.now().toString(36)
+  const random = randomBytes(4).toString(`hex`)
   return `${encoded}~${timestamp}~${random}`
+}
+
+function segmentFile(dataDir: string, dirName: string): string {
+  return path.join(dataDir, `streams`, `${dirName}.log`)
 }
 
 /**
@@ -223,7 +267,6 @@ function generateUniqueDirectoryName(streamPath: string): string {
  */
 export class FileBackedStreamStore {
   private db: Database
-  private fileManager: StreamFileManager
   private fileHandlePool: FileHandlePool
   private pendingLongPolls: Array<PendingLongPoll> = []
   private dataDir: string
@@ -247,10 +290,13 @@ export class FileBackedStreamStore {
     this.db = openLMDB({
       path: path.join(this.dataDir, `metadata.lmdb`),
       compression: true,
+      noMemInit: true,
+      cache: true,
+      sharedStructuresKey: Symbol.for(`structures`),
     })
 
-    // Initialize file manager
-    this.fileManager = new StreamFileManager(path.join(this.dataDir, `streams`))
+    // Pre-create the streams directory
+    fs.mkdirSync(path.join(this.dataDir, `streams`), { recursive: true })
 
     // Initialize file handle pool with SIEVE cache
     const maxFileHandles = options.maxFileHandles ?? 100
@@ -265,7 +311,7 @@ export class FileBackedStreamStore {
    * Validates that LMDB metadata matches actual file contents and reconciles any mismatches.
    */
   private recover(): void {
-    console.log(`[FileBackedStreamStore] Starting recovery...`)
+    serverLog.info(`[FileBackedStreamStore] Starting recovery...`)
 
     let recovered = 0
     let reconciled = 0
@@ -288,17 +334,11 @@ export class FileBackedStreamStore {
         const streamMeta = value as StreamMetadata
         const streamPath = key.replace(`stream:`, ``)
 
-        // Get segment file path
-        const segmentPath = path.join(
-          this.dataDir,
-          `streams`,
-          streamMeta.directoryName,
-          `segment_00000.log`
-        )
+        const segmentPath = segmentFile(this.dataDir, streamMeta.directoryName)
 
         // Check if file exists
         if (!fs.existsSync(segmentPath)) {
-          console.warn(
+          serverLog.warn(
             `[FileBackedStreamStore] Recovery: Stream file missing for ${streamPath}, removing from LMDB`
           )
           this.db.removeSync(key)
@@ -323,7 +363,7 @@ export class FileBackedStreamStore {
 
         // Check if offset matches
         if (trueOffset !== streamMeta.currentOffset) {
-          console.warn(
+          serverLog.warn(
             `[FileBackedStreamStore] Recovery: Offset mismatch for ${streamPath}: ` +
               `LMDB says ${streamMeta.currentOffset}, file says ${trueOffset}. Reconciling to file.`
           )
@@ -339,12 +379,12 @@ export class FileBackedStreamStore {
 
         recovered++
       } catch (err) {
-        console.error(`[FileBackedStreamStore] Error recovering stream:`, err)
+        serverLog.error(`[FileBackedStreamStore] Error recovering stream:`, err)
         errors++
       }
     }
 
-    console.log(
+    serverLog.info(
       `[FileBackedStreamStore] Recovery complete: ${recovered} streams, ` +
         `${reconciled} reconciled, ${errors} errors`
     )
@@ -358,39 +398,21 @@ export class FileBackedStreamStore {
     try {
       const fileContent = fs.readFileSync(segmentPath)
       let filePos = 0
-      let currentDataOffset = 0
 
       while (filePos < fileContent.length) {
-        // Read message length (4 bytes)
-        if (filePos + 4 > fileContent.length) {
-          // Truncated length header - stop here
-          break
-        }
+        if (filePos + 4 > fileContent.length) break
 
         const messageLength = fileContent.readUInt32BE(filePos)
-        filePos += 4
+        const frameEnd = filePos + 4 + messageLength + 1
 
-        // Check if we have the full message
-        if (filePos + messageLength > fileContent.length) {
-          // Truncated message data - stop here
-          break
-        }
+        if (frameEnd > fileContent.length) break
 
-        filePos += messageLength
-
-        // Skip newline
-        if (filePos < fileContent.length) {
-          filePos += 1
-        }
-
-        // Update offset with this complete message
-        currentDataOffset += messageLength
+        filePos = frameEnd
       }
 
-      // Return offset in format "readSeq_byteOffset" with zero-padding
-      return `0000000000000000_${String(currentDataOffset).padStart(16, `0`)}`
+      return `0000000000000000_${String(filePos).padStart(16, `0`)}`
     } catch (err) {
-      console.error(
+      serverLog.error(
         `[FileBackedStreamStore] Error scanning file ${segmentPath}:`,
         err
       )
@@ -829,6 +851,8 @@ export class FileBackedStreamStore {
     // Define key for LMDB operations
     const key = `stream:${streamPath}`
 
+    const t0 = performance.now()
+
     // Initialize metadata
     // Note: We set closed to false initially, then set it true after appending initial data
     // This prevents the closed check from rejecting the initial append
@@ -850,17 +874,11 @@ export class FileBackedStreamStore {
       refCount: 0,
     }
 
-    // Create stream directory and empty segment file immediately
-    // This ensures the stream is fully initialized and can be recovered
-    const streamDir = path.join(
-      this.dataDir,
-      `streams`,
-      streamMeta.directoryName
-    )
+    const tAfterMeta = performance.now()
+
+    const segmentPath = segmentFile(this.dataDir, streamMeta.directoryName)
     try {
-      fs.mkdirSync(streamDir, { recursive: true })
-      const segmentPath = path.join(streamDir, `segment_00000.log`)
-      fs.writeFileSync(segmentPath, ``)
+      await this.db.put(key, streamMeta)
     } catch (err) {
       // Rollback source refcount on failure
       if (isFork && sourceMeta) {
@@ -874,15 +892,24 @@ export class FileBackedStreamStore {
           this.db.putSync(sourceKey, updatedSource)
         }
       }
-      console.error(
-        `[FileBackedStreamStore] Error creating stream directory:`,
+      serverLog.error(
+        `[FileBackedStreamStore] Error creating stream (LMDB put):`,
         err
       )
       throw err
     }
-
-    // Save to LMDB
-    this.db.putSync(key, streamMeta)
+    const tAfterLmdb = performance.now()
+    try {
+      await this.fileHandlePool.openWriteStream(segmentPath)
+    } catch (err) {
+      this.db.removeSync(key)
+      serverLog.error(
+        `[FileBackedStreamStore] Error creating stream (file open):`,
+        err
+      )
+      throw err
+    }
+    const tAfterOpen = performance.now()
 
     // Append initial data if provided
     if (options.initialData && options.initialData.length > 0) {
@@ -909,16 +936,33 @@ export class FileBackedStreamStore {
         throw err
       }
     }
+    const tAfterAppend = performance.now()
 
     // Now set closed flag if requested (after initial append succeeded)
     if (options.closed) {
       const updatedMeta = this.db.get(key) as StreamMetadata
       updatedMeta.closed = true
-      this.db.putSync(key, updatedMeta)
+      await this.db.put(key, updatedMeta)
     }
 
     // Re-fetch updated metadata
     const updated = this.db.get(key) as StreamMetadata
+    const totalMs = performance.now() - t0
+    if (totalMs > 50) {
+      serverLog.event(
+        {
+          event: `store.create`,
+          path: streamPath,
+          totalMs: +totalMs.toFixed(2),
+          metaMs: +(tAfterMeta - t0).toFixed(2),
+          lmdbMs: +(tAfterLmdb - tAfterMeta).toFixed(2),
+          openMs: +(tAfterOpen - tAfterLmdb).toFixed(2),
+          appendMs: +(tAfterAppend - tAfterOpen).toFixed(2),
+          initBytes: options.initialData?.length ?? 0,
+        },
+        `store.create slow`
+      )
+    }
     return this.streamMetaToStream(updated)
   }
 
@@ -975,26 +1019,18 @@ export class FileBackedStreamStore {
     // Cancel any pending long-polls for this stream
     this.cancelLongPollsForStream(streamPath)
 
-    // Close any open file handle for this stream's segment file
-    const segmentPath = path.join(
-      this.dataDir,
-      `streams`,
-      streamMeta.directoryName,
-      `segment_00000.log`
-    )
-    this.fileHandlePool.closeFileHandle(segmentPath).catch((err: Error) => {
-      console.error(`[FileBackedStreamStore] Error closing file handle:`, err)
-    })
+    const segmentPath = segmentFile(this.dataDir, streamMeta.directoryName)
 
     // Delete from LMDB
     this.db.removeSync(key)
 
-    // Delete files using unique directory name (async, but don't wait)
-    this.fileManager
-      .deleteDirectoryByName(streamMeta.directoryName)
+    // Close handle then delete file (chained to avoid EBUSY on Windows)
+    this.fileHandlePool
+      .closeFileHandle(segmentPath)
+      .then(() => fs.promises.unlink(segmentPath))
       .catch((err: Error) => {
-        console.error(
-          `[FileBackedStreamStore] Error deleting stream directory:`,
+        serverLog.error(
+          `[FileBackedStreamStore] Error cleaning up stream file:`,
           err
         )
       })
@@ -1144,17 +1180,13 @@ export class FileBackedStreamStore {
     const readSeq = parts[0]!
     const byteOffset = parts[1]!
 
-    // Calculate new offset with zero-padding for lexicographic sorting (only data bytes, not framing)
-    const newByteOffset = byteOffset + processedData.length
+    const FRAME_OVERHEAD = 5 // 4-byte length prefix + 1-byte newline
+    const newByteOffset = byteOffset + FRAME_OVERHEAD + processedData.length
     const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
 
-    // Get segment file path (directory was created in create())
-    const streamDir = path.join(
-      this.dataDir,
-      `streams`,
-      streamMeta.directoryName
-    )
-    const segmentPath = path.join(streamDir, `segment_00000.log`)
+    const segmentPath = segmentFile(this.dataDir, streamMeta.directoryName)
+
+    const tAppendStart = performance.now()
 
     // Get write stream from pool
     const stream = this.fileHandlePool.getWriteStream(segmentPath)
@@ -1176,6 +1208,8 @@ export class FileBackedStreamStore {
       })
     })
 
+    const tAfterWrite = performance.now()
+
     // 2. Create message object for return value
     const message: StreamMessage = {
       data: processedData,
@@ -1185,6 +1219,8 @@ export class FileBackedStreamStore {
 
     // 3. Flush to disk (blocks here until durable)
     await this.fileHandlePool.fsyncFile(segmentPath)
+
+    const tAfterFsync = performance.now()
 
     // 4. Update LMDB metadata atomically (only after flush, so metadata reflects durability)
     //    This includes both the offset update and producer state update
@@ -1214,7 +1250,25 @@ export class FileBackedStreamStore {
       closedBy: closedBy ?? streamMeta.closedBy,
     }
     const key = `stream:${streamPath}`
-    this.db.putSync(key, updatedMeta)
+    await this.db.put(key, updatedMeta)
+
+    const tAfterLmdb = performance.now()
+    const appendTotal = tAfterLmdb - tAppendStart
+    if (appendTotal > 50) {
+      serverLog.event(
+        {
+          event: `store.append`,
+          path: streamPath,
+          totalMs: +appendTotal.toFixed(2),
+          writeMs: +(tAfterWrite - tAppendStart).toFixed(2),
+          fsyncMs: +(tAfterFsync - tAfterWrite).toFixed(2),
+          lmdbMs: +(tAfterLmdb - tAfterFsync).toFixed(2),
+          bytes: processedData.length,
+          isInitial: options.isInitialCreate ?? false,
+        },
+        `store.append slow`
+      )
+    }
 
     // 5. Notify long-polls (data is now readable from disk)
     this.notifyLongPolls(streamPath)
@@ -1275,9 +1329,9 @@ export class FileBackedStreamStore {
    * Close a stream without appending data.
    * @returns The final offset, or null if stream doesn't exist
    */
-  closeStream(
+  async closeStream(
     streamPath: string
-  ): { finalOffset: string; alreadyClosed: boolean } | null {
+  ): Promise<{ finalOffset: string; alreadyClosed: boolean } | null> {
     const streamMeta = this.getMetaIfNotExpired(streamPath)
     if (!streamMeta) {
       return null
@@ -1291,7 +1345,7 @@ export class FileBackedStreamStore {
       ...streamMeta,
       closed: true,
     }
-    this.db.putSync(key, updatedMeta)
+    await this.db.put(key, updatedMeta)
 
     // Notify any pending long-polls that the stream is closed
     this.notifyLongPollsClosed(streamPath)
@@ -1390,7 +1444,7 @@ export class FileBackedStreamStore {
         },
         producers: updatedProducers,
       }
-      this.db.putSync(key, updatedMeta)
+      await this.db.put(key, updatedMeta)
 
       // Notify any pending long-polls
       this.notifyLongPollsClosed(streamPath)
@@ -1449,8 +1503,10 @@ export class FileBackedStreamStore {
         // Skip newline
         filePos += 1
 
-        // Calculate this message's logical offset (end position)
-        physicalDataOffset += messageLength
+        // Calculate this message's logical offset (end position).
+        // Frames in our file layout are 4-byte length + data + 1-byte newline,
+        // and stream offsets advance by the full frame size — see append().
+        physicalDataOffset += messageLength + 5
         const logicalOffset = baseByteOffset + physicalDataOffset
 
         // Stop if we've exceeded the cap
@@ -1468,7 +1524,7 @@ export class FileBackedStreamStore {
         }
       }
     } catch (err) {
-      console.error(`[FileBackedStreamStore] Error reading segment file:`, err)
+      serverLog.error(`[FileBackedStreamStore] Error reading segment file:`, err)
     }
 
     return messages
@@ -1512,12 +1568,7 @@ export class FileBackedStreamStore {
     // Read source's own segment file
     // For a fork source, its own data starts at physical byte 0 in its segment file,
     // but the logical offsets need to account for its own forkOffset base
-    const segmentPath = path.join(
-      this.dataDir,
-      `streams`,
-      sourceMeta.directoryName,
-      `segment_00000.log`
-    )
+    const segmentPath = segmentFile(this.dataDir, sourceMeta.directoryName)
 
     // The base offset for this source's own data is its forkOffset (if it's a fork) or 0
     const sourceBaseByte = sourceMeta.forkOffset
@@ -1578,12 +1629,7 @@ export class FileBackedStreamStore {
 
       // Read fork's own segment file with offset translation
       // Physical bytes in file start at 0, but logical offsets start at forkOffset
-      const segmentPath = path.join(
-        this.dataDir,
-        `streams`,
-        streamMeta.directoryName,
-        `segment_00000.log`
-      )
+      const segmentPath = segmentFile(this.dataDir, streamMeta.directoryName)
       const ownMessages = this.readMessagesFromSegmentFile(
         segmentPath,
         startByte,
@@ -1592,12 +1638,7 @@ export class FileBackedStreamStore {
       messages.push(...ownMessages)
     } else {
       // Non-forked stream: read from segment file directly
-      const segmentPath = path.join(
-        this.dataDir,
-        `streams`,
-        streamMeta.directoryName,
-        `segment_00000.log`
-      )
+      const segmentPath = segmentFile(this.dataDir, streamMeta.directoryName)
       const ownMessages = this.readMessagesFromSegmentFile(
         segmentPath,
         startByte,
@@ -1701,6 +1742,10 @@ export class FileBackedStreamStore {
       throw new Error(`Stream not found: ${streamPath}`)
     }
 
+    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
+      return formatJsonMessages(messages)
+    }
+
     // Concatenate all message data
     const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
     const concatenated = new Uint8Array(totalSize)
@@ -1708,11 +1753,6 @@ export class FileBackedStreamStore {
     for (const msg of messages) {
       concatenated.set(msg.data, offset)
       offset += msg.data.length
-    }
-
-    // For JSON mode, wrap in array brackets
-    if (normalizeContentType(streamMeta.contentType) === `application/json`) {
-      return formatJsonResponse(concatenated)
     }
 
     return concatenated
@@ -1747,7 +1787,7 @@ export class FileBackedStreamStore {
 
     // Clear file handle pool
     this.fileHandlePool.closeAll().catch((err: Error) => {
-      console.error(`[FileBackedStreamStore] Error closing handles:`, err)
+      serverLog.error(`[FileBackedStreamStore] Error closing handles:`, err)
     })
 
     // Note: Files are not deleted in clear() with unique directory names

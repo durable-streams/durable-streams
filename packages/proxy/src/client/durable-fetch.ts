@@ -280,6 +280,12 @@ async function readFromStream(
     live: `sse`, // Follow until stream closes
   })
 
+  // The durable response surface is the returned Response body stream. The
+  // underlying StreamResponse also exposes a `closed` promise that rejects on
+  // transport errors; attach a sink here so callers that never read the body do
+  // not trigger unhandled rejections during teardown.
+  void streamResponse.closed.catch(() => {})
+
   // Bridge: wrap DS client's bodyStream() into a Response
   const bodyStream = streamResponse.bodyStream()
 

@@ -13,7 +13,7 @@
   "dependencies": {
     "@durable-streams/client": "workspace:*",
     "@durable-streams/server": "workspace:*",
-    "fast-check": "^4.4.0",
+    "fast-check": "^4.6.0",
     "tsx": "^4.19.2",
     "yaml": "^2.7.1"
   },

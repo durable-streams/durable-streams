@@ -86,6 +86,59 @@ export function formatJsonResponse(data: Uint8Array): Uint8Array {
   return new TextEncoder().encode(wrapped)
 }
 
+function decodeStoredJsonMessage(data: Uint8Array): string {
+  let text = new TextDecoder().decode(data).trimEnd()
+  if (text.endsWith(`,`)) {
+    text = text.slice(0, -1)
+  }
+  return text
+}
+
+function enrichJsonValueWithOffset(parsed: unknown, offset: string): string {
+  if (!parsed || typeof parsed !== `object` || Array.isArray(parsed)) {
+    return JSON.stringify(parsed)
+  }
+
+  const candidate = parsed as {
+    headers?: Record<string, unknown>
+  }
+  const headers = candidate.headers
+
+  if (!headers || typeof headers !== `object`) {
+    return JSON.stringify(parsed)
+  }
+
+  const isStateChange = typeof headers.operation === `string`
+  const isStateControl = typeof headers.control === `string`
+  if (!isStateChange && !isStateControl) {
+    return JSON.stringify(parsed)
+  }
+
+  return JSON.stringify({
+    ...candidate,
+    headers: {
+      ...headers,
+      offset,
+    },
+  })
+}
+
+export function formatJsonMessages(messages: Array<StreamMessage>): Uint8Array {
+  if (messages.length === 0) {
+    return new TextEncoder().encode(`[]`)
+  }
+
+  const items = messages.flatMap((message) => {
+    const rawFragment = decodeStoredJsonMessage(message.data)
+    const parsed = JSON.parse(`[${rawFragment}]`) as Array<unknown>
+    return parsed.map((value) =>
+      enrichJsonValueWithOffset(value, message.offset)
+    )
+  })
+
+  return new TextEncoder().encode(`[${items.join(`,`)}]`)
+}
+
 /**
  * In-memory store for durable streams.
  */
@@ -778,9 +831,9 @@ export class StreamStore {
    * Close a stream without appending data.
    * @returns The final offset, or null if stream doesn't exist
    */
-  closeStream(
+  async closeStream(
     path: string
-  ): { finalOffset: string; alreadyClosed: boolean } | null {
+  ): Promise<{ finalOffset: string; alreadyClosed: boolean } | null> {
     const stream = this.getIfNotExpired(path)
     if (!stream) {
       return null
@@ -1052,6 +1105,10 @@ export class StreamStore {
       throw new Error(`Stream not found: ${path}`)
     }
 
+    if (normalizeContentType(stream.contentType) === `application/json`) {
+      return formatJsonMessages(messages)
+    }
+
     // Concatenate all message data
     const totalSize = messages.reduce((sum, m) => sum + m.data.length, 0)
     const concatenated = new Uint8Array(totalSize)
@@ -1059,11 +1116,6 @@ export class StreamStore {
     for (const msg of messages) {
       concatenated.set(msg.data, offset)
       offset += msg.data.length
-    }
-
-    // For JSON mode, wrap in array brackets
-    if (normalizeContentType(stream.contentType) === `application/json`) {
-      return formatJsonResponse(concatenated)
     }
 
     return concatenated
@@ -1200,8 +1252,8 @@ export class StreamStore {
     const readSeq = parts[0]!
     const byteOffset = parts[1]!
 
-    // Calculate new offset with zero-padding for lexicographic sorting
-    const newByteOffset = byteOffset + processedData.length
+    const FRAME_OVERHEAD = 5 // 4-byte length prefix + 1-byte newline
+    const newByteOffset = byteOffset + FRAME_OVERHEAD + processedData.length
     const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
 
     const message: StreamMessage = {

@@ -5,10 +5,17 @@
  *   pnpm start:dev
  */
 
+import path from "node:path"
+
 import {
   DurableStreamTestServer,
   createRegistryHooks,
 } from "@durable-streams/server"
+
+// Load .env from repo root (if present)
+try {
+  process.loadEnvFile(path.resolve(import.meta.dirname, `../../.env`))
+} catch {}
 
 const server = new DurableStreamTestServer({
   port: 4437,

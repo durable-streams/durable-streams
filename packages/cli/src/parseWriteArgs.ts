@@ -8,18 +8,21 @@ export interface ParsedWriteArgs {
  * Extract a flag value from args, supporting both --flag=value and --flag value syntax.
  * Returns { value, consumed } where consumed is the number of args used (0 if no match).
  */
-function extractFlagValue(
+export function extractFlagValue(
   args: Array<string>,
   index: number,
-  flagName: string
+  flagName: string,
+  example?: string
 ): { value: string | null; consumed: number } {
   const arg = args[index]!
   const prefix = `${flagName}=`
 
+  const hint = example ? `\n  Example: ${flagName}="${example}"` : ``
+
   if (arg.startsWith(prefix)) {
     const value = arg.slice(prefix.length)
     if (!value) {
-      throw new Error(`${flagName} requires a value`)
+      throw new Error(`${flagName} requires a value${hint}`)
     }
     return { value, consumed: 1 }
   }
@@ -27,7 +30,7 @@ function extractFlagValue(
   if (arg === flagName) {
     const value = args[index + 1]
     if (!value || value.startsWith(`--`)) {
-      throw new Error(`${flagName} requires a value`)
+      throw new Error(`${flagName} requires a value${hint}`)
     }
     return { value, consumed: 2 }
   }
@@ -44,6 +47,7 @@ function extractFlagValue(
 export function parseWriteArgs(args: Array<string>): ParsedWriteArgs {
   let contentType = `application/octet-stream`
   let batchJson = false
+  let explicitContentType = false
   const contentParts: Array<string> = []
 
   for (let i = 0; i < args.length; i++) {
@@ -56,13 +60,21 @@ export function parseWriteArgs(args: Array<string>): ParsedWriteArgs {
 
     if (arg === `--batch-json`) {
       batchJson = true
-      contentType = `application/json`
+      if (!explicitContentType) {
+        contentType = `application/json`
+      }
       continue
     }
 
-    const contentTypeResult = extractFlagValue(args, i, `--content-type`)
+    const contentTypeResult = extractFlagValue(
+      args,
+      i,
+      `--content-type`,
+      `application/json`
+    )
     if (contentTypeResult.value !== null) {
       contentType = contentTypeResult.value
+      explicitContentType = true
       i += contentTypeResult.consumed - 1
       continue
     }

@@ -1,4 +1,8 @@
-import { createCollection, createOptimisticAction } from "@tanstack/db"
+import {
+  createCollection,
+  createOptimisticAction,
+  deepEquals,
+} from "@tanstack/db"
 import { DurableStream as DurableStreamClass } from "@durable-streams/client"
 import { isChangeEvent, isControlEvent } from "./types"
 import type { Collection, SyncConfig } from "@tanstack/db"
@@ -7,6 +11,7 @@ import type { StandardSchemaV1 } from "@standard-schema/spec"
 import type {
   DurableStream,
   DurableStreamOptions,
+  JsonBatch,
   StreamResponse,
 } from "@durable-streams/client"
 
@@ -119,12 +124,27 @@ export interface CreateStreamDBOptions<
     never
   >,
 > {
-  /** Options for creating the durable stream (stream is created lazily on preload) */
-  streamOptions: DurableStreamOptions
+  /** Options for creating a new durable stream. Ignored when `stream` is provided. */
+  streamOptions?: DurableStreamOptions
+  /** Pre-existing DurableStream instance to reuse (avoids creating a second connection). */
+  stream?: DurableStream
   /** The stream state definition */
   state: TDef
   /** Optional factory function to create actions with db and stream context */
   actions?: ActionFactory<TDef, TActions>
+  /** Called for every ChangeEvent as it flows through the stream consumer. */
+  onEvent?: (event: ChangeEvent) => void
+  /**
+   * Called once per consumed stream batch before items are dispatched.
+   * Useful when external consumers need batch metadata available during
+   * downstream collection/effect processing.
+   */
+  onBeforeBatch?: (batch: JsonBatch<StateEvent>) => void
+  /**
+   * Called once per consumed stream batch after items have been dispatched.
+   * Useful for tracking safe offsets for external ack/lease protocols.
+   */
+  onBatch?: (batch: JsonBatch<StateEvent>) => void
 }
 
 /**
@@ -180,6 +200,11 @@ export interface StreamDBMethods {
   stream: DurableStream
 
   /**
+   * Current stream offset (tracks the last consumed position).
+   */
+  readonly offset: string
+
+  /**
    * Preload all collections by consuming the stream until up-to-date
    */
   preload: () => Promise<void>
@@ -195,6 +220,20 @@ export interface StreamDBMethods {
   utils: StreamDBUtils
 }
 
+/**
+ * Build a TanStack collection id for a StreamDB collection.
+ *
+ * Collection ids must be unique per source stream, not just per schema key,
+ * otherwise joining the same collection name from two different streams can
+ * collapse to one logical source inside TanStack DB.
+ */
+export function getStreamDBCollectionId(
+  streamUrl: string,
+  collectionName: string
+): string {
+  return `stream-db:${streamUrl}:${collectionName}`
+}
+
 // ============================================================================
 // Internal Event Dispatcher
 // ============================================================================
@@ -204,7 +243,12 @@ export interface StreamDBMethods {
  */
 interface CollectionSyncHandler {
   begin: () => void
-  write: (value: object, type: `insert` | `update` | `delete`) => void
+  write: (
+    value: object,
+    type: `insert` | `update` | `delete`,
+    cursor?: string
+  ) => void
+  read: (key: string) => object | undefined
   commit: () => void
   markReady: () => void
   truncate: () => void
@@ -247,6 +291,15 @@ class EventDispatcher {
   /** Track existing keys per collection for upsert logic */
   private existingKeys = new Map<string, Set<string>>()
 
+  /** Global sequence counter for insertion ordering */
+  private seq = 0
+
+  private comparableRow(row: object): Record<string, unknown> {
+    const clone = { ...(row as Record<string, unknown>) }
+    delete clone._seq
+    return clone
+  }
+
   /**
    * Register a handler for a specific event type
    */
@@ -262,8 +315,10 @@ class EventDispatcher {
    * Dispatch a change event to the appropriate collection.
    * Writes are buffered until commit() is called via markUpToDate().
    */
-  dispatchChange(event: StateEvent): void {
+  dispatchChange(event: StateEvent, cursor?: string): void {
     if (!isChangeEvent(event)) return
+
+    const eventCursor = event.headers.offset ?? cursor
 
     // Check for txid in headers and collect it
     if (event.headers.txid && typeof event.headers.txid === `string`) {
@@ -296,6 +351,9 @@ class EventDispatcher {
     // Set the primary key field on the value object from the event key
     ;(value as any)[handler.primaryKey] = event.key
 
+    // Stamp global insertion order for cross-collection sorting
+    ;(value as any)._seq = this.seq++
+
     // Begin transaction on first write to this handler
     if (!this.pendingHandlers.has(handler)) {
       handler.begin()
@@ -309,8 +367,24 @@ class EventDispatcher {
       operation = existing ? `update` : `insert`
     }
 
-    // Track key existence for upsert logic
     const keys = this.existingKeys.get(event.type)
+
+    // Live stream reconnects can replay an already-synced insert for the same
+    // row. Normalize that case to update so observation replays remain
+    // idempotent instead of tripping TanStack DB's duplicate-key path.
+    if (operation === `insert` && keys?.has(event.key)) {
+      operation = `update`
+    } else if (operation === `insert` && typeof event.key === `string`) {
+      const existingValue = handler.read(event.key)
+      if (
+        existingValue &&
+        deepEquals(this.comparableRow(existingValue), this.comparableRow(value))
+      ) {
+        operation = `update`
+      }
+    }
+
+    // Track key existence for upsert logic
     if (operation === `insert` || operation === `update`) {
       keys?.add(event.key)
     } else {
@@ -319,7 +393,7 @@ class EventDispatcher {
     }
 
     try {
-      handler.write(value, operation)
+      handler.write(value, operation, eventCursor)
     } catch (error) {
       console.error(`[StreamDB] Error in handler.write():`, error)
       console.error(`[StreamDB] Event that caused error:`, {
@@ -504,19 +578,21 @@ class EventDispatcher {
 function createStreamSyncConfig<T extends object>(
   eventType: string,
   dispatcher: EventDispatcher,
-  primaryKey: string
+  primaryKey: string,
+  read: (key: string) => T | undefined
 ): SyncConfig<T, string> {
   return {
     sync: ({ begin, write, commit, markReady, truncate }) => {
       // Register this collection's handler with the dispatcher
       dispatcher.registerHandler(eventType, {
         begin,
-        write: (value, type) => {
+        write: (value, type, _cursor) => {
           write({
             value: value as T,
             type,
           })
         },
+        read: (key) => read(key),
         commit,
         markReady,
         truncate,
@@ -762,26 +838,37 @@ export function createStreamDB<
 ): TActions extends Record<string, never>
   ? StreamDB<TDef>
   : StreamDBWithActions<TDef, TActions> {
-  const { streamOptions, state, actions: actionsFactory } = options
+  const {
+    streamOptions,
+    state,
+    actions: actionsFactory,
+    onEvent,
+    onBeforeBatch,
+    onBatch,
+  } = options
 
-  // Create a stream handle (lightweight, doesn't connect until stream() is called)
-  const stream = new DurableStreamClass(streamOptions)
+  // Reuse provided stream or create a new one
+  const stream = options.stream ?? new DurableStreamClass(streamOptions!)
 
   // Create the event dispatcher
   const dispatcher = new EventDispatcher()
+
+  const streamIdentity = stream.url
 
   // Create TanStack DB collections for each definition
   const collectionInstances: Record<string, Collection<object, string>> = {}
 
   for (const [name, definition] of Object.entries(state)) {
-    const collection = createCollection({
-      id: `stream-db:${name}`,
+    // eslint-disable-next-line prefer-const -- self-referential: collection.get() used in its own sync config
+    let collection: Collection<object, string> = createCollection({
+      id: getStreamDBCollectionId(streamIdentity, name),
       schema: definition.schema as StandardSchemaV1<object>,
       getKey: (item: any) => String(item[definition.primaryKey]),
       sync: createStreamSyncConfig(
         definition.type,
         dispatcher,
-        definition.primaryKey
+        definition.primaryKey,
+        (key) => collection.get(key) as object | undefined
       ),
       startSync: true, // Start syncing immediately
       // Disable GC - we manage lifecycle via db.close()
@@ -797,6 +884,20 @@ export function createStreamDB<
   let streamResponse: StreamResponse<StateEvent> | null = null
   const abortController = new AbortController()
   let consumerStarted = false
+  let lastConsumedOffset = `-1`
+  const isAbortLikeError = (err: unknown): boolean => {
+    if (abortController.signal.aborted) {
+      return true
+    }
+    if (!(err instanceof Error)) {
+      return false
+    }
+    return (
+      err.name === `AbortError` ||
+      err.name === `FetchBackoffAbortError` ||
+      err.message === `Stream request was aborted`
+    )
+  }
 
   /**
    * Start the stream consumer (called lazily on first preload)
@@ -807,33 +908,49 @@ export function createStreamDB<
 
     // Start streaming (this is where the connection actually happens)
     streamResponse = await stream.stream<StateEvent>({
-      live: true,
+      live: `sse`,
+      json: true,
       signal: abortController.signal,
     })
+    // StreamDB consumes batches via subscribeJson(); it does not await the
+    // session's closed promise. Swallow that terminal rejection so aborting
+    // the live session during db.close() doesn't surface as an unhandled
+    // rejection after the real error has already been routed elsewhere.
+    void streamResponse.closed.catch((err) => {
+      if (isAbortLikeError(err)) {
+        return undefined
+      }
+      const error = err instanceof Error ? err : new Error(String(err))
+      console.error(`[StreamDB] Stream consumer closed unexpectedly:`, error)
+      dispatcher.rejectAll(error)
+      return undefined
+    })
+    lastConsumedOffset = streamResponse.offset
 
     // Process events as they come in
     streamResponse.subscribeJson((batch) => {
       try {
+        lastConsumedOffset = batch.offset
+        onBeforeBatch?.(batch)
+
         for (const event of batch.items) {
           if (isChangeEvent(event)) {
-            dispatcher.dispatchChange(event)
+            dispatcher.dispatchChange(event, batch.offset)
+            onEvent?.(event)
           } else if (isControlEvent(event)) {
             dispatcher.dispatchControl(event)
           }
         }
 
-        // Check batch-level up-to-date signal
-        if (batch.upToDate) {
+        onBatch?.(batch)
+
+        if (batch.upToDate || dispatcher.ready) {
           dispatcher.markUpToDate()
         }
       } catch (error) {
         console.error(`[StreamDB] Error processing batch:`, error)
-        console.error(`[StreamDB] Failed batch:`, batch)
-        // Reject all waiting preload promises
         dispatcher.rejectAll(error as Error)
-        // Abort the stream to stop further processing
         abortController.abort()
-        // Don't rethrow - we've already rejected the promise
       }
       return Promise.resolve()
     })
@@ -842,6 +959,9 @@ export function createStreamDB<
   // Build the StreamDB object with methods
   const dbMethods: StreamDBMethods = {
     stream,
+    get offset() {
+      return lastConsumedOffset
+    },
     preload: async () => {
       await startConsumer()
       await dispatcher.waitForUpToDate()
@@ -857,11 +977,14 @@ export function createStreamDB<
     },
   }
 
-  // Combine collections with methods
-  const db = {
-    collections: collectionInstances,
-    ...dbMethods,
-  } as unknown as StreamDB<TDef>
+  const db = Object.create(null) as StreamDB<TDef>
+  Object.defineProperty(db, `collections`, {
+    value: collectionInstances,
+    enumerable: true,
+    configurable: false,
+    writable: false,
+  })
+  Object.defineProperties(db, Object.getOwnPropertyDescriptors(dbMethods))
 
   // If actions factory is provided, wrap actions and return db with actions
   if (actionsFactory) {
@@ -877,10 +1000,13 @@ export function createStreamDB<
       })
     }
 
-    return {
-      ...db,
-      actions: wrappedActions,
-    } as any
+    Object.defineProperty(db, `actions`, {
+      value: wrappedActions,
+      enumerable: true,
+      configurable: false,
+      writable: false,
+    })
+    return db as any
   }
 
   return db as any
