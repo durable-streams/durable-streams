@@ -8015,6 +8015,43 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
       expect(headRes.headers.get(`content-type`)).toBe(`application/json`)
     })
+
+    test(`should fork inheriting content-type when header omitted`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-ct-inherit-src-${id}`
+      const forkPath = `/v1/stream/fork-create-ct-inherit-fork-${id}`
+
+      // Create source with application/json
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"key":"value"}]`,
+      })
+
+      // Fork WITHOUT Content-Type header → fork must inherit source's
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+      expect(forkRes.headers.get(`content-type`)).toBe(`application/json`)
+
+      // HEAD on fork should also show the inherited content type
+      const headRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `HEAD`,
+      })
+      expect(headRes.headers.get(`content-type`)).toBe(`application/json`)
+
+      // Appending with the inherited content-type must succeed (no 409)
+      const appendRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"key":"appended"}]`,
+      })
+      expect(appendRes.status).toBe(204)
+    })
   })
 
   // ============================================================================
