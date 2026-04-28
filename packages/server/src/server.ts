@@ -562,13 +562,24 @@ export class DurableStreamTestServer {
   ): Promise<void> {
     let contentType = req.headers[`content-type`]
 
-    // Sanitize content-type: if empty or invalid, use default
+    // Parse fork headers (must come before content-type sanitization so
+    // forks can fall through to the store's content-type inheritance)
+    const forkedFromHeader = req.headers[
+      STREAM_FORKED_FROM_HEADER.toLowerCase()
+    ] as string | undefined
+    const forkOffsetHeader = req.headers[
+      STREAM_FORK_OFFSET_HEADER.toLowerCase()
+    ] as string | undefined
+
+    // Sanitize content-type: if empty or invalid, use default — but only
+    // for non-fork creates. For forks, an omitted Content-Type means "inherit
+    // from source", which is resolved by the store.
     if (
       !contentType ||
       contentType.trim() === `` ||
       !/^[\w-]+\/[\w-]+/.test(contentType)
     ) {
-      contentType = `application/octet-stream`
+      contentType = forkedFromHeader ? undefined : `application/octet-stream`
     }
 
     const ttlHeader = req.headers[STREAM_TTL_HEADER.toLowerCase()] as
@@ -581,14 +592,6 @@ export class DurableStreamTestServer {
     // Parse Stream-Closed header
     const closedHeader = req.headers[STREAM_CLOSED_HEADER.toLowerCase()]
     const createClosed = closedHeader === `true`
-
-    // Parse fork headers
-    const forkedFromHeader = req.headers[
-      STREAM_FORKED_FROM_HEADER.toLowerCase()
-    ] as string | undefined
-    const forkOffsetHeader = req.headers[
-      STREAM_FORK_OFFSET_HEADER.toLowerCase()
-    ] as string | undefined
 
     // Validate TTL and Expires-At headers
     if (ttlHeader && expiresAtHeader) {
@@ -681,6 +684,8 @@ export class DurableStreamTestServer {
     }
 
     const stream = this.store.get(path)!
+    const resolvedContentType =
+      stream.contentType ?? contentType ?? `application/octet-stream`
 
     // Call lifecycle hook for new streams
     if (isNew && this.options.onStreamCreated) {
@@ -688,7 +693,7 @@ export class DurableStreamTestServer {
         this.options.onStreamCreated({
           type: `created`,
           path,
-          contentType: stream.contentType ?? contentType,
+          contentType: resolvedContentType,
           timestamp: Date.now(),
         })
       )
@@ -696,7 +701,7 @@ export class DurableStreamTestServer {
 
     // Return 201 for new streams, 200 for idempotent creates
     const headers: Record<string, string> = {
-      "content-type": stream.contentType ?? contentType,
+      "content-type": resolvedContentType,
       [STREAM_OFFSET_HEADER]: stream.currentOffset,
     }
 
