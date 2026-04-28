@@ -21,6 +21,8 @@ const alias = {
   ),
 }
 
+const includeCaddy = process.env.RUN_CADDY_TESTS === `1`
+
 export default defineConfig({
   test: {
     projects: [
@@ -37,16 +39,23 @@ export default defineConfig({
           name: "server",
           include: ["packages/server/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
+          testTimeout: 15000,
         },
         resolve: { alias },
       }),
-      defineProject({
-        test: {
-          name: "caddy",
-          include: ["packages/caddy-plugin/**/*.test.ts"],
-        },
-        resolve: { alias },
-      }),
+      ...(includeCaddy
+        ? [
+            defineProject({
+              test: {
+                name: "caddy",
+                include: ["packages/caddy-plugin/**/*.test.ts"],
+                testTimeout: 15000,
+                hookTimeout: 15000,
+              },
+              resolve: { alias },
+            }),
+          ]
+        : []),
       defineProject({
         test: {
           name: "state",

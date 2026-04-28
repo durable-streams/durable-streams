@@ -4,12 +4,14 @@
     "allowSyntheticDefaultImports": true,
     "allowUnreachableCode": false,
     "allowUnusedLabels": false,
+    "baseUrl": ".",
     "declaration": true,
     "esModuleInterop": true,
     "forceConsistentCasingInFileNames": true,
-    "isolatedDeclarations": true,
+    "isolatedDeclarations": false,
     "isolatedModules": true,
-    "lib": ["DOM", "DOM.Iterable", "DOM.AsyncIterable", "ES2022"],
+    "jsx": "react-jsx",
+    "lib": ["DOM", "DOM.Iterable", "DOM.AsyncIterable", "ES2023"],
     "module": "ES2022",
     "moduleResolution": "Bundler",
     "noEmit": true,
@@ -17,6 +19,34 @@
     "noUncheckedIndexedAccess": true,
     "noUnusedLocals": true,
     "noUnusedParameters": false,
+    "paths": {
+      "@durable-streams/client": ["packages/client/src/index.ts"],
+      "@durable-streams/client/*": ["packages/client/src/*"],
+      "@durable-streams/state": ["packages/state/src/index.ts"],
+      "@durable-streams/state/*": ["packages/state/src/*"],
+      "@durable-streams/server": ["packages/server/src/index.ts"],
+      "@durable-streams/server/*": ["packages/server/src/*"],
+      "@durable-streams/ts-darix-server": [
+        "packages/ts-darix-server/src/index.ts"
+      ],
+      "@durable-streams/ts-darix-server/*": ["packages/ts-darix-server/src/*"],
+      "@durable-streams/server-conformance-tests": [
+        "packages/server-conformance-tests/src/index.ts"
+      ],
+      "@durable-streams/server-conformance-tests/*": [
+        "packages/server-conformance-tests/src/*"
+      ],
+      "@durable-streams/darix-server-conformance-tests": [
+        "packages/darix-server-conformance-tests/src/index.ts"
+      ],
+      "@durable-streams/darix-server-conformance-tests/*": [
+        "packages/darix-server-conformance-tests/src/*"
+      ],
+      "@durable-streams/darix-runtime": [
+        "packages/ts-darix-runtime/src/index.ts"
+      ],
+      "@durable-streams/darix-runtime/*": ["packages/ts-darix-runtime/src/*"]
+    },
     "resolveJsonModule": true,
     "skipLibCheck": true,
     "strict": true,
@@ -32,6 +62,9 @@
     "**/test/**",
     "**/*.test.ts",
     "packages/caddy-plugin/**",
+    "packages/darix-ui/**",
+    "packages/darix-app/**",
+    "packages/darix-cli/**",
     "examples/yjs-demo/**"
   ]
 }

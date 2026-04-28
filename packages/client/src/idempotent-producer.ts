@@ -148,9 +148,10 @@ export class IdempotentProducer {
   #closed = false
   #closeResult: CloseResult | null = null
   #pendingFinalMessage?: Uint8Array | string
+  #lastSuccessfulOffset: Offset | null = null
 
-  // When autoClaim is true, we must wait for the first batch to complete
-  // before allowing pipelining (to know what epoch was claimed)
+  // Every new epoch must commit sequence 0 before later sequences can race
+  // ahead, otherwise the server may see seq>0 first and reject the epoch.
   #epochClaimed: boolean
 
   // Track sequence completions for 409 retry coordination
@@ -213,9 +214,9 @@ export class IdempotentProducer {
 
     this.#maxInFlight = maxInFlight
 
-    // When autoClaim is true, epoch is not yet known until first batch completes
-    // We block pipelining until then to avoid racing with the claim
-    this.#epochClaimed = !this.#autoClaim
+    // Always gate pipelining until sequence 0 succeeds for the current epoch.
+    // This applies to explicit epochs too, not just auto-claim flows.
+    this.#epochClaimed = false
 
     // Initialize fastq with maxInFlight concurrency
     this.#queue = fastq.promise(this.#batchWorker.bind(this), this.#maxInFlight)
@@ -326,6 +327,13 @@ export class IdempotentProducer {
 
     // Wait for queue to drain
     await this.#queue.drained()
+  }
+
+  /**
+   * Highest stream offset confirmed by a successful batch write in this producer.
+   */
+  get lastSuccessfulOffset(): Offset | null {
+    return this.#lastSuccessfulOffset
   }
 
   /**
@@ -466,6 +474,7 @@ export class IdempotentProducer {
         // Auto-claim: retry with epoch+1
         const newEpoch = currentEpoch + 1
         this.#epoch = newEpoch
+        this.#epochClaimed = false
         // Reset sequence for new epoch - set to 0 so the recursive call uses seq 0
         // (the first operation in a new epoch should be seq 0)
         this.#nextSeq = 0
@@ -490,6 +499,7 @@ export class IdempotentProducer {
     await this.flush()
     this.#epoch++
     this.#nextSeq = 0
+    this.#epochClaimed = false
   }
 
   /**
@@ -538,10 +548,8 @@ export class IdempotentProducer {
     this.#batchBytes = 0
     this.#nextSeq++
 
-    // When autoClaim is enabled and epoch hasn't been claimed yet,
-    // we must wait for any in-flight batch to complete before sending more.
-    // This ensures the first batch claims the epoch before pipelining begins.
-    if (this.#autoClaim && !this.#epochClaimed && this.#queue.length() > 0) {
+    // Hold back later sequences until seq 0 for the current epoch completes.
+    if (!this.#epochClaimed && !this.#queue.idle()) {
       // Wait for queue to drain, then push
       this.#queue.drained().then(() => {
         this.#queue.push({ batch, seq }).catch(() => {
@@ -564,7 +572,10 @@ export class IdempotentProducer {
     const epoch = this.#epoch
 
     try {
-      await this.#doSendBatch(batch, seq, epoch)
+      const result = await this.#doSendBatch(batch, seq, epoch)
+      if (result.offset) {
+        this.#lastSuccessfulOffset = result.offset
+      }
 
       // Mark epoch as claimed after first successful batch
       // This enables full pipelining for subsequent batches
@@ -737,6 +748,7 @@ export class IdempotentProducer {
         // Auto-claim: retry with epoch+1
         const newEpoch = currentEpoch + 1
         this.#epoch = newEpoch
+        this.#epochClaimed = false
         this.#nextSeq = 1 // This batch will use seq 0
 
         // Retry with new epoch, starting at seq 0

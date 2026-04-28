@@ -406,6 +406,44 @@ describe(`stream() function`, () => {
       expect(received[0]).toEqual(items)
     })
 
+    it(`should advance response offset after subscribed batches are consumed`, async () => {
+      mockFetch
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify([{ id: 1 }]), {
+            status: 200,
+            headers: {
+              "content-type": `application/json`,
+              [STREAM_OFFSET_HEADER]: `1_10`,
+            },
+          })
+        )
+        .mockResolvedValueOnce(
+          new Response(JSON.stringify([{ id: 2 }]), {
+            status: 200,
+            headers: {
+              "content-type": `application/json`,
+              [STREAM_OFFSET_HEADER]: `1_20`,
+              [STREAM_UP_TO_DATE_HEADER]: `true`,
+            },
+          })
+        )
+
+      const res = await stream<{ id: number }>({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: true,
+      })
+
+      await new Promise<void>((resolve) => {
+        res.subscribeJson((batch) => {
+          if (batch.upToDate) resolve()
+        })
+      })
+
+      expect(res.offset).toBe(`1_20`)
+      expect(res.upToDate).toBe(true)
+    })
+
     it(`should throw on non-JSON content`, async () => {
       mockFetch.mockResolvedValue(
         new Response(`plain text`, {

@@ -143,18 +143,15 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
     private Chunk pollSSE(Duration timeout) throws DurableStreamException {
         ensureSSEStarted();
 
-        if (sseReader.isClosed()) {
-            return null;
-        }
-
         long timeoutMs = timeout != null ? timeout.toMillis() : 30000;
         Chunk chunk = sseReader.poll(timeoutMs);
 
         if (chunk != null) {
             updateStateFromChunk(chunk);
+            return chunk;
         }
 
-        return chunk;
+        return null;
     }
 
     private void ensureSSEStarted() throws DurableStreamException {
@@ -196,10 +193,6 @@ public final class ChunkIterator implements Iterator<Chunk>, Iterable<Chunk>, Au
 
     private Chunk fetchNextSSE() throws DurableStreamException {
         ensureSSEStarted();
-
-        if (sseReader.isClosed()) {
-            return null;
-        }
 
         // For SSE, use the configured timeout or a reasonable default
         long timeoutMs = timeout != null ? timeout.toMillis() : 60000;

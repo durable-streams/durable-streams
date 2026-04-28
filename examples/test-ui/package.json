@@ -10,22 +10,23 @@
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
-    "@types/react": "^19.2.7",
+    "@types/react": "^19.2.14",
     "@types/react-dom": "^19.2.3",
-    "@vitejs/plugin-react": "^5.1.1",
+    "@vitejs/plugin-react": "^5.2.0",
     "typescript": "~5.9.3",
     "vite": "^7.2.4"
   },
   "dependencies": {
     "@durable-streams/client": "workspace:^",
     "@durable-streams/state": "workspace:^",
-    "@tanstack/react-db": "latest",
-    "@tanstack/react-router": "^1.139.14",
-    "@tanstack/react-virtual": "^3.13.13",
-    "@tanstack/router-devtools": "^1.139.15",
-    "@tanstack/router-plugin": "^1.139.14",
-    "react": "^19.2.1",
-    "react-dom": "^19.2.1",
+    "@tanstack/db": "^0.6.0",
+    "@tanstack/react-db": "^0.1.78",
+    "@tanstack/react-router": "^1.166.8",
+    "@tanstack/react-virtual": "^3.13.22",
+    "@tanstack/router-devtools": "^1.166.7",
+    "@tanstack/router-plugin": "^1.166.8",
+    "react": "^19.2.4",
+    "react-dom": "^19.2.4",
     "react-json-view": "^1.21.3"
   }
 }

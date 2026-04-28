@@ -17,6 +17,9 @@ permissions:
 jobs:
   release:
     runs-on: ubuntu-latest
+    outputs:
+      published: ${{ steps.changesets.outputs.published }}
+      ts_darix_server_release_tag: ${{ steps.ts_darix_server_release_tag.outputs.tag }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -63,8 +66,29 @@ jobs:
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Capture the new ts-darix-server release tag
+        id: ts_darix_server_release_tag
+        if: steps.changesets.outputs.published == 'true'
+        run: |
+          set -euo pipefail
+
+          published_packages='${{ steps.changesets.outputs.publishedPackages }}'
+          tag="$(
+            echo "$published_packages" \
+              | jq -r '.[] | select(.name == "@durable-streams/ts-darix-server") | .name + "@" + .version'
+          )"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+
       - name: Comment on PRs about release
         if: steps.changesets.outputs.published == 'true'
         uses: tanstack/config/.github/comment-on-release@main
         with:
           published-packages: ${{ steps.changesets.outputs.publishedPackages }}
+
+  publish-agent-server-image:
+    needs: release
+    if: ${{ needs.release.outputs.published == 'true' && needs.release.outputs.ts_darix_server_release_tag != '' }}
+    uses: ./.github/workflows/publish-agent-server-dockerhub-image.yml
+    secrets: inherit
+    with:
+      git_ref: ${{ needs.release.outputs.ts_darix_server_release_tag }}

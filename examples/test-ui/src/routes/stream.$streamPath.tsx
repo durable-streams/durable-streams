@@ -8,9 +8,9 @@ import {
   useSyncExternalStore,
 } from "react"
 import { DurableStream, IdempotentProducer } from "@durable-streams/client"
-import { and, eq, gt, useLiveQuery } from "@tanstack/react-db"
 import { useVirtualizer } from "@tanstack/react-virtual"
 import ReactJson from "react-json-view"
+import { useCollectionData } from "../hooks/useCollectionData"
 import { useStreamDB } from "../lib/stream-db-context"
 import { useTypingIndicator } from "../hooks/useTypingIndicator"
 import { streamStore } from "../lib/stream-store"
@@ -46,6 +46,7 @@ function StreamViewer() {
   const { streamPath } = Route.useParams()
   const { contentType, stream } = Route.useLoaderData()
   const { presenceDB } = useStreamDB()
+  const presence = useCollectionData(presenceDB.collections.presence)
   const { startTyping } = useTypingIndicator(streamPath)
   const [writeInput, setWriteInput] = useState(``)
   const [error, setError] = useState<string | null>(null)
@@ -131,19 +132,15 @@ function StreamViewer() {
     return () => clearInterval(interval)
   }, [])
 
-  // Query typing users for this stream
-  const { data: typers = [] } = useLiveQuery(
-    (q) =>
-      q
-        .from({ presence: presenceDB.collections.presence })
-        .where(({ presence }) =>
-          and(
-            eq(presence.streamPath, streamPath),
-            eq(presence.isTyping, true),
-            gt(presence.lastSeen, now - 60000)
-          )
-        ),
-    [streamPath, now]
+  const typers = useMemo(
+    () =>
+      presence.filter(
+        (item) =>
+          item.streamPath === streamPath &&
+          item.isTyping &&
+          item.lastSeen > now - 60000
+      ),
+    [now, presence, streamPath]
   )
 
   // Auto-scroll to bottom when new messages arrive

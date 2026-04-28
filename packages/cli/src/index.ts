@@ -7,7 +7,7 @@ import { stderr, stdin, stdout } from "node:process"
 import { fileURLToPath } from "node:url"
 import { DurableStream } from "@durable-streams/client"
 import { flattenJsonForAppend, isJsonContentType } from "./jsonUtils.js"
-import { parseWriteArgs } from "./parseWriteArgs.js"
+import { extractFlagValue, parseWriteArgs } from "./parseWriteArgs.js"
 import {
   buildStreamUrl,
   normalizeBaseUrl,
@@ -19,7 +19,12 @@ import type { ParsedWriteArgs } from "./parseWriteArgs.js"
 
 export type { ParsedWriteArgs }
 export type { GlobalOptions }
-export { flattenJsonForAppend, isJsonContentType, parseWriteArgs }
+export {
+  extractFlagValue,
+  flattenJsonForAppend,
+  isJsonContentType,
+  parseWriteArgs,
+}
 export { parseGlobalOptions, buildHeaders, getUsageText }
 export {
   buildStreamUrl,
@@ -35,42 +40,6 @@ const STREAM_AUTH = process.env.STREAM_AUTH
 interface GlobalOptions {
   url?: string
   auth?: string
-}
-
-/**
- * Extract a flag value from args, supporting both --flag=value and --flag value syntax.
- * Returns { value, consumed } where consumed is the number of args used (0 if no match).
- */
-function extractFlagValue(
-  args: Array<string>,
-  index: number,
-  flagName: string,
-  example: string
-): { value: string | null; consumed: number } {
-  const arg = args[index]!
-  const prefix = `${flagName}=`
-
-  if (arg.startsWith(prefix)) {
-    const value = arg.slice(prefix.length)
-    if (!value) {
-      throw new Error(
-        `${flagName} requires a value\n  Example: ${flagName}="${example}"`
-      )
-    }
-    return { value, consumed: 1 }
-  }
-
-  if (arg === flagName) {
-    const value = args[index + 1]
-    if (!value || value.startsWith(`--`)) {
-      throw new Error(
-        `${flagName} requires a value\n  Example: ${flagName} "${example}"`
-      )
-    }
-    return { value, consumed: 2 }
-  }
-
-  return { value: null, consumed: 0 }
 }
 
 /**

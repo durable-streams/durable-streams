@@ -8,8 +8,9 @@
   },
   "scripts": {
     "start:dev": "pnpm --filter @durable-streams/cli start:dev",
+    "traces": "pnpm exec tsx scripts/analyze-traces.mts",
     "link:dev": "pnpm --filter @durable-streams/cli link:dev",
-    "build": "pnpm -r --filter '!@durable-streams-internal/caddy-plugin' --filter '!@durable-streams/example-*' build",
+    "build": "pnpm -r --filter '!@durable-streams-internal/caddy-plugin' --filter '!@durable-streams-internal/client-dotnet' --filter '!@durable-streams/example-*' build",
     "dev": "pnpm -r --parallel dev",
     "test": "vitest",
     "test:run": "vitest run --project client --project server --project state",
@@ -27,25 +28,30 @@
     "docs:preview": "pnpm --filter @durable-streams/docs preview"
   },
   "devDependencies": {
-    "@changesets/cli": "^2.29.8",
-    "@eslint/js": "^9.39.1",
+    "@changesets/cli": "^2.30.0",
+    "@eslint/js": "^9.39.4",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/exporter-trace-otlp-proto": "^0.57.2",
+    "@opentelemetry/sdk-node": "^0.57.2",
     "@stylistic/eslint-plugin": "^4.4.1",
     "@svitejs/changesets-changelog-github-compact": "^1.2.0",
     "@tanstack/config": "^0.22.1",
-    "@types/node": "^22.15.21",
-    "@typescript-eslint/eslint-plugin": "^8.47.0",
-    "@typescript-eslint/parser": "^8.47.0",
-    "@vitest/coverage-v8": "^4.0.0",
-    "eslint": "^9.39.1",
+    "@types/node": "^22.19.15",
+    "@typescript-eslint/eslint-plugin": "^8.57.0",
+    "@typescript-eslint/parser": "^8.57.0",
+    "@vitest/coverage-v8": "^4.1.0",
+    "eslint": "^9.39.4",
     "eslint-config-prettier": "^10.1.8",
     "eslint-import-resolver-typescript": "^4.4.4",
     "eslint-plugin-prettier": "^5.5.4",
     "husky": "^9.1.7",
     "lint-staged": "^15.5.2",
-    "prettier": "^3.6.2",
+    "prettier": "^3.8.1",
     "tsdown": "^0.9.0",
+    "tsx": "^4.19.2",
     "typescript": "^5.9.2",
-    "vitest": "^4.0.0"
+    "undici": "^7.24.7",
+    "vitest": "^4.1.0"
   },
   "lint-staged": {
     "*.{ts,tsx}": [
@@ -55,5 +61,14 @@
       "prettier --write"
     ]
   },
-  "pnpm": {}
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "better-sqlite3",
+      "electron",
+      "sharp"
+    ],
+    "overrides": {
+      "@tanstack/db": "^0.6.4"
+    }
+  }
 }

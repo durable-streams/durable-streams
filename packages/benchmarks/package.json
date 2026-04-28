@@ -8,10 +8,10 @@
   },
   "dependencies": {
     "@durable-streams/client": "workspace:*",
-    "vitest": "^4.0.0"
+    "vitest": "^4.1.0"
   },
   "devDependencies": {
-    "@types/node": "^22.15.21",
+    "@types/node": "^22.19.15",
     "tsdown": "^0.9.0",
     "typescript": "^5.0.0"
   },

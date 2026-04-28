@@ -11,3 +11,11 @@ ignoredBuiltDependencies:
   - "@parcel/watcher"
   - "@swc/core"
   - lmdb
+
+onlyBuiltDependencies:
+  - electron
+  - esbuild
+  - msgpackr-extract
+  - protobufjs
+  - rolldown
+  - unrs-resolver

@@ -1,87 +1,77 @@
 // @refresh skip
 import { For, createMemo } from "solid-js"
-import { count, eq, useLiveQuery } from "@tanstack/solid-db"
 import { useWikipediaDB } from "../lib/stream-db"
+import { useCollectionData } from "../lib/useCollectionData"
 import "./StatsPanel.css"
 
 export function StatsPanel() {
   const db = useWikipediaDB()
+  const events = useCollectionData(db.collections.events)
 
-  // Total events count
-  const totalQuery = useLiveQuery((q) =>
-    q
-      .from({ events: db.collections.events })
-      .select(({ events }) => ({ total: count(events.id) }))
-  )
+  const totalEvents = createMemo(() => events().length)
 
-  // Top 5 languages with DB aggregation
-  const topLanguagesQuery = useLiveQuery((q) => {
-    const languageCounts = q
-      .from({ events: db.collections.events })
-      .groupBy(({ events }) => events.language)
-      .select(({ events }) => ({
-        language: events.language,
-        count: count(events.id),
-      }))
+  const topLanguages = createMemo(() => {
+    const counts = new Map<string, number>()
 
-    return q
-      .from({ stats: languageCounts })
-      .orderBy(({ stats }) => stats.count, `desc`)
-      .limit(5)
+    for (const event of events()) {
+      counts.set(event.language, (counts.get(event.language) ?? 0) + 1)
+    }
+
+    return Array.from(counts.entries())
+      .map(([language, count]) => ({ language, count }))
+      .sort((a, b) => b.count - a.count || a.language.localeCompare(b.language))
+      .slice(0, 5)
   })
 
-  // Event type breakdown with DB aggregation
-  const typeBreakdownQuery = useLiveQuery((q) =>
-    q
-      .from({ events: db.collections.events })
-      .groupBy(({ events }) => events.type)
-      .select(({ events }) => ({
-        type: events.type,
-        count: count(events.id),
-      }))
-  )
+  const typeBreakdown = createMemo(() => {
+    const counts = new Map<string, number>()
 
-  // Bot vs human ratio with DB aggregation
-  const botStatsQuery = useLiveQuery((q) =>
-    q
-      .from({ events: db.collections.events })
-      .groupBy(({ events }) => events.isBot)
-      .select(({ events }) => ({
-        isBot: events.isBot,
-        count: count(events.id),
-      }))
-  )
+    for (const event of events()) {
+      counts.set(event.type, (counts.get(event.type) ?? 0) + 1)
+    }
 
-  // Top 5 active users (non-bots) with DB aggregation
-  const topUsersQuery = useLiveQuery((q) => {
-    const userCounts = q
-      .from({ events: db.collections.events })
-      .where(({ events }) => eq(events.isBot, false))
-      .groupBy(({ events }) => events.user)
-      .select(({ events }) => ({
-        user: events.user,
-        count: count(events.id),
-      }))
-
-    return q
-      .from({ stats: userCounts })
-      .orderBy(({ stats }) => stats.count, `desc`)
-      .limit(5)
+    return Array.from(counts.entries())
+      .map(([type, count]) => ({ type, count }))
+      .sort((a, b) => b.count - a.count || a.type.localeCompare(b.type))
   })
 
-  // Events per second - need recent 100 for time calculation
-  const recentEventsQuery = useLiveQuery((q) =>
-    q
-      .from({ events: db.collections.events })
-      .orderBy(({ events }) => events.timestamp, `desc`)
-      .limit(100)
-      .select(({ events }) => ({
-        timestamp: events.timestamp,
-      }))
+  const botStats = createMemo(() => {
+    let botCount = 0
+    let humanCount = 0
+
+    for (const event of events()) {
+      if (event.isBot) {
+        botCount += 1
+      } else {
+        humanCount += 1
+      }
+    }
+
+    return { botCount, humanCount }
+  })
+
+  const topUsers = createMemo(() => {
+    const counts = new Map<string, number>()
+
+    for (const event of events()) {
+      if (event.isBot) continue
+      counts.set(event.user, (counts.get(event.user) ?? 0) + 1)
+    }
+
+    return Array.from(counts.entries())
+      .map(([user, count]) => ({ user, count }))
+      .sort((a, b) => b.count - a.count || a.user.localeCompare(b.user))
+      .slice(0, 5)
+  })
+
+  const recentEvents = createMemo(() =>
+    [...events()]
+      .sort((a, b) => b.timestamp.localeCompare(a.timestamp))
+      .slice(0, 100)
   )
 
   const eventsPerSec = createMemo(() => {
-    const recent = recentEventsQuery.data
+    const recent = recentEvents()
     if (recent.length < 2) return `0.00`
 
     const oldest = new Date(recent[recent.length - 1].timestamp).getTime()
@@ -92,9 +82,7 @@ export function StatsPanel() {
   })
 
   const botRatio = createMemo(() => {
-    const stats = botStatsQuery.data
-    const botCount = stats.find((s: any) => s.isBot)?.count || 0
-    const humanCount = stats.find((s: any) => !s.isBot)?.count || 0
+    const { botCount, humanCount } = botStats()
     const total = botCount + humanCount
     return total > 0 ? ((botCount / total) * 100).toFixed(1) : `0.0`
   })
@@ -118,7 +106,7 @@ export function StatsPanel() {
         <div class="stat-icon">🌍</div>
         <div class="stat-content">
           <div class="stat-label">Total Events</div>
-          <div class="stat-value">{totalQuery.data[0]?.total || 0}</div>
+          <div class="stat-value">{totalEvents()}</div>
         </div>
       </div>
 
@@ -126,7 +114,7 @@ export function StatsPanel() {
         <h3>🌐 Top Languages</h3>
         <div class="stat-list">
           <For
-            each={topLanguagesQuery.data}
+            each={topLanguages()}
             fallback={<div class="stat-empty">No data yet</div>}
           >
             {(item) => (
@@ -143,7 +131,7 @@ export function StatsPanel() {
         <h3>📝 Event Types</h3>
         <div class="stat-list">
           <For
-            each={typeBreakdownQuery.data}
+            each={typeBreakdown()}
             fallback={<div class="stat-empty">No data yet</div>}
           >
             {(item) => (
@@ -168,7 +156,7 @@ export function StatsPanel() {
         <h3>👥 Active Users</h3>
         <div class="stat-list">
           <For
-            each={topUsersQuery.data}
+            each={topUsers()}
             fallback={<div class="stat-empty">No data yet</div>}
           >
             {(item) => (

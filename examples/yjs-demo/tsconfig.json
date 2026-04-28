@@ -22,7 +22,10 @@
     "noUnusedParameters": false,
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": false
+    "noUncheckedSideEffectImports": false,
+    "paths": {
+      "@tanstack/db": ["./node_modules/@tanstack/db"]
+    }
   },
   "include": ["src", "vite.config.ts", "server.ts", "workload.ts"]
 }
