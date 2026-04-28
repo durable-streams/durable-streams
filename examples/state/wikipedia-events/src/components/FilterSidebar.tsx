@@ -1,7 +1,8 @@
 // @refresh skip
+import { createMemo } from "solid-js"
 import { For } from "solid-js"
-import { count, useLiveQuery } from "@tanstack/solid-db"
 import { useWikipediaDB } from "../lib/stream-db"
+import { useCollectionData } from "../lib/useCollectionData"
 import { NAMESPACES } from "../lib/types"
 import type { Filters } from "../lib/types"
 import "./FilterSidebar.css"
@@ -17,31 +18,19 @@ interface FilterSidebarProps {
 
 export function FilterSidebar(props: FilterSidebarProps) {
   const db = useWikipediaDB()
+  const events = useCollectionData(db.collections.events)
 
-  console.log(`[FilterSidebar] Rendering with db:`, db)
-  console.log(`[FilterSidebar] db.collections.events:`, db.collections.events)
+  const topLanguages = createMemo(() => {
+    const counts = new Map<string, number>()
 
-  // Query for top languages using DB aggregation
-  // Wrap collection access in function to ensure it's accessed reactively
-  const topLanguagesQuery = useLiveQuery((q) => {
-    const eventsCollection = db.collections.events
-    console.log(
-      `[FilterSidebar] Inside query, eventsCollection:`,
-      eventsCollection
-    )
+    for (const event of events()) {
+      counts.set(event.language, (counts.get(event.language) ?? 0) + 1)
+    }
 
-    const languageCounts = q
-      .from({ events: eventsCollection })
-      .groupBy(({ events }) => events.language)
-      .select(({ events }) => ({
-        language: events.language,
-        count: count(events.id),
-      }))
-
-    return q
-      .from({ stats: languageCounts })
-      .orderBy(({ stats }) => stats.count, `desc`)
-      .limit(10)
+    return Array.from(counts.entries())
+      .map(([language, count]) => ({ language, count }))
+      .sort((a, b) => b.count - a.count || a.language.localeCompare(b.language))
+      .slice(0, 10)
   })
 
   const eventTypes = [`edit`, `new`, `log`, `categorize`]
@@ -63,7 +52,7 @@ export function FilterSidebar(props: FilterSidebarProps) {
       <section class="filter-section">
         <h3>Language</h3>
         <div class="filter-options">
-          <For each={topLanguagesQuery.data}>
+          <For each={topLanguages()}>
             {(item) => (
               <label class="filter-option">
                 <input

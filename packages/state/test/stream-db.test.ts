@@ -146,10 +146,59 @@ describe(`Stream DB`, () => {
     expect(msg?.text).toBe(`Hello!`)
     expect(msg?.userId).toBe(`1`)
 
-    // Verify returned values include the primary key
-    expect(Object.keys(kyle || {})).toEqual([`id`, `name`, `email`])
+    // Verify returned values include the primary key and StreamDB sequence field.
+    // Additional internal metadata fields may also be present on collection rows.
+    expect(Object.keys(kyle || {})).toEqual(
+      expect.arrayContaining([`id`, `name`, `email`, `_seq`])
+    )
 
     // Cleanup
+    db.close()
+  })
+
+  it(`should track the last consumed stream offset after preload`, async () => {
+    const streamState = createStateSchema({
+      users: {
+        schema: userSchema,
+        type: `user`,
+        primaryKey: `id`,
+      },
+    })
+
+    const streamPath = `/db/offset-${Date.now()}`
+    const streamUrl = `${baseUrl}${streamPath}`
+    const stream = await DurableStream.create({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+
+    await stream.append(
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
+        })
+      )
+    )
+    await stream.append(
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `2`, name: `Ada`, email: `ada@example.com` },
+        })
+      )
+    )
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: streamUrl,
+        contentType: `application/json`,
+      },
+      state: streamState,
+    })
+
+    await db.preload()
+
+    expect(db.offset).not.toBe(`-1`)
+
     db.close()
   })
 
@@ -712,12 +761,12 @@ describe(`Stream DB`, () => {
 
     // Verify initial inserts were received
     expect(allChanges.length).toBe(2)
-    expect(allChanges[0]).toEqual({
+    expect(allChanges[0]).toMatchObject({
       key: `1`,
       type: `insert`,
       value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
     })
-    expect(allChanges[1]).toEqual({
+    expect(allChanges[1]).toMatchObject({
       key: `2`,
       type: `insert`,
       value: { id: `2`, name: `Sarah`, email: `sarah@example.com` },
@@ -742,7 +791,7 @@ describe(`Stream DB`, () => {
 
     // Verify update was received
     expect(allChanges.length).toBe(1)
-    expect(allChanges[0]).toEqual({
+    expect(allChanges[0]).toMatchObject({
       key: `1`,
       type: `update`,
       value: { id: `1`, name: `Kyle Updated`, email: `kyle@example.com` },
@@ -762,7 +811,7 @@ describe(`Stream DB`, () => {
     await new Promise((resolve) => setTimeout(resolve, 100))
 
     expect(allChanges.length).toBe(1)
-    expect(allChanges[0]).toEqual({
+    expect(allChanges[0]).toMatchObject({
       key: `2`,
       type: `delete`,
       value: { id: `2`, name: `Sarah`, email: `sarah@example.com` },
@@ -1811,14 +1860,16 @@ describe(`Stream DB Actions`, () => {
             mutationFn: async (name: string) => {
               // Verify we can use the stream
               await actionStream.append(
-                streamState.users.insert({
-                  key: name,
-                  value: {
-                    id: name,
-                    name,
-                    email: `${name.toLowerCase()}@example.com`,
-                  },
-                })
+                JSON.stringify(
+                  streamState.users.insert({
+                    key: name,
+                    value: {
+                      id: name,
+                      name,
+                      email: `${name.toLowerCase()}@example.com`,
+                    },
+                  })
+                )
               )
             },
           },

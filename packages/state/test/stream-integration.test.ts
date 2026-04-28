@@ -119,6 +119,42 @@ describe(`Stream Integration`, () => {
     expect(users.size).toBe(2)
   })
 
+  it(`should expose per-message offsets on state change headers`, async () => {
+    const streamPath = `/state/offset-headers-${Date.now()}`
+
+    const stream = await DurableStream.create({
+      url: `${baseUrl}${streamPath}`,
+      contentType: `application/json`,
+    })
+
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Alice` },
+        headers: { operation: `insert` },
+      })
+    )
+
+    await stream.append(
+      JSON.stringify({
+        type: `user`,
+        key: `1`,
+        value: { name: `Alicia` },
+        old_value: { name: `Alice` },
+        headers: { operation: `update` },
+      })
+    )
+
+    const res = await stream.stream<ChangeEvent>({ live: false })
+    const events = await res.json()
+
+    expect(events).toHaveLength(2)
+    expect(events[0]?.headers.offset).toMatch(/^\d{16}_\d{16}$/)
+    expect(events[1]?.headers.offset).toMatch(/^\d{16}_\d{16}$/)
+    expect(events[0]?.headers.offset).not.toEqual(events[1]?.headers.offset)
+  })
+
   it(`should handle multiple types in a stream`, async () => {
     const streamPath = `/state/multi-type-${Date.now()}`
 

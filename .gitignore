@@ -201,3 +201,9 @@ examples/yjs-demo/.tanstack
 
 # MacOS
 .DS_Store
+
+.worktrees
+.superpowers/
+data/
+
+.opentrace/
