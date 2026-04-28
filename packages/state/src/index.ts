@@ -15,7 +15,11 @@ export { isChangeEvent, isControlEvent } from "./types"
 export { MaterializedState } from "./materialized-state"
 
 // Stream DB
-export { createStreamDB, createStateSchema } from "./stream-db"
+export {
+  createStreamDB,
+  createStateSchema,
+  getStreamDBCollectionId,
+} from "./stream-db"
 export type {
   CollectionDefinition,
   CollectionEventHelpers,
@@ -37,7 +41,12 @@ export type {
 export type { Collection, SyncConfig } from "@tanstack/db"
 export {
   createCollection,
+  createLiveQueryCollection,
   createOptimisticAction,
+  createTransaction,
+  deepEquals,
+  localOnlyCollectionOptions,
+  queryOnce,
   // Comparison operators
   eq,
   gt,
@@ -60,4 +69,8 @@ export {
   avg,
   min,
   max,
+  // Includes/projection functions
+  concat,
+  coalesce,
+  toArray,
 } from "@tanstack/db"

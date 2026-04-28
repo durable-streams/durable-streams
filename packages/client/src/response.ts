@@ -394,6 +394,23 @@ export class StreamResponseImpl<
   }
 
   /**
+   * Update state from already-extracted batch metadata.
+   */
+  #updateStateFromBatchMetadata(params: {
+    offset: Offset
+    cursor: string | undefined
+    upToDate: boolean
+    streamClosed: boolean
+  }): void {
+    this.#syncState = this.#syncState.withResponseMetadata({
+      offset: params.offset,
+      cursor: params.cursor,
+      upToDate: params.upToDate,
+      streamClosed: params.streamClosed,
+    })
+  }
+
+  /**
    * Update instance state from an SSE control event.
    */
   #updateStateFromSSEControl(controlEvent: SSEControlEvent): void {
@@ -1109,6 +1126,12 @@ export class StreamResponseImpl<
               this.cursor,
               this.streamClosed
             )
+          this.#updateStateFromBatchMetadata({
+            offset,
+            cursor,
+            upToDate,
+            streamClosed,
+          })
 
           // Get response text first (handles empty responses gracefully)
           const text = await response.text()
@@ -1152,7 +1175,10 @@ export class StreamResponseImpl<
       }
     }
 
-    consumeJsonSubscription()
+    // Errors are already routed through #markError/#markClosed inside the
+    // subscription loop. Consume the task promise as well so shutdown-time
+    // abort races don't escape as unhandled rejections.
+    void consumeJsonSubscription().catch(() => undefined)
 
     return () => {
       abortController.abort()
@@ -1182,6 +1208,12 @@ export class StreamResponseImpl<
               this.cursor,
               this.streamClosed
             )
+          this.#updateStateFromBatchMetadata({
+            offset,
+            cursor,
+            upToDate,
+            streamClosed,
+          })
 
           const buffer = await response.arrayBuffer()
 
@@ -1211,7 +1243,7 @@ export class StreamResponseImpl<
       }
     }
 
-    consumeBytesSubscription()
+    void consumeBytesSubscription().catch(() => undefined)
 
     return () => {
       abortController.abort()
@@ -1241,6 +1273,12 @@ export class StreamResponseImpl<
               this.cursor,
               this.streamClosed
             )
+          this.#updateStateFromBatchMetadata({
+            offset,
+            cursor,
+            upToDate,
+            streamClosed,
+          })
 
           const text = await response.text()
 
@@ -1270,7 +1308,7 @@ export class StreamResponseImpl<
       }
     }
 
-    consumeTextSubscription()
+    void consumeTextSubscription().catch(() => undefined)
 
     return () => {
       abortController.abort()
@@ -1445,10 +1483,10 @@ function createSSESyntheticResponseFromParts(
         0
       )
       const combined = new Uint8Array(totalLength)
-      let offset = 0
+      let writeOffset = 0
       for (const part of decodedParts) {
-        combined.set(part, offset)
-        offset += part.length
+        combined.set(part, writeOffset)
+        writeOffset += part.length
       }
       body = combined.buffer
     }
