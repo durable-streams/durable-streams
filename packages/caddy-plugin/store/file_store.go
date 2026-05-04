@@ -269,6 +269,17 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		meta.ForkedFrom = opts.ForkedFrom
 		meta.TTLSeconds = forkTTL
 		meta.ExpiresAt = forkExpiresAt
+		// Persist the user-supplied ForkOffset (may be nil if omitted) and
+		// the user-supplied ForkSubOffset for idempotent re-creation matching.
+		// These differ from meta.ForkOffset for JSON forks created with
+		// sub-offset > 0 (where meta.ForkOffset is advanced internally).
+		if opts.ForkOffset != nil {
+			requested := *opts.ForkOffset
+			meta.ForkOffsetRequested = &requested
+		}
+		if opts.ForkSubOffset != nil {
+			meta.ForkSubOffset = *opts.ForkSubOffset
+		}
 
 		// Materialize binary sub-offset prefix into the fork's segment.
 		// This must happen before any client-supplied initial data so the
@@ -297,10 +308,7 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 			}
 			writer.Close()
 
-			// Store the user-supplied sub-offset (content bytes) for idempotent
-			// re-creation matching. The physical advance includes the length
-			// prefix written by WriteMessage.
-			meta.ForkSubOffsetBytes = uint64(len(binarySubOffsetPrefix))
+			// Advance the fork's currentOffset past the materialized prefix.
 			meta.CurrentOffset = forkOffset.Add(uint64(LengthPrefixSize + len(binarySubOffsetPrefix)))
 		}
 	} else {

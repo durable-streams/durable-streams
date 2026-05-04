@@ -228,9 +228,11 @@ export class StreamStore {
         const forkOffsetMatches =
           options.forkOffset === undefined ||
           options.forkOffset === existingRaw.forkOffset
-        // Sub-offset: undefined and 0 are equivalent.
+        // Sub-offset: undefined and 0 are equivalent. Compare the raw
+        // user-supplied integer (count for JSON, bytes for binary) so the
+        // comparison is independent of how it was resolved internally.
         const requestedSub = options.forkSubOffset ?? 0
-        const existingSub = existingRaw.forkSubOffsetBytes ?? 0
+        const existingSub = existingRaw.forkSubOffset ?? 0
         const forkSubOffsetMatches = requestedSub === existingSub
 
         if (
@@ -354,7 +356,9 @@ export class StreamStore {
         timestamp: Date.now(),
       })
       stream.currentOffset = newOffset
-      stream.forkSubOffsetBytes = forkSubOffsetPrefix.length
+      // Persist the user-supplied sub-offset verbatim for idempotent
+      // re-creation matching, not the encoded byte length.
+      stream.forkSubOffset = options.forkSubOffset
     }
 
     // If initial data is provided, append it

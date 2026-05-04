@@ -108,11 +108,12 @@ export interface Stream {
   forkOffset?: string
 
   /**
-   * Sub-offset content bytes refining `forkOffset` (non-JSON forks only).
-   * For JSON forks, the sub-offset is resolved into `forkOffset` itself, so
-   * this field stays 0/undefined.
+   * User-supplied sub-offset value refining `forkOffset` (Section 4.2 of
+   * PROTOCOL.md). Stored verbatim for idempotent re-creation matching:
+   * bytes for non-JSON forks, flattened message count for JSON forks.
+   * `undefined` and `0` are equivalent.
    */
-  forkSubOffsetBytes?: number
+  forkSubOffset?: number
 
   /**
    * Number of forks referencing this stream.
