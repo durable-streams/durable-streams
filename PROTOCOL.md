@@ -839,19 +839,17 @@ Content-Type: application/json
 {
   "consumer_id": "my-agent:task-123",
   "streams": ["/agents/task-123"],
-  "namespace": "/agents/*",
   "lease_ttl_ms": 45000
 }
 ```
 
 **Fields:**
 
-| Field          | Required | Description                                                 |
-| -------------- | -------- | ----------------------------------------------------------- |
-| `consumer_id`  | Yes      | Stable, client-provided identifier; must be unique          |
-| `streams`      | Yes      | One or more stream paths to track                           |
-| `namespace`    | No       | Glob pattern for informational grouping (e.g., `/agents/*`) |
-| `lease_ttl_ms` | No       | Lease duration in milliseconds; server default if omitted   |
+| Field          | Required | Description                                               |
+| -------------- | -------- | --------------------------------------------------------- |
+| `consumer_id`  | Yes      | Stable, client-provided identifier; must be unique        |
+| `streams`      | Yes      | One or more stream paths to track                         |
+| `lease_ttl_ms` | No       | Lease duration in milliseconds; server default if omitted |
 
 **Response:**
 
@@ -867,7 +865,6 @@ Content-Type: application/json
   "state": "REGISTERED",
   "epoch": 0,
   "streams": [{ "path": "/agents/task-123", "offset": "-1" }],
-  "namespace": "/agents/*",
   "lease_ttl_ms": 45000
 }
 ```
@@ -931,6 +928,8 @@ POST /consumers/{id}/acquire
 }
 ```
 
+The `offset` in each stream entry is the last-acknowledged offset (i.e., the consumer's current cursor position). The consumer should resume reading from the next offset after this position.
+
 Acquiring the epoch:
 
 - Increments the epoch counter
@@ -981,7 +980,7 @@ Content-Type: application/json
 
 Both cursor-advancing acks and empty acks reset the lease timer.
 
-**Offset semantics:** Offsets are "last processed inclusive." Offset `"1005"` means events through 1005 have been processed; the next read starts from `"1006"`. Offset `"-1"` means nothing has been processed (start from beginning).
+**Offset semantics:** Offsets are "last processed inclusive." Acking offset `"1005"` means events through that offset have been processed; the consumer resumes reading from the offset returned in `Stream-Next-Offset` of the response that delivered offset `"1005"`. Offset `"-1"` means nothing has been processed (start from beginning).
 
 **Error responses:**
 

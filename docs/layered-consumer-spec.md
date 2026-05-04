@@ -93,10 +93,10 @@ REGISTERED ───────────────────────
 Pending work exists when any subscribed stream has unprocessed events:
 
 ```
-pending_work = any(tail[path] > acked[path] for path in subscribed_streams)
+pending_work = any(tail[path] >lex acked[path] for path in subscribed_streams)
 ```
 
-Where `acked[path]` is the last acknowledged offset (inclusive — the event at this offset was processed) and `tail[path]` is the current stream end. An acked offset of `-1` means no events have been processed yet. Offset comparison uses the fixed-width lexicographic format defined in the main protocol (see PROTOCOL.md § Offsets).
+Where `>lex` denotes lexicographic comparison (see PROTOCOL.md § 8 — offsets are opaque but lexicographically sortable), `acked[path]` is the last acknowledged offset (inclusive — the event at this offset was processed), and `tail[path]` is the current stream end. An acked offset of `-1` means no events have been processed yet.
 
 ### L1 HTTP API
 
@@ -109,7 +109,6 @@ Content-Type: application/json
 {
   "consumer_id": "my-agent:task-123",
   "streams": ["/agents/task-123"],
-  "namespace": "/agents/*",
   "lease_ttl_ms": 45000
 }
 ```
@@ -118,7 +117,6 @@ Content-Type: application/json
 | -------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------ |
 | `consumer_id`  | Yes      | Stable, client-provided identifier; must be unique. Must not start with reserved prefix `__wh__:` (used by L2/A synthetic consumers) |
 | `streams`      | Yes      | One or more stream paths to track                                                                                                    |
-| `namespace`    | No       | Glob pattern for informational grouping (e.g., `/agents/*`)                                                                          |
 | `lease_ttl_ms` | No       | Lease duration in milliseconds; server default if omitted                                                                            |
 
 **Response:**
@@ -135,7 +133,6 @@ Content-Type: application/json
   "state": "REGISTERED",
   "epoch": 0,
   "streams": [{ "path": "/agents/task-123", "offset": "-1" }],
-  "namespace": "/agents/*",
   "lease_ttl_ms": 45000
 }
 ```
@@ -171,6 +168,8 @@ POST /consumers/{id}/acquire
   "streams": [{ "path": "/agents/task-123", "offset": "1002" }]
 }
 ```
+
+The `offset` in each stream entry is the last-acknowledged offset (i.e., the consumer's current cursor position). The consumer should resume reading from the next offset after this position.
 
 Acquiring the epoch:
 
@@ -226,7 +225,7 @@ Content-Type: application/json
 
 Both cursor-advancing acks and empty acks reset the lease timer.
 
-**Offset semantics:** Offsets are "last processed inclusive." Offset `"1005"` means events through 1005 have been processed; the next read starts from `"1006"`. Offset `"-1"` means nothing has been processed.
+**Offset semantics:** Offsets are "last processed inclusive." Acking offset `"1005"` means events through that offset have been processed; the consumer resumes reading from the offset returned in `Stream-Next-Offset` of the response that delivered offset `"1005"`. Offset `"-1"` means nothing has been processed.
 
 **Error responses:**
 
@@ -318,7 +317,7 @@ Identity: `__wh__:{subscription_id}:{url_encoded_stream_path}`
 
 The `__wh__:` prefix is a reserved namespace that prevents collision with user-created L1 consumers. The L1 registration endpoint rejects consumer IDs starting with this prefix.
 
-Because a subscription uses a glob pattern (e.g., `/agents/*`), a single subscription can match many streams — each matched stream gets its own consumer instance with independent state, offsets, and lifecycle. The consumer ID encodes the prefix, subscription, and specific stream it tracks. The stream path is URL-encoded to avoid parsing ambiguity. Multiple subscriptions matching the same stream create independent consumers.
+Because a subscription uses a glob pattern (e.g., `/agents/*`), a single subscription can match many streams — each matched stream gets its own consumer instance with independent state, offsets, and lifecycle. This one-consumer-per-matched-stream design exists because each stream represents an independent unit of work (e.g., one agent task) that should wake, process, and idle independently. The consumer can later subscribe to additional streams (e.g., shared filesystem, tool outputs) via the callback API, but it starts with the single stream that triggered its creation. The consumer ID encodes the prefix, subscription, and specific stream it tracks. The stream path is URL-encoded to avoid parsing ambiguity. Multiple subscriptions matching the same stream create independent consumers.
 
 **Implementation note:** When extracting the consumer ID from callback URLs (e.g., `/callback/{consumer_id}`), implementations MUST use the raw percent-encoded path, not a decoded version. HTTP frameworks often decode `%2F` → `/` in URL paths automatically, which would break consumer ID lookups.
 
@@ -351,46 +350,46 @@ Rules:
 The L2 states IDLE/WAKING/LIVE are layered on top of L1's REGISTERED/READING:
 
 ```
-                    ┌──────────────────────────────────────────┐
-                    │                                          │
-                    ▼                                          │
-              ┌──────────┐    pending_work    ┌──────────┐    │
-              │          │ ─────────────────► │          │    │
-              │   IDLE   │  L1 acquire()      │  WAKING  │    │
-              │(L1:REG'd)│  wake_id new       │(L1:READ) │    │
-              └──────────┘                    └────┬─────┘    │
-                    ▲                              │          │
-                    │                    ┌─────────┼────┐     │
-                    │                    │         │    │     │
-                    │              callback   webhook   │     │
-                    │              claims     2xx or    │     │
-                    │              wake_id    {done}    │     │
-                    │                    │         │    │     │
-                    │                    ▼         │    │     │
-                    │               ┌─────────┐   │    │     │
-                    │               │         │   │    │     │
-                    │ done+¬pending │  LIVE   │───┘    │     │
-                    │ OR lease exp. │(L1:READ)│        │     │
-                    └───────────────┴─────────┘        │     │
-                    │                                   │     │
-                    │  done + pending_work               │     │
-                    └───────────────────────────────────┘     │
-                                                              │
-                    10s timeout, no 2xx, no callback ──────────┘
-                    (retry webhook delivery)
+              ┌──────────┐   pending_work    ┌──────────┐
+              │          │ ────────────────► │          │──┐
+              │   IDLE   │  L1 acquire(),    │  WAKING  │  │ 10s timeout,
+              │(L1:REG'd)│  new wake_id,     │(L1:READ) │  │ no 2xx/callback
+              │          │  webhook POST     │          │◄─┘ (retry webhook)
+              └──────────┘                   └────┬─────┘
+                ▲   ▲                              │
+                │   │                    ┌─────────┴────────┐
+                │   │                    │                  │
+                │   │              callback claims    webhook responds
+                │   │              wake_id            {done: true}
+                │   │                    │            + ¬pending_work
+                │   │                    ▼                  │
+                │   │               ┌─────────┐            │
+                │   │               │         │            │
+                │   │ done+¬pending │  LIVE   │            │
+                │   │ OR lease exp. │(L1:READ)│            │
+                │   └───────────────┴─────────┘            │
+                │                        │                 │
+                │   done + pending_work  │                 │
+                │   (new wake cycle)     │                 │
+                └────────────────────────┘                 │
+                │                                          │
+                └──────────────────────────────────────────┘
+                    (L1 release, auto-ack to tail)
 ```
 
 #### State Transitions
 
 | From   | To      | Trigger                                                          | Side Effects                            |
 | ------ | ------- | ---------------------------------------------------------------- | --------------------------------------- |
-| IDLE   | WAKING  | `pending_work` becomes true                                      | L1 acquire(), new wake_id, webhook POST |
+| IDLE   | WAKING  | `pending_work` detected (on append to subscribed stream)         | L1 acquire(), new wake_id, webhook POST |
 | WAKING | LIVE    | Webhook responds 2xx, OR callback claims wake_id                 | L1 lease timer running                  |
 | WAKING | IDLE    | Webhook responds `{done: true}` and `¬pending_work`              | L1 release(), auto-ack to tail          |
 | LIVE   | IDLE    | Callback `{done: true}` and `¬pending_work`                      | L1 release()                            |
 | LIVE   | IDLE    | L1 lease timer expires (no callback activity)                    | L1 epoch already released by L1         |
 | LIVE   | WAKING  | Callback `{done: true}` and `pending_work`                       | L1 acquire() again, new wake_id         |
 | Any    | Removed | Primary stream deleted, subscription deleted, or unsubscribe all | L1 consumer deleted                     |
+
+`pending_work` is not a reactive property that the server continuously monitors. It is a condition evaluated at two specific moments: (1) when an append occurs on a subscribed stream (to decide whether to wake an IDLE consumer), and (2) when a `done` callback is received (to decide whether to re-wake or transition to IDLE).
 
 #### Epoch
 
@@ -446,7 +445,7 @@ Webhook-Signature: t=1704067200,sha256=a1b2c3d4e5f6...
 The webhook response may include `{ "done": true }` to immediately return to IDLE without using the callback API. When the server receives this response:
 
 1. The wake is considered claimed
-2. All streams are auto-acked to their current tail offset
+2. All streams are auto-acked to their current tail offset (the consumer has already read to the end of each stream before responding)
 3. L1 epoch is released; consumer returns to REGISTERED
 4. Consumer transitions to IDLE
 5. If new events arrive later, a new wake cycle begins
@@ -567,8 +566,8 @@ For `TOKEN_EXPIRED`, the new token in the error response can be used to retry. F
 
 Offsets are **"last processed inclusive"**:
 
-- `"1005"` means events through 1005 have been processed
-- Next read starts from `"1006"`
+- Acking `"1005"` means events through that offset have been processed
+- The consumer resumes from the `Stream-Next-Offset` returned in the response that delivered that event
 - `"-1"` means no events processed yet
 
 ### Dynamic Subscribe
@@ -790,7 +789,9 @@ Content-Type: application/json
 1. Worker long-polls the wake stream for new events
 2. On receiving a `wake` event, worker calls `POST /consumers/{id}/acquire`
 3. If acquire succeeds, worker reads events, acks progress, and releases when done
-4. If acquire fails (`EPOCH_HELD` or `INTERNAL_ERROR`), another worker claimed it — skip
+4. If acquire returns `INTERNAL_ERROR` (critical callback failed), retry later
+
+In the single-process reference server, acquire always succeeds (self-supersede per L1 LP4) — there is no `EPOCH_HELD` rejection. Multiple workers racing to acquire the same consumer will all succeed sequentially, each superseding the previous one. The last writer wins: earlier acquirers will receive `STALE_EPOCH` on their next ack. Workers should check the `claimed` events on the wake stream to coordinate: if a `claimed` event for a newer epoch appears, the worker should stop processing. In future multi-server deployments, `EPOCH_HELD` may be produced to reject competing acquires from different nodes.
 
 ### L1/L2 Coupling via Critical Callbacks
 
