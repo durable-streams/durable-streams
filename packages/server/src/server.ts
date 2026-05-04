@@ -39,6 +39,7 @@ const STREAM_CLOSED_HEADER = `Stream-Closed`
 // Fork headers (request headers only — not set on responses)
 const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
 const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
+const STREAM_FORK_SUB_OFFSET_HEADER = `Stream-Fork-Sub-Offset`
 
 // Query params
 const OFFSET_QUERY_PARAM = `offset`
@@ -431,7 +432,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset`
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`
     )
     res.setHeader(
       `access-control-expose-headers`,
@@ -570,6 +571,13 @@ export class DurableStreamTestServer {
     const forkOffsetHeader = req.headers[
       STREAM_FORK_OFFSET_HEADER.toLowerCase()
     ] as string | undefined
+    const forkSubOffsetHeaderRaw =
+      req.headers[STREAM_FORK_SUB_OFFSET_HEADER.toLowerCase()]
+    // Distinguish "header absent" from "header present but empty"
+    const forkSubOffsetHeaderPresent = forkSubOffsetHeaderRaw !== undefined
+    const forkSubOffsetHeader = Array.isArray(forkSubOffsetHeaderRaw)
+      ? forkSubOffsetHeaderRaw[0]
+      : forkSubOffsetHeaderRaw
 
     // Sanitize content-type: if empty or invalid, use default — but only
     // for non-fork creates. For forks, an omitted Content-Type means "inherit
@@ -639,6 +647,26 @@ export class DurableStreamTestServer {
       }
     }
 
+    // Validate sub-offset if header was present (including empty value)
+    let forkSubOffset: number | undefined
+    if (forkSubOffsetHeaderPresent) {
+      if (!forkedFromHeader) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Stream-Fork-Sub-Offset requires Stream-Forked-From`)
+        return
+      }
+      const subOffsetPattern = /^(0|[1-9]\d*)$/
+      if (
+        forkSubOffsetHeader === undefined ||
+        !subOffsetPattern.test(forkSubOffsetHeader)
+      ) {
+        res.writeHead(400, { "content-type": `text/plain` })
+        res.end(`Invalid Stream-Fork-Sub-Offset format`)
+        return
+      }
+      forkSubOffset = parseInt(forkSubOffsetHeader, 10)
+    }
+
     // Read body if present
     const body = await this.readBody(req)
 
@@ -655,6 +683,7 @@ export class DurableStreamTestServer {
           closed: createClosed,
           forkedFrom: forkedFromHeader,
           forkOffset: forkOffsetHeader,
+          forkSubOffset,
         })
       )
     } catch (err) {
@@ -662,6 +691,11 @@ export class DurableStreamTestServer {
         if (err.message.includes(`Source stream not found`)) {
           res.writeHead(404, { "content-type": `text/plain` })
           res.end(`Source stream not found`)
+          return
+        }
+        if (err.message.includes(`Invalid fork sub-offset`)) {
+          res.writeHead(400, { "content-type": `text/plain` })
+          res.end(`Invalid fork sub-offset`)
           return
         }
         if (err.message.includes(`Invalid fork offset`)) {

@@ -31,9 +31,10 @@ var (
 
 // Fork-related errors
 var (
-	ErrStreamSoftDeleted = errors.New("stream is soft-deleted")
-	ErrInvalidForkOffset = errors.New("fork offset beyond source stream length")
-	ErrRefCountUnderflow = errors.New("reference count underflow")
+	ErrStreamSoftDeleted    = errors.New("stream is soft-deleted")
+	ErrInvalidForkOffset    = errors.New("fork offset beyond source stream length")
+	ErrInvalidForkSubOffset = errors.New("fork sub-offset overshoots or is invalid")
+	ErrRefCountUnderflow    = errors.New("reference count underflow")
 )
 
 // ProducerState tracks the epoch and sequence for an idempotent producer
@@ -154,13 +155,14 @@ type ClosedByProducer struct {
 
 // CreateOptions contains options for creating a stream
 type CreateOptions struct {
-	ContentType string
-	TTLSeconds  *int64
-	ExpiresAt   *time.Time
-	InitialData []byte
-	Closed      bool    // Create stream in closed state
-	ForkedFrom  string  // Source stream path (fork creation)
-	ForkOffset  *Offset // Fork offset (nil = source's current tail)
+	ContentType   string
+	TTLSeconds    *int64
+	ExpiresAt     *time.Time
+	InitialData   []byte
+	Closed        bool    // Create stream in closed state
+	ForkedFrom    string  // Source stream path (fork creation)
+	ForkOffset    *Offset // Fork offset (nil = source's current tail)
+	ForkSubOffset *uint64 // Sub-position past ForkOffset (nil = 0). Bytes for non-JSON, message count for JSON.
 }
 
 // AppendOptions contains options for appending to a stream
@@ -193,21 +195,23 @@ type Message struct {
 
 // StreamMetadata contains metadata about a stream
 type StreamMetadata struct {
-	Path           string
-	ContentType    string
-	CurrentOffset  Offset
-	LastSeq        string // Last Stream-Seq value
-	TTLSeconds     *int64
-	ExpiresAt      *time.Time
-	CreatedAt      time.Time
-	LastAccessedAt time.Time
-	Producers      map[string]*ProducerState // Producer ID -> state
-	Closed         bool                      // Stream is closed (no more appends allowed)
-	ClosedBy       *ClosedByProducer         // Producer that closed the stream (for idempotent duplicate detection)
-	ForkedFrom     string                    // Source stream path (empty if not a fork)
-	ForkOffset     Offset                    // Divergence point: offsets < ForkOffset come from source
-	RefCount       int32                     // Number of forks referencing this stream
-	SoftDeleted    bool                      // Logically deleted but retained for fork readers
+	Path                string
+	ContentType         string
+	CurrentOffset       Offset
+	LastSeq             string // Last Stream-Seq value
+	TTLSeconds          *int64
+	ExpiresAt           *time.Time
+	CreatedAt           time.Time
+	LastAccessedAt      time.Time
+	Producers           map[string]*ProducerState // Producer ID -> state
+	Closed              bool                      // Stream is closed (no more appends allowed)
+	ClosedBy            *ClosedByProducer         // Producer that closed the stream (for idempotent duplicate detection)
+	ForkedFrom          string                    // Source stream path (empty if not a fork)
+	ForkOffset          Offset                    // Internal divergence point: offsets < ForkOffset come from source. For JSON forks created with a sub-offset this is advanced past the user-supplied offset; ForkOffsetRequested holds the original.
+	ForkOffsetRequested *Offset                   // The user-supplied Stream-Fork-Offset (nil if omitted). Differs from ForkOffset only for JSON forks created with sub-offset > 0; used for idempotent re-creation matching.
+	ForkSubOffset       uint64                    // User-supplied Stream-Fork-Sub-Offset value: bytes for non-JSON forks, flattened message count for JSON forks (0 = no sub-offset slice). Stored verbatim for idempotent re-creation matching.
+	RefCount            int32                     // Number of forks referencing this stream
+	SoftDeleted         bool                      // Logically deleted but retained for fork readers
 }
 
 // IsExpired checks if the stream has expired based on TTL or ExpiresAt
@@ -263,7 +267,31 @@ func (m *StreamMetadata) ConfigMatches(opts CreateOptions) bool {
 		return false
 	}
 	if opts.ForkedFrom != "" {
-		if opts.ForkOffset != nil && !m.ForkOffset.Equal(*opts.ForkOffset) {
+		// Compare against the user-supplied ForkOffset (ForkOffsetRequested),
+		// not the internally-resolved ForkOffset. The two differ for JSON
+		// forks created with a sub-offset (where ForkOffset is advanced past
+		// the user-supplied value).
+		if opts.ForkOffset != nil {
+			storedRequested := m.ForkOffsetRequested
+			if storedRequested == nil {
+				// Backward-compat: pre-PR metadata wasn't tracking the
+				// requested offset; fall back to the internal ForkOffset
+				// (correct for non-JSON-sub-offset forks, which is the
+				// only case the old code wrote).
+				storedRequested = &m.ForkOffset
+			}
+			if !storedRequested.Equal(*opts.ForkOffset) {
+				return false
+			}
+		}
+		// Sub-offset: nil and 0 are equivalent. Compare the raw user-supplied
+		// integer (count for JSON, bytes for binary) so the comparison is
+		// independent of how it was resolved internally.
+		var requestedSub uint64
+		if opts.ForkSubOffset != nil {
+			requestedSub = *opts.ForkSubOffset
+		}
+		if m.ForkSubOffset != requestedSub {
 			return false
 		}
 	}

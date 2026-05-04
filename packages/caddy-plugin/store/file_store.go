@@ -149,6 +149,7 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 	var forkOffset Offset
 	var sourceContentType string
 	var sourceMeta *StreamMetadata
+	var binarySubOffsetPrefix []byte // For binary forks with sub-offset: bytes to materialize into the fork's segment
 	isFork := opts.ForkedFrom != ""
 
 	if isFork {
@@ -176,6 +177,26 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		// Validate: ZeroOffset <= forkOffset <= source.CurrentOffset
 		if forkOffset.LessThan(ZeroOffset) || sourceMeta.CurrentOffset.LessThan(forkOffset) {
 			return nil, false, ErrInvalidForkOffset
+		}
+
+		// Resolve sub-offset (if any) against the source. For JSON, this
+		// advances forkOffset to a server-minted message-boundary offset; the
+		// fork's metadata then stores no synthetic prefix. For binary, this
+		// returns the prefix bytes to materialize into the fork's segment.
+		if opts.ForkSubOffset != nil && *opts.ForkSubOffset > 0 {
+			sourceDirName, ok := s.dirCache[opts.ForkedFrom]
+			if !ok {
+				return nil, false, ErrStreamNotFound
+			}
+			resolvedOffset, prefixBytes, err := s.resolveForkSubOffset(sourceMeta, sourceDirName, forkOffset, *opts.ForkSubOffset)
+			if err != nil {
+				return nil, false, err
+			}
+			if IsJSONContentType(sourceMeta.ContentType) {
+				forkOffset = resolvedOffset
+			} else {
+				binarySubOffsetPrefix = prefixBytes
+			}
 		}
 
 		// Atomically increment source refcount in bbolt
@@ -248,6 +269,48 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		meta.ForkedFrom = opts.ForkedFrom
 		meta.TTLSeconds = forkTTL
 		meta.ExpiresAt = forkExpiresAt
+		// Persist the user-supplied ForkOffset (may be nil if omitted) and
+		// the user-supplied ForkSubOffset for idempotent re-creation matching.
+		// These differ from meta.ForkOffset for JSON forks created with
+		// sub-offset > 0 (where meta.ForkOffset is advanced internally).
+		if opts.ForkOffset != nil {
+			requested := *opts.ForkOffset
+			meta.ForkOffsetRequested = &requested
+		}
+		if opts.ForkSubOffset != nil {
+			meta.ForkSubOffset = *opts.ForkSubOffset
+		}
+
+		// Materialize binary sub-offset prefix into the fork's segment.
+		// This must happen before any client-supplied initial data so the
+		// inherited prefix appears first in the fork's read order.
+		if len(binarySubOffsetPrefix) > 0 {
+			writer, err := NewSegmentWriter(segPath)
+			if err != nil {
+				os.RemoveAll(streamDir)
+				s.metaStore.DecrementRefCount(opts.ForkedFrom)
+				sourceMeta.RefCount--
+				return nil, false, fmt.Errorf("failed to open fork segment for sub-offset materialization: %w", err)
+			}
+			if _, err := writer.WriteMessage(binarySubOffsetPrefix); err != nil {
+				writer.Close()
+				os.RemoveAll(streamDir)
+				s.metaStore.DecrementRefCount(opts.ForkedFrom)
+				sourceMeta.RefCount--
+				return nil, false, fmt.Errorf("failed to materialize sub-offset prefix: %w", err)
+			}
+			if err := writer.Sync(); err != nil {
+				writer.Close()
+				os.RemoveAll(streamDir)
+				s.metaStore.DecrementRefCount(opts.ForkedFrom)
+				sourceMeta.RefCount--
+				return nil, false, fmt.Errorf("failed to sync fork segment: %w", err)
+			}
+			writer.Close()
+
+			// Advance the fork's currentOffset past the materialized prefix.
+			meta.CurrentOffset = forkOffset.Add(uint64(LengthPrefixSize + len(binarySubOffsetPrefix)))
+		}
 	} else {
 		meta.CurrentOffset = ZeroOffset
 		meta.TTLSeconds = opts.TTLSeconds
@@ -727,6 +790,47 @@ func (s *FileStore) appendToStream(meta *StreamMetadata, dirName string, data []
 	}
 
 	return meta.CurrentOffset.Add(uint64(n)), nil
+}
+
+// resolveForkSubOffset walks the source stream from forkOffset and resolves a
+// non-zero sub-offset.
+//
+// For JSON sources, it returns the offset that lies subOffset flattened
+// messages past forkOffset; the second return value is unused.
+//
+// For non-JSON (binary) sources, it returns the original forkOffset and a
+// byte slice containing the first subOffset content bytes of the message
+// that begins at forkOffset. The caller materializes those bytes as the
+// first message of the fork's own segment.
+//
+// Errors with ErrInvalidForkSubOffset if the resolution overshoots available
+// data.
+func (s *FileStore) resolveForkSubOffset(sourceMeta *StreamMetadata, sourceDirName string, forkOffset Offset, subOffset uint64) (Offset, []byte, error) {
+	// Read the source from forkOffset onward (across its own fork chain if any)
+	sourceMessages, err := s.readForkedStream(sourceMeta, sourceDirName, forkOffset)
+	if err != nil {
+		return Offset{}, nil, fmt.Errorf("failed to read source for sub-offset resolution: %w", err)
+	}
+
+	if IsJSONContentType(sourceMeta.ContentType) {
+		// Walk subOffset flattened messages from forkOffset.
+		if uint64(len(sourceMessages)) < subOffset {
+			return Offset{}, nil, ErrInvalidForkSubOffset
+		}
+		return sourceMessages[subOffset-1].Offset, nil, nil
+	}
+
+	// Binary: there must be at least one message past forkOffset to slice.
+	if len(sourceMessages) == 0 {
+		return Offset{}, nil, ErrInvalidForkSubOffset
+	}
+	first := sourceMessages[0].Data
+	if uint64(len(first)) < subOffset {
+		return Offset{}, nil, ErrInvalidForkSubOffset
+	}
+	prefix := make([]byte, subOffset)
+	copy(prefix, first[:subOffset])
+	return forkOffset, prefix, nil
 }
 
 // readFromSegment reads messages from a segment file starting at the given physical offset.

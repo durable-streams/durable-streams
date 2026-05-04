@@ -88,6 +88,12 @@ interface StreamMetadata {
    */
   forkOffset?: string
   /**
+   * User-supplied sub-offset value refining `forkOffset` (Section 4.2 of
+   * PROTOCOL.md). Stored verbatim for idempotent re-creation matching:
+   * bytes for non-JSON forks, flattened message count for JSON forks.
+   */
+  forkSubOffset?: number
+  /**
    * Number of forks referencing this stream.
    * Defaults to 0. Optional for backward-compatible deserialization from LMDB.
    */
@@ -704,6 +710,7 @@ export class FileBackedStreamStore {
       closed?: boolean
       forkedFrom?: string
       forkOffset?: string
+      forkSubOffset?: number
     } = {}
   ): Promise<Stream> {
     // Use getMetaIfNotExpired to treat expired streams as non-existent
@@ -740,6 +747,12 @@ export class FileBackedStreamStore {
         const forkOffsetMatches =
           options.forkOffset === undefined ||
           options.forkOffset === existingRaw.forkOffset
+        // Sub-offset: undefined and 0 are equivalent. Compare the raw
+        // user-supplied integer (count for JSON, bytes for binary) so the
+        // comparison is independent of how it was resolved internally.
+        const requestedSub = options.forkSubOffset ?? 0
+        const existingSub = existingRaw.forkSubOffset ?? 0
+        const forkSubOffsetMatches = requestedSub === existingSub
 
         if (
           contentTypeMatches &&
@@ -747,7 +760,8 @@ export class FileBackedStreamStore {
           expiresMatches &&
           closedMatches &&
           forkedFromMatches &&
-          forkOffsetMatches
+          forkOffsetMatches &&
+          forkSubOffsetMatches
         ) {
           // Idempotent success - return existing stream
           return this.streamMetaToStream(existingRaw)
@@ -765,6 +779,7 @@ export class FileBackedStreamStore {
     let forkOffset = `0000000000000000_0000000000000000`
     let sourceContentType: string | undefined
     let sourceMeta: StreamMetadata | undefined
+    let forkSubOffsetPrefix: Uint8Array | undefined
 
     if (isFork) {
       const sourceKey = `stream:${options.forkedFrom!}`
@@ -792,6 +807,17 @@ export class FileBackedStreamStore {
       const zeroOffset = `0000000000000000_0000000000000000`
       if (forkOffset < zeroOffset || sourceMeta.currentOffset < forkOffset) {
         throw new Error(`Invalid fork offset: ${forkOffset}`)
+      }
+
+      // Resolve sub-offset against the source. Returns the prefix bytes to
+      // materialize as the fork's first own message.
+      if (options.forkSubOffset && options.forkSubOffset > 0) {
+        forkSubOffsetPrefix = this.resolveForkSubOffset(
+          options.forkedFrom!,
+          forkOffset,
+          options.forkSubOffset,
+          normalizeContentType(sourceContentType) === `application/json`
+        )
       }
 
       // Atomically increment source refcount in LMDB
@@ -847,6 +873,7 @@ export class FileBackedStreamStore {
       closed: false, // Set to false initially, will be updated after initial append if needed
       forkedFrom: isFork ? options.forkedFrom : undefined,
       forkOffset: isFork ? forkOffset : undefined,
+      forkSubOffset: undefined,
       refCount: 0,
     }
 
@@ -860,7 +887,31 @@ export class FileBackedStreamStore {
     try {
       fs.mkdirSync(streamDir, { recursive: true })
       const segmentPath = path.join(streamDir, `segment_00000.log`)
-      fs.writeFileSync(segmentPath, ``)
+      // For binary forks with sub-offset, materialize the prefix as the
+      // first framed message in the segment. For JSON forks the same
+      // applies — this store keeps one message per POST regardless of
+      // mode, so a JSON sub-offset also produces a synthetic prefix.
+      if (forkSubOffsetPrefix && forkSubOffsetPrefix.length > 0) {
+        const lengthBuf = Buffer.allocUnsafe(4)
+        lengthBuf.writeUInt32BE(forkSubOffsetPrefix.length, 0)
+        const frameBuf = Buffer.concat([
+          lengthBuf,
+          Buffer.from(forkSubOffsetPrefix),
+          Buffer.from(`\n`),
+        ])
+        fs.writeFileSync(segmentPath, frameBuf)
+        // Advance currentOffset by content bytes only.
+        const parts = streamMeta.currentOffset.split(`_`).map(Number)
+        const readSeq = parts[0]!
+        const byteOffset = parts[1]!
+        const newByteOffset = byteOffset + forkSubOffsetPrefix.length
+        streamMeta.currentOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
+        // Persist the user-supplied sub-offset verbatim for idempotent
+        // re-creation matching, not the encoded byte length.
+        streamMeta.forkSubOffset = options.forkSubOffset
+      } else {
+        fs.writeFileSync(segmentPath, ``)
+      }
     } catch (err) {
       // Rollback source refcount on failure
       if (isFork && sourceMeta) {
@@ -1533,6 +1584,57 @@ export class FileBackedStreamStore {
     messages.push(...ownMessages)
 
     return messages
+  }
+
+  /**
+   * Resolve a fork sub-offset against the source: read the message that
+   * starts at forkOffset and return prefix bytes to materialize as the
+   * fork's first own message. For JSON, parses comma-joined values.
+   */
+  private resolveForkSubOffset(
+    sourcePath: string,
+    forkOffset: string,
+    subOffset: number,
+    isJSON: boolean
+  ): Uint8Array {
+    const forkByte = Number(forkOffset.split(`_`)[1] ?? 0)
+    // Read source past forkOffset (cap at source's currentOffset by passing
+    // a large cap; we only care about the first message past forkOffset).
+    const sourceMeta = this.db.get(`stream:${sourcePath}`) as
+      | StreamMetadata
+      | undefined
+    if (!sourceMeta) {
+      throw new Error(`Source stream not found: ${sourcePath}`)
+    }
+    const currentByte = Number(sourceMeta.currentOffset.split(`_`)[1] ?? 0)
+    const messages = this.readForkedMessages(sourcePath, forkByte, currentByte)
+    if (messages.length === 0) {
+      throw new Error(`Invalid fork sub-offset: no data past forkOffset`)
+    }
+    const first = messages[0]!
+    if (isJSON) {
+      const text = new TextDecoder().decode(first.data)
+      const trimmed = text.endsWith(`,`) ? text.slice(0, -1) : text
+      let values: Array<unknown>
+      try {
+        values = JSON.parse(`[${trimmed}]`)
+      } catch {
+        throw new Error(`Invalid fork sub-offset: source JSON is unparseable`)
+      }
+      if (subOffset > values.length) {
+        throw new Error(
+          `Invalid fork sub-offset: overshoots source message count`
+        )
+      }
+      const prefix = values.slice(0, subOffset).map((v) => JSON.stringify(v))
+      return new TextEncoder().encode(prefix.join(`,`) + `,`)
+    }
+    if (subOffset > first.data.length) {
+      throw new Error(
+        `Invalid fork sub-offset: overshoots source message length`
+      )
+    }
+    return first.data.slice(0, subOffset)
   }
 
   read(

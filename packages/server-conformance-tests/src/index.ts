@@ -8052,6 +8052,725 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
       expect(appendRes.status).toBe(204)
     })
+
+    // ------------------------------------------------------------------
+    // Sub-offset forking (Stream-Fork-Sub-Offset)
+    // ------------------------------------------------------------------
+
+    const STREAM_FORK_SUB_OFFSET_HEADER = `Stream-Fork-Sub-Offset`
+
+    test(`should fork at a binary sub-offset within an append`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-bin-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-bin-fork-${id}`
+
+      // Create source with one append of 5 bytes
+      const createRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hello`,
+      })
+      expect(createRes.status).toBe(201)
+
+      // Fork at the start, taking the first 3 bytes of the append
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `3`,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Read fork → should see only "hel"
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`hel`)
+    })
+
+    test(`should fork at a JSON sub-offset within a flattened batch`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-json-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-json-fork-${id}`
+
+      // Create JSON source with a 4-element flattened batch
+      const createRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"a":1},{"b":2},{"c":3},{"d":4}]`,
+      })
+      expect(createRes.status).toBe(201)
+
+      // Fork at start, taking only the first 2 flattened messages
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/json`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `2`,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Read fork → should be [{"a":1},{"b":2}]
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.json()
+      expect(body).toEqual([{ a: 1 }, { b: 2 }])
+    })
+
+    test(`should treat sub-offset 0 as equivalent to absent header`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-zero-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-zero-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+
+      // First PUT without sub-offset
+      const res1 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+        },
+      })
+      expect(res1.status).toBe(201)
+
+      // Second PUT with sub-offset=0 → idempotent 200
+      const res2 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `0`,
+        },
+      })
+      expect(res2.status).toBe(200)
+    })
+
+    test(`should return 400 when binary sub-offset overshoots message length`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-over-bin-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-over-bin-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hi`, // 2 bytes
+      })
+
+      const res = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `5`,
+        },
+      })
+      expect(res.status).toBe(400)
+    })
+
+    test(`should return 400 when JSON sub-offset overshoots message count`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-over-json-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-over-json-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"a":1},{"b":2},{"c":3}]`,
+      })
+
+      const res = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/json`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `4`,
+        },
+      })
+      expect(res.status).toBe(400)
+    })
+
+    test(`should return 400 for malformed sub-offset values`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-bad-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-bad-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+
+      for (const bad of [`-1`, `abc`, `1.5`, `05`, `+1`]) {
+        const res = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_FORKED_FROM_HEADER]: sourcePath,
+            [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+            [STREAM_FORK_SUB_OFFSET_HEADER]: bad,
+          },
+        })
+        expect(res.status).toBe(400)
+      }
+    })
+
+    test(`should be idempotent when re-creating with matching sub-offset`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-idem-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-idem-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hello`,
+      })
+
+      const headers = {
+        "Content-Type": `text/plain`,
+        [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+        [STREAM_FORK_SUB_OFFSET_HEADER]: `2`,
+      }
+
+      const res1 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers,
+      })
+      expect(res1.status).toBe(201)
+
+      const res2 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers,
+      })
+      expect(res2.status).toBe(200)
+    })
+
+    test(`should return 409 when re-creating with mismatched sub-offset`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-conflict-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-conflict-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hello`,
+      })
+
+      const baseHeaders = {
+        "Content-Type": `text/plain`,
+        [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+      }
+
+      const res1 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: { ...baseHeaders, [STREAM_FORK_SUB_OFFSET_HEADER]: `2` },
+      })
+      expect(res1.status).toBe(201)
+
+      const res2 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: { ...baseHeaders, [STREAM_FORK_SUB_OFFSET_HEADER]: `3` },
+      })
+      expect(res2.status).toBe(409)
+    })
+
+    test(`should be idempotent when re-creating a JSON fork with matching sub-offset`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-json-idem-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-json-idem-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"a":1},{"b":2},{"c":3},{"d":4}]`,
+      })
+
+      const headers = {
+        "Content-Type": `application/json`,
+        [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+        [STREAM_FORK_SUB_OFFSET_HEADER]: `2`,
+      }
+
+      const res1 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers,
+      })
+      expect(res1.status).toBe(201)
+
+      const res2 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers,
+      })
+      expect(res2.status).toBe(200)
+    })
+
+    test(`should return 409 when re-creating a JSON fork with mismatched sub-offset`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-json-conflict-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-json-conflict-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"a":1},{"b":2},{"c":3},{"d":4}]`,
+      })
+
+      const baseHeaders = {
+        "Content-Type": `application/json`,
+        [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+      }
+
+      const res1 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: { ...baseHeaders, [STREAM_FORK_SUB_OFFSET_HEADER]: `2` },
+      })
+      expect(res1.status).toBe(201)
+
+      const res2 = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: { ...baseHeaders, [STREAM_FORK_SUB_OFFSET_HEADER]: `3` },
+      })
+      expect(res2.status).toBe(409)
+    })
+
+    test(`should support appending to fork after sub-offset boundary`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-append-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-append-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hello`,
+      })
+
+      // Fork inheriting first 3 bytes ("hel")
+      await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `3`,
+        },
+      })
+
+      // Append to fork
+      const appendRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `LO`,
+      })
+      expect(appendRes.status).toBe(204)
+
+      // Read fork → "helLO"
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(readRes.status).toBe(200)
+      const body = await readRes.text()
+      expect(body).toBe(`helLO`)
+    })
+
+    test(`should inherit content-type when sub-offset is supplied without explicit Content-Type`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-ct-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-ct-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"a":1},{"b":2}]`,
+      })
+
+      const res = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `1`,
+        },
+      })
+      expect(res.status).toBe(201)
+      expect(res.headers.get(`content-type`)).toBe(`application/json`)
+    })
+
+    test(`should not inherit producer state across sub-offset fork boundary`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-prod-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-prod-fork-${id}`
+      const producerId = `prod-${id}`
+
+      // Create JSON source (no producer)
+      const src = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+      })
+      expect(src.status).toBe(201)
+
+      // Producer P writes a 3-message batch under (P, 0, 0)
+      const batchRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Producer-Id": producerId,
+          "Producer-Epoch": `0`,
+          "Producer-Seq": `0`,
+        },
+        body: `[{"i":1},{"i":2},{"i":3}]`,
+      })
+      // Fresh producer accept is 200 per §5.2.1
+      expect(batchRes.status).toBe(200)
+
+      // Fork mid-batch (sub-offset = 1 message — fork inherits {"i":1} only)
+      const fork = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `1`,
+        },
+      })
+      expect(fork.status).toBe(201)
+
+      // Producer P retries the same (P, 0, 0) tuple against the fork.
+      // The fork has no producer state, so this MUST be treated as a fresh
+      // accept (200), not silently deduplicated as a 204. A 204 here would
+      // mean the fork inherited producer state and is silently dropping
+      // data the producer has not yet seen accepted on the fork.
+      const retry = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `application/json`,
+          "Producer-Id": producerId,
+          "Producer-Epoch": `0`,
+          "Producer-Seq": `0`,
+        },
+        body: `[{"i":99}]`,
+      })
+      expect(retry.status).toBe(200)
+
+      // Fork now contains: inherited [{"i":1}] + new [{"i":99}]
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      const body = await readRes.json()
+      expect(body).toEqual([{ i: 1 }, { i: 99 }])
+    })
+
+    test(`should not inherit producer state across binary sub-offset fork boundary`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-prod-bin-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-prod-bin-fork-${id}`
+      const producerId = `prod-${id}`
+
+      // Create binary source (no producer)
+      const src = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+      expect(src.status).toBe(201)
+
+      // Producer P writes a single message under (P, 0, 0)
+      const writeRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Producer-Id": producerId,
+          "Producer-Epoch": `0`,
+          "Producer-Seq": `0`,
+        },
+        body: `hello`,
+      })
+      // Fresh producer accept is 200 per §5.2.1
+      expect(writeRes.status).toBe(200)
+
+      // Fork mid-message (sub-offset = 3 bytes — fork inherits "hel" only)
+      const fork = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `3`,
+        },
+      })
+      expect(fork.status).toBe(201)
+
+      // Producer P retries the same (P, 0, 0) tuple against the fork.
+      // The fork has no producer state, so this MUST be treated as a fresh
+      // accept (200), not silently deduplicated as a 204.
+      const retry = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `POST`,
+        headers: {
+          "Content-Type": `text/plain`,
+          "Producer-Id": producerId,
+          "Producer-Epoch": `0`,
+          "Producer-Seq": `0`,
+        },
+        body: `LO`,
+      })
+      expect(retry.status).toBe(200)
+
+      // Fork now contains: inherited "hel" + new "LO"
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(await readRes.text()).toBe(`helLO`)
+    })
+
+    test(`should fork at a binary sub-offset anchored mid-stream`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-mid-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-mid-fork-${id}`
+
+      // First append — capture its tail offset as the anchor
+      const putRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `first`,
+      })
+      expect(putRes.status).toBe(201)
+      const anchor = putRes.headers.get(`Stream-Next-Offset`)!
+
+      // Second append — this is what sub-offset will slice
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `second`,
+      })
+
+      // Fork at the mid-anchor with sub-offset = 3 → take "sec" of "second"
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: anchor,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `3`,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Fork contains "first" (inherited) + "sec" (sub-offset slice)
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(await readRes.text()).toBe(`firstsec`)
+    })
+
+    test(`should return 400 when sub-offset > 0 is supplied without Stream-Fork-Offset`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-default-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-default-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+
+      // Default fork offset is the source's tail; sub-offset > 0 past tail
+      // names a position past the next data boundary → 400.
+      const res = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `1`,
+        },
+      })
+      expect(res.status).toBe(400)
+    })
+
+    test(`should return 400 when Stream-Fork-Sub-Offset is supplied without Stream-Forked-From (even when value is 0)`, async () => {
+      const id = uniqueId()
+      const targetPath = `/v1/stream/fork-create-suboffset-zero-no-src-${id}`
+
+      const res = await fetch(`${getBaseUrl()}${targetPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `0`,
+        },
+      })
+      expect(res.status).toBe(400)
+    })
+
+    test(`should return a Stream-Next-Offset on sub-offset fork creation that is consumable by reads`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-next-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-next-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hello`,
+      })
+
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `3`,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+      const tail = forkRes.headers.get(`Stream-Next-Offset`)
+      expect(tail).toBeTruthy()
+
+      // Reading from the reported tail must return zero data and be up-to-date.
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=${tail!}`)
+      expect(readRes.status).toBe(200)
+      expect(await readRes.text()).toBe(``)
+      expect(readRes.headers.get(STREAM_UP_TO_DATE_HEADER)).toBe(`true`)
+    })
+
+    test(`should return 400 when sub-offset is supplied on an empty source stream`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-empty-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-empty-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+      })
+
+      const res = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `1`,
+        },
+      })
+      expect(res.status).toBe(400)
+    })
+
+    test(`should accept binary sub-offset equal to message length`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-bin-eq-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-bin-eq-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hello`,
+      })
+
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `5`,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(await readRes.text()).toBe(`hello`)
+    })
+
+    test(`should accept JSON sub-offset equal to flattened message count`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-json-eq-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-json-eq-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"a":1},{"b":2},{"c":3}]`,
+      })
+
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/json`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `3`,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(await readRes.json()).toEqual([{ a: 1 }, { b: 2 }, { c: 3 }])
+    })
+
+    test(`should append initial body after the materialized sub-offset prefix`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-body-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-body-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `hello`,
+      })
+
+      // PUT with sub-offset AND an initial body — body must land AFTER the
+      // materialized prefix.
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `3`,
+        },
+        body: `XY`,
+      })
+      expect(forkRes.status).toBe(201)
+
+      // Fork: "hel" (sub-offset prefix) + "XY" (initial body) = "helXY"
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(await readRes.text()).toBe(`helXY`)
+    })
+
+    test(`should allow sub-offset fork creation from a closed source stream`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-create-suboffset-closed-src-${id}`
+      const forkPath = `/v1/stream/fork-create-suboffset-closed-fork-${id}`
+
+      // Create a closed source with data via PUT + Stream-Closed
+      const putRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_CLOSED_HEADER_FORK]: `true`,
+        },
+        body: `hello`,
+      })
+      expect(putRes.status).toBe(201)
+
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `3`,
+        },
+      })
+      expect(forkRes.status).toBe(201)
+
+      const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+      expect(await readRes.text()).toBe(`hel`)
+    })
   })
 
   // ============================================================================
@@ -8738,6 +9457,63 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         await fetch(`${getBaseUrl()}${level2}?offset=-1`)
       ).text()
       expect(r2).toBe(`XYZ`)
+    })
+
+    test(`should compose sub-offsets across chained forks`, async () => {
+      const id = uniqueId()
+      const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
+      const STREAM_FORK_SUB_OFFSET_HEADER = `Stream-Fork-Sub-Offset`
+      const level0 = `/v1/stream/fork-rec-sub-l0-${id}`
+      const level1 = `/v1/stream/fork-rec-sub-l1-${id}`
+      const level2 = `/v1/stream/fork-rec-sub-l2-${id}`
+
+      // Level 0: 6-byte source
+      await fetch(`${getBaseUrl()}${level0}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `abcdef`,
+      })
+
+      // Level 1: fork at sub-offset 4 → inherits "abcd"
+      await fetch(`${getBaseUrl()}${level1}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level0,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `4`,
+        },
+      })
+      const r1 = await (
+        await fetch(`${getBaseUrl()}${level1}?offset=-1`)
+      ).text()
+      expect(r1).toBe(`abcd`)
+
+      // Level 2: fork of level1 at sub-offset 2 → inherits "ab"
+      await fetch(`${getBaseUrl()}${level2}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `text/plain`,
+          [STREAM_FORKED_FROM_HEADER]: level1,
+          [STREAM_FORK_OFFSET_HEADER]: `0000000000000000_0000000000000000`,
+          [STREAM_FORK_SUB_OFFSET_HEADER]: `2`,
+        },
+      })
+      const r2 = await (
+        await fetch(`${getBaseUrl()}${level2}?offset=-1`)
+      ).text()
+      expect(r2).toBe(`ab`)
+
+      // Append to level2 and confirm reads still compose correctly
+      await fetch(`${getBaseUrl()}${level2}`, {
+        method: `POST`,
+        headers: { "Content-Type": `text/plain` },
+        body: `Z`,
+      })
+      const r2b = await (
+        await fetch(`${getBaseUrl()}${level2}?offset=-1`)
+      ).text()
+      expect(r2b).toBe(`abZ`)
     })
   })
 
