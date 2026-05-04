@@ -88,9 +88,11 @@ interface StreamMetadata {
    */
   forkOffset?: string
   /**
-   * Sub-offset content bytes refining `forkOffset` (non-JSON forks only).
+   * User-supplied sub-offset value refining `forkOffset` (Section 4.2 of
+   * PROTOCOL.md). Stored verbatim for idempotent re-creation matching:
+   * bytes for non-JSON forks, flattened message count for JSON forks.
    */
-  forkSubOffsetBytes?: number
+  forkSubOffset?: number
   /**
    * Number of forks referencing this stream.
    * Defaults to 0. Optional for backward-compatible deserialization from LMDB.
@@ -767,9 +769,11 @@ export class FileBackedStreamStore {
         const forkOffsetMatches =
           options.forkOffset === undefined ||
           options.forkOffset === existingRaw.forkOffset
-        // Sub-offset: undefined and 0 are equivalent.
+        // Sub-offset: undefined and 0 are equivalent. Compare the raw
+        // user-supplied integer (count for JSON, bytes for binary) so the
+        // comparison is independent of how it was resolved internally.
         const requestedSub = options.forkSubOffset ?? 0
-        const existingSub = existingRaw.forkSubOffsetBytes ?? 0
+        const existingSub = existingRaw.forkSubOffset ?? 0
         const forkSubOffsetMatches = requestedSub === existingSub
 
         if (
@@ -893,7 +897,7 @@ export class FileBackedStreamStore {
       closed: false, // Set to false initially, will be updated after initial append if needed
       forkedFrom: isFork ? options.forkedFrom : undefined,
       forkOffset: isFork ? forkOffset : undefined,
-      forkSubOffsetBytes: undefined,
+      forkSubOffset: undefined,
       refCount: 0,
     }
 
@@ -905,7 +909,7 @@ export class FileBackedStreamStore {
       // in the new segment before persisting metadata or opening the
       // write stream — `openWriteStream` opens with `flags: 'a'` so a
       // pre-existing file is appended to, not truncated. We also
-      // advance `currentOffset` and stamp `forkSubOffsetBytes` so the
+      // advance `currentOffset` and stamp `forkSubOffset` so the
       // metadata written below reflects the post-prefix state.
       if (forkSubOffsetPrefix && forkSubOffsetPrefix.length > 0) {
         const lengthBuf = Buffer.allocUnsafe(4)
@@ -921,7 +925,9 @@ export class FileBackedStreamStore {
         const byteOffset = parts[1]!
         const newByteOffset = byteOffset + forkSubOffsetPrefix.length
         streamMeta.currentOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
-        streamMeta.forkSubOffsetBytes = forkSubOffsetPrefix.length
+        // Persist the user-supplied sub-offset verbatim for idempotent
+        // re-creation matching, not the encoded byte length.
+        streamMeta.forkSubOffset = options.forkSubOffset
       }
       await this.db.put(key, streamMeta)
     } catch (err) {

@@ -252,6 +252,17 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 		meta.ForkedFrom = opts.ForkedFrom
 		meta.TTLSeconds = forkTTL
 		meta.ExpiresAt = forkExpiresAt
+		// Persist the user-supplied ForkOffset (may be nil if omitted) and
+		// the user-supplied ForkSubOffset for idempotent re-creation matching.
+		// These differ from meta.ForkOffset for JSON forks created with
+		// sub-offset > 0 (where meta.ForkOffset is advanced internally).
+		if opts.ForkOffset != nil {
+			requested := *opts.ForkOffset
+			meta.ForkOffsetRequested = &requested
+		}
+		if opts.ForkSubOffset != nil {
+			meta.ForkSubOffset = *opts.ForkSubOffset
+		}
 	} else {
 		meta.CurrentOffset = ZeroOffset
 		meta.TTLSeconds = opts.TTLSeconds
@@ -273,7 +284,6 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 		})
 		stream.data = append(stream.data, binarySubOffsetPrefix...)
 		stream.metadata.CurrentOffset = newOffset
-		stream.metadata.ForkSubOffsetBytes = uint64(len(binarySubOffsetPrefix))
 	}
 
 	// Handle initial data
