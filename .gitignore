@@ -199,5 +199,8 @@ examples/yjs-demo/.tanstack
 .netlify
 .claude/
 
+# Caddy plugin conformance test output (data_dir from packages/caddy-plugin/test/Caddyfile)
+/data/
+
 # MacOS
 .DS_Store

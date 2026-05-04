@@ -148,6 +148,11 @@ These headers are used on `PUT` requests to create a forked stream:
 
 - `Stream-Forked-From: <source-path>`: The path component of the source stream's URL, relative to the same server. When present, the `PUT` creates a fork rather than a new empty stream. Cross-service forking is not supported — the source stream must be on the same server as the fork.
 - `Stream-Fork-Offset: <offset>`: The divergence point in the source stream. The fork inherits all data from the source up to (but not including) this offset. If omitted, defaults to the source stream's current tail offset.
+- `Stream-Fork-Sub-Offset: <integer>` (optional): A non-negative integer that refines the divergence point to a sub-position past `Stream-Fork-Offset`. Interpreted per the source stream's content type:
+  - For `application/json` streams: number of flattened messages (Section 7.1) to inherit past the anchor.
+  - For all other content types: number of decoded entity body bytes to inherit past the anchor, exclusive of any framing the server uses internally and independent of any HTTP transfer or content encoding used in transit.
+  - Default `0`. A request with sub-offset `0` is equivalent to a request with the header omitted.
+  - The sub-offset is a separate addressing dimension and is not part of the offset value (see Section 6).
 
 When forking, the `Content-Type` header is optional — if omitted, the fork inherits the source stream's content type. If provided, it **MUST** match the source stream's content type; servers **MUST** return `409 Conflict` if it differs. Forks have independent lifetimes and can outlive their source stream. Fork TTL/expiry follows this table:
 
@@ -167,14 +172,15 @@ When forking, the `Content-Type` header is optional — if omitted, the fork inh
 
 Fork creation may return the standard stream creation errors from Section 5.1 (such as `409 Conflict` for content-type mismatch or `400 Bad Request` for invalid TTL/expiry), plus the following fork-specific errors:
 
-| Condition                         | Status          | Description                                                       |
-| --------------------------------- | --------------- | ----------------------------------------------------------------- |
-| Source stream not found           | 404 Not Found   | The `Stream-Forked-From` path does not exist                      |
-| Fork offset beyond stream length  | 400 Bad Request | The `Stream-Fork-Offset` exceeds the source stream's current tail |
-| Invalid offset format             | 400 Bad Request | The `Stream-Fork-Offset` value is malformed                       |
-| Content-Type mismatch with source | 409 Conflict    | Provided `Content-Type` differs from the source stream's type     |
-| Target path already in use        | 409 Conflict    | A stream already exists at the target URL with different config   |
-| Source is soft-deleted            | 409 Conflict    | The source stream has been deleted but still has forks            |
+| Condition                         | Status          | Description                                                                                          |
+| --------------------------------- | --------------- | ---------------------------------------------------------------------------------------------------- |
+| Source stream not found           | 404 Not Found   | The `Stream-Forked-From` path does not exist                                                         |
+| Fork offset beyond stream length  | 400 Bad Request | The `Stream-Fork-Offset` exceeds the source stream's current tail                                    |
+| Invalid offset format             | 400 Bad Request | The `Stream-Fork-Offset` value is malformed                                                          |
+| Sub-offset overshoot or invalid   | 400 Bad Request | The `Stream-Fork-Sub-Offset` is malformed, negative, or names a position past the next data boundary |
+| Content-Type mismatch with source | 409 Conflict    | Provided `Content-Type` differs from the source stream's type                                        |
+| Target path already in use        | 409 Conflict    | A stream already exists at the target URL with different config                                      |
+| Source is soft-deleted            | 409 Conflict    | The source stream has been deleted but still has forks                                               |
 
 #### Idempotent fork creation
 
@@ -183,6 +189,10 @@ Fork creation follows the same idempotency rules as regular stream creation (Sec
 #### Closed stream forking
 
 Closed streams **MAY** be forked. The resulting fork starts in the open state regardless of the source stream's closed status. This enables forking from historical points in completed streams.
+
+#### Producer state and fork boundaries
+
+Forks **MUST NOT** inherit idempotent producer state (Section 5.2.1) or per-writer `Stream-Seq` state (Section 5.2) from the source. A fork is a new stream from a writer-state perspective; producers writing to the fork **MUST** re-bootstrap their state on the fork (typically by bumping their epoch). This applies to all forks, including those created with `Stream-Fork-Sub-Offset` whose boundary lies inside a producer batch on the source — the source's producer state is unchanged, and the fork's writer-state-fresh shape ensures retries against the fork cannot collide with the partial inherited data.
 
 #### Soft-delete and lifecycle
 
@@ -245,6 +255,7 @@ This provides idempotent "create or ensure exists" semantics aligned with HTTP P
 
 - `Stream-Forked-From` (optional): When present, the `PUT` creates a fork rather than a new empty stream. The value is the URL path of the source stream. See Section 4.2 for fork semantics.
 - `Stream-Fork-Offset` (optional, requires `Stream-Forked-From`): The divergence point in the source stream. If omitted, defaults to the source stream's current tail offset. Servers **MUST** return `400 Bad Request` if the offset exceeds the source stream's tail.
+- `Stream-Fork-Sub-Offset` (optional, requires `Stream-Forked-From`): A non-negative integer refining the divergence point past `Stream-Fork-Offset`. See Section 4.2 for content-type-driven semantics.
 
 #### Request Body (Optional)
 
@@ -846,6 +857,8 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 
 **Reserved Values**: The sentinel values `-1` and `now` are reserved by the protocol. Server implementations **MUST NOT** generate these strings as actual stream offsets (in `Stream-Next-Offset` headers or SSE control events). This ensures clients can always distinguish between sentinel requests and real offset values.
 
+**Sub-offset addressing**: For operations that accept a `Stream-Fork-Sub-Offset` header (Section 4.2), the sub-offset is a separate addressing dimension alongside the opaque offset. It is not part of the offset value, does not appear in any response, and does not violate the offset opacity, uniqueness, or strict-monotonicity properties above. Servers internally resolve `(offset, suboffset)` to a precise position; all offset values returned to clients remain server-minted opaque tokens conforming to the properties in this section. Future protocol revisions **MAY** extend sub-offset addressing to read operations using the same content-type-driven semantics.
+
 The opaque nature of offsets enables important server-side optimizations. For example, offsets may encode chunk file identifiers, allowing catch-up requests to be served directly from object storage without touching the main database.
 
 Clients **MUST** use the `Stream-Next-Offset` value returned in responses for subsequent read requests. They **SHOULD** persist offsets locally (e.g., in browser local storage or a database) to enable resumability after disconnection or restart.
@@ -1090,17 +1103,18 @@ This port was selected from the IANA unassigned range 4434-4440. Standalone serv
 
 This document requests registration of the following HTTP headers in the "Permanent Message Header Field Names" registry:
 
-| Field Name           | Status    | Reference     |
-| -------------------- | --------- | ------------- |
-| `Stream-TTL`         | permanent | This document |
-| `Stream-Expires-At`  | permanent | This document |
-| `Stream-Seq`         | permanent | This document |
-| `Stream-Cursor`      | permanent | This document |
-| `Stream-Next-Offset` | permanent | This document |
-| `Stream-Up-To-Date`  | permanent | This document |
-| `Stream-Closed`      | permanent | This document |
-| `Stream-Forked-From` | permanent | This document |
-| `Stream-Fork-Offset` | permanent | This document |
+| Field Name               | Status    | Reference     |
+| ------------------------ | --------- | ------------- |
+| `Stream-TTL`             | permanent | This document |
+| `Stream-Expires-At`      | permanent | This document |
+| `Stream-Seq`             | permanent | This document |
+| `Stream-Cursor`          | permanent | This document |
+| `Stream-Next-Offset`     | permanent | This document |
+| `Stream-Up-To-Date`      | permanent | This document |
+| `Stream-Closed`          | permanent | This document |
+| `Stream-Forked-From`     | permanent | This document |
+| `Stream-Fork-Offset`     | permanent | This document |
+| `Stream-Fork-Sub-Offset` | permanent | This document |
 
 **Descriptions:**
 
@@ -1113,6 +1127,7 @@ This document requests registration of the following HTTP headers in the "Perman
 - `Stream-Closed`: Indicates stream is closed / end-of-stream (presence header, value `true`)
 - `Stream-Forked-From`: Source stream path for forked streams, used on `PUT` requests (opaque string)
 - `Stream-Fork-Offset`: Divergence point offset for forked streams, used on `PUT` requests (opaque string)
+- `Stream-Fork-Sub-Offset`: Sub-position refinement past `Stream-Fork-Offset`, used on `PUT` requests (non-negative integer; bytes for non-JSON, message count for JSON)
 
 ## 12. References
 

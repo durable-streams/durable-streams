@@ -35,10 +35,11 @@ type bboltMetadata struct {
 	Closed   bool                   `json:"closed,omitempty"`
 	ClosedBy *bboltClosedByProducer `json:"closed_by,omitempty"`
 	// Fork state
-	ForkedFrom  string `json:"forked_from,omitempty"`
-	ForkOffset  string `json:"fork_offset,omitempty"`
-	RefCount    int32  `json:"ref_count,omitempty"`
-	SoftDeleted bool   `json:"soft_deleted,omitempty"`
+	ForkedFrom         string `json:"forked_from,omitempty"`
+	ForkOffset         string `json:"fork_offset,omitempty"`
+	ForkSubOffsetBytes uint64 `json:"fork_sub_offset_bytes,omitempty"`
+	RefCount           int32  `json:"ref_count,omitempty"`
+	SoftDeleted        bool   `json:"soft_deleted,omitempty"`
 }
 
 // bboltClosedByProducer is the serialized form of ClosedByProducer
@@ -139,6 +140,7 @@ func (s *BboltMetadataStore) Put(meta *StreamMetadata, directoryName string) err
 	bm.ForkedFrom = meta.ForkedFrom
 	if meta.ForkedFrom != "" {
 		bm.ForkOffset = meta.ForkOffset.String()
+		bm.ForkSubOffsetBytes = meta.ForkSubOffsetBytes
 	}
 	bm.RefCount = meta.RefCount
 	bm.SoftDeleted = meta.SoftDeleted
@@ -233,6 +235,7 @@ func (s *BboltMetadataStore) Get(path string) (*StreamMetadata, string, error) {
 			}
 			meta.ForkOffset = forkOffset
 		}
+		meta.ForkSubOffsetBytes = bm.ForkSubOffsetBytes
 		meta.RefCount = bm.RefCount
 		meta.SoftDeleted = bm.SoftDeleted
 
@@ -485,6 +488,7 @@ func (s *BboltMetadataStore) ForEach(fn func(meta *StreamMetadata, directoryName
 				}
 				meta.ForkOffset = forkOffset
 			}
+			meta.ForkSubOffsetBytes = bm.ForkSubOffsetBytes
 			meta.RefCount = bm.RefCount
 			meta.SoftDeleted = bm.SoftDeleted
 

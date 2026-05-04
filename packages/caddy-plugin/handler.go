@@ -39,8 +39,9 @@ const (
 
 // Fork headers (request headers only — not set on responses)
 const (
-	HeaderStreamForkedFrom = "Stream-Forked-From"
-	HeaderStreamForkOffset = "Stream-Fork-Offset"
+	HeaderStreamForkedFrom    = "Stream-Forked-From"
+	HeaderStreamForkOffset    = "Stream-Fork-Offset"
+	HeaderStreamForkSubOffset = "Stream-Fork-Sub-Offset"
 )
 
 // sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
@@ -52,7 +53,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset")
 	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
@@ -110,6 +111,13 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	// Parse fork headers
 	forkedFromStr := r.Header.Get(HeaderStreamForkedFrom)
 	forkOffsetStr := r.Header.Get(HeaderStreamForkOffset)
+	// Use Values() to distinguish "header present but empty" from "absent"
+	forkSubOffsetVals := r.Header.Values(HeaderStreamForkSubOffset)
+	forkSubOffsetPresent := len(forkSubOffsetVals) > 0
+	forkSubOffsetStr := ""
+	if forkSubOffsetPresent {
+		forkSubOffsetStr = forkSubOffsetVals[0]
+	}
 
 	// Validate TTL and ExpiresAt aren't both provided
 	if ttlStr != "" && expiresAtStr != "" {
@@ -164,6 +172,18 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		opts.ForkOffset = &forkOffset
 	}
 
+	// Parse fork sub-offset if header was present (including empty value)
+	if forkSubOffsetPresent {
+		if forkedFromStr == "" {
+			return newHTTPError(http.StatusBadRequest, "Stream-Fork-Sub-Offset requires Stream-Forked-From")
+		}
+		subOffset, err := parseSubOffset(forkSubOffsetStr)
+		if err != nil {
+			return newHTTPError(http.StatusBadRequest, err.Error())
+		}
+		opts.ForkSubOffset = &subOffset
+	}
+
 	meta, wasCreated, err := h.store.Create(path, opts)
 	if err != nil {
 		if errors.Is(err, store.ErrStreamNotFound) {
@@ -171,6 +191,9 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		}
 		if errors.Is(err, store.ErrInvalidForkOffset) {
 			return newHTTPError(http.StatusBadRequest, "fork offset beyond source stream length")
+		}
+		if errors.Is(err, store.ErrInvalidForkSubOffset) {
+			return newHTTPError(http.StatusBadRequest, "fork sub-offset overshoots or is invalid")
 		}
 		if errors.Is(err, store.ErrStreamSoftDeleted) {
 			return newHTTPError(http.StatusConflict, "source stream was deleted but still has active forks")
@@ -1026,4 +1049,20 @@ func parseTTL(s string) (int64, error) {
 	}
 
 	return ttl, nil
+}
+
+// subOffsetRegex matches the same digit-only format as TTL.
+var subOffsetRegex = regexp.MustCompile(`^[1-9][0-9]*$|^0$`)
+
+// parseSubOffset parses a Stream-Fork-Sub-Offset value: a non-negative integer
+// without leading zeros, sign, or whitespace.
+func parseSubOffset(s string) (uint64, error) {
+	if !subOffsetRegex.MatchString(s) {
+		return 0, fmt.Errorf("invalid Stream-Fork-Sub-Offset format: must be a non-negative integer without leading zeros")
+	}
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid Stream-Fork-Sub-Offset: %w", err)
+	}
+	return v, nil
 }

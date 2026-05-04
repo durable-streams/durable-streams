@@ -194,6 +194,7 @@ export class StreamStore {
       closed?: boolean
       forkedFrom?: string
       forkOffset?: string
+      forkSubOffset?: number
     } = {}
   ): Stream {
     // Check if stream already exists
@@ -227,6 +228,10 @@ export class StreamStore {
         const forkOffsetMatches =
           options.forkOffset === undefined ||
           options.forkOffset === existingRaw.forkOffset
+        // Sub-offset: undefined and 0 are equivalent.
+        const requestedSub = options.forkSubOffset ?? 0
+        const existingSub = existingRaw.forkSubOffsetBytes ?? 0
+        const forkSubOffsetMatches = requestedSub === existingSub
 
         if (
           contentTypeMatches &&
@@ -234,7 +239,8 @@ export class StreamStore {
           expiresMatches &&
           closedMatches &&
           forkedFromMatches &&
-          forkOffsetMatches
+          forkOffsetMatches &&
+          forkSubOffsetMatches
         ) {
           // Idempotent success - return existing stream
           return existingRaw
@@ -252,6 +258,7 @@ export class StreamStore {
     let forkOffset = `0000000000000000_0000000000000000`
     let sourceContentType: string | undefined
     let sourceStream: Stream | undefined
+    let forkSubOffsetPrefix: Uint8Array | undefined
 
     if (isFork) {
       sourceStream = this.streams.get(options.forkedFrom!)
@@ -278,6 +285,18 @@ export class StreamStore {
       const zeroOffset = `0000000000000000_0000000000000000`
       if (forkOffset < zeroOffset || sourceStream.currentOffset < forkOffset) {
         throw new Error(`Invalid fork offset: ${forkOffset}`)
+      }
+
+      // Resolve sub-offset against the source. Both binary and JSON return
+      // a synthetic prefix to materialize as the fork's first own message,
+      // because in this store one POST = one message regardless of mode.
+      if (options.forkSubOffset && options.forkSubOffset > 0) {
+        forkSubOffsetPrefix = this.resolveForkSubOffset(
+          sourceStream,
+          forkOffset,
+          options.forkSubOffset,
+          normalizeContentType(sourceContentType) === `application/json`
+        )
       }
 
       // Increment source refcount
@@ -320,6 +339,22 @@ export class StreamStore {
       refCount: 0,
       forkedFrom: isFork ? options.forkedFrom : undefined,
       forkOffset: isFork ? forkOffset : undefined,
+    }
+
+    // Materialize sub-offset prefix as the fork's first own message.
+    if (forkSubOffsetPrefix && forkSubOffsetPrefix.length > 0) {
+      const parts = stream.currentOffset.split(`_`).map(Number)
+      const readSeq = parts[0]!
+      const byteOffset = parts[1]!
+      const newByteOffset = byteOffset + forkSubOffsetPrefix.length
+      const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
+      stream.messages.push({
+        data: forkSubOffsetPrefix,
+        offset: newOffset,
+        timestamp: Date.now(),
+      })
+      stream.currentOffset = newOffset
+      stream.forkSubOffsetBytes = forkSubOffsetPrefix.length
     }
 
     // If initial data is provided, append it
@@ -1179,6 +1214,67 @@ export class StreamStore {
   // ============================================================================
   // Private helpers
   // ============================================================================
+
+  /**
+   * Resolve a sub-offset against a source stream and return the prefix bytes
+   * to materialize as the fork's first own message. Reads from the source
+   * (across its fork chain if any) starting at forkOffset; the first message
+   * returned is the one that starts at forkOffset. Throws if the sub-offset
+   * cannot be satisfied (no message past forkOffset, or overshoots its
+   * content extent).
+   */
+  private resolveForkSubOffset(
+    sourceStream: Stream,
+    forkOffset: string,
+    subOffset: number,
+    isJSON: boolean
+  ): Uint8Array {
+    // Read source past forkOffset across its fork chain
+    let sourceMessages: Array<StreamMessage>
+    if (sourceStream.forkedFrom) {
+      sourceMessages = [
+        ...this.readForkedMessages(
+          sourceStream.forkedFrom,
+          forkOffset,
+          sourceStream.forkOffset!
+        ),
+        ...this.readOwnMessages(sourceStream, forkOffset),
+      ]
+    } else {
+      sourceMessages = this.readOwnMessages(sourceStream, forkOffset)
+    }
+    if (sourceMessages.length === 0) {
+      throw new Error(`Invalid fork sub-offset: no data past forkOffset`)
+    }
+    const first = sourceMessages[0]!
+    if (isJSON) {
+      // The message data is comma-joined JSON values with a trailing comma
+      // (e.g., `{"a":1},{"b":2},`). Wrap in [...] to parse, take first N
+      // elements, re-encode in the same comma-joined format.
+      const text = new TextDecoder().decode(first.data)
+      const trimmed = text.endsWith(`,`) ? text.slice(0, -1) : text
+      let values: Array<unknown>
+      try {
+        values = JSON.parse(`[${trimmed}]`)
+      } catch {
+        throw new Error(`Invalid fork sub-offset: source JSON is unparseable`)
+      }
+      if (subOffset > values.length) {
+        throw new Error(
+          `Invalid fork sub-offset: overshoots source message count`
+        )
+      }
+      const prefix = values.slice(0, subOffset).map((v) => JSON.stringify(v))
+      return new TextEncoder().encode(prefix.join(`,`) + `,`)
+    }
+    // Binary: take first subOffset bytes
+    if (subOffset > first.data.length) {
+      throw new Error(
+        `Invalid fork sub-offset: overshoots source message length`
+      )
+    }
+    return first.data.slice(0, subOffset)
+  }
 
   private appendToStream(
     stream: Stream,
