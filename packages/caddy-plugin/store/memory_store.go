@@ -174,21 +174,24 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 	var forkOffset Offset
 	var sourceContentType string
 	var sourceMeta *StreamMetadata
+	var sourceStream *memoryStream
+	var binarySubOffsetPrefix []byte
 	isFork := opts.ForkedFrom != ""
 
 	if isFork {
-		sourceStream, ok := s.streams[opts.ForkedFrom]
+		ss, ok := s.streams[opts.ForkedFrom]
 		if !ok {
 			return nil, false, ErrStreamNotFound
 		}
-		if sourceStream.metadata.SoftDeleted {
+		if ss.metadata.SoftDeleted {
 			return nil, false, ErrStreamSoftDeleted
 		}
-		if sourceStream.metadata.IsExpired() {
+		if ss.metadata.IsExpired() {
 			return nil, false, ErrStreamNotFound
 		}
 
-		sourceMeta = &sourceStream.metadata
+		sourceStream = ss
+		sourceMeta = &ss.metadata
 		sourceContentType = sourceMeta.ContentType
 
 		// Resolve fork offset: use opts.ForkOffset if set, else source's CurrentOffset
@@ -201,6 +204,19 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 		// Validate: ZeroOffset <= forkOffset <= source.CurrentOffset
 		if forkOffset.LessThan(ZeroOffset) || sourceMeta.CurrentOffset.LessThan(forkOffset) {
 			return nil, false, ErrInvalidForkOffset
+		}
+
+		// Resolve sub-offset against the source stream
+		if opts.ForkSubOffset != nil && *opts.ForkSubOffset > 0 {
+			resolvedOffset, prefixBytes, err := s.resolveForkSubOffset(sourceStream, forkOffset, *opts.ForkSubOffset)
+			if err != nil {
+				return nil, false, err
+			}
+			if isJSONContentType(sourceMeta.ContentType) {
+				forkOffset = resolvedOffset
+			} else {
+				binarySubOffsetPrefix = prefixBytes
+			}
 		}
 
 		// Increment source refcount
@@ -246,6 +262,18 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 		metadata: meta,
 		messages: make([]Message, 0),
 		data:     make([]byte, 0),
+	}
+
+	// Materialize binary sub-offset prefix as the fork's first own message.
+	if isFork && len(binarySubOffsetPrefix) > 0 {
+		newOffset := stream.metadata.CurrentOffset.Add(uint64(len(binarySubOffsetPrefix)))
+		stream.messages = append(stream.messages, Message{
+			Data:   binarySubOffsetPrefix,
+			Offset: newOffset,
+		})
+		stream.data = append(stream.data, binarySubOffsetPrefix...)
+		stream.metadata.CurrentOffset = newOffset
+		stream.metadata.ForkSubOffsetBytes = uint64(len(binarySubOffsetPrefix))
 	}
 
 	// Handle initial data
@@ -700,6 +728,32 @@ func readOwnMessages(stream *memoryStream, offset Offset, capAtOffset *Offset) [
 		}
 	}
 	return messages
+}
+
+// resolveForkSubOffset walks the source stream from forkOffset and resolves a
+// non-zero sub-offset. See FileStore.resolveForkSubOffset for semantics.
+func (s *MemoryStore) resolveForkSubOffset(sourceStream *memoryStream, forkOffset Offset, subOffset uint64) (Offset, []byte, error) {
+	// Read the source from forkOffset onward (across its fork chain if any)
+	sourceMessages := s.readForkedStream(sourceStream, forkOffset)
+
+	if isJSONContentType(sourceStream.metadata.ContentType) {
+		if uint64(len(sourceMessages)) < subOffset {
+			return Offset{}, nil, ErrInvalidForkSubOffset
+		}
+		return sourceMessages[subOffset-1].Offset, nil, nil
+	}
+
+	// Binary: at least one message must follow forkOffset
+	if len(sourceMessages) == 0 {
+		return Offset{}, nil, ErrInvalidForkSubOffset
+	}
+	first := sourceMessages[0].Data
+	if uint64(len(first)) < subOffset {
+		return Offset{}, nil, ErrInvalidForkSubOffset
+	}
+	prefix := make([]byte, subOffset)
+	copy(prefix, first[:subOffset])
+	return forkOffset, prefix, nil
 }
 
 // readForkedStream reads messages across the fork chain. For non-forks it delegates
