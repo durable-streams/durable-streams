@@ -38,7 +38,7 @@ jobs:
 
       - name: Typecheck
         run: |
-          tsc --build --clean
+          pnpm exec tsc --build --clean
           pnpm typecheck
 
       - name: Upload build artifacts
@@ -76,38 +76,95 @@ jobs:
           name: build-artifacts
 
       - name: Test
-        run: pnpm test:run --project client --project server --project state
+        run: pnpm test:run --project client --project server --project state --project cli --project darix-cli
 
-  test-python:
+  darix-tests:
     runs-on: ubuntu-latest
-    defaults:
-      run:
-        working-directory: packages/client-py
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
         with:
-          version: "latest"
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Start Darix test backend
+        run: pnpm test:backend
+        env:
+          DARIX_COMPOSE_PROJECT: darix-agent-ci
+          PG_HOST_PORT: "55554"
+          ELECTRIC_HOST_PORT: "56724"
+          JAEGER_UI_PORT: "51686"
+          JAEGER_OTLP_HTTP_PORT: "54318"
+          JAEGER_OTLP_GRPC_PORT: "54317"
+
+      - name: Run Darix tests
+        run: |
+          darix_host=localhost
+          if [ "${AI_AGENT:-}" = "1" ]; then
+            darix_host=host.docker.internal
+          fi
+
+          export DATABASE_URL="postgres://darix:darix@${darix_host}:55554/darix"
+          export CLICKHOUSE_URL="http://darix:darix@${darix_host}:8123"
+          export ELECTRIC_URL="http://${darix_host}:56724"
+
+          pnpm test:run:darix
+        env:
+          DARIX_COMPOSE_PROJECT: darix-agent-ci
+          PG_HOST_PORT: "55554"
+          ELECTRIC_HOST_PORT: "56724"
+
+      - name: Stop Darix test backend
+        if: always()
+        run: pnpm test:backend:stop
+        env:
+          DARIX_COMPOSE_PROJECT: darix-agent-ci
+          PG_HOST_PORT: "55554"
+          ELECTRIC_HOST_PORT: "56724"
+          JAEGER_UI_PORT: "51686"
+          JAEGER_OTLP_HTTP_PORT: "54318"
+          JAEGER_OTLP_GRPC_PORT: "54317"
+
+  test-python:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
 
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
+      - name: Install uv
+        run: |
+          python -m pip install --user uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+
       - name: Install Python dependencies
         run: uv sync --extra dev
+        working-directory: packages/client-py
 
       - name: Lint with ruff
         run: uv run ruff check src/ tests/
+        working-directory: packages/client-py
 
       - name: Typecheck with pyright
         run: uv run pyright src/
+        working-directory: packages/client-py
 
       - name: Run unit tests
         run: uv run pytest tests/ -v --ignore=tests/test_integration.py
+        working-directory: packages/client-py
 
   conformance-tests-python-sync:
     runs-on: ubuntu-latest
@@ -124,15 +181,15 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          python -m pip install --user uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install Node.js dependencies
         run: pnpm install --frozen-lockfile
@@ -162,15 +219,15 @@ jobs:
           node-version: 22
           cache: pnpm
 
-      - name: Install uv
-        uses: astral-sh/setup-uv@v4
-        with:
-          version: "latest"
-
       - name: Setup Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.12"
+
+      - name: Install uv
+        run: |
+          python -m pip install --user uv
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
 
       - name: Install Node.js dependencies
         run: pnpm install --frozen-lockfile
@@ -192,9 +249,12 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Setup .NET
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "8.0"
+        run: |
+          curl -fsSL https://dot.net/v1/dotnet-install.sh -o dotnet-install.sh
+          bash dotnet-install.sh --channel 10.0 --install-dir "$DOTNET_ROOT"
+          echo "$DOTNET_ROOT" >> "$GITHUB_PATH"
+        env:
+          DOTNET_ROOT: /home/runner/.dotnet
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
@@ -214,6 +274,8 @@ jobs:
       - name: Build C# adapter
         working-directory: packages/client-dotnet
         run: dotnet publish src/DurableStreams.ConformanceAdapter -c Release -o ./adapter
+        env:
+          DOTNET_ROOT: /home/runner/.dotnet
 
       - name: Run C# conformance tests
         run: pnpm --filter @durable-streams/client-conformance-tests exec tsx src/cli.ts --run ../client-dotnet/adapter/conformance-adapter
@@ -298,5 +360,7 @@ jobs:
         run: chmod +x packages/caddy-plugin/caddy
 
       - name: Run conformance tests (${{ matrix.shard.name }})
+        env:
+          RUN_CADDY_TESTS: "1"
         run: |
           pnpm vitest run --project caddy --testNamePattern "${{ matrix.shard.pattern }}"

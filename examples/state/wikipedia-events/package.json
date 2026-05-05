@@ -13,13 +13,13 @@
     "@durable-streams/client": "workspace:*",
     "@durable-streams/state": "workspace:*",
     "@tanstack/solid-db": "latest",
-    "solid-js": "^1.9.3",
+    "solid-js": "^1.9.11",
     "zod": "^3.24.1"
   },
   "devDependencies": {
-    "@types/node": "^22.15.21",
+    "@types/node": "^22.19.15",
     "typescript": "^5.9.2",
     "vite": "^6.0.0",
-    "vite-plugin-solid": "^2.10.2"
+    "vite-plugin-solid": "^2.11.11"
   }
 }

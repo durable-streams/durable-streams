@@ -6,6 +6,7 @@ const config: Options = {
   platform: "node",
   dts: true,
   clean: true,
+  external: [/^@durable-streams\//],
 }
 
 export default config

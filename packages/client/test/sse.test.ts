@@ -732,6 +732,86 @@ data: {"streamNextOffset":"300","streamCursor":"cursor-3","upToDate":true}
     expect(batches[2]!.upToDate).toBe(true)
   })
 
+  it(`should merge multiple JSON array data events before a control event`, async () => {
+    // Bug: when multiple SSE data events arrive before a single control event,
+    // each containing a JSON array like [item], the client joins them via string
+    // concatenation producing [item1][item2] — invalid JSON. It should merge
+    // them into a single valid array [item1, item2].
+    const StreamResponseImpl = await getStreamResponseImpl()
+
+    // Simulate the real-world pattern: server sends many data events
+    // (each a JSON array with one item) followed by one control event.
+    const sseText = `event: data
+data: [{"type":"message_received","key":"msg-1"}]
+
+event: data
+data: [{"type":"run","key":"run-0"}]
+
+event: data
+data: [{"type":"step","key":"step-0"}]
+
+event: control
+data: {"streamNextOffset":"100","upToDate":true}
+
+`
+    const encoder = new TextEncoder()
+    const sseBody = new ReadableStream({
+      start(controller) {
+        controller.enqueue(encoder.encode(sseText))
+        controller.close()
+      },
+    })
+
+    const firstResponse = new Response(sseBody, {
+      status: 200,
+      headers: { "content-type": `text/event-stream` },
+    })
+
+    const streamResponse = new StreamResponseImpl<{
+      type: string
+      key: string
+    }>({
+      url: `http://test.com/stream`,
+      contentType: `application/json`,
+      live: `sse`,
+      startOffset: `0`,
+      isJsonMode: true,
+      initialOffset: `0`,
+      initialCursor: undefined,
+      initialUpToDate: false,
+      initialStreamClosed: false,
+      firstResponse,
+      abortController: new AbortController(),
+      fetchNext: vi.fn(),
+    })
+
+    // subscribeJson should receive all 3 items in one batch without PARSE_ERROR
+    const batches: Array<{
+      items: Array<{ type: string; key: string }>
+      upToDate: boolean
+    }> = []
+
+    await new Promise<void>((resolve) => {
+      streamResponse.subscribeJson<{ type: string; key: string }>((batch) => {
+        batches.push({
+          items: [...batch.items],
+          upToDate: batch.upToDate,
+        })
+        if (batch.upToDate) {
+          resolve()
+        }
+        return Promise.resolve()
+      })
+    })
+
+    expect(batches).toHaveLength(1)
+    expect(batches[0]!.items).toHaveLength(3)
+    expect(batches[0]!.items[0]!.type).toBe(`message_received`)
+    expect(batches[0]!.items[1]!.type).toBe(`run`)
+    expect(batches[0]!.items[2]!.type).toBe(`step`)
+    expect(batches[0]!.upToDate).toBe(true)
+  })
+
   it(`should surface SSE reconnection errors`, async () => {
     const StreamResponseImpl = await getStreamResponseImpl()
 
