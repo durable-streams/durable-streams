@@ -258,7 +258,9 @@ async function streamInternal<TJson = unknown>(
       ? async (
           offset: Offset,
           cursor: string | undefined,
-          signal: AbortSignal
+          signal: AbortSignal,
+          headerOverrides?: Parameters<typeof resolveHeaders>[0],
+          paramOverrides?: Parameters<typeof resolveParams>[0]
         ): Promise<Response> => {
           const sseUrl = new URL(url)
           sseUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
@@ -268,12 +270,19 @@ async function streamInternal<TJson = unknown>(
           }
 
           // Resolve params per-request (for dynamic values)
-          const sseParams = await resolveParams(options.params)
+          // Use overrides from onError handler if available, merged with originals
+          const effectiveParams = paramOverrides
+            ? { ...options.params, ...paramOverrides }
+            : options.params
+          const sseParams = await resolveParams(effectiveParams)
           for (const [key, value] of Object.entries(sseParams)) {
             sseUrl.searchParams.set(key, value)
           }
 
-          const sseHeaders = await resolveHeaders(options.headers)
+          const effectiveHeaders = headerOverrides
+            ? { ...options.headers, ...headerOverrides }
+            : options.headers
+          const sseHeaders = await resolveHeaders(effectiveHeaders)
 
           const response = await fetchClient(sseUrl.toString(), {
             method: `GET`,
@@ -306,5 +315,8 @@ async function streamInternal<TJson = unknown>(
     startSSE,
     sseResilience: options.sseResilience,
     encoding,
+    onError: options.onError,
+    headers: options.headers,
+    params: options.params,
   })
 }
