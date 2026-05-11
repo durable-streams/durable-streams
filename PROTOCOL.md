@@ -33,7 +33,7 @@ Copyright (c) 2025 ElectricSQL
    - 5.6. [Read Stream - Catch-up](#56-read-stream---catch-up)
    - 5.7. [Read Stream - Live (Long-poll)](#57-read-stream---live-long-poll)
    - 5.8. [Read Stream - Live (SSE)](#58-read-stream---live-sse)
-6. [Service-scoped Subscriptions](#6-service-scoped-subscriptions)
+6. [Stream Metadata Subscriptions](#6-stream-metadata-subscriptions)
    - 6.1. [Subscription Addressing](#61-subscription-addressing)
    - 6.2. [Create or Re-confirm a Subscription](#62-create-or-re-confirm-a-subscription)
    - 6.3. [Read or Delete a Subscription](#63-read-or-delete-a-subscription)
@@ -803,27 +803,27 @@ data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 
 SSE on a forked stream delivers inherited data from the source stream followed by the fork's own data, then waits for new fork appends. Source appends after the fork point are never delivered.
 
-## 6. Service-scoped Subscriptions
+## 6. Stream Metadata Subscriptions
 
-Subscriptions are durable, service-scoped cursors that wake workers when one or more streams have pending events. A subscription belongs to a service namespace and is addressed under that service's `__ds` control namespace:
+Subscriptions are durable cursors that wake workers when one or more streams have pending events. Subscription control APIs live under the stream metadata namespace:
 
 ```http
-/v1/stream/:serviceId/__ds/subscriptions/:id
+/v1/stream-meta/subscriptions/:id
 ```
 
-Application streams for the same service are regular durable streams under `/v1/stream/:serviceId/...`. Stream paths inside subscription request and response bodies are service-relative paths such as `events/abc` or `wake/pool`. The `__ds` path segment is reserved for Durable Streams control APIs and MUST NOT be used by application streams inside a service namespace.
+Application streams remain regular durable streams under `/v1/stream/...`. Stream paths inside subscription request and response bodies are stream-root-relative paths such as `events/abc` or `wake/pool`.
 
 A subscription can be delivered by webhook or by pull-wake. Both mechanisms share the same cursor fields, generation fencing, lease timeout, and stream membership model.
 
 ### 6.1. Subscription Addressing
 
-`serviceId` identifies the service namespace. The subscription `id` is client-provided and unique within that service. Servers MUST route subscription control requests before normal stream operations so that `__ds` control paths are not interpreted as application streams.
+The subscription `id` is client-provided and unique within the stream metadata namespace. Servers MUST route stream metadata control requests before normal stream operations so that subscription control paths are not interpreted as application streams.
 
 The server stores one cursor per subscription stream. Each stream link has:
 
 | Field          | Description                                                            |
 | -------------- | ---------------------------------------------------------------------- |
-| `path`         | Service-relative stream path                                           |
+| `path`         | Stream-root-relative stream path                                       |
 | `link_type`    | `glob` when matched by `pattern`, `explicit` when added by `streams[]` |
 | `acked_offset` | Last processed offset, inclusive                                       |
 
@@ -832,7 +832,7 @@ If a stream is linked both explicitly and by a glob pattern, `explicit` takes pr
 ### 6.2. Create or Re-confirm a Subscription
 
 ```http
-PUT /v1/stream/:serviceId/__ds/subscriptions/:id
+PUT /v1/stream-meta/subscriptions/:id
 Content-Type: application/json
 
 {
@@ -848,15 +848,15 @@ Content-Type: application/json
 
 Fields:
 
-| Field          | Required                | Description                                                          |
-| -------------- | ----------------------- | -------------------------------------------------------------------- |
-| `type`         | Yes                     | `webhook` or `pull-wake`                                             |
-| `pattern`      | No                      | Glob over service-relative stream paths                              |
-| `streams`      | No                      | Explicit service-relative stream paths, additive to `pattern`        |
-| `webhook.url`  | For `type: "webhook"`   | URL that receives wake notifications                                 |
-| `wake_stream`  | For `type: "pull-wake"` | Service-relative durable stream path used as the worker wake channel |
-| `lease_ttl_ms` | No                      | Lease duration, from 1 second to 10 minutes. Default: 30 seconds     |
-| `description`  | No                      | Human-readable description                                           |
+| Field          | Required                | Description                                                       |
+| -------------- | ----------------------- | ----------------------------------------------------------------- |
+| `type`         | Yes                     | `webhook` or `pull-wake`                                          |
+| `pattern`      | No                      | Glob over stream-root-relative stream paths                       |
+| `streams`      | No                      | Explicit stream-root-relative stream paths, additive to `pattern` |
+| `webhook.url`  | For `type: "webhook"`   | URL that receives wake notifications                              |
+| `wake_stream`  | For `type: "pull-wake"` | Stream-root-relative durable stream path used as the wake channel |
+| `lease_ttl_ms` | No                      | Lease duration, from 1 second to 10 minutes. Default: 30 seconds  |
+| `description`  | No                      | Human-readable description                                        |
 
 At least one of `pattern` or `streams` MUST be present. `pattern` uses the glob rules from Section 7.1: `*` matches one path segment and `**` matches zero or more path segments.
 
@@ -878,12 +878,12 @@ Webhook URLs MUST be validated to reduce SSRF risk:
 - Development webhook URLs MAY use `http://localhost` or `http://127.0.0.x`.
 - RFC1918, link-local, loopback, and other local network targets MUST be rejected unless covered by the explicit localhost development exception.
 
-When a subscription with a `pattern` is created, the server MUST eagerly backfill matching existing streams using the service's internal stream listing facility. Existing streams are linked at their current tail offset so subscription creation does not replay historical data by default. Streams discovered later because of a matching append are linked before that append for wake purposes.
+When a subscription with a `pattern` is created, the server MUST eagerly backfill matching existing streams using its internal stream listing facility. Existing streams are linked at their current tail offset so subscription creation does not replay historical data by default. Streams discovered later because of a matching append are linked before that append for wake purposes.
 
 ### 6.3. Read or Delete a Subscription
 
 ```http
-GET /v1/stream/:serviceId/__ds/subscriptions/:id
+GET /v1/stream-meta/subscriptions/:id
 ```
 
 Response:
@@ -892,7 +892,6 @@ Response:
 {
   "id": "sub-1",
   "subscription_id": "sub-1",
-  "service_id": "svc",
   "type": "webhook",
   "pattern": "events/*",
   "streams": [
@@ -914,7 +913,7 @@ Response:
 `status` is `active` while delivery is operating normally and `failed` while webhook retry is scheduled after a failed delivery attempt. The webhook secret MUST NOT be returned by GET.
 
 ```http
-DELETE /v1/stream/:serviceId/__ds/subscriptions/:id
+DELETE /v1/stream-meta/subscriptions/:id
 ```
 
 Deletion tombstones the subscription and returns `204 No Content`. In-flight callback, ack, or release requests for a deleted subscription MUST fail and MUST NOT advance cursors.
@@ -924,7 +923,7 @@ Deletion tombstones the subscription and returns `204 No Content`. In-flight cal
 Explicit stream links can be added and removed without changing the subscription's glob pattern.
 
 ```http
-POST /v1/stream/:serviceId/__ds/subscriptions/:id/streams
+POST /v1/stream-meta/subscriptions/:id/streams
 Content-Type: application/json
 
 { "streams": ["events/x", "events/y"] }
@@ -935,12 +934,12 @@ Content-Type: application/json
 New explicit streams are linked at their current tail offset. Adding an already-linked stream is idempotent.
 
 ```http
-DELETE /v1/stream/:serviceId/__ds/subscriptions/:id/streams/:path
+DELETE /v1/stream-meta/subscriptions/:id/streams/:path
 
 → 204 No Content
 ```
 
-`:path` is the URL-encoded service-relative stream path and may contain slashes. Deleting an absent explicit link is idempotent. This operation removes only the explicit link; a matching glob link remains active.
+`:path` is the URL-encoded stream-root-relative stream path and may contain slashes. Deleting an absent explicit link is idempotent. This operation removes only the explicit link; a matching glob link remains active.
 
 ## 7. Subscription Delivery
 
@@ -970,7 +969,7 @@ Webhook-Signature: t=<timestamp>,sha256=<hex>
       "has_pending": true
     }
   ],
-  "callback_url": "https://server.example/v1/stream/svc/__ds/subscriptions/sub-1/callback",
+  "callback_url": "https://server.example/v1/stream-meta/subscriptions/sub-1/callback",
   "callback_token": "eyJ..."
 }
 ```
@@ -988,7 +987,7 @@ When a webhook returns `{ "done": true }`, the server MUST automatically ack the
 For asynchronous processing, the handler calls back:
 
 ```http
-POST /v1/stream/:serviceId/__ds/subscriptions/:id/callback
+POST /v1/stream-meta/subscriptions/:id/callback
 Authorization: Bearer <callback_token>
 Content-Type: application/json
 
@@ -1038,7 +1037,7 @@ Wake event shape:
 Workers consume the wake stream and race to claim the subscription:
 
 ```http
-POST /v1/stream/:serviceId/__ds/subscriptions/:id/claim
+POST /v1/stream-meta/subscriptions/:id/claim
 Authorization: Bearer <service-jwt>
 Content-Type: application/json
 
@@ -1083,7 +1082,7 @@ Content-Type: application/json
 A pull-wake worker acks through the subscription-scoped ack endpoint:
 
 ```http
-POST /v1/stream/:serviceId/__ds/subscriptions/:id/ack
+POST /v1/stream-meta/subscriptions/:id/ack
 Authorization: Bearer <claim-token>
 Content-Type: application/json
 
@@ -1100,7 +1099,7 @@ The ack endpoint doubles as heartbeat. Calling it without `done: true` extends t
 A worker can voluntarily release without acking:
 
 ```http
-POST /v1/stream/:serviceId/__ds/subscriptions/:id/release
+POST /v1/stream-meta/subscriptions/:id/release
 Authorization: Bearer <claim-token>
 Content-Type: application/json
 

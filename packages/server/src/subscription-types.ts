@@ -14,7 +14,7 @@ export interface SubscriptionWebhookConfig {
 }
 
 export interface SubscriptionRecord {
-  service_id: string
+  namespace: string
   id: string
   type: SubscriptionType
   pattern?: string

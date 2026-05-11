@@ -20,7 +20,7 @@ export interface ConformanceTestOptions {
   baseUrl: string
   /** Timeout for long-poll tests in milliseconds (default: 20000) */
   longPollTimeoutMs?: number
-  /** Enable service-scoped subscription conformance tests. */
+  /** Enable stream metadata subscription conformance tests. */
   subscriptions?: boolean
 }
 
@@ -10157,22 +10157,20 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   })
 
   // ============================================================================
-  // Service-scoped Subscriptions
+  // Stream metadata subscriptions
   // ============================================================================
 
-  describe.runIf(options.subscriptions)(`Service-scoped Subscriptions`, () => {
+  describe.runIf(options.subscriptions)(`Stream metadata subscriptions`, () => {
     const ts = () => Date.now()
-    const subUrl = (service: string, id: string) =>
-      `${getBaseUrl()}/v1/stream/${service}/__ds/subscriptions/${id}`
-    const streamUrl = (service: string, path: string) =>
-      `${getBaseUrl()}/v1/stream/${service}/${path}`
+    const subUrl = (id: string) =>
+      `${getBaseUrl()}/v1/stream-meta/subscriptions/${id}`
+    const streamUrl = (path: string) => `${getBaseUrl()}/v1/stream/${path}`
 
     test(`creates and idempotently re-confirms a webhook subscription`, async () => {
       const receiver = await createWebhookReceiver()
-      const service = `svc-${ts()}`
       const id = `sub-${ts()}`
       try {
-        const create = await fetch(subUrl(service, id), {
+        const create = await fetch(subUrl(id), {
           method: `PUT`,
           headers: { "content-type": `application/json` },
           body: JSON.stringify({
@@ -10187,7 +10185,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         const created = (await create.json()) as Record<string, unknown>
         expect(created.webhook_secret).toMatch(/^whsec_/)
 
-        const confirm = await fetch(subUrl(service, id), {
+        const confirm = await fetch(subUrl(id), {
           method: `PUT`,
           headers: { "content-type": `application/json` },
           body: JSON.stringify({
@@ -10202,7 +10200,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         const confirmed = (await confirm.json()) as Record<string, unknown>
         expect(confirmed.webhook_secret).toBeUndefined()
 
-        const get = await fetch(subUrl(service, id))
+        const get = await fetch(subUrl(id))
         expect(get.status).toBe(200)
         const body = (await get.json()) as Record<string, unknown>
         expect(body.id).toBe(id)
@@ -10210,14 +10208,14 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(body.webhook_secret).toBeUndefined()
         expect((body.webhook as Record<string, unknown>).url).toBe(receiver.url)
       } finally {
+        await fetch(subUrl(id), { method: `DELETE` })
         await receiver.close()
       }
     })
 
     test(`rejects unsafe webhook URLs`, async () => {
-      const service = `svc-${ts()}`
       const id = `sub-${ts()}`
-      const res = await fetch(subUrl(service, id), {
+      const res = await fetch(subUrl(id), {
         method: `PUT`,
         headers: { "content-type": `application/json` },
         body: JSON.stringify({
@@ -10233,11 +10231,10 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
 
     test(`webhook synchronous done auto-acks the wake snapshot`, async () => {
       const receiver = await createWebhookReceiver({ response: { done: true } })
-      const service = `svc-${ts()}`
       const id = `sub-${ts()}`
       const path = `events/sync-${ts()}`
       try {
-        const create = await fetch(subUrl(service, id), {
+        const create = await fetch(subUrl(id), {
           method: `PUT`,
           headers: { "content-type": `application/json` },
           body: JSON.stringify({
@@ -10249,7 +10246,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(create.status).toBe(201)
 
-        await fetch(streamUrl(service, path), {
+        await fetch(streamUrl(path), {
           method: `PUT`,
           headers: { "content-type": `application/json` },
           body: JSON.stringify({ event: `created` }),
@@ -10259,7 +10256,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(notification.signature).toMatch(/^t=\d+,sha256=/)
         expect(notification.body.subscription_id).toBe(id)
         expect(notification.body.callback_url).toBe(
-          `${getBaseUrl()}/v1/stream/${service}/__ds/subscriptions/${id}/callback`
+          `${getBaseUrl()}/v1/stream-meta/subscriptions/${id}/callback`
         )
         const stream = (
           notification.body.streams as Array<{
@@ -10267,12 +10264,12 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
             tail_offset: string
             has_pending: boolean
           }>
-        )[0]!
+        ).find((item) => item.path === path)!
         expect(stream.path).toBe(path)
         expect(stream.has_pending).toBe(true)
 
         await waitForCondition(async () => {
-          const get = await fetch(subUrl(service, id))
+          const get = await fetch(subUrl(id))
           const body = (await get.json()) as {
             streams: Array<{ path: string; acked_offset: string }>
           }
@@ -10282,17 +10279,17 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           )
         })
       } finally {
+        await fetch(subUrl(id), { method: `DELETE` })
         await receiver.close()
       }
     })
 
     test(`webhook callback acks and fences stale wake generations`, async () => {
       const receiver = await createWebhookReceiver()
-      const service = `svc-${ts()}`
       const id = `sub-${ts()}`
       const path = `events/callback-${ts()}`
       try {
-        await fetch(subUrl(service, id), {
+        await fetch(subUrl(id), {
           method: `PUT`,
           headers: { "content-type": `application/json` },
           body: JSON.stringify({
@@ -10302,7 +10299,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
             lease_ttl_ms: 1000,
           }),
         })
-        await fetch(streamUrl(service, path), {
+        await fetch(streamUrl(path), {
           method: `PUT`,
           headers: { "content-type": `application/json` },
           body: JSON.stringify({ event: `created` }),
@@ -10349,16 +10346,16 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         const staleBody = (await stale.json()) as { error: { code: string } }
         expect(staleBody.error.code).toBe(`FENCED`)
       } finally {
+        await fetch(subUrl(id), { method: `DELETE` })
         await receiver.close()
       }
     })
 
     test(`adds and removes explicit subscription streams`, async () => {
       const receiver = await createWebhookReceiver()
-      const service = `svc-${ts()}`
       const id = `sub-${ts()}`
       try {
-        const create = await fetch(subUrl(service, id), {
+        const create = await fetch(subUrl(id), {
           method: `PUT`,
           headers: { "content-type": `application/json` },
           body: JSON.stringify({
@@ -10369,7 +10366,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         })
         expect(create.status).toBe(201)
 
-        const add = await fetch(`${subUrl(service, id)}/streams`, {
+        const add = await fetch(`${subUrl(id)}/streams`, {
           method: `POST`,
           headers: { "content-type": `application/json` },
           body: JSON.stringify({ streams: [`manual/b`] }),
@@ -10377,12 +10374,12 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         expect(add.status).toBe(204)
 
         const remove = await fetch(
-          `${subUrl(service, id)}/streams/${encodeURIComponent(`manual/b`)}`,
+          `${subUrl(id)}/streams/${encodeURIComponent(`manual/b`)}`,
           { method: `DELETE` }
         )
         expect(remove.status).toBe(204)
 
-        const get = await fetch(subUrl(service, id))
+        const get = await fetch(subUrl(id))
         const body = (await get.json()) as {
           streams: Array<{ path: string; link_type: string }>
         }
@@ -10393,22 +10390,22 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
           false
         )
       } finally {
+        await fetch(subUrl(id), { method: `DELETE` })
         await receiver.close()
       }
     })
 
     test(`pull-wake claim, ack, and release use subscription-scoped leases`, async () => {
-      const service = `svc-${ts()}`
       const id = `pull-${ts()}`
       const wakeStream = `wake/pool-${ts()}`
       const path = `events/pull-${ts()}`
 
-      await fetch(streamUrl(service, wakeStream), {
+      await fetch(streamUrl(wakeStream), {
         method: `PUT`,
         headers: { "content-type": `application/json` },
         body: `[]`,
       })
-      const create = await fetch(subUrl(service, id), {
+      const create = await fetch(subUrl(id), {
         method: `PUT`,
         headers: { "content-type": `application/json` },
         body: JSON.stringify({
@@ -10420,19 +10417,19 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       })
       expect(create.status).toBe(201)
 
-      await fetch(streamUrl(service, path), {
+      await fetch(streamUrl(path), {
         method: `PUT`,
         headers: { "content-type": `application/json` },
         body: JSON.stringify({ event: `created` }),
       })
 
       await waitForCondition(async () => {
-        const res = await fetch(streamUrl(service, wakeStream))
+        const res = await fetch(streamUrl(wakeStream))
         const events = (await res.json()) as Array<{ subscription_id: string }>
         return events.some((event) => event.subscription_id === id)
       })
 
-      const claim = await fetch(`${subUrl(service, id)}/claim`, {
+      const claim = await fetch(`${subUrl(id)}/claim`, {
         method: `POST`,
         headers: { "content-type": `application/json` },
         body: JSON.stringify({ worker: `worker-1` }),
@@ -10448,7 +10445,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         (stream) => stream.path === path
       )!.tail_offset
 
-      const busy = await fetch(`${subUrl(service, id)}/claim`, {
+      const busy = await fetch(`${subUrl(id)}/claim`, {
         method: `POST`,
         headers: { "content-type": `application/json` },
         body: JSON.stringify({ worker: `worker-2` }),
@@ -10460,7 +10457,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(busyBody.error.code).toBe(`ALREADY_CLAIMED`)
       expect(busyBody.error.current_holder).toBe(`worker-1`)
 
-      const ack = await fetch(`${subUrl(service, id)}/ack`, {
+      const ack = await fetch(`${subUrl(id)}/ack`, {
         method: `POST`,
         headers: {
           "content-type": `application/json`,
@@ -10476,12 +10473,12 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(ack.status).toBe(200)
       expect(await ack.json()).toEqual({ ok: true, next_wake: false })
 
-      await fetch(streamUrl(service, path), {
+      await fetch(streamUrl(path), {
         method: `POST`,
         headers: { "content-type": `application/json` },
         body: JSON.stringify({ event: `second` }),
       })
-      const claim2 = await fetch(`${subUrl(service, id)}/claim`, {
+      const claim2 = await fetch(`${subUrl(id)}/claim`, {
         method: `POST`,
         headers: { "content-type": `application/json` },
         body: JSON.stringify({ worker: `worker-1` }),
@@ -10492,7 +10489,7 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         generation: number
         token: string
       }
-      const release = await fetch(`${subUrl(service, id)}/release`, {
+      const release = await fetch(`${subUrl(id)}/release`, {
         method: `POST`,
         headers: {
           "content-type": `application/json`,

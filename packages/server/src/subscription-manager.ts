@@ -47,18 +47,30 @@ function normalizeRelativePath(path: string): string {
   return path.replace(/^\/+/, ``).replace(/\/+$/, ``)
 }
 
-function toAbsoluteStreamPath(serviceId: string, streamPath: string): string {
-  return `/v1/stream/${serviceId}/${normalizeRelativePath(streamPath)}`
+function toAbsoluteStreamPath(namespace: string, streamPath: string): string {
+  const normalizedNamespace = normalizeRelativePath(namespace)
+  const namespacePrefix =
+    normalizedNamespace.length > 0 ? `${normalizedNamespace}/` : ``
+  return `/v1/stream/${namespacePrefix}${normalizeRelativePath(streamPath)}`
 }
 
-function toServiceRelativePath(
-  serviceId: string,
+function toNamespaceRelativePath(
+  namespace: string,
   absolutePath: string
 ): string | null {
-  const prefix = `/v1/stream/${serviceId}/`
-  if (!absolutePath.startsWith(prefix)) return null
-  const relative = absolutePath.slice(prefix.length)
-  if (relative === `` || relative.startsWith(`__ds/`)) return null
+  const streamRoot = `/v1/stream/`
+  if (!absolutePath.startsWith(streamRoot)) return null
+
+  const path = absolutePath.slice(streamRoot.length)
+  const normalizedNamespace = normalizeRelativePath(namespace)
+  if (normalizedNamespace.length === 0) {
+    return path.length > 0 ? path : null
+  }
+
+  const prefix = `${normalizedNamespace}/`
+  if (!path.startsWith(prefix)) return null
+  const relative = path.slice(prefix.length)
+  if (relative === ``) return null
   return relative
 }
 
@@ -160,14 +172,14 @@ export class SubscriptionManager {
   }
 
   createOrConfirm(
-    serviceId: string,
+    namespace: string,
     id: string,
     input: SubscriptionCreateInput
   ):
     | { subscription: SubscriptionRecord; created: boolean }
     | { error: SubscriptionError } {
     const configHash = stableConfigHash(input)
-    const key = this.key(serviceId, id)
+    const key = this.key(namespace, id)
     const existing = this.subscriptions.get(key)
     if (existing) {
       if (existing.config_hash !== configHash) {
@@ -216,7 +228,7 @@ export class SubscriptionManager {
     }
 
     const subscription: SubscriptionRecord = {
-      service_id: serviceId,
+      namespace,
       id,
       type: input.type,
       pattern: input.pattern,
@@ -246,18 +258,18 @@ export class SubscriptionManager {
         subscription,
         stream,
         `explicit`,
-        this.getTailOffset(serviceId, stream)
+        this.getTailOffset(namespace, stream)
       )
     }
 
     if (input.pattern) {
-      for (const stream of this.listServiceStreams(serviceId)) {
+      for (const stream of this.listNamespaceStreams(namespace)) {
         if (globMatch(input.pattern, stream)) {
           this.linkStream(
             subscription,
             stream,
             `glob`,
-            this.getTailOffset(serviceId, stream)
+            this.getTailOffset(namespace, stream)
           )
         }
       }
@@ -267,12 +279,12 @@ export class SubscriptionManager {
     return { subscription, created: true }
   }
 
-  get(serviceId: string, id: string): SubscriptionRecord | undefined {
-    return this.subscriptions.get(this.key(serviceId, id))
+  get(namespace: string, id: string): SubscriptionRecord | undefined {
+    return this.subscriptions.get(this.key(namespace, id))
   }
 
-  delete(serviceId: string, id: string): boolean {
-    const key = this.key(serviceId, id)
+  delete(namespace: string, id: string): boolean {
+    const key = this.key(namespace, id)
     const subscription = this.subscriptions.get(key)
     if (!subscription) return false
     this.clearLease(subscription)
@@ -282,29 +294,29 @@ export class SubscriptionManager {
   }
 
   addExplicitStreams(
-    serviceId: string,
+    namespace: string,
     id: string,
     streams: Array<string>
   ): boolean {
-    const subscription = this.get(serviceId, id)
+    const subscription = this.get(namespace, id)
     if (!subscription) return false
     for (const stream of streams) {
       this.linkStream(
         subscription,
         stream,
         `explicit`,
-        this.getTailOffset(serviceId, stream)
+        this.getTailOffset(namespace, stream)
       )
     }
     return true
   }
 
   removeExplicitStream(
-    serviceId: string,
+    namespace: string,
     id: string,
     streamPath: string
   ): boolean {
-    const subscription = this.get(serviceId, id)
+    const subscription = this.get(namespace, id)
     if (!subscription) return false
     const normalized = normalizeRelativePath(streamPath)
     const link = subscription.streams.get(normalized)
@@ -319,8 +331,8 @@ export class SubscriptionManager {
   async onStreamAppend(absolutePath: string): Promise<void> {
     if (this.isShuttingDown) return
     for (const subscription of this.subscriptions.values()) {
-      const relative = toServiceRelativePath(
-        subscription.service_id,
+      const relative = toNamespaceRelativePath(
+        subscription.namespace,
         absolutePath
       )
       if (!relative) continue
@@ -341,8 +353,8 @@ export class SubscriptionManager {
 
   onStreamDeleted(absolutePath: string): void {
     for (const subscription of this.subscriptions.values()) {
-      const relative = toServiceRelativePath(
-        subscription.service_id,
+      const relative = toNamespaceRelativePath(
+        subscription.namespace,
         absolutePath
       )
       if (relative) subscription.streams.delete(relative)
@@ -350,12 +362,12 @@ export class SubscriptionManager {
   }
 
   async handleWebhookCallback(
-    serviceId: string,
+    namespace: string,
     id: string,
     token: string,
     request: SubscriptionCallbackRequest
   ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const subscription = this.get(serviceId, id)
+    const subscription = this.get(namespace, id)
     if (!subscription) {
       return this.errorResponse(
         404,
@@ -384,11 +396,11 @@ export class SubscriptionManager {
   }
 
   async claim(
-    serviceId: string,
+    namespace: string,
     id: string,
     worker: string
   ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const subscription = this.get(serviceId, id)
+    const subscription = this.get(namespace, id)
     if (!subscription) {
       return this.errorResponse(
         404,
@@ -446,12 +458,12 @@ export class SubscriptionManager {
   }
 
   async ack(
-    serviceId: string,
+    namespace: string,
     id: string,
     token: string,
     request: SubscriptionCallbackRequest
   ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const subscription = this.get(serviceId, id)
+    const subscription = this.get(namespace, id)
     if (!subscription) {
       return this.errorResponse(
         404,
@@ -486,12 +498,12 @@ export class SubscriptionManager {
   }
 
   async release(
-    serviceId: string,
+    namespace: string,
     id: string,
     token: string,
     request: SubscriptionCallbackRequest
   ): Promise<{ status: number; body?: Record<string, unknown> }> {
-    const subscription = this.get(serviceId, id)
+    const subscription = this.get(namespace, id)
     if (!subscription) {
       return this.errorResponse(
         404,
@@ -525,7 +537,6 @@ export class SubscriptionManager {
     return {
       id: subscription.id,
       subscription_id: subscription.id,
-      service_id: subscription.service_id,
       type: subscription.type,
       pattern: subscription.pattern,
       streams: this.streamInfos(subscription).map((stream) => ({
@@ -608,7 +619,7 @@ export class SubscriptionManager {
       wake_id: subscription.wake_id,
       generation: subscription.generation,
       streams: this.streamInfos(subscription),
-      callback_url: `${this.callbackBaseUrl}/v1/stream/${subscription.service_id}/__ds/subscriptions/${encodeURIComponent(subscription.id)}/callback`,
+      callback_url: this.subscriptionActionUrl(subscription, `callback`),
       callback_token: subscription.token,
     })
 
@@ -684,7 +695,7 @@ export class SubscriptionManager {
   ): Promise<void> {
     if (!subscription.wake_stream) return
     const wakeStream = toAbsoluteStreamPath(
-      subscription.service_id,
+      subscription.namespace,
       subscription.wake_stream
     )
     if (!this.streamStore.has(wakeStream)) {
@@ -747,7 +758,7 @@ export class SubscriptionManager {
       if (
         compareOffsets(
           ack.offset,
-          this.getTailOffset(subscription.service_id, stream)
+          this.getTailOffset(subscription.namespace, stream)
         ) > 0
       ) {
         return this.errorResponse(
@@ -813,7 +824,7 @@ export class SubscriptionManager {
     subscription: SubscriptionRecord
   ): Array<SubscriptionStreamInfo> {
     return Array.from(subscription.streams.values()).map((link) => {
-      const tail = this.getTailOffset(subscription.service_id, link.path)
+      const tail = this.getTailOffset(subscription.namespace, link.path)
       return {
         path: link.path,
         link_type: link.link_types.has(`explicit`) ? `explicit` : `glob`,
@@ -845,18 +856,32 @@ export class SubscriptionManager {
     return link
   }
 
-  private listServiceStreams(serviceId: string): Array<string> {
+  private listNamespaceStreams(namespace: string): Array<string> {
     return this.streamStore
       .list()
-      .map((path) => toServiceRelativePath(serviceId, path))
+      .map((path) => toNamespaceRelativePath(namespace, path))
       .filter((path): path is string => path !== null)
   }
 
-  private getTailOffset(serviceId: string, streamPath: string): string {
+  private getTailOffset(namespace: string, streamPath: string): string {
     return (
-      this.streamStore.get(toAbsoluteStreamPath(serviceId, streamPath))
+      this.streamStore.get(toAbsoluteStreamPath(namespace, streamPath))
         ?.currentOffset ?? ZERO_OFFSET
     )
+  }
+
+  private subscriptionActionUrl(
+    subscription: SubscriptionRecord,
+    action: string
+  ): string {
+    const url = new URL(
+      `/v1/stream-meta/subscriptions/${encodeURIComponent(subscription.id)}/${action}`,
+      this.callbackBaseUrl
+    )
+    if (subscription.namespace.length > 0) {
+      url.searchParams.set(`service_id`, subscription.namespace)
+    }
+    return url.toString()
   }
 
   private extendLease(subscription: SubscriptionRecord): void {
@@ -879,11 +904,11 @@ export class SubscriptionManager {
   }
 
   private tokenSubject(subscription: SubscriptionRecord): string {
-    return `${subscription.service_id}:${subscription.id}`
+    return `namespace:${subscription.namespace}:subscription:${subscription.id}`
   }
 
-  private key(serviceId: string, id: string): string {
-    return `${serviceId}:${id}`
+  private key(namespace: string, id: string): string {
+    return `${namespace}\0${id}`
   }
 
   private errorResponse(
