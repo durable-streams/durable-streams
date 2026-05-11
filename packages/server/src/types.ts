@@ -209,8 +209,8 @@ export interface TestServerOptions {
 
   /**
    * Enable webhook subscriptions.
-   * When true, the server handles subscription CRUD, consumer lifecycle,
-   * and callback API endpoints.
+   * Pull-wake subscription routes are always mounted, but type=webhook creates
+   * are rejected unless this is true.
    * Default: false.
    */
   webhooks?: boolean

@@ -27,11 +27,8 @@ import {
 import { StreamStore } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import { generateResponseCursor } from "./cursor"
-import { WebhookManager } from "./webhook-manager"
-import { WebhookRoutes } from "./webhook-routes"
-import { ConsumerManager } from "./consumer-manager"
-import { ConsumerRoutes } from "./consumer-routes"
-import { PullWakeManager } from "./pull-wake-manager"
+import { SubscriptionManager } from "./subscription-manager"
+import { SubscriptionRoutes } from "./subscription-routes"
 import { serverLog } from "./log"
 import type { CursorOptions } from "./cursor"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
@@ -177,11 +174,8 @@ export class DurableStreamTestServer {
   private isShuttingDown = false
   /** Injected faults for testing retry/resilience */
   private injectedFaults = new Map<string, InjectedFault>()
-  private consumerManager: ConsumerManager | null = null
-  private consumerRoutes: ConsumerRoutes | null = null
-  private pullWakeManager: PullWakeManager | null = null
-  private webhookManager: WebhookManager | null = null
-  private webhookRoutes: WebhookRoutes | null = null
+  private subscriptionManager: SubscriptionManager | null = null
+  private subscriptionRoutes: SubscriptionRoutes | null = null
 
   constructor(options: TestServerOptions = {}) {
     // Choose store based on dataDir option
@@ -268,37 +262,14 @@ export class DurableStreamTestServer {
           this._url = `http://${host}:${addr.port}`
         }
 
-        // Initialize ConsumerManager (L1 — always available)
-        this.consumerManager = new ConsumerManager({
-          getTailOffset: (path: string) => {
-            const stream = this.store.get(path)
-            return stream ? stream.currentOffset : `-1`
-          },
-        })
-
-        // Initialize PullWakeManager (L2/B — always available alongside ConsumerManager)
-        this.pullWakeManager = new PullWakeManager({
-          consumerManager: this.consumerManager,
+        this.subscriptionManager = new SubscriptionManager({
+          callbackBaseUrl: this._url!,
           streamStore: this.store,
+          webhooksEnabled: this.options.webhooks,
         })
-
-        // Initialize webhook components after URL is known
-        if (this.options.webhooks) {
-          this.webhookManager = new WebhookManager({
-            callbackBaseUrl: this._url!,
-            getTailOffset: (path: string) => {
-              const stream = this.store.get(path)
-              return stream ? stream.currentOffset : `-1`
-            },
-            consumerManager: this.consumerManager,
-          })
-          this.webhookRoutes = new WebhookRoutes(this.webhookManager)
-        }
-
-        this.consumerRoutes = new ConsumerRoutes(this.consumerManager, {
-          webhookManager: this.webhookManager,
-          pullWakeManager: this.pullWakeManager,
-        })
+        this.subscriptionRoutes = new SubscriptionRoutes(
+          this.subscriptionManager
+        )
         resolveStart(this._url!)
       })
     })
@@ -315,24 +286,10 @@ export class DurableStreamTestServer {
     // Mark as shutting down to stop SSE handlers
     this.isShuttingDown = true
 
-    // Shut down pull-wake manager (L2/B)
-    if (this.pullWakeManager) {
-      this.pullWakeManager.shutdown()
-      this.pullWakeManager = null
-    }
-
-    // Shut down consumer manager (L1)
-    if (this.consumerManager) {
-      this.consumerManager.shutdown()
-      this.consumerManager = null
-      this.consumerRoutes = null
-    }
-
-    // Shut down webhook manager (cancel all retry/liveness timers)
-    if (this.webhookManager) {
-      this.webhookManager.shutdown()
-      this.webhookManager = null
-      this.webhookRoutes = null
+    if (this.subscriptionManager) {
+      this.subscriptionManager.shutdown()
+      this.subscriptionManager = null
+      this.subscriptionRoutes = null
     }
 
     // Cancel all pending long-polls and SSE waits to unblock connection handlers
@@ -399,9 +356,7 @@ export class DurableStreamTestServer {
         ) => Promise<Record<string, unknown>>)
       | undefined
   ): void {
-    if (this.webhookManager) {
-      this.webhookManager.enrichPayload = fn
-    }
+    void fn
   }
 
   /**
@@ -600,22 +555,9 @@ export class DurableStreamTestServer {
       }
     }
 
-    // L1 Consumer routes
-    if (this.consumerRoutes && method) {
-      const handled = await this.consumerRoutes.handleRequest(
+    if (this.subscriptionRoutes && method) {
+      const handled = await this.subscriptionRoutes.handleRequest(
         method,
-        path,
-        req,
-        res
-      )
-      if (handled) return
-    }
-
-    // Handle webhook subscription/callback routes
-    if (this.webhookRoutes && method) {
-      const handled = await this.webhookRoutes.handleRequest(
-        method,
-        url,
         path,
         req,
         res
@@ -830,18 +772,8 @@ export class DurableStreamTestServer {
       )
     }
 
-    // Notify webhook manager of new stream
-    if (isNew && this.webhookManager) {
-      this.webhookManager.onStreamCreated(path)
-      // If stream was created with initial data, also trigger append
-      if (body.length > 0) {
-        this.webhookManager.onStreamAppend(path)
-      }
-    }
-
-    // Notify pull-wake manager of append
-    if (isNew && body.length > 0 && this.pullWakeManager) {
-      this.pullWakeManager.onStreamAppend(path)
+    if (isNew && body.length > 0) {
+      await this.notifyStreamAppend(path)
     }
 
     // Return 201 for new streams, 200 for idempotent creates
@@ -1679,14 +1611,7 @@ export class DurableStreamTestServer {
         res.writeHead(statusCode, responseHeaders)
         res.end()
 
-        // Notify webhook manager of append
-        if (this.webhookManager) {
-          this.webhookManager.onStreamAppend(path)
-        }
-        // Notify pull-wake manager of append
-        if (this.pullWakeManager) {
-          this.pullWakeManager.onStreamAppend(path)
-        }
+        await this.notifyStreamAppend(path)
         return
       }
 
@@ -1750,13 +1675,15 @@ export class DurableStreamTestServer {
     res.writeHead(204, responseHeaders)
     res.end()
 
-    // Notify webhook manager of append
-    if (this.webhookManager) {
-      this.webhookManager.onStreamAppend(path)
-    }
-    // Notify pull-wake manager of append
-    if (this.pullWakeManager) {
-      this.pullWakeManager.onStreamAppend(path)
+    await this.notifyStreamAppend(path)
+  }
+
+  private async notifyStreamAppend(path: string): Promise<void> {
+    if (!this.subscriptionManager) return
+    try {
+      await this.subscriptionManager.onStreamAppend(path)
+    } catch (err) {
+      serverLog.error(`[server] subscription append hook failed:`, err)
     }
   }
 
@@ -1790,12 +1717,8 @@ export class DurableStreamTestServer {
       )
     }
 
-    // Notify L1 and L2 of stream deletion
-    if (this.consumerManager) {
-      this.consumerManager.onStreamDeleted(path)
-    }
-    if (this.webhookManager) {
-      this.webhookManager.onStreamDeleted(path)
+    if (this.subscriptionManager) {
+      this.subscriptionManager.onStreamDeleted(path)
     }
 
     res.writeHead(204)

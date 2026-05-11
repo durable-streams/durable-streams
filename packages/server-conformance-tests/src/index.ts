@@ -5,6 +5,7 @@
  * any server implementation to verify protocol compliance.
  */
 
+import { createServer as createHttpServer } from "node:http"
 import { describe, expect, test, vi } from "vitest"
 import * as fc from "fast-check"
 import {
@@ -13,14 +14,14 @@ import {
   STREAM_SEQ_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "@durable-streams/client"
-import { applyAction, enabledActions, webhook } from "./webhook-dsl"
-import type { ConsumerModel, LiveAction } from "./webhook-dsl"
 
 export interface ConformanceTestOptions {
   /** Base URL of the server to test */
   baseUrl: string
   /** Timeout for long-poll tests in milliseconds (default: 20000) */
   longPollTimeoutMs?: number
+  /** Enable service-scoped subscription conformance tests. */
+  subscriptions?: boolean
 }
 
 /**
@@ -139,6 +140,91 @@ function parseSSEEvents(
   }
 
   return events
+}
+
+async function createWebhookReceiver(opts?: {
+  response?: Record<string, unknown>
+}): Promise<{
+  url: string
+  received: Array<{
+    body: Record<string, unknown>
+    signature: string | null
+  }>
+  waitForRequest: (timeoutMs?: number) => Promise<{
+    body: Record<string, unknown>
+    signature: string | null
+  }>
+  close: () => Promise<void>
+}> {
+  const received: Array<{
+    body: Record<string, unknown>
+    signature: string | null
+  }> = []
+  const waiters: Array<() => void> = []
+
+  const server = createHttpServer((req, res) => {
+    const chunks: Array<Buffer> = []
+    req.on(`data`, (chunk: Buffer) => chunks.push(chunk))
+    req.on(`end`, () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString(`utf8`)) as Record<
+        string,
+        unknown
+      >
+      const signatureHeader = req.headers[`webhook-signature`]
+      received.push({
+        body,
+        signature: typeof signatureHeader === `string` ? signatureHeader : null,
+      })
+      for (const waiter of waiters.splice(0)) waiter()
+      res.writeHead(200, { "content-type": `application/json` })
+      res.end(JSON.stringify(opts?.response ?? {}))
+    })
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.on(`error`, reject)
+    server.listen(0, `127.0.0.1`, () => resolve())
+  })
+
+  const addr = server.address()
+  if (!addr || typeof addr === `string`) {
+    throw new Error(`Failed to start webhook receiver`)
+  }
+
+  return {
+    url: `http://127.0.0.1:${addr.port}/webhook`,
+    received,
+    waitForRequest: async (timeoutMs = 5_000) => {
+      if (received.length > 0) return received[received.length - 1]!
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error(`Timed out waiting for webhook request`)),
+          timeoutMs
+        )
+        waiters.push(() => {
+          clearTimeout(timeout)
+          resolve()
+        })
+      })
+      return received[received.length - 1]!
+    },
+    close: async () => {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    },
+  }
+}
+
+async function waitForCondition(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 3_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`Timed out waiting for condition`)
 }
 
 /**
@@ -10071,1001 +10157,353 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
   })
 
   // ============================================================================
-  // Webhook Subscriptions
+  // Service-scoped Subscriptions
   // ============================================================================
 
-  describe(`Webhook Subscriptions`, () => {
+  describe.runIf(options.subscriptions)(`Service-scoped Subscriptions`, () => {
     const ts = () => Date.now()
+    const subUrl = (service: string, id: string) =>
+      `${getBaseUrl()}/v1/stream/${service}/__ds/subscriptions/${id}`
+    const streamUrl = (service: string, path: string) =>
+      `${getBaseUrl()}/v1/stream/${service}/${path}`
 
-    // ----------------------------------------------------------------
-    // Tier 1: Subscription CRUD
-    // ----------------------------------------------------------------
+    test(`creates and idempotently re-confirms a webhook subscription`, async () => {
+      const receiver = await createWebhookReceiver()
+      const service = `svc-${ts()}`
+      const id = `sub-${ts()}`
+      try {
+        const create = await fetch(subUrl(service, id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            pattern: `events/*`,
+            webhook: { url: receiver.url },
+            lease_ttl_ms: 1000,
+            description: `test subscription`,
+          }),
+        })
+        expect(create.status).toBe(201)
+        const created = (await create.json()) as Record<string, unknown>
+        expect(created.webhook_secret).toMatch(/^whsec_/)
 
-    describe(`Subscription CRUD`, () => {
-      test(`should create a subscription`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `crud-create-${ts()}`)
-          .run())
+        const confirm = await fetch(subUrl(service, id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            pattern: `events/*`,
+            webhook: { url: receiver.url },
+            lease_ttl_ms: 1000,
+            description: `test subscription`,
+          }),
+        })
+        expect(confirm.status).toBe(200)
+        const confirmed = (await confirm.json()) as Record<string, unknown>
+        expect(confirmed.webhook_secret).toBeUndefined()
 
-      test(`should return 200 for idempotent create with same config`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `crud-idempotent-${ts()}`)
-          .custom(async (ctx) => {
-            // Re-create with same webhook URL → 200 (no secret)
-            const res = await fetch(
-              `${ctx.baseUrl}/agents/*?subscription=${ctx.subscriptionId}`,
-              {
-                method: `PUT`,
-                headers: { "content-type": `application/json` },
-                body: JSON.stringify({
-                  webhook: `${ctx.receiver.url}/webhook`,
-                }),
-              }
-            )
-            expect(res.status).toBe(200)
-            const body = (await res.json()) as Record<string, unknown>
-            expect(body.webhook_secret).toBeUndefined()
-          })
-          .run())
-
-      test(`should return 409 for create with different config`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `crud-conflict-${ts()}`)
-          .custom(async (ctx) => {
-            const res = await fetch(
-              `${ctx.baseUrl}/agents/*?subscription=${ctx.subscriptionId}`,
-              {
-                method: `PUT`,
-                headers: { "content-type": `application/json` },
-                body: JSON.stringify({
-                  webhook: `http://different-host.example.com/webhook`,
-                }),
-              }
-            )
-            expect(res.status).toBe(409)
-          })
-          .run())
-
-      test(`should list subscriptions under a pattern`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `crud-list-${ts()}`)
-          .custom(async (ctx) => {
-            const res = await fetch(`${ctx.baseUrl}/agents/*?subscriptions`)
-            expect(res.status).toBe(200)
-            const body = (await res.json()) as {
-              subscriptions: Array<Record<string, unknown>>
-            }
-            const found = body.subscriptions.find(
-              (s) => s.subscription_id === ctx.subscriptionId
-            )
-            expect(found).toBeDefined()
-            expect(found!.webhook_secret).toBeUndefined()
-          })
-          .run())
-
-      test(`should list all subscriptions with ** pattern`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `crud-list-all-${ts()}`)
-          .custom(async (ctx) => {
-            const res = await fetch(`${ctx.baseUrl}/**?subscriptions`)
-            expect(res.status).toBe(200)
-            const body = (await res.json()) as {
-              subscriptions: Array<Record<string, unknown>>
-            }
-            const found = body.subscriptions.find(
-              (s) => s.subscription_id === ctx.subscriptionId
-            )
-            expect(found).toBeDefined()
-          })
-          .run())
-
-      test(`should get subscription by ID`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `crud-get-${ts()}`)
-          .custom(async (ctx) => {
-            const res = await fetch(
-              `${ctx.baseUrl}/**?subscription=${ctx.subscriptionId}`
-            )
-            expect(res.status).toBe(200)
-            const body = (await res.json()) as Record<string, unknown>
-            expect(body.subscription_id).toBe(ctx.subscriptionId)
-            expect(body.webhook_secret).toBeUndefined()
-          })
-          .run())
-
-      test(`should delete a subscription`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `crud-delete-${ts()}`)
-          .custom(async (ctx) => {
-            const res = await fetch(
-              `${ctx.baseUrl}/agents/*?subscription=${ctx.subscriptionId}`,
-              { method: `DELETE` }
-            )
-            expect(res.status).toBe(204)
-
-            const getRes = await fetch(
-              `${ctx.baseUrl}/**?subscription=${ctx.subscriptionId}`
-            )
-            expect(getRes.status).toBe(404)
-          })
-          .run())
+        const get = await fetch(subUrl(service, id))
+        expect(get.status).toBe(200)
+        const body = (await get.json()) as Record<string, unknown>
+        expect(body.id).toBe(id)
+        expect(body.type).toBe(`webhook`)
+        expect(body.webhook_secret).toBeUndefined()
+        expect((body.webhook as Record<string, unknown>).url).toBe(receiver.url)
+      } finally {
+        await receiver.close()
+      }
     })
 
-    // ----------------------------------------------------------------
-    // Tier 1: State Machine — Single Wake Cycle
-    // ----------------------------------------------------------------
-
-    describe(`State Machine: Wake Cycle`, () => {
-      test(`full cycle: IDLE → WAKING → LIVE → IDLE`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `wake-full-${ts()}`)
-          .stream(`/agents/wake-full-${ts()}`)
-          .append({ event: `created` })
-          .expectWake()
-          .claimWake()
-          .ackAll()
-          .done()
-          .expectIdle()
-          .run())
-
-      test(`synchronous done: IDLE → WAKING → IDLE`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `wake-sync-${ts()}`)
-          .stream(`/agents/wake-sync-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .respondDone()
-          .run())
-
-      test(`re-wake after synchronous done`, () => {
-        const path = `/agents/wake-rewake-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, `wake-rewake-${ts()}`)
-          .stream(path)
-          .append({ event: `first` })
-          .expectWake()
-          .respondDone()
-          .append({ event: `second` })
-          .expectWake({ epochIncremented: true })
-          .respondDone()
-          .run()
+    test(`rejects unsafe webhook URLs`, async () => {
+      const service = `svc-${ts()}`
+      const id = `sub-${ts()}`
+      const res = await fetch(subUrl(service, id), {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({
+          type: `webhook`,
+          pattern: `events/*`,
+          webhook: { url: `http://10.0.0.1/hook` },
+        }),
       })
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { error: { code: string } }
+      expect(body.error.code).toBe(`WEBHOOK_URL_REJECTED`)
     })
 
-    // ----------------------------------------------------------------
-    // Tier 1: Done with Pending Work
-    // ----------------------------------------------------------------
+    test(`webhook synchronous done auto-acks the wake snapshot`, async () => {
+      const receiver = await createWebhookReceiver({ response: { done: true } })
+      const service = `svc-${ts()}`
+      const id = `sub-${ts()}`
+      const path = `events/sync-${ts()}`
+      try {
+        const create = await fetch(subUrl(service, id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            pattern: `events/*`,
+            webhook: { url: receiver.url },
+            lease_ttl_ms: 1000,
+          }),
+        })
+        expect(create.status).toBe(201)
 
-    describe(`Done with Pending Work`, () => {
-      test(`done without ack → immediate re-wake`, () => {
-        const path = `/agents/pending-noack-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, `pending-noack-${ts()}`)
-          .stream(path)
-          .append({ event: `first` })
-          .expectWake()
-          .claimWake()
-          .append({ event: `second` })
-          .done()
-          .expectWake({ epochIncremented: true })
-          .respondDone()
-          .run()
-      })
+        await fetch(streamUrl(service, path), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({ event: `created` }),
+        })
 
-      test(`done with full ack → IDLE (no re-wake)`, () => {
-        const path = `/agents/pending-acked-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, `pending-acked-${ts()}`)
-          .stream(path)
-          .append({ event: `first` })
-          .expectWake()
-          .claimWake()
-          .ackAll()
-          .done()
-          .expectIdle()
-          .run()
-      })
-    })
-
-    // ----------------------------------------------------------------
-    // Tier 1: Offset Management
-    // ----------------------------------------------------------------
-
-    describe(`Offset Management`, () => {
-      test(`acked offsets persist across wake cycles`, () => {
-        const path = `/agents/ack-persist-${ts()}`
-        return (
-          webhook(getBaseUrl())
-            .subscription(`/agents/*`, `ack-persist-${ts()}`)
-            .stream(path)
-            .append([{ event: `a` }, { event: `b` }])
-            .expectWake()
-            .claimWake()
-            .ackAll()
-            .done()
-            .expectIdle()
-            // Second wake — offset should reflect previous ack
-            .append({ event: `c` })
-            .expectWake({ epochIncremented: true })
-            .custom(async (ctx) => {
-              const streamInfo = ctx.notification!.parsed.streams.find(
-                (s: { path: string }) => s.path === path
-              )
-              expect(streamInfo).toBeDefined()
-              // Offset should NOT be the initial offset
-              expect(streamInfo!.offset).not.toBe(
-                `0000000000000000_0000000000000000`
-              )
-            })
-            .respondDone()
-            .run()
+        const notification = await receiver.waitForRequest()
+        expect(notification.signature).toMatch(/^t=\d+,sha256=/)
+        expect(notification.body.subscription_id).toBe(id)
+        expect(notification.body.callback_url).toBe(
+          `${getBaseUrl()}/v1/stream/${service}/__ds/subscriptions/${id}/callback`
         )
-      })
+        const stream = (
+          notification.body.streams as Array<{
+            path: string
+            tail_offset: string
+            has_pending: boolean
+          }>
+        )[0]!
+        expect(stream.path).toBe(path)
+        expect(stream.has_pending).toBe(true)
+
+        await waitForCondition(async () => {
+          const get = await fetch(subUrl(service, id))
+          const body = (await get.json()) as {
+            streams: Array<{ path: string; acked_offset: string }>
+          }
+          return body.streams.some(
+            (item) =>
+              item.path === path && item.acked_offset === stream.tail_offset
+          )
+        })
+      } finally {
+        await receiver.close()
+      }
     })
 
-    // ----------------------------------------------------------------
-    // Tier 1: Dynamic Subscriptions
-    // ----------------------------------------------------------------
+    test(`webhook callback acks and fences stale wake generations`, async () => {
+      const receiver = await createWebhookReceiver()
+      const service = `svc-${ts()}`
+      const id = `sub-${ts()}`
+      const path = `events/callback-${ts()}`
+      try {
+        await fetch(subUrl(service, id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            pattern: `events/*`,
+            webhook: { url: receiver.url },
+            lease_ttl_ms: 1000,
+          }),
+        })
+        await fetch(streamUrl(service, path), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({ event: `created` }),
+        })
 
-    describe(`Dynamic Subscribe/Unsubscribe`, () => {
-      test(`subscribe to additional streams via callback`, () => {
-        const primary = `/agents/dynsub-${ts()}`
-        const secondary = `/tools/dynsub-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, `dynsub-${ts()}`)
-          .stream(primary)
-          .stream(secondary)
-          .append({ event: `start` })
-          .expectWake()
-          .claimWake()
-          .subscribe([secondary])
-          .expectCallbackOk()
-          .expectStreams([primary, secondary])
-          .done()
-          .run()
-      })
+        const notification = await receiver.waitForRequest()
+        const body = notification.body as {
+          callback_url: string
+          callback_token: string
+          wake_id: string
+          generation: number
+          streams: Array<{ path: string; tail_offset: string }>
+        }
+        const tail = body.streams.find(
+          (stream) => stream.path === path
+        )!.tail_offset
+        const ackBody = {
+          wake_id: body.wake_id,
+          generation: body.generation,
+          acks: [{ stream: path, offset: tail }],
+          done: true,
+        }
 
-      test(`unsubscribe from streams via callback`, () => {
-        const primary = `/agents/unsub-${ts()}`
-        const secondary = `/tools/unsub-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, `dynunsub-${ts()}`)
-          .stream(primary)
-          .stream(secondary)
-          .append({ event: `start` })
-          .expectWake()
-          .claimWake()
-          .subscribe([secondary])
-          .unsubscribe([secondary])
-          .expectCallbackOk()
-          .custom(async (ctx) => {
-            const streams = ctx.lastCallbackResult!.body.streams as Array<{
-              path: string
-            }>
-            expect(streams.find((s) => s.path === secondary)).toBeUndefined()
-          })
-          .done()
-          .run()
-      })
+        const callback = await fetch(body.callback_url, {
+          method: `POST`,
+          headers: {
+            "content-type": `application/json`,
+            authorization: `Bearer ${body.callback_token}`,
+          },
+          body: JSON.stringify(ackBody),
+        })
+        expect(callback.status).toBe(200)
+        expect(await callback.json()).toEqual({ ok: true, next_wake: false })
 
-      test(`appends to dynamically subscribed stream trigger wake`, () => {
-        const primary = `/agents/dynwake-${ts()}`
-        const secondary = `/tools/dynwake-${ts()}`
-        return (
-          webhook(getBaseUrl())
-            .subscription(`/agents/*`, `dynwake-${ts()}`)
-            .stream(primary)
-            .stream(secondary)
-            .appendTo(primary, { event: `start` })
-            .expectWake()
-            .claimWake()
-            .subscribe([secondary])
-            .expectCallbackOk()
-            .ackAll()
-            .done()
-            // Now append to the secondary stream — should trigger a new wake
-            .appendTo(secondary, { event: `secondary-event` })
-            .expectWake({ epochIncremented: true, triggeredBy: [secondary] })
-            .claimWake()
-            .ackAll()
-            .done()
-            .run()
+        const stale = await fetch(body.callback_url, {
+          method: `POST`,
+          headers: {
+            "content-type": `application/json`,
+            authorization: `Bearer ${body.callback_token}`,
+          },
+          body: JSON.stringify(ackBody),
+        })
+        expect(stale.status).toBe(409)
+        const staleBody = (await stale.json()) as { error: { code: string } }
+        expect(staleBody.error.code).toBe(`FENCED`)
+      } finally {
+        await receiver.close()
+      }
+    })
+
+    test(`adds and removes explicit subscription streams`, async () => {
+      const receiver = await createWebhookReceiver()
+      const service = `svc-${ts()}`
+      const id = `sub-${ts()}`
+      try {
+        const create = await fetch(subUrl(service, id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            streams: [`manual/a`],
+            webhook: { url: receiver.url },
+          }),
+        })
+        expect(create.status).toBe(201)
+
+        const add = await fetch(`${subUrl(service, id)}/streams`, {
+          method: `POST`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({ streams: [`manual/b`] }),
+        })
+        expect(add.status).toBe(204)
+
+        const remove = await fetch(
+          `${subUrl(service, id)}/streams/${encodeURIComponent(`manual/b`)}`,
+          { method: `DELETE` }
         )
-      })
+        expect(remove.status).toBe(204)
 
-      test(`unsubscribe primary stream updates re-wake routing`, () => {
-        const primary = `/agents/dynprimary-${ts()}`
-        const secondary = `/tools/dynprimary-${ts()}`
-        return (
-          webhook(getBaseUrl())
-            .subscription(`/agents/*`, `dynprimary-${ts()}`)
-            .stream(primary)
-            .stream(secondary)
-            .appendTo(primary, { event: `start` })
-            .expectWake()
-            .claimWake()
-            .subscribe([secondary])
-            .unsubscribe([primary])
-            .expectCallbackOk()
-            .expectStreams([secondary])
-            .ackAll()
-            .done()
-            // Append to secondary (now the only stream) — should still wake
-            .appendTo(secondary, { event: `after-unsub` })
-            .expectWake({ epochIncremented: true })
-            .claimWake()
-            .ackAll()
-            .done()
-            .run()
+        const get = await fetch(subUrl(service, id))
+        const body = (await get.json()) as {
+          streams: Array<{ path: string; link_type: string }>
+        }
+        expect(body.streams).toContainEqual(
+          expect.objectContaining({ path: `manual/a`, link_type: `explicit` })
         )
-      })
-    })
-
-    // ----------------------------------------------------------------
-    // Tier 1: Token Management
-    // ----------------------------------------------------------------
-
-    describe(`Token Management`, () => {
-      test(`token is present in every successful callback response`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `token-rotate-${ts()}`)
-          .stream(`/agents/token-rotate-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .claimWake()
-          // Token presence is verified by invariant checker S5
-          .done()
-          .run())
-
-      test(`invalid token is rejected`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `token-invalid-${ts()}`)
-          .stream(`/agents/token-invalid-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .skipInvariants()
-          .rawCallback({ epoch: 1, wake_id: `fake` }, `totally-invalid-token`)
-          .expectError(`TOKEN_INVALID`, 401)
-          .respondDone()
-          .run())
-    })
-
-    // ----------------------------------------------------------------
-    // Tier 1: Webhook Signatures
-    // ----------------------------------------------------------------
-
-    describe(`Webhook Signatures`, () => {
-      test(`signature header present and verifiable`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `sig-${ts()}`)
-          .stream(`/agents/sig-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          // Signature verification is handled by invariant checker S8
-          .respondDone()
-          .run())
-
-      test(`ignores unrelated webhook notifications delivered to the same receiver`, () => {
-        const mainId = `sig-main-${ts()}`
-        const foreignId = `sig-foreign-${ts()}`
-        const mainPath = `/agents/sig-main-${ts()}`
-        const foreignPath = `/tools/sig-foreign-${ts()}`
-
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, mainId)
-          .custom(async (ctx) => {
-            const res = await fetch(
-              `${ctx.baseUrl}/tools/*?subscription=${foreignId}`,
-              {
-                method: `PUT`,
-                headers: { "content-type": `application/json` },
-                body: JSON.stringify({
-                  webhook: `${ctx.receiver.url}/webhook`,
-                }),
-              }
-            )
-            expect(res.status).toBe(201)
-            ctx.trackSubscription(foreignId, `/tools/*`)
-
-            await fetch(`${ctx.baseUrl}${foreignPath}`, {
-              method: `PUT`,
-              headers: { "content-type": `application/json` },
-              body: `[]`,
-            })
-            await fetch(`${ctx.baseUrl}${foreignPath}`, {
-              method: `POST`,
-              headers: { "content-type": `application/json` },
-              body: JSON.stringify({ event: `foreign` }),
-            })
-
-            const deadline = Date.now() + 2_000
-            while (
-              ctx.receiver.received.length === 0 ||
-              ctx.receiver.received[0]!.parsed.primary_stream !== foreignPath
-            ) {
-              expect(Date.now()).toBeLessThan(deadline)
-              await new Promise((resolve) => setTimeout(resolve, 20))
-            }
-
-            await fetch(`${ctx.baseUrl}${mainPath}`, {
-              method: `PUT`,
-              headers: { "content-type": `application/json` },
-              body: `[]`,
-            })
-            ctx.currentStream = mainPath
-            ctx.knownStreams.add(mainPath)
-            ctx.history.push({ type: `stream_created`, path: mainPath })
-          })
-          .append({ event: `main` })
-          .expectWake({ triggeredBy: [mainPath] })
-          .custom(async (ctx) => {
-            expect(ctx.notification!.parsed.primary_stream).toBe(mainPath)
-          })
-          .respondDone()
-          .run()
-      })
-    })
-
-    // ----------------------------------------------------------------
-    // Tier 1: Garbage Collection
-    // ----------------------------------------------------------------
-
-    describe(`Garbage Collection`, () => {
-      test(`delete primary stream → consumer gone`, () => {
-        const path = `/agents/gc-stream-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, `gc-stream-${ts()}`)
-          .stream(path)
-          .append({ event: `test` })
-          .expectWake()
-          .claimWake()
-          .deleteStream(path)
-          .expectGone()
-          .run()
-      })
-
-      test(`delete subscription → all consumers gone`, () => {
-        const subId = `gc-sub-${ts()}`
-        const path = `/agents/gc-sub-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, subId)
-          .stream(path)
-          .append({ event: `test` })
-          .expectWake()
-          .claimWake()
-          .deleteSubscription(subId)
-          .expectGone()
-          .run()
-      })
-    })
-
-    // ----------------------------------------------------------------
-    // Tier 1: Subscription Lifecycle
-    // ----------------------------------------------------------------
-
-    describe(`Subscription Lifecycle`, () => {
-      test(`delete and recreate subscription starts with fresh epoch and cursors`, () => {
-        const subId = `recreate-${ts()}`
-        const path = `/agents/recreate-${ts()}`
-        return (
-          webhook(getBaseUrl())
-            .subscription(`/agents/*`, subId)
-            .stream(path)
-            .append({ event: `first` })
-            .expectWake()
-            .claimWake()
-            .ackAll()
-            .done()
-            // Delete the subscription (cascades to L1 consumer)
-            .deleteSubscription(subId)
-            // Skip global invariants — S1 epoch monotonicity checker doesn't
-            // account for consumer deletion resetting the epoch counter
-            .skipInvariants()
-            // Recreate with the same ID
-            .custom(async (ctx) => {
-              const res = await fetch(
-                `${ctx.baseUrl}/agents/*?subscription=${subId}`,
-                {
-                  method: `PUT`,
-                  headers: { "content-type": `application/json` },
-                  body: JSON.stringify({
-                    webhook: `${ctx.receiver.url}/webhook`,
-                  }),
-                }
-              )
-              expect(res.status).toBe(201)
-              const body = (await res.json()) as Record<string, unknown>
-              ctx.webhookSecret = body.webhook_secret as string
-            })
-            // Append again — should get a fresh consumer with epoch 1 and offset -1
-            .append({ event: `second` })
-            .expectWake()
-            .custom(async (ctx) => {
-              const n = ctx.notification!.parsed
-              expect(n.epoch).toBe(1)
-              const streams = n.streams as Array<{
-                path: string
-                offset: string
-              }>
-              const stream = streams.find((s) => s.path === path)
-              expect(stream!.offset).toBe(`-1`)
-            })
-            .respondDone()
-            .run()
+        expect(body.streams.some((stream) => stream.path === `manual/b`)).toBe(
+          false
         )
-      })
-
-      test(`second subscription on same stream gets its own consumer`, () => {
-        const subA = `multi-sub-a-${ts()}`
-        const subB = `multi-sub-b-${ts()}`
-        const path = `/agents/multi-sub-${ts()}`
-
-        return (
-          webhook(getBaseUrl())
-            .subscription(`/agents/*`, subA)
-            .stream(path)
-            .append({ event: `first` })
-            .expectWake()
-            .respondDone()
-            // Now add a second subscription for the same pattern
-            .custom(async (ctx) => {
-              const res = await fetch(
-                `${ctx.baseUrl}/agents/*?subscription=${subB}`,
-                {
-                  method: `PUT`,
-                  headers: { "content-type": `application/json` },
-                  body: JSON.stringify({
-                    webhook: `${ctx.receiver.url}/webhook`,
-                  }),
-                }
-              )
-              expect(res.status).toBe(201)
-            })
-            // Append again — both subA and subB should get wakes
-            .append({ event: `second` })
-            .expectWake()
-            .custom(async (ctx) => {
-              // We got a wake — verify it's for one of the subscriptions.
-              // The other subscription should also be woken.
-              // Wait for the second notification.
-              const second = await ctx.receiver.waitForNotification(2000)
-              expect(second).toBeDefined()
-              // Collect both consumer IDs
-              const ids = [
-                ctx.notification!.parsed.consumer_id,
-                second.parsed.consumer_id,
-              ]
-              // Both subscriptions should have distinct consumer instances
-              expect(ids.length).toBe(2)
-              expect(ids[0]).not.toBe(ids[1])
-              // Both should reference the same stream
-              expect(
-                (
-                  ctx.notification!.parsed.streams as Array<{ path: string }>
-                )[0]!.path
-              ).toBe(path)
-              expect(
-                (second.parsed.streams as Array<{ path: string }>)[0]!.path
-              ).toBe(path)
-            })
-            .respondDone()
-            .run()
-        )
-      })
+      } finally {
+        await receiver.close()
+      }
     })
 
-    // ----------------------------------------------------------------
-    // Tier 1: Glob Pattern Matching
-    // ----------------------------------------------------------------
+    test(`pull-wake claim, ack, and release use subscription-scoped leases`, async () => {
+      const service = `svc-${ts()}`
+      const id = `pull-${ts()}`
+      const wakeStream = `wake/pool-${ts()}`
+      const path = `events/pull-${ts()}`
 
-    describe(`Glob Pattern Matching`, () => {
-      test(`* matches exactly one path segment`, () => {
-        const path = `/agents/glob-match-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, `glob-star-${ts()}`)
-          .stream(path)
-          .append({ event: `match` })
-          .expectWake()
-          .custom(async (ctx) => {
-            expect(ctx.notification!.parsed.primary_stream).toBe(path)
-          })
-          .respondDone()
-          .run()
+      await fetch(streamUrl(service, wakeStream), {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+        body: `[]`,
+      })
+      const create = await fetch(subUrl(service, id), {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({
+          type: `pull-wake`,
+          pattern: `events/*`,
+          wake_stream: wakeStream,
+          lease_ttl_ms: 1000,
+        }),
+      })
+      expect(create.status).toBe(201)
+
+      await fetch(streamUrl(service, path), {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ event: `created` }),
       })
 
-      test(`* does not match multiple path segments`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `glob-star-no-multi-${ts()}`)
-          .stream(`/agents/foo/bar-${ts()}`)
-          .append({ event: `no-match` })
-          .expectIdle()
-          .run())
-
-      test(`** matches recursively`, () => {
-        const path = `/agents/foo/bar/deep-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/**`, `glob-dblstar-${ts()}`)
-          .stream(path)
-          .append({ event: `deep` })
-          .expectWake()
-          .custom(async (ctx) => {
-            expect(ctx.notification!.parsed.primary_stream).toBe(path)
-          })
-          .respondDone()
-          .run()
+      await waitForCondition(async () => {
+        const res = await fetch(streamUrl(service, wakeStream))
+        const events = (await res.json()) as Array<{ subscription_id: string }>
+        return events.some((event) => event.subscription_id === id)
       })
 
-      test(`literal prefix with * suffix`, () => {
-        const path = `/agents/workers/task-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/workers/*`, `glob-prefix-${ts()}`)
-          .stream(path)
-          .append({ event: `match` })
-          .expectWake()
-          .respondDone()
-          .run()
+      const claim = await fetch(`${subUrl(service, id)}/claim`, {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ worker: `worker-1` }),
       })
-    })
+      expect(claim.status).toBe(200)
+      const claimed = (await claim.json()) as {
+        wake_id: string
+        generation: number
+        token: string
+        streams: Array<{ path: string; tail_offset: string }>
+      }
+      const tail = claimed.streams.find(
+        (stream) => stream.path === path
+      )!.tail_offset
 
-    // ----------------------------------------------------------------
-    // Tier 2: Adversarial — Epoch Attacks
-    // ----------------------------------------------------------------
-
-    describe(`Adversarial: Epoch Fencing`, () => {
-      test(`stale epoch callback → 409 STALE_EPOCH`, () => {
-        const path = `/agents/epoch-stale-${ts()}`
-        return (
-          webhook(getBaseUrl())
-            .subscription(`/agents/*`, `epoch-stale-${ts()}`)
-            .stream(path)
-            .append({ event: `first` })
-            .expectWake()
-            .respondDone()
-            // Second wake (new epoch)
-            .append({ event: `second` })
-            .expectWake({ epochIncremented: true })
-            .claimWake()
-            // Send callback with epoch from first wake (stale)
-            .custom(async (ctx) => {
-              const staleEpoch = ctx.currentEpoch! - 1
-              const result = await fetch(ctx.callbackUrl!, {
-                method: `POST`,
-                headers: {
-                  "content-type": `application/json`,
-                  authorization: `Bearer ${ctx.currentToken}`,
-                },
-                body: JSON.stringify({ epoch: staleEpoch }),
-              })
-              const body = await result.json()
-              expect(result.status).toBe(409)
-              expect((body as Record<string, unknown>).error).toHaveProperty(
-                `code`,
-                `STALE_EPOCH`
-              )
-            })
-            .done()
-            .run()
-        )
+      const busy = await fetch(`${subUrl(service, id)}/claim`, {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ worker: `worker-2` }),
       })
-    })
+      expect(busy.status).toBe(409)
+      const busyBody = (await busy.json()) as {
+        error: { code: string; current_holder: string }
+      }
+      expect(busyBody.error.code).toBe(`ALREADY_CLAIMED`)
+      expect(busyBody.error.current_holder).toBe(`worker-1`)
 
-    // ----------------------------------------------------------------
-    // Tier 2: Adversarial — Token Attacks
-    // ----------------------------------------------------------------
-
-    describe(`Adversarial: Token Attacks`, () => {
-      test(`invalid token → 401 TOKEN_INVALID`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `token-bad-${ts()}`)
-          .stream(`/agents/token-bad-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .skipInvariants()
-          .rawCallback({ epoch: 1, wake_id: `w_fake` }, `totally-invalid-token`)
-          .expectError(`TOKEN_INVALID`, 401)
-          .respondDone()
-          .run())
-
-      test(`missing Authorization header → 401`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `token-missing-${ts()}`)
-          .stream(`/agents/token-missing-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .skipInvariants()
-          .custom(async (ctx) => {
-            const result = await fetch(ctx.callbackUrl!, {
-              method: `POST`,
-              headers: { "content-type": `application/json` },
-              body: JSON.stringify({ epoch: ctx.currentEpoch }),
-            })
-            expect(result.status).toBe(401)
-          })
-          .respondDone()
-          .run())
-    })
-
-    // ----------------------------------------------------------------
-    // Tier 2: Adversarial — Wake ID Attacks
-    // ----------------------------------------------------------------
-
-    describe(`Adversarial: Wake ID`, () => {
-      test(`double claim same wake_id is idempotent (200)`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `wakeid-double-${ts()}`)
-          .stream(`/agents/wakeid-double-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .claimWake()
-          .custom(async (ctx) => {
-            // Re-send the same wake_id that was already claimed —
-            // should succeed idempotently since the 2xx webhook response
-            // or a prior callback may have already claimed it.
-            const result = await fetch(ctx.callbackUrl!, {
-              method: `POST`,
-              headers: {
-                "content-type": `application/json`,
-                authorization: `Bearer ${ctx.currentToken}`,
-              },
-              body: JSON.stringify({
-                epoch: ctx.currentEpoch,
-                wake_id: ctx.currentWakeId,
-              }),
-            })
-            const body = (await result.json()) as Record<string, unknown>
-            expect(result.status).toBe(200)
-            expect(body).toHaveProperty(`ok`, true)
-          })
-          .done()
-          .run())
-
-      test(`2xx webhook response then callback claim is idempotent`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `wakeid-2xx-claim-${ts()}`)
-          .stream(`/agents/wakeid-2xx-claim-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .respondOk()
-          .wait(200)
-          .claimWake()
-          .done()
-          .run())
-
-      test(`fabricated wake_id → 409 ALREADY_CLAIMED`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `wakeid-fake-${ts()}`)
-          .stream(`/agents/wakeid-fake-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .skipInvariants()
-          .rawCallback({
-            epoch: 1,
-            wake_id: `w_totally_fabricated`,
-          })
-          .custom(async (ctx) => {
-            // Fabricated wake_id should be rejected
-            expect(ctx.lastCallbackResult!.status).toBe(409)
-          })
-          .respondDone()
-          .run())
-    })
-
-    // ----------------------------------------------------------------
-    // Tier 2: Adversarial — Malformed Requests
-    // ----------------------------------------------------------------
-
-    describe(`Adversarial: Malformed Requests`, () => {
-      test(`missing epoch field → 400`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `malformed-noepoch-${ts()}`)
-          .stream(`/agents/malformed-noepoch-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .skipInvariants()
-          .custom(async (ctx) => {
-            const result = await fetch(ctx.callbackUrl!, {
-              method: `POST`,
-              headers: {
-                "content-type": `application/json`,
-                authorization: `Bearer ${ctx.currentToken}`,
-              },
-              body: JSON.stringify({ wake_id: `w_foo` }),
-            })
-            expect(result.status).toBe(400)
-          })
-          .respondDone()
-          .run())
-
-      test(`non-JSON body → 400`, () =>
-        webhook(getBaseUrl())
-          .subscription(`/agents/*`, `malformed-nonjson-${ts()}`)
-          .stream(`/agents/malformed-nonjson-${ts()}`)
-          .append({ event: `test` })
-          .expectWake()
-          .skipInvariants()
-          .custom(async (ctx) => {
-            const result = await fetch(ctx.callbackUrl!, {
-              method: `POST`,
-              headers: {
-                "content-type": `application/json`,
-                authorization: `Bearer ${ctx.currentToken}`,
-              },
-              body: `not json at all {{{`,
-            })
-            expect(result.status).toBe(400)
-          })
-          .respondDone()
-          .run())
-    })
-
-    // ----------------------------------------------------------------
-    // Tier 2: Adversarial — Race Conditions
-    // ----------------------------------------------------------------
-
-    describe(`Adversarial: Race Conditions`, () => {
-      test(`callback after subscription deleted → 410`, () => {
-        const subId = `race-subdel-${ts()}`
-        const path = `/agents/race-subdel-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, subId)
-          .stream(path)
-          .append({ event: `test` })
-          .expectWake()
-          .claimWake()
-          .deleteSubscription(subId)
-          .expectGone()
-          .run()
+      const ack = await fetch(`${subUrl(service, id)}/ack`, {
+        method: `POST`,
+        headers: {
+          "content-type": `application/json`,
+          authorization: `Bearer ${claimed.token}`,
+        },
+        body: JSON.stringify({
+          wake_id: claimed.wake_id,
+          generation: claimed.generation,
+          acks: [{ stream: path, offset: tail }],
+          done: true,
+        }),
       })
+      expect(ack.status).toBe(200)
+      expect(await ack.json()).toEqual({ ok: true, next_wake: false })
 
-      test(`callback after stream deleted → 410`, () => {
-        const path = `/agents/race-streamdel-${ts()}`
-        return webhook(getBaseUrl())
-          .subscription(`/agents/*`, `race-streamdel-${ts()}`)
-          .stream(path)
-          .append({ event: `test` })
-          .expectWake()
-          .claimWake()
-          .deleteStream(path)
-          .expectGone()
-          .run()
+      await fetch(streamUrl(service, path), {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ event: `second` }),
       })
-    })
-
-    // ----------------------------------------------------------------
-    // Property-Based: Random Action Sequences
-    // ----------------------------------------------------------------
-
-    describe(`Property-Based: Random Action Sequences`, () => {
-      // Action types generated uniformly, then filtered by ENABLED predicate
-      const liveActionArb: fc.Arbitrary<LiveAction> = fc.oneof(
-        { weight: 40, arbitrary: fc.constant(`append` as const) },
-        { weight: 25, arbitrary: fc.constant(`ack` as const) },
-        { weight: 10, arbitrary: fc.constant(`subscribe` as const) },
-        { weight: 5, arbitrary: fc.constant(`unsubscribe-secondary` as const) },
-        { weight: 20, arbitrary: fc.constant(`keepalive` as const) }
-      )
-
-      test(`random action sequences preserve safety invariants`, async () => {
-        await fc.assert(
-          fc.asyncProperty(
-            fc.array(liveActionArb, { minLength: 2, maxLength: 8 }),
-            fc.boolean(),
-            async (actions, ackBeforeDone) => {
-              const id = `prop-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-              const primary = `/agents/prop-${id}`
-              const secondary = `/tools/prop-${id}`
-
-              const scenario = webhook(getBaseUrl())
-                .subscription(`/agents/*`, `sub-${id}`)
-                .stream(primary)
-                .stream(secondary)
-                .append({ event: `init` })
-                .expectWake()
-                .claimWake()
-
-              // ENABLED-predicate model: generate all actions, skip disabled ones
-              let model: ConsumerModel = {
-                phase: `LIVE`,
-                subscribedToSecondary: false,
-                hasUnackedEvents: true, // init append is unacked
-                appendCount: 1,
-              }
-
-              for (const action of actions) {
-                const valid = enabledActions(model)
-                if (!valid.includes(action)) continue
-
-                switch (action) {
-                  case `append`:
-                    scenario.append({
-                      event: `prop-event`,
-                      ts: Date.now(),
-                    })
-                    break
-                  case `ack`:
-                    scenario.ackAll()
-                    break
-                  case `subscribe`:
-                    scenario.subscribe([secondary])
-                    break
-                  case `unsubscribe-secondary`:
-                    scenario.unsubscribe([secondary])
-                    break
-                  case `keepalive`:
-                    scenario.callback({})
-                    break
-                }
-                model = applyAction(model, action)
-              }
-
-              if (ackBeforeDone) {
-                scenario.ackAll()
-                model = applyAction(model, `ack`)
-              }
-              scenario.done()
-
-              // L3: if there are un-acked events at done time, the server
-              // will re-wake — we must consume it to satisfy the liveness check
-              if (model.hasUnackedEvents) {
-                scenario.expectWake({ epochIncremented: true })
-                scenario.respondDone()
-              }
-
-              await scenario.run()
-            }
-          ),
-          { numRuns: 20, endOnFailure: true }
-        )
-      }, 30_000)
-
-      test(`wake cycles with varying ack strategies preserve epoch monotonicity`, async () => {
-        await fc.assert(
-          fc.asyncProperty(
-            fc.integer({ min: 1, max: 3 }),
-            fc.array(fc.boolean(), { minLength: 1, maxLength: 3 }),
-            async (numCycles, ackDecisions) => {
-              const id = `prop-epoch-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
-              const path = `/agents/prop-epoch-${id}`
-
-              const scenario = webhook(getBaseUrl())
-                .subscription(`/agents/*`, `sub-epoch-${id}`)
-                .stream(path)
-
-              for (let i = 0; i < numCycles; i++) {
-                scenario.append({ event: `cycle-${i}` })
-                scenario.expectWake(
-                  i > 0 ? { epochIncremented: true } : undefined
-                )
-
-                const shouldAck = ackDecisions[i % ackDecisions.length]
-                if (shouldAck) {
-                  scenario.respondDone()
-                } else {
-                  scenario.claimWake()
-                  scenario.done()
-                  // Pending work causes re-wake — consume it
-                  scenario.expectWake({ epochIncremented: true })
-                  scenario.respondDone()
-                }
-              }
-
-              await scenario.run()
-            }
-          ),
-          { numRuns: 10, endOnFailure: true }
-        )
-      }, 30_000)
+      const claim2 = await fetch(`${subUrl(service, id)}/claim`, {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ worker: `worker-1` }),
+      })
+      expect(claim2.status).toBe(200)
+      const claimed2 = (await claim2.json()) as {
+        wake_id: string
+        generation: number
+        token: string
+      }
+      const release = await fetch(`${subUrl(service, id)}/release`, {
+        method: `POST`,
+        headers: {
+          "content-type": `application/json`,
+          authorization: `Bearer ${claimed2.token}`,
+        },
+        body: JSON.stringify({
+          wake_id: claimed2.wake_id,
+          generation: claimed2.generation,
+        }),
+      })
+      expect(release.status).toBe(204)
     })
   })
 }
-
-export { runConsumerConformanceTests } from "./consumer-tests"
-export type { ConsumerTestContext } from "./consumer-tests"
-export { runPullWakeConformanceTests } from "./pull-wake-tests"
-export type { PullWakeTestContext } from "./pull-wake-tests"
-export { consumer, checkL1Invariants } from "./consumer-dsl"
-export type {
-  L1HistoryEvent,
-  ConsumerRunContext,
-  L1ConsumerModel,
-} from "./consumer-dsl"

@@ -33,36 +33,15 @@ Copyright (c) 2025 ElectricSQL
    - 5.6. [Read Stream - Catch-up](#56-read-stream---catch-up)
    - 5.7. [Read Stream - Live (Long-poll)](#57-read-stream---live-long-poll)
    - 5.8. [Read Stream - Live (SSE)](#58-read-stream---live-sse)
-6. [Named Consumers](#6-named-consumers)
-   - 6.1. [Consumer Registration](#61-consumer-registration)
-   - 6.2. [Consumer State Machine](#62-consumer-state-machine)
-   - 6.3. [Epoch Acquisition](#63-epoch-acquisition)
-   - 6.4. [Acknowledgment](#64-acknowledgment)
-   - 6.5. [Release](#65-release)
-   - 6.6. [Liveness Policy](#66-liveness-policy)
-   - 6.7. [Token Scope](#67-token-scope)
-   - 6.8. [Named Reads](#68-named-reads)
-   - 6.9. [Registration vs. Notification Preferences](#69-registration-vs-notification-preferences)
-7. [Wake-Up Notifications](#7-wake-up-notifications)
-   - 7.1. [Webhook (Unicast Wake)](#71-webhook-unicast-wake)
-     - 7.1.1. [Subscription Model](#711-subscription-model)
-     - 7.1.2. [Consumer Instance Lifecycle](#712-consumer-instance-lifecycle)
-     - 7.1.3. [Wake-up Notification](#713-wake-up-notification)
-     - 7.1.4. [Webhook Signature Verification](#714-webhook-signature-verification)
-     - 7.1.5. [Callback API](#715-callback-api)
-     - 7.1.6. [Dynamic Subscribe/Unsubscribe](#716-dynamic-subscribeunsubscribe)
-     - 7.1.7. [Secondary Subscriptions](#717-secondary-subscriptions)
-     - 7.1.8. [Failure Handling](#718-failure-handling)
-     - 7.1.9. [Subscription HTTP API](#719-subscription-http-api)
-     - 7.1.10. [Garbage Collection](#7110-garbage-collection)
-   - 7.2. [Pull-Wake (Competitive Wake)](#72-pull-wake-competitive-wake)
-     - 7.2.1. [Wake Stream](#721-wake-stream)
-     - 7.2.2. [Claim Protocol](#722-claim-protocol)
-     - 7.2.3. [Bootstrapping](#723-bootstrapping)
-     - 7.2.4. [Liveness Detection](#724-liveness-detection)
-     - 7.2.5. [Contention Handling](#725-contention-handling)
-     - 7.2.6. [Failure Handling](#726-failure-handling)
-   - 7.3. [Mobile Push (Unicast Wake)](#73-mobile-push-unicast-wake)
+6. [Service-scoped Subscriptions](#6-service-scoped-subscriptions)
+   - 6.1. [Subscription Addressing](#61-subscription-addressing)
+   - 6.2. [Create or Re-confirm a Subscription](#62-create-or-re-confirm-a-subscription)
+   - 6.3. [Read or Delete a Subscription](#63-read-or-delete-a-subscription)
+   - 6.4. [Explicit Stream Membership](#64-explicit-stream-membership)
+7. [Subscription Delivery](#7-subscription-delivery)
+   - 7.1. [Webhook Delivery and Callback](#71-webhook-delivery-and-callback)
+   - 7.2. [Pull-wake Claim, Ack, and Release](#72-pull-wake-claim-ack-and-release)
+   - 7.3. [Generation Fencing and Leases](#73-generation-fencing-and-leases)
 8. [Offsets](#8-offsets)
 9. [Content Types](#9-content-types)
 10. [Caching and Collapsing](#10-caching-and-collapsing)
@@ -824,710 +803,328 @@ data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 
 SSE on a forked stream delivers inherited data from the source stream followed by the fork's own data, then waits for new fork appends. Source appends after the fork point are never delivered.
 
-## 6. Named Consumers
+## 6. Service-scoped Subscriptions
 
-Named Consumers (Layer 1) provide mechanism-independent consumer identity, epoch fencing, offset tracking, and lease-based liveness. They are the foundation on which wake-up notification mechanisms (Section 7) are built.
-
-A consumer is a named cursor group: it holds a set of stream paths with their last-acknowledged offsets, an epoch for fencing concurrent readers, and a lease timer for liveness. The consumer lifecycle has two states — REGISTERED (waiting, no active reader) and READING (epoch held, actively consuming). Any mechanism — webhook HTTP callbacks, long-poll, mobile push — can sit on top of this layer by acquiring an epoch and acking offsets.
-
-### 6.1. Consumer Registration
+Subscriptions are durable, service-scoped cursors that wake workers when one or more streams have pending events. A subscription belongs to a service namespace and is addressed under that service's `__ds` control namespace:
 
 ```http
-POST /consumers
+/v1/stream/:serviceId/__ds/subscriptions/:id
+```
+
+Application streams for the same service are regular durable streams under `/v1/stream/:serviceId/...`. Stream paths inside subscription request and response bodies are service-relative paths such as `events/abc` or `wake/pool`. The `__ds` path segment is reserved for Durable Streams control APIs and MUST NOT be used by application streams inside a service namespace.
+
+A subscription can be delivered by webhook or by pull-wake. Both mechanisms share the same cursor fields, generation fencing, lease timeout, and stream membership model.
+
+### 6.1. Subscription Addressing
+
+`serviceId` identifies the service namespace. The subscription `id` is client-provided and unique within that service. Servers MUST route subscription control requests before normal stream operations so that `__ds` control paths are not interpreted as application streams.
+
+The server stores one cursor per subscription stream. Each stream link has:
+
+| Field          | Description                                                            |
+| -------------- | ---------------------------------------------------------------------- |
+| `path`         | Service-relative stream path                                           |
+| `link_type`    | `glob` when matched by `pattern`, `explicit` when added by `streams[]` |
+| `acked_offset` | Last processed offset, inclusive                                       |
+
+If a stream is linked both explicitly and by a glob pattern, `explicit` takes precedence in serialized responses. Removing the explicit link does not remove the glob link if the pattern still matches.
+
+### 6.2. Create or Re-confirm a Subscription
+
+```http
+PUT /v1/stream/:serviceId/__ds/subscriptions/:id
 Content-Type: application/json
 
 {
-  "consumer_id": "my-agent:task-123",
-  "streams": ["/agents/task-123"],
-  "namespace": "/agents/*",
-  "lease_ttl_ms": 45000
+  "type": "webhook",
+  "pattern": "events/*",
+  "streams": ["events/manual-a", "events/manual-b"],
+  "webhook": { "url": "https://worker.example/hooks" },
+  "wake_stream": "wake/pool",
+  "lease_ttl_ms": 30000,
+  "description": "event processor"
 }
 ```
 
-**Fields:**
+Fields:
 
-| Field          | Required | Description                                                 |
-| -------------- | -------- | ----------------------------------------------------------- |
-| `consumer_id`  | Yes      | Stable, client-provided identifier; must be unique          |
-| `streams`      | Yes      | One or more stream paths to track                           |
-| `namespace`    | No       | Glob pattern for informational grouping (e.g., `/agents/*`) |
-| `lease_ttl_ms` | No       | Lease duration in milliseconds; server default if omitted   |
+| Field          | Required                | Description                                                          |
+| -------------- | ----------------------- | -------------------------------------------------------------------- |
+| `type`         | Yes                     | `webhook` or `pull-wake`                                             |
+| `pattern`      | No                      | Glob over service-relative stream paths                              |
+| `streams`      | No                      | Explicit service-relative stream paths, additive to `pattern`        |
+| `webhook.url`  | For `type: "webhook"`   | URL that receives wake notifications                                 |
+| `wake_stream`  | For `type: "pull-wake"` | Service-relative durable stream path used as the worker wake channel |
+| `lease_ttl_ms` | No                      | Lease duration, from 1 second to 10 minutes. Default: 30 seconds     |
+| `description`  | No                      | Human-readable description                                           |
 
-**Response:**
+At least one of `pattern` or `streams` MUST be present. `pattern` uses the glob rules from Section 7.1: `*` matches one path segment and `**` matches zero or more path segments.
 
-- `201 Created`: Consumer registered
-- `200 OK`: Consumer already exists with identical configuration (idempotent)
-- `409 Conflict` (`CONSUMER_ALREADY_EXISTS`): Consumer exists with different configuration
+Responses:
 
-**Response body (201/200):**
+| Status | Meaning                                                                                          |
+| ------ | ------------------------------------------------------------------------------------------------ |
+| 201    | Subscription created. The response includes `webhook_secret` for webhook subscriptions.          |
+| 200    | Existing subscription re-confirmed with an identical configuration. `webhook_secret` is omitted. |
+| 409    | Subscription exists with the same ID but a different configuration.                              |
+
+Servers MUST hash the normalized subscription configuration and compare that hash for idempotent re-confirmation. The hash includes `type`, `pattern`, normalized `streams[]`, delivery configuration, `lease_ttl_ms`, and `description`.
+
+Webhook secrets are generated by the server and have Stripe-style `whsec_...` identifiers. The secret is returned only in the 201 create response and MUST NOT be returned by later GET or 200 re-confirmation responses.
+
+Webhook URLs MUST be validated to reduce SSRF risk:
+
+- Production webhook URLs MUST use `https://`.
+- Development webhook URLs MAY use `http://localhost` or `http://127.0.0.x`.
+- RFC1918, link-local, loopback, and other local network targets MUST be rejected unless covered by the explicit localhost development exception.
+
+When a subscription with a `pattern` is created, the server MUST eagerly backfill matching existing streams using the service's internal stream listing facility. Existing streams are linked at their current tail offset so subscription creation does not replay historical data by default. Streams discovered later because of a matching append are linked before that append for wake purposes.
+
+### 6.3. Read or Delete a Subscription
+
+```http
+GET /v1/stream/:serviceId/__ds/subscriptions/:id
+```
+
+Response:
 
 ```json
 {
-  "consumer_id": "my-agent:task-123",
-  "state": "REGISTERED",
-  "epoch": 0,
-  "streams": [{ "path": "/agents/task-123", "offset": "-1" }],
-  "namespace": "/agents/*",
-  "lease_ttl_ms": 45000
-}
-```
-
-Offsets are initialized to `"-1"` (nothing acknowledged) for new streams.
-
-**Get consumer:**
-
-```http
-GET /consumers/{id}
-→ 200 OK  (ConsumerInfo)
-→ 404  (CONSUMER_NOT_FOUND)
-```
-
-**Delete consumer:**
-
-```http
-DELETE /consumers/{id}
-→ 204 No Content
-→ 404  (CONSUMER_NOT_FOUND)
-```
-
-### 6.2. Consumer State Machine
-
-```
-  ┌────────────────────────────────────────────────┐
-  │                                                │
-  │   POST /consumers/{id}/acquire                 │
-  │   (epoch++, token issued, lease timer starts)  │
-  │                                                │
-  ▼                                                │
-REGISTERED ──────────────────────────────► READING
-  ▲                                                │
-  │                                                │
-  │   POST /consumers/{id}/release                 │
-  │   OR lease TTL expires                         │
-  │                                                │
-  └────────────────────────────────────────────────┘
-```
-
-| State        | Description                                       |
-| ------------ | ------------------------------------------------- |
-| `REGISTERED` | Consumer exists; no active reader holds the epoch |
-| `READING`    | Epoch acquired; consumer is actively reading      |
-
-L2 mechanisms map their own richer states on top:
-
-- Webhook Layer 2: IDLE maps to REGISTERED; WAKING + LIVE map to READING
-
-### 6.3. Epoch Acquisition
-
-```http
-POST /consumers/{id}/acquire
-→ 200 OK
-
-{
-  "consumer_id": "my-agent:task-123",
-  "epoch": 3,
-  "token": "eyJ...",
-  "streams": [{ "path": "/agents/task-123", "offset": "1002" }]
-}
-```
-
-Acquiring the epoch:
-
-- Increments the epoch counter
-- Transitions the consumer to READING
-- Issues a bearer token scoped to this consumer and epoch
-- Starts the lease timer
-
-If the consumer is already READING (a previous reader crashed without releasing), this is a **self-supersede**: the epoch is incremented, the previous token is invalidated, and a new token is returned. Any subsequent ack from the old reader will receive `409 STALE_EPOCH`. Self-supersede always succeeds in the single-process reference server — the `EPOCH_HELD` error code is reserved for future multi-server deployments.
-
-**Error responses:**
-
-| Status | Code                 | Description                                |
-| ------ | -------------------- | ------------------------------------------ |
-| 404    | `CONSUMER_NOT_FOUND` | Consumer does not exist                    |
-| 409    | `EPOCH_HELD`         | Reserved; not produced by reference server |
-
-### 6.4. Acknowledgment
-
-Acks advance the consumer's durable cursor for one or more streams. An empty ack (zero offsets) is a heartbeat: it extends the lease without writing a durable cursor update.
-
-```http
-POST /consumers/{id}/ack
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{
-  "offsets": [
-    { "path": "/agents/task-123", "offset": "1005" }
-  ]
-}
-
-→ 200 OK
-{ "ok": true, "token": "eyJ..." }
-```
-
-**Heartbeat (empty ack):**
-
-```http
-POST /consumers/{id}/ack
-Authorization: Bearer {token}
-Content-Type: application/json
-
-{ "offsets": [] }
-
-→ 200 OK
-{ "ok": true, "token": "eyJ..." }
-```
-
-Both cursor-advancing acks and empty acks reset the lease timer.
-
-**Offset semantics:** Offsets are "last processed inclusive." Offset `"1005"` means events through 1005 have been processed; the next read starts from `"1006"`. Offset `"-1"` means nothing has been processed (start from beginning).
-
-**Error responses:**
-
-| Status | Code                 | Description                                     |
-| ------ | -------------------- | ----------------------------------------------- |
-| 400    | `INVALID_REQUEST`    | Malformed JSON or missing `offsets` field       |
-| 401    | `TOKEN_EXPIRED`      | Bearer token TTL exceeded                       |
-| 401    | `TOKEN_INVALID`      | Token is malformed or signature invalid         |
-| 409    | `STALE_EPOCH`        | Token epoch does not match current epoch        |
-| 409    | `OFFSET_REGRESSION`  | Ack offset is less than current cursor          |
-| 409    | `INVALID_OFFSET`     | Ack offset is beyond stream tail                |
-| 400    | `UNKNOWN_STREAM`     | Stream path is not registered for this consumer |
-| 404    | `CONSUMER_NOT_FOUND` | Consumer does not exist                         |
-
-### 6.5. Release
-
-```http
-POST /consumers/{id}/release
-Authorization: Bearer {token}
-
-→ 200 OK
-{ "ok": true, "state": "REGISTERED" }
-```
-
-Releasing the epoch:
-
-- Validates the bearer token and epoch
-- Transitions the consumer from READING to REGISTERED
-- Cancels the lease timer
-
-The consumer's offsets are preserved. A subsequent acquire starts from the last acknowledged position.
-
-**Error responses:** Same token/epoch errors as acknowledgment.
-
-### 6.6. Liveness Policy
-
-When a consumer is in READING state, a lease timer runs for `lease_ttl_ms` milliseconds from the last ack. If the timer fires:
-
-- The epoch is released (READING → REGISTERED)
-- Any registered L2 callbacks (`onLeaseExpired`) are invoked, allowing the L2 layer to re-wake the consumer
-
-Both cursor-advancing acks and empty acks (heartbeat shape) reset the timer. The heartbeat pattern lets a slow reader extend its lease without advancing its cursor:
-
-```http
-POST /consumers/{id}/ack
-Authorization: Bearer {token}
-
-{ "offsets": [] }
-```
-
-The token is refreshed in the response when it is nearing expiry (within 5 minutes of its 1-hour TTL).
-
-### 6.7. Token Scope
-
-Bearer token is per-consumer, not per-stream. One consumer may ack across
-multiple streams in one request. Token authorizes the consumer identity;
-epoch validated server-side during ack processing.
-
-Token TTL SHOULD be significantly longer than lease TTL so tokens do not
-expire during normal operation.
-
-### 6.8. Named Reads
-
-- Anonymous L0 reads: client-supplied offset is authoritative
-- Named L1 reads: server-committed cursor is authoritative
-- Acquire returns committed cursor position for each subscribed stream
-- Consumer reads from where server says it left off
-- Named read with explicit offset MAY be used for debugging
-  but MUST NOT advance committed cursor
-
-### 6.9. Registration vs. Notification Preferences
-
-```http
-PUT /consumers/{id}/wake
-Content-Type: application/json
-
-{ "type": "webhook", "url": "https://my-handler.dev/hook" }
-```
-
-or
-
-```json
-{ "type": "pull-wake", "wake_stream": "/wake/my-workers" }
-```
-
-or
-
-```json
-{ "type": "none" }
-```
-
-Registration (Layer 1) and notification preferences (Layer 2) are separate.
-A consumer can be registered without any wake preference (pure pull).
-A consumer can change wake mechanisms without re-registering.
-
-> Phase 2 scope: A consumer has exactly one active wake preference at a time.
-> The RFC's broader "zero-or-more" model (e.g., webhook AND push simultaneously)
-> is deferred to a future phase.
-
-## 7. Wake-Up Notifications
-
-Wake-Up Notifications (Layer 2) sit on top of Named Consumers (Section 6) and deliver a signal to the consumer process when work is available. The consumer uses its existing L1 epoch, ack, and release operations to do the actual reading; the L2 layer only orchestrates who gets notified and when.
-
-Layer 2 is opt-in and requires Layer 1. Each wake mechanism is fully, concretely specified. No abstract interface.
-
-Two structural categories:
-
-- **Unicast wake** (webhook, mobile push): server targets specific consumer
-- **Competitive wake** (pull-wake): workers compete to claim from shared stream
-
-This section defines three sub-mechanisms. The Webhook mechanism (Section 7.1) and Pull-Wake mechanism (Section 7.2) are specified for v1; Mobile Push is a placeholder for future extension.
-
-### 7.1. Webhook (Unicast Wake)
-
-Webhook is a unicast wake mechanism: the server targets a specific consumer directly, so there is no competitive contention (unlike pull-wake).
-
-Webhook subscriptions enable serverless functions and AI agents to react to stream events without maintaining persistent connections. Unlike traditional webhooks that deliver data inline, Durable Streams webhooks are **wake-up signals** — the notification tells the consumer which streams have new events, and the consumer reads the actual data using the standard HTTP protocol (Sections 3–5).
-
-The L2 webhook mechanism layered on top of L1:
-
-- **Subscription** (L2): maps a glob pattern to a webhook URL and secret
-- **Consumer instance lifecycle** (L2): IDLE/WAKING/LIVE states built on L1 REGISTERED/READING
-- **Wake delivery** (L2): HMAC-signed POST notifying the consumer of pending work
-- **Callback API** (L2): bundles wake claim + ack into a single request, delegating to L1 ack internally
-- **Failure handling** (L2): retry, backoff, garbage collection
-
-The L1 Named Consumer (Section 6) provides the actual epoch, offset tracking, and lease.
-
-**Implementation note on L1/L2 coupling:** In the current reference implementation, the webhook subscription creation also creates (or idempotently registers) the underlying L1 consumer. The full dialectic ideal — where L2 only attaches to an independently-registered L1 consumer — is not yet achieved. Similarly, `wake_id_claimed` state is retained on the L2 `WebhookConsumer` record for retry idempotency, even though epoch fencing (L1) subsumes most of its function. These are known compromises; the specs document the actual achieved separation.
-
-#### 7.1.1. Subscription Model
-
-A subscription consists of:
-
-- **`subscription_id`**: Client-provided identifier for this subscription
-- **`pattern`**: Glob pattern matching stream paths (e.g., `/agents/*`)
-- **`webhook`**: URL to POST notifications to
-- **`webhook_secret`**: Server-generated secret for signature verification (returned on creation only, not stored retrievably)
-- **`description`**: Optional human-readable description
-
-Subscriptions are **immutable** — to change the webhook URL or pattern, delete and recreate the subscription.
-
-When a stream is created or receives events that match the pattern, the server spawns a consumer instance (if one doesn't exist) and wakes it.
-
-**Glob patterns** support wildcards:
-
-- `*` matches exactly one path segment
-- `**` matches zero or more path segments (recursive)
-- `/agents/*` matches `/agents/task-123` but not `/agents/foo/bar`
-- `/agents/**` matches `/agents/task-123` and `/agents/foo/bar/baz`
-- `/agents/*/inbox` matches `/agents/worker-1/inbox`
-
-**Existing streams:** When a subscription is created and matching streams already exist, consumer instances are created in IDLE state. They wake only when new events arrive, not immediately.
-
-#### 7.1.2. Consumer Instance Lifecycle
-
-A consumer instance is spawned when a stream matches a subscription's pattern. Each instance has its own identity, epoch, offset tracking, and can dynamically subscribe to additional streams.
-
-**Consumer instance identity** is `{subscription_id}:{url_encoded_stream_path}`. Because a subscription uses a glob pattern (e.g., `/agents/*`), a single subscription can match many streams — each matched stream gets its own consumer instance with independent state, offsets, and lifecycle. The consumer ID encodes both the subscription and the specific stream it tracks. The stream path is URL-encoded to avoid parsing ambiguity. Multiple subscriptions matching the same stream create independent consumer instances.
-
-**L2 states (built on top of L1 REGISTERED/READING):**
-
-- **IDLE** (→ L1 REGISTERED): No pending work; waiting for events
-- **WAKING** (→ L1 READING): Webhook notification sent; waiting for callback claim
-- **LIVE** (→ L1 READING): Actively processing; callback claimed
-
-**Pending work** exists when any subscribed stream has unprocessed events:
-
-```
-pending_work = any(tail[path] > acked[path] for path in subscribed_streams)
-```
-
-Where `acked[path]` is the last acknowledged offset (inclusive — this event was processed), `tail[path]` is the current tail offset of the stream, and offset `-1` means "before any events" (nothing acked yet).
-
-**State transitions:**
-
-1. **IDLE → WAKING**: `pending_work` becomes true; L1 epoch is acquired (incrementing epoch), new `wake_id` generated
-2. **WAKING → LIVE**: Consumer responds to webhook with 2xx, OR a callback claims the `wake_id` (whichever happens first)
-3. **WAKING → IDLE**: Consumer responds to webhook with `{ "done": true }` AND `pending_work` is false; L1 epoch released
-4. **LIVE → IDLE**: Consumer sends `{ "done": true }` in callback AND `pending_work` is false, OR L1 lease TTL expires with no callback activity; L1 epoch released
-5. **Re-wake**: If `{ "done": true }` is received but `pending_work` is still true, immediately trigger a new wake (L1 acquire again, new `wake_id`)
-
-**L1/L2 mapping:**
-
-- **Server acquires L1 epoch BEFORE sending webhook.** The IDLE → WAKING transition acquires the L1 epoch (REGISTERED → READING). The consumer receives the webhook already in READING state — the `epoch` and `token` fields in the payload are from this pre-webhook acquire.
-- **Wake claiming (`wake_id`) is an L2-only protocol step — it does NOT acquire the epoch.** The epoch was already acquired at IDLE → WAKING. Claiming the `wake_id` only transitions the L2 state (WAKING → LIVE); the L1 state remains READING throughout.
-- **Consumer remains REGISTERED (L1) regardless of webhook delivery status.** If webhook delivery fails (timeout, 4xx, 5xx), the server releases the L1 epoch (READING → REGISTERED) and retries. L2 failure handling (Section 7.1.8) never leaves a consumer stuck in READING with no active session.
-- **Done signal transitions L1 READING → REGISTERED.** When `{ "done": true }` is received, the L2 state transitions to IDLE and the L1 epoch is released (READING → REGISTERED). Cursors committed via acks are preserved.
-
-**Epoch** is the L1 epoch (see Section 6.3). Callbacks with a stale epoch **MUST** be rejected with `409 STALE_EPOCH`. This is analogous to producer epochs in Section 5.2.1.
-
-**`wake_id`** is a unique identifier for each wake attempt. The first callback claiming a `wake_id` transitions the consumer to LIVE. Claiming an already-claimed `wake_id` is **idempotent** — the callback succeeds. This handles the case where a 2xx webhook response already transitioned the consumer to LIVE before the callback arrives. Callbacks with a non-matching `wake_id` **MUST** receive `409 ALREADY_CLAIMED`.
-
-**WAKING timeout (10 seconds):** If the consumer has not transitioned to LIVE within 10 seconds of a webhook delivery attempt (no 2xx response and no callback), the server retries the webhook delivery with exponential backoff (see Section 7.1.8). This handles cases where the webhook endpoint is unreachable or slow to start. A 2xx response means the consumer has received the notification and is actively processing — the server transitions immediately to LIVE, and the L1 lease TTL takes over from there.
-
-**Liveness timeout:** Once LIVE, any callback request (including empty heartbeat acks) resets the L1 lease timer. If the lease expires with no callback activity, the consumer transitions to IDLE. Consumers doing slow processing **SHOULD** send periodic callbacks to stay alive. Serverless functions that hold the webhook connection open are covered by the HTTP request timeout (30 seconds) — when the response arrives, it transitions to LIVE and the lease timer begins.
-
-**Wake-up batching:** If multiple events arrive on subscribed streams while the consumer is IDLE, they are batched into a single wake-up. The server **MUST NOT** wake the consumer multiple times — one wake-up per IDLE → WAKING transition.
-
-**No re-wake while LIVE:** If the consumer is already LIVE, new events on subscribed streams **MUST NOT** trigger additional wake-ups.
-
-#### 7.1.3. Wake-up Notification
-
-When waking a consumer, the server **MUST** POST to the webhook URL:
-
-```http
-POST {webhook_url}
-Content-Type: application/json
-Webhook-Signature: t=<timestamp>,sha256=<signature>
-
-{
-  "consumer_id": "{subscription_id}:{url_encoded_stream_path}",
-  "epoch": 7,
-  "wake_id": "w_f8a3b2c1",
-  "primary_stream": "/agents/task-123",
+  "id": "sub-1",
+  "subscription_id": "sub-1",
+  "service_id": "svc",
+  "type": "webhook",
+  "pattern": "events/*",
   "streams": [
-    { "path": "/agents/task-123", "offset": "1002" },
-    { "path": "/shared-filesystem/task-123", "offset": "500" }
+    {
+      "path": "events/abc",
+      "link_type": "glob",
+      "acked_offset": "0000000000000001_0000000000000042"
+    }
   ],
-  "triggered_by": ["/agents/task-123"],
-  "callback": "{callback_base_url}/callback/{consumer_id}",
-  "token": "eyJhbGciOiJIUzI1NiIs..."
+  "webhook": { "url": "https://worker.example/hooks" },
+  "wake_stream": null,
+  "lease_ttl_ms": 30000,
+  "created_at": "2026-05-09T00:00:00.000Z",
+  "status": "active",
+  "description": "event processor"
 }
 ```
 
-**Headers:**
-
-- `Webhook-Signature`: HMAC-SHA256 signature for verification (see Section 7.1.4)
-
-**Payload fields:**
-
-- `consumer_id`: Unique identifier for this consumer instance
-- `epoch`: Current L1 epoch; consumers **MUST** include this in callback requests for fencing
-- `wake_id`: Unique identifier for this wake attempt; consumers **MUST** include this in their first callback to claim the wake
-- `primary_stream`: The stream path that originally matched the subscription pattern
-- `streams`: All streams this consumer is subscribed to, with their last acknowledged offset
-- `triggered_by`: Array of stream paths that have pending events (informational)
-- `callback`: Scoped URL for acknowledgments and subscription changes
-- `token`: Initial callback token (from L1 acquire); use in `Authorization: Bearer` header for first callback
-
-The webhook **MAY** respond with `{ "done": true }` to immediately return to IDLE (for simple synchronous processing). This counts as claiming the wake — the server **MUST NOT** redeliver.
-
-#### 7.1.4. Webhook Signature Verification
-
-All webhook notifications **MUST** be signed. Consumers **SHOULD** verify signatures before processing.
-
-**Signature format:**
-
-```
-Webhook-Signature: t=<timestamp>,sha256=<signature>
-```
-
-- `t`: Unix timestamp (seconds) when the signature was generated
-- `sha256`: Hex-encoded HMAC-SHA256 of `<timestamp>.<raw_body>` using the subscription's `webhook_secret`
-
-**Verification steps:**
-
-1. Extract timestamp and signature from the `Webhook-Signature` header
-2. Check timestamp is within acceptable window (±5 minutes) to prevent replay attacks
-3. Compute expected signature: `HMAC-SHA256(webhook_secret, "<timestamp>.<raw_body>")`
-4. Compare signatures using constant-time comparison
-
-Implementations **MUST** use the raw request body bytes for signature verification. Parsing and re-serializing JSON can change whitespace or key order and break the signature.
-
-#### 7.1.5. Callback API
-
-The callback URL is scoped to the specific consumer instance and bundles wake claim + L1 ack in a single request. Consumers authenticate via the `Authorization` header with the token from the webhook payload or the most recent callback response.
+`status` is `active` while delivery is operating normally and `failed` while webhook retry is scheduled after a failed delivery attempt. The webhook secret MUST NOT be returned by GET.
 
 ```http
-POST {callback_url}
-Authorization: Bearer {token}
+DELETE /v1/stream/:serviceId/__ds/subscriptions/:id
+```
+
+Deletion tombstones the subscription and returns `204 No Content`. In-flight callback, ack, or release requests for a deleted subscription MUST fail and MUST NOT advance cursors.
+
+### 6.4. Explicit Stream Membership
+
+Explicit stream links can be added and removed without changing the subscription's glob pattern.
+
+```http
+POST /v1/stream/:serviceId/__ds/subscriptions/:id/streams
+Content-Type: application/json
+
+{ "streams": ["events/x", "events/y"] }
+
+→ 204 No Content
+```
+
+New explicit streams are linked at their current tail offset. Adding an already-linked stream is idempotent.
+
+```http
+DELETE /v1/stream/:serviceId/__ds/subscriptions/:id/streams/:path
+
+→ 204 No Content
+```
+
+`:path` is the URL-encoded service-relative stream path and may contain slashes. Deleting an absent explicit link is idempotent. This operation removes only the explicit link; a matching glob link remains active.
+
+## 7. Subscription Delivery
+
+A subscription is idle when no lease is held and no wake is in flight. When any linked stream has a tail offset greater than its `acked_offset`, the subscription has pending work. Pending work creates a new wake generation unless the subscription already has a wake in flight or a worker lease is held.
+
+Every wake has a unique `wake_id` and monotonically increasing `generation` scoped to the subscription. Acks are last-processed inclusive: acking offset `N` means the next read for that stream starts after `N`.
+
+### 7.1. Webhook Delivery and Callback
+
+When a matching stream receives an append and the subscription is idle, the Subscription Durable Object sends a webhook request:
+
+```http
+POST {webhook.url}
+Content-Type: application/json
+Webhook-Signature: t=<timestamp>,sha256=<hex>
+
+{
+  "subscription_id": "sub-1",
+  "wake_id": "w_abc123",
+  "generation": 7,
+  "streams": [
+    {
+      "path": "events/abc",
+      "link_type": "glob",
+      "acked_offset": "0000000000000001_0000000000000042",
+      "tail_offset": "0000000000000002_0000000000000084",
+      "has_pending": true
+    }
+  ],
+  "callback_url": "https://server.example/v1/stream/svc/__ds/subscriptions/sub-1/callback",
+  "callback_token": "eyJ..."
+}
+```
+
+`Webhook-Signature` is an HMAC-SHA256 signature over `<timestamp>.<raw_body>` keyed by the subscription's `webhook_secret`. Webhook receivers SHOULD verify the signature using the raw request body and reject timestamps outside a small replay window such as five minutes.
+
+The webhook handler can finish synchronously by returning:
+
+```json
+{ "done": true }
+```
+
+When a webhook returns `{ "done": true }`, the server MUST automatically ack the tail offsets included in that wake snapshot and release the lease. If new events arrived after the snapshot, the subscription still has pending work and MUST be woken again with a new `wake_id` and `generation`.
+
+For asynchronous processing, the handler calls back:
+
+```http
+POST /v1/stream/:serviceId/__ds/subscriptions/:id/callback
+Authorization: Bearer <callback_token>
 Content-Type: application/json
 
 {
-  "epoch": 7,
-  "wake_id": "w_f8a3b2c1",
-  "acks": [
-    { "path": "/agents/task-123", "offset": "1005" }
-  ],
-  "subscribe": ["/tools/task-123"],
-  "unsubscribe": ["/some-old-stream"],
+  "wake_id": "w_abc123",
+  "generation": 7,
+  "acks": [{ "stream": "events/abc", "offset": "0000000000000002_0000000000000084" }],
   "done": true
 }
 ```
 
-**Required fields:**
+Callback tokens are scoped to a subscription and generation. They are not service JWTs and are used only for this wake's callback path.
 
-- `epoch`: **MUST** match current L1 consumer epoch (fencing)
-- `wake_id`: **MUST** be included in the first callback to claim the wake; **OPTIONAL** in subsequent callbacks
-
-**Optional fields:**
-
-- `acks`: Array of `{ path, offset }` pairs acknowledging processed events (delegated to L1 ack)
-- `subscribe`: Array of stream paths to subscribe to
-- `unsubscribe`: Array of stream paths to unsubscribe from
-- `done`: Boolean indicating the consumer is finished processing
-
-**Callback semantics:**
-
-- Callbacks are processed **serially** per consumer instance
-- All operations are **idempotent** — safe to retry on timeout
-- Requests are **atomic** — entire request succeeds or fails together
-- Any callback (even empty `{}`) resets the L1 lease timer via an empty ack (heartbeat)
-
-**Success response:**
+Successful callbacks return:
 
 ```json
-{
-  "ok": true,
-  "token": "eyJ...",
-  "streams": [
-    { "path": "/agents/task-123", "offset": "1005" },
-    { "path": "/tools/task-123", "offset": "42" }
-  ]
-}
+{ "ok": true, "next_wake": false }
 ```
 
-- `token`: New callback token from L1 (always included; consumer **MUST** use this for subsequent requests)
-- `streams`: Current list of all subscribed streams with their offsets (always included)
-
-**Offset semantics:** Offsets are "last processed inclusive" — the offset value represents the last event that was successfully processed. Offset `"-1"` means no events have been processed yet.
-
-**Error responses:**
-
-| Status | Code              | Description                                              |
-| ------ | ----------------- | -------------------------------------------------------- |
-| 400    | `INVALID_REQUEST` | Malformed JSON or unknown fields                         |
-| 401    | `TOKEN_EXPIRED`   | Callback token has expired (response includes new token) |
-| 401    | `TOKEN_INVALID`   | Callback token is malformed or signature invalid         |
-| 409    | `ALREADY_CLAIMED` | `wake_id` does not match current wake                    |
-| 409    | `INVALID_OFFSET`  | Ack offset is invalid (e.g., beyond stream tail)         |
-| 409    | `STALE_EPOCH`     | Callback epoch is older than current consumer epoch      |
-| 410    | `CONSUMER_GONE`   | Consumer instance no longer exists                       |
-
-Error response body:
-
-```json
-{
-  "ok": false,
-  "error": {
-    "code": "STALE_EPOCH",
-    "message": "Consumer epoch 5 is stale; current epoch is 7"
-  },
-  "token": "eyJ..."
-}
-```
-
-For `TOKEN_EXPIRED`, a new token is included in the error response — the consumer **SHOULD** retry with the new token. For `STALE_EPOCH` and `ALREADY_CLAIMED`, the consumer **SHOULD** stop processing.
-
-**Token refresh:** Every callback response **MUST** include a `token` field. The server **MAY** return the same token if it is not nearing expiry, or a fresh token if the current one will expire soon (e.g., within 5 minutes). Error responses that include a token always provide a fresh one. Consumers **MUST** use the most recently received token for subsequent requests.
-
-#### 7.1.6. Dynamic Subscribe/Unsubscribe
-
-Consumers **MAY** subscribe to additional streams or unsubscribe from existing streams via the callback API.
-
-**Subscribe behavior:**
-
-- New subscriptions start at current tail (new events only)
-- Subscribing to a non-existent stream is allowed — the consumer will be woken when the stream is created and receives its first event
-- No validation of stream paths
-
-**Unsubscribe behavior:**
-
-- Consumers **MAY** unsubscribe from any stream including the primary stream
-- Unsubscribing from all streams removes the consumer instance
-- If a subscribed stream is deleted, it is silently removed from the consumer's subscription list
-
-#### 7.1.7. Secondary Subscriptions
-
-When a consumer subscribes to streams beyond its primary, the coordination works via internal webhooks:
-
-1. The primary stream's server creates a subscription on the secondary stream (marked as internal)
-2. The secondary stream sends webhook notifications to the primary stream's server
-3. The primary stream decides whether to wake the consumer (if IDLE) or let the callback loop handle it (if LIVE)
-
-For single-server deployments, implementations **MAY** optimize internal subscriptions with direct function calls. For distributed deployments, servers **MUST** use the same HMAC signature verification for internal webhooks.
-
-#### 7.1.8. Failure Handling
-
-**Webhook request timeout:** Servers **MUST** wait up to 30 seconds for a response from the webhook endpoint. If the endpoint does not respond within this window, the request is considered failed.
-
-**WAKING timeout:** The server **MUST** wait at least 10 seconds for the consumer to transition from WAKING to LIVE (via 2xx response or callback claim). If neither occurs, the server retries the webhook delivery. A 2xx webhook response transitions the consumer to LIVE — no retry is needed because the consumer has acknowledged the notification.
-
-**Webhook delivery retries** use exponential backoff for failed deliveries:
-
-- Initial retry with exponential backoff up to 30 seconds between attempts
-- Then retry every 60 seconds with jitter
-- Retries continue until the consumer transitions to LIVE, but consumer instances are garbage collected after 3 days of consecutive webhook failures (see Section 7.1.10)
-
-**Delivery guarantee** is at-least-once. Consumers **MUST** handle duplicate events idempotently.
-
-#### 7.1.9. Subscription HTTP API
-
-Subscriptions use the glob pattern as the URL path, with query parameters for CRUD operations.
-
-**Create subscription:**
+If `wake_id` or `generation` is stale, the server MUST return:
 
 ```http
-PUT /{pattern}?subscription={id}
+409 Conflict
+Content-Type: application/json
+
+{ "error": { "code": "FENCED" } }
+```
+
+Webhook delivery retries use exponential backoff from 1 second up to 60 seconds with 20% jitter. Retry metadata, including `next_attempt_at`, MUST be persisted across Durable Object eviction so a freshly-loaded object honors the prior retry schedule.
+
+### 7.2. Pull-wake Claim, Ack, and Release
+
+A pull-wake subscription writes wake events to its configured `wake_stream`. The wake stream is an ordinary durable stream and MUST be created explicitly by the application.
+
+Wake event shape:
+
+```json
+{
+  "type": "wake",
+  "subscription_id": "sub-1",
+  "stream": "events/abc",
+  "generation": 7,
+  "ts": 1778324210000
+}
+```
+
+Workers consume the wake stream and race to claim the subscription:
+
+```http
+POST /v1/stream/:serviceId/__ds/subscriptions/:id/claim
+Authorization: Bearer <service-jwt>
+Content-Type: application/json
+
+{ "worker": "worker-name" }
+```
+
+Successful claim:
+
+```json
+{
+  "wake_id": "w_abc123",
+  "generation": 7,
+  "token": "eyJ...",
+  "streams": [
+    {
+      "path": "events/abc",
+      "link_type": "glob",
+      "acked_offset": "0000000000000001_0000000000000042",
+      "tail_offset": "0000000000000002_0000000000000084",
+      "has_pending": true
+    }
+  ],
+  "lease_ttl_ms": 30000
+}
+```
+
+If another worker holds the lease:
+
+```http
+409 Conflict
 Content-Type: application/json
 
 {
-  "webhook": "https://my-agent.workers.dev/handler",
-  "description": "Agent task processor"
+  "error": {
+    "code": "ALREADY_CLAIMED",
+    "current_holder": "worker-2",
+    "generation": 7
+  }
 }
+```
 
-→ 201 Created
+A pull-wake worker acks through the subscription-scoped ack endpoint:
+
+```http
+POST /v1/stream/:serviceId/__ds/subscriptions/:id/ack
+Authorization: Bearer <claim-token>
+Content-Type: application/json
+
 {
-  "subscription_id": "{id}",
-  "pattern": "/{pattern}",
-  "webhook": "https://my-agent.workers.dev/handler",
-  "webhook_secret": "whsec_abc123def456...",
-  "description": "Agent task processor"
+  "wake_id": "w_abc123",
+  "generation": 7,
+  "acks": [{ "stream": "events/abc", "offset": "0000000000000002_0000000000000084" }],
+  "done": true
 }
 ```
 
-The `webhook_secret` is only returned on creation. It cannot be retrieved later.
+The ack endpoint doubles as heartbeat. Calling it without `done: true` extends the lease and keeps the worker claim active. Calling it with `done: true` applies the acks, releases the lease, and returns `{ "ok": true, "next_wake": true|false }`.
 
-Creating a subscription with an existing ID and identical configuration **MUST** return `200 OK` (idempotent). Creating with an existing ID but different configuration **MUST** return `409 Conflict`.
-
-**URL encoding:** Servers **MUST** treat `*` and `%2A` as equivalent in URL paths.
-
-**List subscriptions under a pattern:**
+A worker can voluntarily release without acking:
 
 ```http
-GET /{pattern}?subscriptions
-→ 200 OK
-{ "subscriptions": [...] }
-```
+POST /v1/stream/:serviceId/__ds/subscriptions/:id/release
+Authorization: Bearer <claim-token>
+Content-Type: application/json
 
-**List all subscriptions:**
+{ "wake_id": "w_abc123", "generation": 7 }
 
-```http
-GET /**?subscriptions
-→ 200 OK
-{ "subscriptions": [...] }
-```
-
-**Get subscription by ID:**
-
-```http
-GET /**?subscription={id}
-→ 200 OK
-{ "subscription_id": "{id}", "pattern": "/{pattern}", ... }
-```
-
-The response **MUST NOT** include `webhook_secret`.
-
-**Delete subscription:**
-
-```http
-DELETE /{pattern}?subscription={id}
 → 204 No Content
 ```
 
-When a subscription is deleted, all its consumer instances **MUST** be immediately removed. Any in-flight callback requests **MUST** receive `410 CONSUMER_GONE`.
+If pending work remains after release, the server MUST write another wake event for a later claim attempt. Stale release or ack requests MUST return `409 FENCED`.
 
-#### 7.1.10. Garbage Collection
+### 7.3. Generation Fencing and Leases
 
-Consumer instances **MUST** be removed when:
+`generation` is the subscription-level fencing counter. It increments for every wake. `wake_id` is unique per wake and prevents a request for one wake from being replayed into another wake in the same generation. Servers MUST reject a callback, ack, or release unless all of the following match current subscription state:
 
-- The primary stream is deleted
-- Webhook errors continuously for 3 days
-- The consumer unsubscribes from all streams (including primary)
+- Bearer token is valid for the subscription.
+- Token generation matches the current generation.
+- Request `generation` matches the current generation.
+- Request `wake_id` matches the current wake.
 
-When a consumer instance is removed, all its internal webhook subscriptions to secondary streams **MUST** also be cleaned up.
-
-When a subscription is deleted, all its consumer instances **MUST** be removed immediately (cascade delete).
-
-### 7.2. Pull-Wake (Competitive Wake)
-
-For worker pool patterns where multiple workers compete to process entities.
-
-> **Phase 2 scope:** Pull-wake consumers are single-stream (one consumer per
-> entity stream, e.g., `/users/123` → `user-handler`). Multi-stream pull-wake
-> consumers are deferred to a future phase.
-
-#### 7.2.1. Wake Stream
-
-A Durable Stream (Layer 0 self-hosting) serving as notification channel and coordination log.
-
-**Events:**
-
-```json
-{ "type": "wake",    "stream": "/users/123", "consumer": "user-handler" }
-{ "type": "claimed", "stream": "/users/123", "worker": "worker-7", "epoch": 42 }
-```
-
-- One event per stream (not arrays)
-- Wake events written when REGISTERED consumer has pending data
-- Claimed events written after successful epoch acquisition (informational)
-
-#### 7.2.2. Claim Protocol
-
-Control plane / data plane separation:
-
-- Claims go through atomic `POST /consumers/{id}/acquire` (server authoritative)
-- Server writes claimed notification to wake stream after success
-- Workers use claimed notifications to skip already-claimed wakes (optimization)
-- Worker that misses claimed notification gets 409 from acquire (safe fallback)
-
-**Worker flow:**
-
-1. Read wake stream via SSE (Layer 0)
-2. See wake event with no subsequent claimed event for that stream
-3. Call `POST /consumers/{consumer_id}/acquire` with streams + worker
-4. On success: receive epoch + bearer token, server writes claimed event
-5. On 409: another worker claimed it, skip and continue reading
-
-#### 7.2.3. Bootstrapping
-
-The wake stream operates at Layer 0 only — no named consumers on the wake stream, no wake-about-wake. This is the termination condition for self-hosting recursion (analogous to DNS root servers with hardcoded IPs).
-
-#### 7.2.4. Liveness Detection
-
-Two mechanisms combine:
-
-- SSE connection to wake stream — connection drop means worker is offline
-- Epoch lease timeout — processing sessions have TTL extended by ack activity
-
-#### 7.2.5. Contention Handling
-
-| Pattern         | Readers | Contention | Example                       |
-| --------------- | ------- | ---------- | ----------------------------- |
-| Single consumer | 1       | None       | Desktop app for user entity   |
-| Small pool      | 2–5     | Low        | Team workspace handlers       |
-| Large pool      | Many    | High       | Batch processing, distributed |
-
-Thundering herd mitigation:
-
-- Random backoff before claim attempt (proportional to known worker count)
-- Workers may signal capacity via presence events on wake stream
-
-#### 7.2.6. Failure Handling
-
-- Worker SSE drops → loses access to wake stream
-- Worker reconnects, resumes from last wake stream offset
-- Active session timeout → epoch released (Layer 1 policy)
-
-### 7.3. Mobile Push (Unicast Wake)
-
-[Future — APNs/FCM integration. See RFC § Layer 2 / Mechanism C.]
+`lease_ttl_ms` bounds worker liveness. For webhook delivery, the lease starts when a wake is issued and is extended by valid callbacks. For pull-wake, the lease starts when a worker successfully claims and is extended by valid ack calls without `done: true`. When a lease expires, the server MUST clear the holder and wake token; if pending work remains, it MUST schedule another wake.
 
 ## 8. Offsets
 
-Offsets are opaque tokens that identify positions within a stream. They are also used as the "last acknowledged" cursor in Named Consumer (Section 6) offset tracking. They have the following properties:
+Offsets are opaque tokens that identify positions within a stream. They are also used as subscription `acked_offset` cursors (Section 6). They have the following properties:
 
 1. **Opaque**: Clients **MUST NOT** interpret offset structure or meaning
 2. **Lexicographically Sortable**: For any two valid offsets for the same stream, a lexicographic comparison determines their relative position in the stream. Clients **MAY** compare offsets lexicographically to determine ordering.
@@ -1816,11 +1413,11 @@ Implementations supporting webhook subscriptions **MUST** validate webhook URLs 
 
 ### 12.9. Callback Token Security
 
-Callback tokens **MUST** be passed via the `Authorization` header to avoid logging exposure. Tokens **SHOULD** be signed (e.g., HMAC-signed JWTs) containing the consumer ID, epoch, and expiry. Implementations **MUST** validate token signatures on every callback request. Tokens have a 1-hour TTL and are refreshed only when nearing expiry (e.g., within 5 minutes); otherwise the same token is returned to avoid unnecessary cryptographic overhead.
+Callback and claim tokens **MUST** be passed via the `Authorization` header to avoid logging exposure. Tokens **SHOULD** be signed (e.g., HMAC-signed JWTs) containing the subscription identity, generation, and expiry. Implementations **MUST** validate token signatures on every callback, ack, and release request.
 
 ### 12.10. Webhook Signature Security
 
-Webhook signatures (Section 7.1.4) prevent spoofing of notifications. The `webhook_secret` is generated by the server and returned only on subscription creation. Consumers **SHOULD** verify signatures before processing any webhook payload. Timestamps in signatures prevent replay attacks within the ±5-minute tolerance window.
+Webhook signatures (Section 7.1) prevent spoofing of notifications. The `webhook_secret` is generated by the server and returned only on subscription creation. Webhook receivers **SHOULD** verify signatures before processing any webhook payload. Timestamps in signatures prevent replay attacks within the ±5-minute tolerance window.
 
 ### 12.11. TLS
 
