@@ -558,7 +558,6 @@ export class DurableStreamTestServer {
     if (this.subscriptionRoutes && method) {
       const handled = await this.subscriptionRoutes.handleRequest(
         method,
-        url,
         path,
         req,
         res

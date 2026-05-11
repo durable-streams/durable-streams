@@ -14,7 +14,6 @@ import type {
 } from "./subscription-types"
 
 interface ParsedRoute {
-  namespace: string
   subscriptionId: string
   action:
     | `base`
@@ -49,12 +48,11 @@ export class SubscriptionRoutes {
 
   async handleRequest(
     method: string,
-    url: URL,
     path: string,
     req: IncomingMessage,
     res: ServerResponse
   ): Promise<boolean> {
-    const route = this.parseRoute(url, path)
+    const route = this.parseRoute(path)
     if (!route) return false
 
     try {
@@ -105,7 +103,6 @@ export class SubscriptionRoutes {
       }
 
       const result = this.manager.createOrConfirm(
-        route.namespace,
         route.subscriptionId,
         input.value
       )
@@ -128,10 +125,7 @@ export class SubscriptionRoutes {
     }
 
     if (method === `GET`) {
-      const subscription = this.manager.get(
-        route.namespace,
-        route.subscriptionId
-      )
+      const subscription = this.manager.get(route.subscriptionId)
       if (!subscription) {
         this.writeError(
           res,
@@ -146,7 +140,7 @@ export class SubscriptionRoutes {
     }
 
     if (method === `DELETE`) {
-      this.manager.delete(route.namespace, route.subscriptionId)
+      this.manager.delete(route.subscriptionId)
       res.writeHead(204)
       res.end()
       return
@@ -182,7 +176,6 @@ export class SubscriptionRoutes {
       return
     }
     const ok = this.manager.addExplicitStreams(
-      route.namespace,
       route.subscriptionId,
       streams.map(normalizeRelativePath)
     )
@@ -209,7 +202,6 @@ export class SubscriptionRoutes {
       return
     }
     const ok = this.manager.removeExplicitStream(
-      route.namespace,
       route.subscriptionId,
       route.streamPath ?? ``
     )
@@ -243,7 +235,6 @@ export class SubscriptionRoutes {
     }
     const body = (await this.readJson(req)) as SubscriptionCallbackRequest
     const result = await this.manager.handleWebhookCallback(
-      route.namespace,
       route.subscriptionId,
       token,
       body
@@ -267,11 +258,7 @@ export class SubscriptionRoutes {
       )
       return
     }
-    const result = await this.manager.claim(
-      route.namespace,
-      route.subscriptionId,
-      worker
-    )
+    const result = await this.manager.claim(route.subscriptionId, worker)
     this.writeManagerResult(res, result)
   }
 
@@ -291,12 +278,7 @@ export class SubscriptionRoutes {
       return
     }
     const body = (await this.readJson(req)) as SubscriptionCallbackRequest
-    const result = await this.manager.ack(
-      route.namespace,
-      route.subscriptionId,
-      token,
-      body
-    )
+    const result = await this.manager.ack(route.subscriptionId, token, body)
     this.writeManagerResult(res, result)
   }
 
@@ -316,12 +298,7 @@ export class SubscriptionRoutes {
       return
     }
     const body = (await this.readJson(req)) as SubscriptionCallbackRequest
-    const result = await this.manager.release(
-      route.namespace,
-      route.subscriptionId,
-      token,
-      body
-    )
+    const result = await this.manager.release(route.subscriptionId, token, body)
     this.writeManagerResult(res, result)
   }
 
@@ -403,28 +380,24 @@ export class SubscriptionRoutes {
     }
   }
 
-  private parseRoute(url: URL, path: string): ParsedRoute | null {
+  private parseRoute(path: string): ParsedRoute | null {
     const prefix = `/v1/stream-meta/subscriptions/`
     if (!path.startsWith(prefix)) return null
 
     const rest = path.slice(prefix.length)
     const parts = rest.split(`/`)
-    const namespace = normalizeRelativePath(
-      url.searchParams.get(`service_id`) ?? ``
-    )
     const subscriptionId = parts[0] ? decodeURIComponent(parts[0]) : ``
     if (!subscriptionId) return null
 
     const tail = parts.slice(1)
     if (tail.length === 0) {
-      return { namespace, subscriptionId, action: `base` }
+      return { subscriptionId, action: `base` }
     }
     if (tail[0] === `streams` && tail.length === 1) {
-      return { namespace, subscriptionId, action: `streams` }
+      return { subscriptionId, action: `streams` }
     }
     if (tail[0] === `streams` && tail.length > 1) {
       return {
-        namespace,
         subscriptionId,
         action: `stream`,
         streamPath: normalizeRelativePath(
@@ -437,7 +410,6 @@ export class SubscriptionRoutes {
       [`callback`, `claim`, `ack`, `release`].includes(tail[0]!)
     ) {
       return {
-        namespace,
         subscriptionId,
         action: tail[0] as ParsedRoute[`action`],
       }

@@ -47,31 +47,16 @@ function normalizeRelativePath(path: string): string {
   return path.replace(/^\/+/, ``).replace(/\/+$/, ``)
 }
 
-function toAbsoluteStreamPath(namespace: string, streamPath: string): string {
-  const normalizedNamespace = normalizeRelativePath(namespace)
-  const namespacePrefix =
-    normalizedNamespace.length > 0 ? `${normalizedNamespace}/` : ``
-  return `/v1/stream/${namespacePrefix}${normalizeRelativePath(streamPath)}`
+function toAbsoluteStreamPath(streamPath: string): string {
+  return `/v1/stream/${normalizeRelativePath(streamPath)}`
 }
 
-function toNamespaceRelativePath(
-  namespace: string,
-  absolutePath: string
-): string | null {
+function toStreamRelativePath(absolutePath: string): string | null {
   const streamRoot = `/v1/stream/`
   if (!absolutePath.startsWith(streamRoot)) return null
 
   const path = absolutePath.slice(streamRoot.length)
-  const normalizedNamespace = normalizeRelativePath(namespace)
-  if (normalizedNamespace.length === 0) {
-    return path.length > 0 ? path : null
-  }
-
-  const prefix = `${normalizedNamespace}/`
-  if (!path.startsWith(prefix)) return null
-  const relative = path.slice(prefix.length)
-  if (relative === ``) return null
-  return relative
+  return path.length > 0 ? path : null
 }
 
 function stableConfigHash(input: SubscriptionCreateInput): string {
@@ -172,15 +157,13 @@ export class SubscriptionManager {
   }
 
   createOrConfirm(
-    namespace: string,
     id: string,
     input: SubscriptionCreateInput
   ):
     | { subscription: SubscriptionRecord; created: boolean }
     | { error: SubscriptionError } {
     const configHash = stableConfigHash(input)
-    const key = this.key(namespace, id)
-    const existing = this.subscriptions.get(key)
+    const existing = this.subscriptions.get(id)
     if (existing) {
       if (existing.config_hash !== configHash) {
         return {
@@ -228,7 +211,6 @@ export class SubscriptionManager {
     }
 
     const subscription: SubscriptionRecord = {
-      namespace,
       id,
       type: input.type,
       pattern: input.pattern,
@@ -258,65 +240,56 @@ export class SubscriptionManager {
         subscription,
         stream,
         `explicit`,
-        this.getTailOffset(namespace, stream)
+        this.getTailOffset(stream)
       )
     }
 
     if (input.pattern) {
-      for (const stream of this.listNamespaceStreams(namespace)) {
+      for (const stream of this.listStreams()) {
         if (globMatch(input.pattern, stream)) {
           this.linkStream(
             subscription,
             stream,
             `glob`,
-            this.getTailOffset(namespace, stream)
+            this.getTailOffset(stream)
           )
         }
       }
     }
 
-    this.subscriptions.set(key, subscription)
+    this.subscriptions.set(id, subscription)
     return { subscription, created: true }
   }
 
-  get(namespace: string, id: string): SubscriptionRecord | undefined {
-    return this.subscriptions.get(this.key(namespace, id))
+  get(id: string): SubscriptionRecord | undefined {
+    return this.subscriptions.get(id)
   }
 
-  delete(namespace: string, id: string): boolean {
-    const key = this.key(namespace, id)
-    const subscription = this.subscriptions.get(key)
+  delete(id: string): boolean {
+    const subscription = this.subscriptions.get(id)
     if (!subscription) return false
     this.clearLease(subscription)
     if (subscription.retry_timer) clearTimeout(subscription.retry_timer)
-    this.subscriptions.delete(key)
+    this.subscriptions.delete(id)
     return true
   }
 
-  addExplicitStreams(
-    namespace: string,
-    id: string,
-    streams: Array<string>
-  ): boolean {
-    const subscription = this.get(namespace, id)
+  addExplicitStreams(id: string, streams: Array<string>): boolean {
+    const subscription = this.get(id)
     if (!subscription) return false
     for (const stream of streams) {
       this.linkStream(
         subscription,
         stream,
         `explicit`,
-        this.getTailOffset(namespace, stream)
+        this.getTailOffset(stream)
       )
     }
     return true
   }
 
-  removeExplicitStream(
-    namespace: string,
-    id: string,
-    streamPath: string
-  ): boolean {
-    const subscription = this.get(namespace, id)
+  removeExplicitStream(id: string, streamPath: string): boolean {
+    const subscription = this.get(id)
     if (!subscription) return false
     const normalized = normalizeRelativePath(streamPath)
     const link = subscription.streams.get(normalized)
@@ -331,10 +304,7 @@ export class SubscriptionManager {
   async onStreamAppend(absolutePath: string): Promise<void> {
     if (this.isShuttingDown) return
     for (const subscription of this.subscriptions.values()) {
-      const relative = toNamespaceRelativePath(
-        subscription.namespace,
-        absolutePath
-      )
+      const relative = toStreamRelativePath(absolutePath)
       if (!relative) continue
       if (subscription.pattern && globMatch(subscription.pattern, relative)) {
         const existing = subscription.streams.get(relative)
@@ -353,21 +323,17 @@ export class SubscriptionManager {
 
   onStreamDeleted(absolutePath: string): void {
     for (const subscription of this.subscriptions.values()) {
-      const relative = toNamespaceRelativePath(
-        subscription.namespace,
-        absolutePath
-      )
+      const relative = toStreamRelativePath(absolutePath)
       if (relative) subscription.streams.delete(relative)
     }
   }
 
   async handleWebhookCallback(
-    namespace: string,
     id: string,
     token: string,
     request: SubscriptionCallbackRequest
   ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const subscription = this.get(namespace, id)
+    const subscription = this.get(id)
     if (!subscription) {
       return this.errorResponse(
         404,
@@ -396,11 +362,10 @@ export class SubscriptionManager {
   }
 
   async claim(
-    namespace: string,
     id: string,
     worker: string
   ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const subscription = this.get(namespace, id)
+    const subscription = this.get(id)
     if (!subscription) {
       return this.errorResponse(
         404,
@@ -458,12 +423,11 @@ export class SubscriptionManager {
   }
 
   async ack(
-    namespace: string,
     id: string,
     token: string,
     request: SubscriptionCallbackRequest
   ): Promise<{ status: number; body: Record<string, unknown> }> {
-    const subscription = this.get(namespace, id)
+    const subscription = this.get(id)
     if (!subscription) {
       return this.errorResponse(
         404,
@@ -498,12 +462,11 @@ export class SubscriptionManager {
   }
 
   async release(
-    namespace: string,
     id: string,
     token: string,
     request: SubscriptionCallbackRequest
   ): Promise<{ status: number; body?: Record<string, unknown> }> {
-    const subscription = this.get(namespace, id)
+    const subscription = this.get(id)
     if (!subscription) {
       return this.errorResponse(
         404,
@@ -694,10 +657,7 @@ export class SubscriptionManager {
     streamPath: string
   ): Promise<void> {
     if (!subscription.wake_stream) return
-    const wakeStream = toAbsoluteStreamPath(
-      subscription.namespace,
-      subscription.wake_stream
-    )
+    const wakeStream = toAbsoluteStreamPath(subscription.wake_stream)
     if (!this.streamStore.has(wakeStream)) {
       serverLog.warn(
         `[subscriptions] wake stream does not exist: ${wakeStream}`
@@ -755,12 +715,7 @@ export class SubscriptionManager {
           `Ack offset regresses the committed cursor`
         )
       }
-      if (
-        compareOffsets(
-          ack.offset,
-          this.getTailOffset(subscription.namespace, stream)
-        ) > 0
-      ) {
+      if (compareOffsets(ack.offset, this.getTailOffset(stream)) > 0) {
         return this.errorResponse(
           409,
           `INVALID_OFFSET`,
@@ -824,7 +779,7 @@ export class SubscriptionManager {
     subscription: SubscriptionRecord
   ): Array<SubscriptionStreamInfo> {
     return Array.from(subscription.streams.values()).map((link) => {
-      const tail = this.getTailOffset(subscription.namespace, link.path)
+      const tail = this.getTailOffset(link.path)
       return {
         path: link.path,
         link_type: link.link_types.has(`explicit`) ? `explicit` : `glob`,
@@ -856,17 +811,17 @@ export class SubscriptionManager {
     return link
   }
 
-  private listNamespaceStreams(namespace: string): Array<string> {
+  private listStreams(): Array<string> {
     return this.streamStore
       .list()
-      .map((path) => toNamespaceRelativePath(namespace, path))
+      .map((path) => toStreamRelativePath(path))
       .filter((path): path is string => path !== null)
   }
 
-  private getTailOffset(namespace: string, streamPath: string): string {
+  private getTailOffset(streamPath: string): string {
     return (
-      this.streamStore.get(toAbsoluteStreamPath(namespace, streamPath))
-        ?.currentOffset ?? ZERO_OFFSET
+      this.streamStore.get(toAbsoluteStreamPath(streamPath))?.currentOffset ??
+      ZERO_OFFSET
     )
   }
 
@@ -878,9 +833,6 @@ export class SubscriptionManager {
       `/v1/stream-meta/subscriptions/${encodeURIComponent(subscription.id)}/${action}`,
       this.callbackBaseUrl
     )
-    if (subscription.namespace.length > 0) {
-      url.searchParams.set(`service_id`, subscription.namespace)
-    }
     return url.toString()
   }
 
@@ -904,11 +856,7 @@ export class SubscriptionManager {
   }
 
   private tokenSubject(subscription: SubscriptionRecord): string {
-    return `namespace:${subscription.namespace}:subscription:${subscription.id}`
-  }
-
-  private key(namespace: string, id: string): string {
-    return `${namespace}\0${id}`
+    return `subscription:${subscription.id}`
   }
 
   private errorResponse(
