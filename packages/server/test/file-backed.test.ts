@@ -9,11 +9,11 @@ import { tmpdir } from "node:os"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import {
   DurableStreamTestServer,
-  FileBackedStreamStore,
   decodeStreamPath,
   encodeStreamPath,
 } from "@durable-streams/server"
 import { decode, encode } from "./support/test-helpers"
+import type { FileBackedStreamStore } from "@durable-streams/server"
 
 // ============================================================================
 // Test fixture for file-backed server
