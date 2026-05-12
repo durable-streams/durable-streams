@@ -1524,7 +1524,10 @@ export class FileBackedStreamStore {
         }
       }
     } catch (err) {
-      serverLog.error(`[FileBackedStreamStore] Error reading segment file:`, err)
+      serverLog.error(
+        `[FileBackedStreamStore] Error reading segment file:`,
+        err
+      )
     }
 
     return messages
