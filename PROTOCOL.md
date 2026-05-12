@@ -33,13 +33,22 @@ Copyright (c) 2025 ElectricSQL
    - 5.6. [Read Stream - Catch-up](#56-read-stream---catch-up)
    - 5.7. [Read Stream - Live (Long-poll)](#57-read-stream---live-long-poll)
    - 5.8. [Read Stream - Live (SSE)](#58-read-stream---live-sse)
-6. [Offsets](#6-offsets)
-7. [Content Types](#7-content-types)
-8. [Caching and Collapsing](#8-caching-and-collapsing)
-9. [Extensibility](#9-extensibility)
-10. [Security Considerations](#10-security-considerations)
-11. [IANA Considerations](#11-iana-considerations)
-12. [References](#12-references)
+6. [Stream Metadata Subscriptions](#6-stream-metadata-subscriptions)
+   - 6.1. [Subscription Addressing](#61-subscription-addressing)
+   - 6.2. [Create or Re-confirm a Subscription](#62-create-or-re-confirm-a-subscription)
+   - 6.3. [Read or Delete a Subscription](#63-read-or-delete-a-subscription)
+   - 6.4. [Explicit Stream Membership](#64-explicit-stream-membership)
+7. [Subscription Delivery](#7-subscription-delivery)
+   - 7.1. [Webhook Delivery and Callback](#71-webhook-delivery-and-callback)
+   - 7.2. [Pull-wake Claim, Ack, and Release](#72-pull-wake-claim-ack-and-release)
+   - 7.3. [Generation Fencing and Leases](#73-generation-fencing-and-leases)
+8. [Offsets](#8-offsets)
+9. [Content Types](#9-content-types)
+10. [Caching and Collapsing](#10-caching-and-collapsing)
+11. [Extensibility](#11-extensibility)
+12. [Security Considerations](#12-security-considerations)
+13. [IANA Considerations](#13-iana-considerations)
+14. [References](#14-references)
 
 ---
 
@@ -544,7 +553,7 @@ Where `{stream-url}` is the URL of the stream. Checks stream existence and retur
 - `Stream-TTL: <seconds>` (optional): The stream's time-to-live window. Each read or write resets the expiry countdown to this value.
 - `Stream-Expires-At: <rfc3339>` (optional): Absolute expiry time, if applicable
 - `Stream-Closed: true` (optional): Present when the stream has been closed. Absence indicates the stream is still open.
-- `Cache-Control`: See Section 8
+- `Cache-Control`: See Section 10
 
 #### Caching Guidance
 
@@ -577,7 +586,7 @@ For non-live reads without data beyond the requested offset, servers **SHOULD** 
 
 #### Response Headers (on 200)
 
-- `Cache-Control`: Derived from TTL/expiry (see Section 8)
+- `Cache-Control`: Derived from TTL/expiry (see Section 9)
 - `ETag: {internal_stream_id}:{start_offset}:{end_offset}`
   - Entity tag for cache validation
 - `Stream-Cursor: <cursor>` (optional for catch-up, required for live modes)
@@ -635,13 +644,13 @@ Where `{stream-url}` is the URL of the stream. If no data is available at the sp
 #### Response Headers (on 200)
 
 - Same as catch-up reads (Section 5.6), plus:
-- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 8.1.
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header. See Section 10.1.
 
 #### Response Headers (on 204)
 
 - `Stream-Next-Offset: <offset>`: Servers **MUST** include a `Stream-Next-Offset` header indicating the current tail offset.
 - `Stream-Up-To-Date: true`: Servers **MUST** include this header to indicate the client is caught up with all available data.
-- `Stream-Cursor: <cursor>`: Servers **MUST** include this header when the stream is open. Servers **MAY** omit this header when `Stream-Closed` is true (cursor is unnecessary when no further polling is expected). Clients **MUST** tolerate its absence when `Stream-Closed` is present. See Section 8.1.
+- `Stream-Cursor: <cursor>`: Servers **MUST** include this header when the stream is open. Servers **MAY** omit this header when `Stream-Closed` is true (cursor is unnecessary when no further polling is expected). Clients **MUST** tolerate its absence when `Stream-Closed` is present. See Section 10.1.
 - `Stream-Closed: true`: **MUST** be present when the stream is closed (see Section 5.6 for semantics). A `204 No Content` with `Stream-Closed: true` indicates EOF.
 
 **EOF Signaling Across Modes:**
@@ -725,7 +734,7 @@ Data is emitted in [Server-Sent Events format](https://developer.mozilla.org/en-
   - Base64 encoding affects only `event: data` payloads. `event: control` events remain JSON as specified and are not encoded.
   - When the stream content type is `application/json`, implementations **MAY** batch multiple logical messages into a single SSE `data` event by streaming a JSON array across multiple `data:` lines, as in the example below.
 - `control`: Emitted after every data event
-  - **MUST** include `streamNextOffset`. See Section 8.1.
+  - **MUST** include `streamNextOffset`. See Section 10.1.
   - **MUST** include `streamCursor` when the stream is open. Servers **MAY** omit `streamCursor` when `streamClosed` is true (cursor is unnecessary when no reconnection is expected).
   - **MUST** include `upToDate: true` when the client is caught up with all available data. Note: `streamClosed: true` implies `upToDate: true` (a closed stream at the final offset is by definition up-to-date), so `upToDate` **MAY** be omitted when `streamClosed` is true.
   - **MUST** include `streamClosed: true` when the stream is closed and all data up to the final offset has been sent.
@@ -794,9 +803,327 @@ data: {"streamNextOffset":"123456_789","streamCursor":"abc"}
 
 SSE on a forked stream delivers inherited data from the source stream followed by the fork's own data, then waits for new fork appends. Source appends after the fork point are never delivered.
 
-## 6. Offsets
+## 6. Stream Metadata Subscriptions
 
-Offsets are opaque tokens that identify positions within a stream. They have the following properties:
+Subscriptions are durable cursors that wake workers when one or more streams have pending events. Subscription control APIs live under the stream metadata namespace:
+
+```http
+/v1/stream-meta/subscriptions/:id
+```
+
+Application streams remain regular durable streams under `/v1/stream/...`. Stream paths inside subscription request and response bodies are stream-root-relative paths such as `events/abc` or `wake/pool`.
+
+A subscription can be delivered by webhook or by pull-wake. Both mechanisms share the same cursor fields, generation fencing, lease timeout, and stream membership model.
+
+### 6.1. Subscription Addressing
+
+The subscription `id` is client-provided and unique within the stream metadata namespace. Servers MUST route stream metadata control requests before normal stream operations so that subscription control paths are not interpreted as application streams.
+
+The server stores one cursor per subscription stream. Each stream link has:
+
+| Field          | Description                                                            |
+| -------------- | ---------------------------------------------------------------------- |
+| `path`         | Stream-root-relative stream path                                       |
+| `link_type`    | `glob` when matched by `pattern`, `explicit` when added by `streams[]` |
+| `acked_offset` | Last processed offset, inclusive                                       |
+
+If a stream is linked both explicitly and by a glob pattern, `explicit` takes precedence in serialized responses. Removing the explicit link does not remove the glob link if the pattern still matches.
+
+### 6.2. Create or Re-confirm a Subscription
+
+```http
+PUT /v1/stream-meta/subscriptions/:id
+Content-Type: application/json
+
+{
+  "type": "webhook",
+  "pattern": "events/*",
+  "streams": ["events/manual-a", "events/manual-b"],
+  "webhook": { "url": "https://worker.example/hooks" },
+  "wake_stream": "wake/pool",
+  "lease_ttl_ms": 30000,
+  "description": "event processor"
+}
+```
+
+Fields:
+
+| Field          | Required                | Description                                                       |
+| -------------- | ----------------------- | ----------------------------------------------------------------- |
+| `type`         | Yes                     | `webhook` or `pull-wake`                                          |
+| `pattern`      | No                      | Glob over stream-root-relative stream paths                       |
+| `streams`      | No                      | Explicit stream-root-relative stream paths, additive to `pattern` |
+| `webhook.url`  | For `type: "webhook"`   | URL that receives wake notifications                              |
+| `wake_stream`  | For `type: "pull-wake"` | Stream-root-relative durable stream path used as the wake channel |
+| `lease_ttl_ms` | No                      | Lease duration, from 1 second to 10 minutes. Default: 30 seconds  |
+| `description`  | No                      | Human-readable description                                        |
+
+At least one of `pattern` or `streams` MUST be present. `pattern` uses the glob rules from Section 7.1: `*` matches one path segment and `**` matches zero or more path segments.
+
+Responses:
+
+| Status | Meaning                                                                                          |
+| ------ | ------------------------------------------------------------------------------------------------ |
+| 201    | Subscription created. The response includes `webhook_secret` for webhook subscriptions.          |
+| 200    | Existing subscription re-confirmed with an identical configuration. `webhook_secret` is omitted. |
+| 409    | Subscription exists with the same ID but a different configuration.                              |
+
+Servers MUST hash the normalized subscription configuration and compare that hash for idempotent re-confirmation. The hash includes `type`, `pattern`, normalized `streams[]`, delivery configuration, `lease_ttl_ms`, and `description`.
+
+Webhook secrets are generated by the server and have Stripe-style `whsec_...` identifiers. The secret is returned only in the 201 create response and MUST NOT be returned by later GET or 200 re-confirmation responses.
+
+Webhook URLs MUST be validated to reduce SSRF risk:
+
+- Production webhook URLs MUST use `https://`.
+- Development webhook URLs MAY use `http://localhost` or `http://127.0.0.x`.
+- RFC1918, link-local, loopback, and other local network targets MUST be rejected unless covered by the explicit localhost development exception.
+
+When a subscription with a `pattern` is created, the server MUST eagerly backfill matching existing streams using its internal stream listing facility. Existing streams are linked at their current tail offset so subscription creation does not replay historical data by default. Streams discovered later because of a matching append are linked before that append for wake purposes.
+
+### 6.3. Read or Delete a Subscription
+
+```http
+GET /v1/stream-meta/subscriptions/:id
+```
+
+Response:
+
+```json
+{
+  "id": "sub-1",
+  "subscription_id": "sub-1",
+  "type": "webhook",
+  "pattern": "events/*",
+  "streams": [
+    {
+      "path": "events/abc",
+      "link_type": "glob",
+      "acked_offset": "0000000000000001_0000000000000042"
+    }
+  ],
+  "webhook": { "url": "https://worker.example/hooks" },
+  "wake_stream": null,
+  "lease_ttl_ms": 30000,
+  "created_at": "2026-05-09T00:00:00.000Z",
+  "status": "active",
+  "description": "event processor"
+}
+```
+
+`status` is `active` while delivery is operating normally and `failed` while webhook retry is scheduled after a failed delivery attempt. The webhook secret MUST NOT be returned by GET.
+
+```http
+DELETE /v1/stream-meta/subscriptions/:id
+```
+
+Deletion tombstones the subscription and returns `204 No Content`. In-flight callback, ack, or release requests for a deleted subscription MUST fail and MUST NOT advance cursors.
+
+### 6.4. Explicit Stream Membership
+
+Explicit stream links can be added and removed without changing the subscription's glob pattern.
+
+```http
+POST /v1/stream-meta/subscriptions/:id/streams
+Content-Type: application/json
+
+{ "streams": ["events/x", "events/y"] }
+
+→ 204 No Content
+```
+
+New explicit streams are linked at their current tail offset. Adding an already-linked stream is idempotent.
+
+```http
+DELETE /v1/stream-meta/subscriptions/:id/streams/:path
+
+→ 204 No Content
+```
+
+`:path` is the URL-encoded stream-root-relative stream path and may contain slashes. Deleting an absent explicit link is idempotent. This operation removes only the explicit link; a matching glob link remains active.
+
+## 7. Subscription Delivery
+
+A subscription is idle when no lease is held and no wake is in flight. When any linked stream has a tail offset greater than its `acked_offset`, the subscription has pending work. Pending work creates a new wake generation unless the subscription already has a wake in flight or a worker lease is held.
+
+Every wake has a unique `wake_id` and monotonically increasing `generation` scoped to the subscription. Acks are last-processed inclusive: acking offset `N` means the next read for that stream starts after `N`.
+
+### 7.1. Webhook Delivery and Callback
+
+When a matching stream receives an append and the subscription is idle, the Subscription Durable Object sends a webhook request:
+
+```http
+POST {webhook.url}
+Content-Type: application/json
+Webhook-Signature: t=<timestamp>,sha256=<hex>
+
+{
+  "subscription_id": "sub-1",
+  "wake_id": "w_abc123",
+  "generation": 7,
+  "streams": [
+    {
+      "path": "events/abc",
+      "link_type": "glob",
+      "acked_offset": "0000000000000001_0000000000000042",
+      "tail_offset": "0000000000000002_0000000000000084",
+      "has_pending": true
+    }
+  ],
+  "callback_url": "https://server.example/v1/stream-meta/subscriptions/sub-1/callback",
+  "callback_token": "eyJ..."
+}
+```
+
+`Webhook-Signature` is an HMAC-SHA256 signature over `<timestamp>.<raw_body>` keyed by the subscription's `webhook_secret`. Webhook receivers SHOULD verify the signature using the raw request body and reject timestamps outside a small replay window such as five minutes.
+
+The webhook handler can finish synchronously by returning:
+
+```json
+{ "done": true }
+```
+
+When a webhook returns `{ "done": true }`, the server MUST automatically ack the tail offsets included in that wake snapshot and release the lease. If new events arrived after the snapshot, the subscription still has pending work and MUST be woken again with a new `wake_id` and `generation`.
+
+For asynchronous processing, the handler calls back:
+
+```http
+POST /v1/stream-meta/subscriptions/:id/callback
+Authorization: Bearer <callback_token>
+Content-Type: application/json
+
+{
+  "wake_id": "w_abc123",
+  "generation": 7,
+  "acks": [{ "stream": "events/abc", "offset": "0000000000000002_0000000000000084" }],
+  "done": true
+}
+```
+
+Callback tokens are scoped to a subscription and generation. They are not service JWTs and are used only for this wake's callback path.
+
+Successful callbacks return:
+
+```json
+{ "ok": true, "next_wake": false }
+```
+
+If `wake_id` or `generation` is stale, the server MUST return:
+
+```http
+409 Conflict
+Content-Type: application/json
+
+{ "error": { "code": "FENCED" } }
+```
+
+Webhook delivery retries use exponential backoff from 1 second up to 60 seconds with 20% jitter. Retry metadata, including `next_attempt_at`, MUST be persisted across Durable Object eviction so a freshly-loaded object honors the prior retry schedule.
+
+### 7.2. Pull-wake Claim, Ack, and Release
+
+A pull-wake subscription writes wake events to its configured `wake_stream`. The wake stream is an ordinary durable stream and MUST be created explicitly by the application.
+
+Wake event shape:
+
+```json
+{
+  "type": "wake",
+  "subscription_id": "sub-1",
+  "stream": "events/abc",
+  "generation": 7,
+  "ts": 1778324210000
+}
+```
+
+Workers consume the wake stream and race to claim the subscription:
+
+```http
+POST /v1/stream-meta/subscriptions/:id/claim
+Authorization: Bearer <service-jwt>
+Content-Type: application/json
+
+{ "worker": "worker-name" }
+```
+
+Successful claim:
+
+```json
+{
+  "wake_id": "w_abc123",
+  "generation": 7,
+  "token": "eyJ...",
+  "streams": [
+    {
+      "path": "events/abc",
+      "link_type": "glob",
+      "acked_offset": "0000000000000001_0000000000000042",
+      "tail_offset": "0000000000000002_0000000000000084",
+      "has_pending": true
+    }
+  ],
+  "lease_ttl_ms": 30000
+}
+```
+
+If another worker holds the lease:
+
+```http
+409 Conflict
+Content-Type: application/json
+
+{
+  "error": {
+    "code": "ALREADY_CLAIMED",
+    "current_holder": "worker-2",
+    "generation": 7
+  }
+}
+```
+
+A pull-wake worker acks through the subscription-scoped ack endpoint:
+
+```http
+POST /v1/stream-meta/subscriptions/:id/ack
+Authorization: Bearer <claim-token>
+Content-Type: application/json
+
+{
+  "wake_id": "w_abc123",
+  "generation": 7,
+  "acks": [{ "stream": "events/abc", "offset": "0000000000000002_0000000000000084" }],
+  "done": true
+}
+```
+
+The ack endpoint doubles as heartbeat. Calling it without `done: true` extends the lease and keeps the worker claim active. Calling it with `done: true` applies the acks, releases the lease, and returns `{ "ok": true, "next_wake": true|false }`.
+
+A worker can voluntarily release without acking:
+
+```http
+POST /v1/stream-meta/subscriptions/:id/release
+Authorization: Bearer <claim-token>
+Content-Type: application/json
+
+{ "wake_id": "w_abc123", "generation": 7 }
+
+→ 204 No Content
+```
+
+If pending work remains after release, the server MUST write another wake event for a later claim attempt. Stale release or ack requests MUST return `409 FENCED`.
+
+### 7.3. Generation Fencing and Leases
+
+`generation` is the subscription-level fencing counter. It increments for every wake. `wake_id` is unique per wake and prevents a request for one wake from being replayed into another wake in the same generation. Servers MUST reject a callback, ack, or release unless all of the following match current subscription state:
+
+- Bearer token is valid for the subscription.
+- Token generation matches the current generation.
+- Request `generation` matches the current generation.
+- Request `wake_id` matches the current wake.
+
+`lease_ttl_ms` bounds worker liveness. For webhook delivery, the lease starts when a wake is issued and is extended by valid callbacks. For pull-wake, the lease starts when a worker successfully claims and is extended by valid ack calls without `done: true`. When a lease expires, the server MUST clear the holder and wake token; if pending work remains, it MUST schedule another wake.
+
+## 8. Offsets
+
+Offsets are opaque tokens that identify positions within a stream. They are also used as subscription `acked_offset` cursors (Section 6). They have the following properties:
 
 1. **Opaque**: Clients **MUST NOT** interpret offset structure or meaning
 2. **Lexicographically Sortable**: For any two valid offsets for the same stream, a lexicographic comparison determines their relative position in the stream. Clients **MAY** compare offsets lexicographically to determine ordering.
@@ -814,7 +1141,7 @@ Offsets are opaque tokens that identify positions within a stream. They have the
 
   **Catch-up mode** (`offset=now` without `live` parameter):
   - Servers **MUST** return `200 OK` with an empty response body appropriate to the stream's content type:
-    - For `application/json` streams: the body **MUST** be `[]` (empty JSON array), consistent with Section 7.1
+    - For `application/json` streams: the body **MUST** be `[]` (empty JSON array), consistent with Section 9.1
     - For all other content types: the body **MUST** be 0 bytes (empty)
   - Servers **MUST** include a `Stream-Next-Offset` header set to the current tail position
   - Servers **MUST** include `Stream-Up-To-Date: true` header
@@ -854,9 +1181,9 @@ Clients **MUST** use the `Stream-Next-Offset` value returned in responses for su
 
 Forked streams use the same offset space as their source stream — there is no offset translation. The fork offset is the divergence point: data at offsets before it comes from the source, data at or after it comes from the fork. A client reading a forked stream from `-1` sees offsets identical to the source up to the divergence point, then continues with offsets generated by the fork's own appends.
 
-**Fork offset validity:** The `Stream-Fork-Offset` value **MUST** be an offset previously returned by the server (via `Stream-Next-Offset`). As with all offsets, clients **MUST NOT** interpret, construct, or modify offset values (see Section 6, property 1). Servers are **NOT REQUIRED** to validate that a fork offset corresponds to a valid position in the stream's internal storage. If a client provides a client-constructed offset that does not correspond to a valid position, the behavior is undefined — reads on the resulting fork **MAY** return corrupted data or errors. Servers **MAY** validate offset alignment and reject invalid offsets with `400 Bad Request`, but this is not required.
+**Fork offset validity:** The `Stream-Fork-Offset` value **MUST** be an offset previously returned by the server (via `Stream-Next-Offset`). As with all offsets, clients **MUST NOT** interpret, construct, or modify offset values (see Section 8, property 1). Servers are **NOT REQUIRED** to validate that a fork offset corresponds to a valid position in the stream's internal storage. If a client provides a client-constructed offset that does not correspond to a valid position, the behavior is undefined — reads on the resulting fork **MAY** return corrupted data or errors. Servers **MAY** validate offset alignment and reject invalid offsets with `400 Bad Request`, but this is not required.
 
-## 7. Content Types
+## 9. Content Types
 
 The protocol supports arbitrary MIME content types. Most content types operate at the byte level, leaving message framing and interpretation to clients. The `application/json` content type has special semantics defined below.
 
@@ -872,15 +1199,15 @@ Clients **MAY** use any content type for their streams, including:
 - `text/plain` for plain text
 - Custom types for application-specific formats
 
-### 7.1. JSON Mode
+### 9.1. JSON Mode
 
 Streams created with `Content-Type: application/json` have special semantics for message boundaries and batch operations.
 
-#### Message Boundaries
+#### 9.1.1. Message Boundaries
 
 For `application/json` streams, servers **MUST** preserve message boundaries. Each POST request stores messages as a distinct unit, and GET responses **MUST** return data as a JSON array containing all messages from the requested offset range.
 
-#### Array Flattening for Batch Operations
+#### 9.1.2. Array Flattening for Batch Operations
 
 When a POST request body contains a JSON array, servers **MUST** flatten exactly one level of the array, treating each element as a separate message. This enables clients to batch multiple messages in a single HTTP request while preserving individual message semantics.
 
@@ -893,17 +1220,17 @@ When a POST request body contains a JSON array, servers **MUST** flatten exactly
 
 **Note:** Client libraries **MAY** automatically wrap individual values in arrays for batching. For example, a client calling `append({"x": 1})` might send POST body `[{"x": 1}]` to the server, which flattens it to store one message: `{"x": 1}`.
 
-#### Empty Arrays
+#### 9.1.3. Empty Arrays
 
 Servers **MUST** reject POST requests containing empty JSON arrays (`[]`) with `400 Bad Request`. Empty arrays in append operations represent no-op operations with no semantic meaning and likely indicate a client bug.
 
 PUT requests with an empty array body (`[]`) are valid and create an empty stream. The empty array simply means no initial messages are being written.
 
-#### JSON Validation
+#### 9.1.4. JSON Validation
 
 Servers **MUST** validate that appended data is valid JSON. If validation fails, servers **MUST** return `400 Bad Request` with an appropriate error message.
 
-#### Response Format
+#### 9.1.5. Response Format
 
 GET responses for `application/json` streams **MUST** return `Content-Type: application/json` with a body containing a JSON array of all messages in the requested range:
 
@@ -920,9 +1247,9 @@ If no messages exist in the range, servers **MUST** return an empty JSON array `
 
 When a forked stream uses `application/json`, reads spanning the fork boundary (returning both inherited and fork messages) **MUST** wrap all messages in a single JSON array. The fork inherits the source stream's content type if none is specified at creation.
 
-## 8. Caching and Collapsing
+## 10. Caching and Collapsing
 
-### 8.1. Catch-up and Long-poll Reads
+### 10.1. Catch-up and Long-poll Reads
 
 For **shared, non-user-specific streams**, servers **SHOULD** return:
 
@@ -1006,15 +1333,15 @@ GET /stream?offset=123&live=long-poll&cursor=1000
 
 CDNs and proxies **SHOULD NOT** cache `204 No Content` responses from long-poll requests in most cases. Long-poll `200 OK` responses are safe to cache when keyed by `offset`, `cursor`, and authentication credentials.
 
-### 8.2. SSE
+### 10.2. SSE
 
 SSE connections **SHOULD** be closed by the server approximately every 60 seconds. This enables new clients to collapse onto edge requests rather than maintaining long-lived connections to origin servers.
 
-## 9. Extensibility
+## 11. Extensibility
 
 The Durable Streams Protocol is designed to be extended for specific use cases and implementations. Extensions **SHOULD** be pure supersets of the base protocol, ensuring compatibility with any client that implements the base protocol.
 
-### 9.1. Protocol Extensions
+### 11.1. Protocol Extensions
 
 Implementations **MAY** extend the protocol with additional query parameters, headers, or response fields to support domain-specific semantics. For example, a database synchronization implementation might add query parameters to filter by table or schema, or include additional metadata in response headers.
 
@@ -1026,37 +1353,37 @@ Extensions **SHOULD** follow these principles:
 
 - **Version Independence**: Extensions **SHOULD** work with any version of a client that implements the base protocol. Extension negotiation **MAY** be handled through headers or query parameters, but base protocol operations **MUST** remain functional without extension support.
 
-### 9.2. Authentication Extensions
+### 11.2. Authentication Extensions
 
-See Section 10.1 for authentication and authorization details. Implementations **MAY** extend the protocol with authentication-related query parameters or headers (e.g., API keys, OAuth tokens, custom authentication headers).
+See Section 12.1 for authentication and authorization details. Implementations **MAY** extend the protocol with authentication-related query parameters or headers (e.g., API keys, OAuth tokens, custom authentication headers).
 
-## 10. Security Considerations
+## 12. Security Considerations
 
-### 10.1. Authentication and Authorization
+### 12.1. Authentication and Authorization
 
-Authentication and authorization are explicitly out of scope for this protocol specification. Clients **SHOULD** implement all standard HTTP authentication primitives (e.g., Basic Authentication [RFC7617], Bearer tokens [RFC6750], Digest Authentication [RFC7616]). Implementations **MUST** provide appropriate access controls to prevent unauthorized stream creation, modification, or deletion, but may do so using any mechanism they choose, including extending the protocol with authentication-related parameters or headers as described in Section 9.2.
+Authentication and authorization are explicitly out of scope for this protocol specification. Clients **SHOULD** implement all standard HTTP authentication primitives (e.g., Basic Authentication [RFC7617], Bearer tokens [RFC6750], Digest Authentication [RFC7616]). Implementations **MUST** provide appropriate access controls to prevent unauthorized stream creation, modification, or deletion, but may do so using any mechanism they choose, including extending the protocol with authentication-related parameters or headers as described in Section 11.2.
 
-### 10.2. Multi-tenant Safety
+### 12.2. Multi-tenant Safety
 
 If stream URLs are guessable, servers **MUST** enforce access controls even when using shared caches. Servers **SHOULD** validate and sanitize stream URLs to prevent path traversal attacks and ensure URL components are within acceptable limits.
 
-### 10.3. Untrusted Content
+### 12.3. Untrusted Content
 
 Clients **MUST** treat stream contents as untrusted input and **MUST NOT** evaluate or execute stream data without appropriate validation. This is particularly important for append-only streams used as logs, where log injection attacks are a concern.
 
-### 10.4. Content Type Validation
+### 12.4. Content Type Validation
 
 Servers **MUST** validate that appended content types match the stream's declared content type to prevent type confusion attacks.
 
-### 10.5. Rate Limiting
+### 12.5. Rate Limiting
 
 Servers **SHOULD** implement rate limiting to prevent abuse. The `429 Too Many Requests` response code indicates rate limit exhaustion.
 
-### 10.6. Sequence Validation
+### 12.6. Sequence Validation
 
 The optional `Stream-Seq` header provides protection against out-of-order writes in multi-writer scenarios. Servers **MUST** reject sequence regressions to maintain stream integrity.
 
-### 10.7. Browser Security Headers
+### 12.7. Browser Security Headers
 
 When serving streams to browser clients, servers **SHOULD** include the following headers to prevent MIME-sniffing attacks, cross-origin embedding exploits, and cache-related vulnerabilities:
 
@@ -1067,26 +1394,43 @@ When serving streams to browser clients, servers **SHOULD** include the followin
   - Servers **SHOULD** include this header to explicitly control cross-origin embedding. Use `cross-origin` to allow cross-origin access via `fetch()`, `same-site` to restrict to the same registrable domain, or `same-origin` for strict same-origin only. This prevents Cross-Origin Read Blocking (CORB) issues and protects against Spectre-like side-channel attacks.
 
 - `Cache-Control: no-store`
-  - Servers **SHOULD** include this header on HEAD responses and on responses containing sensitive or user-specific stream data. This prevents intermediate proxies and CDNs from caching potentially sensitive content. For public, non-sensitive historical reads, servers **MAY** use `Cache-Control: public, max-age=60, stale-while-revalidate=300` as described in Section 8.
+  - Servers **SHOULD** include this header on HEAD responses and on responses containing sensitive or user-specific stream data. This prevents intermediate proxies and CDNs from caching potentially sensitive content. For public, non-sensitive historical reads, servers **MAY** use `Cache-Control: public, max-age=60, stale-while-revalidate=300` as described in Section 10.
 
 - `Content-Disposition: attachment` (optional)
   - Servers **MAY** include this header for `application/octet-stream` responses to prevent inline rendering if a user navigates directly to the stream URL.
 
 These headers provide defense-in-depth for scenarios where stream URLs might be accessed outside the intended programmatic fetch context (e.g., direct navigation, malicious cross-origin embedding via `<script>` or `<img>` tags).
 
-### 10.8. TLS
+### 12.8. Webhook URL Validation (SSRF Prevention)
+
+Implementations supporting webhook subscriptions **MUST** validate webhook URLs to prevent Server-Side Request Forgery (SSRF) attacks:
+
+- **MUST** require HTTPS for webhook URLs in production (HTTP **MAY** be allowed for localhost in development)
+- **SHOULD** block private IP ranges (RFC 1918), link-local addresses, and loopback addresses
+- **SHOULD** block cloud metadata endpoints (e.g., `169.254.169.254`)
+- **MAY** implement domain allowlisting for webhook URLs
+
+### 12.9. Callback Token Security
+
+Callback and claim tokens **MUST** be passed via the `Authorization` header to avoid logging exposure. Tokens **SHOULD** be signed (e.g., HMAC-signed JWTs) containing the subscription identity, generation, and expiry. Implementations **MUST** validate token signatures on every callback, ack, and release request.
+
+### 12.10. Webhook Signature Security
+
+Webhook signatures (Section 7.1) prevent spoofing of notifications. The `webhook_secret` is generated by the server and returned only on subscription creation. Webhook receivers **SHOULD** verify signatures before processing any webhook payload. Timestamps in signatures prevent replay attacks within the ±5-minute tolerance window.
+
+### 12.11. TLS
 
 All protocol operations **MUST** be performed over HTTPS (TLS) in production environments to protect data in transit.
 
-## 11. IANA Considerations
+## 13. IANA Considerations
 
-### 11.1. Default Port
+### 13.1. Default Port
 
 The default port for standalone Durable Streams servers is **4437/tcp** (with 4437/udp reserved for future use).
 
 This port was selected from the IANA unassigned range 4434-4440. Standalone server implementations **SHOULD** use port 4437 as the default when no explicit port is configured. When Durable Streams is integrated into an existing web server or application framework, it **SHOULD** use the host server's port instead.
 
-### 11.2. HTTP Headers
+### 13.2. HTTP Headers
 
 This document requests registration of the following HTTP headers in the "Permanent Message Header Field Names" registry:
 
@@ -1101,6 +1445,7 @@ This document requests registration of the following HTTP headers in the "Perman
 | `Stream-Closed`      | permanent | This document |
 | `Stream-Forked-From` | permanent | This document |
 | `Stream-Fork-Offset` | permanent | This document |
+| `Webhook-Signature`  | permanent | This document |
 
 **Descriptions:**
 
@@ -1113,10 +1458,11 @@ This document requests registration of the following HTTP headers in the "Perman
 - `Stream-Closed`: Indicates stream is closed / end-of-stream (presence header, value `true`)
 - `Stream-Forked-From`: Source stream path for forked streams, used on `PUT` requests (opaque string)
 - `Stream-Fork-Offset`: Divergence point offset for forked streams, used on `PUT` requests (opaque string)
+- `Webhook-Signature`: HMAC-SHA256 signature for webhook notification verification (Section 7.1.4)
 
-## 12. References
+## 14. References
 
-### 12.1. Normative References
+### 14.1. Normative References
 
 [RFC2119] Bradner, S., "Key words for use in RFCs to Indicate Requirement Levels", BCP 14, RFC 2119, DOI 10.17487/RFC2119, March 1997, <https://www.rfc-editor.org/info/rfc2119>.
 
@@ -1134,7 +1480,7 @@ This document requests registration of the following HTTP headers in the "Perman
 
 [RFC7616] Shekh-Yusef, R., Ed., Ahrens, D., and S. Bremer, "HTTP Digest Access Authentication", RFC 7616, DOI 10.17487/RFC7616, September 2015, <https://www.rfc-editor.org/info/rfc7616>.
 
-### 12.2. Informative References
+### 14.2. Informative References
 
 [SSE] Hickson, I., "Server-Sent Events", W3C Recommendation, February 2015, <https://www.w3.org/TR/eventsource/>.
 

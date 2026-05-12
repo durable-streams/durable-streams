@@ -234,7 +234,7 @@ describe(`CLI commands with server`, () => {
 
     // Verify the stream was created with the correct content-type
     const stream = new DurableStream({
-      url: `${serverUrl}/v1/stream/${streamId}`,
+      url: `${serverUrl}/${streamId}`,
     })
     const head = await stream.head()
     expect(head.contentType).toBe(`application/json`)
@@ -255,7 +255,7 @@ describe(`CLI commands with server`, () => {
 
     // Verify the stream was created with the correct content-type
     const stream = new DurableStream({
-      url: `${serverUrl}/v1/stream/${streamId}`,
+      url: `${serverUrl}/${streamId}`,
     })
     const head = await stream.head()
     expect(head.contentType).toBe(`text/plain`)
@@ -272,7 +272,7 @@ describe(`CLI commands with server`, () => {
 
     // Verify the stream was created with application/json content-type
     const stream = new DurableStream({
-      url: `${serverUrl}/v1/stream/${streamId}`,
+      url: `${serverUrl}/${streamId}`,
     })
     const head = await stream.head()
     expect(head.contentType).toBe(`application/json`)

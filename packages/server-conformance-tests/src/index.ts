@@ -5,6 +5,7 @@
  * any server implementation to verify protocol compliance.
  */
 
+import { createServer as createHttpServer } from "node:http"
 import { describe, expect, test, vi } from "vitest"
 import * as fc from "fast-check"
 import {
@@ -19,6 +20,8 @@ export interface ConformanceTestOptions {
   baseUrl: string
   /** Timeout for long-poll tests in milliseconds (default: 20000) */
   longPollTimeoutMs?: number
+  /** Enable stream metadata subscription conformance tests. */
+  subscriptions?: boolean
 }
 
 /**
@@ -137,6 +140,91 @@ function parseSSEEvents(
   }
 
   return events
+}
+
+async function createWebhookReceiver(opts?: {
+  response?: Record<string, unknown>
+}): Promise<{
+  url: string
+  received: Array<{
+    body: Record<string, unknown>
+    signature: string | null
+  }>
+  waitForRequest: (timeoutMs?: number) => Promise<{
+    body: Record<string, unknown>
+    signature: string | null
+  }>
+  close: () => Promise<void>
+}> {
+  const received: Array<{
+    body: Record<string, unknown>
+    signature: string | null
+  }> = []
+  const waiters: Array<() => void> = []
+
+  const server = createHttpServer((req, res) => {
+    const chunks: Array<Buffer> = []
+    req.on(`data`, (chunk: Buffer) => chunks.push(chunk))
+    req.on(`end`, () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString(`utf8`)) as Record<
+        string,
+        unknown
+      >
+      const signatureHeader = req.headers[`webhook-signature`]
+      received.push({
+        body,
+        signature: typeof signatureHeader === `string` ? signatureHeader : null,
+      })
+      for (const waiter of waiters.splice(0)) waiter()
+      res.writeHead(200, { "content-type": `application/json` })
+      res.end(JSON.stringify(opts?.response ?? {}))
+    })
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.on(`error`, reject)
+    server.listen(0, `127.0.0.1`, () => resolve())
+  })
+
+  const addr = server.address()
+  if (!addr || typeof addr === `string`) {
+    throw new Error(`Failed to start webhook receiver`)
+  }
+
+  return {
+    url: `http://127.0.0.1:${addr.port}/webhook`,
+    received,
+    waitForRequest: async (timeoutMs = 5_000) => {
+      if (received.length > 0) return received[received.length - 1]!
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(
+          () => reject(new Error(`Timed out waiting for webhook request`)),
+          timeoutMs
+        )
+        waiters.push(() => {
+          clearTimeout(timeout)
+          resolve()
+        })
+      })
+      return received[received.length - 1]!
+    },
+    close: async () => {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    },
+  }
+}
+
+async function waitForCondition(
+  predicate: () => Promise<boolean>,
+  timeoutMs = 3_000
+): Promise<void> {
+  const deadline = Date.now() + timeoutMs
+  while (Date.now() < deadline) {
+    if (await predicate()) return
+    await new Promise((resolve) => setTimeout(resolve, 25))
+  }
+  throw new Error(`Timed out waiting for condition`)
 }
 
 /**
@@ -10065,6 +10153,354 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       })
       expect(fork2.status).toBe(200)
+    })
+  })
+
+  // ============================================================================
+  // Stream metadata subscriptions
+  // ============================================================================
+
+  describe.runIf(options.subscriptions)(`Stream metadata subscriptions`, () => {
+    const ts = () => Date.now()
+    const subUrl = (id: string) =>
+      `${getBaseUrl()}/v1/stream-meta/subscriptions/${id}`
+    const streamUrl = (path: string) => `${getBaseUrl()}/v1/stream/${path}`
+
+    test(`creates and idempotently re-confirms a webhook subscription`, async () => {
+      const receiver = await createWebhookReceiver()
+      const id = `sub-${ts()}`
+      try {
+        const create = await fetch(subUrl(id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            pattern: `events/*`,
+            webhook: { url: receiver.url },
+            lease_ttl_ms: 1000,
+            description: `test subscription`,
+          }),
+        })
+        expect(create.status).toBe(201)
+        const created = (await create.json()) as Record<string, unknown>
+        expect(created.webhook_secret).toMatch(/^whsec_/)
+
+        const confirm = await fetch(subUrl(id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            pattern: `events/*`,
+            webhook: { url: receiver.url },
+            lease_ttl_ms: 1000,
+            description: `test subscription`,
+          }),
+        })
+        expect(confirm.status).toBe(200)
+        const confirmed = (await confirm.json()) as Record<string, unknown>
+        expect(confirmed.webhook_secret).toBeUndefined()
+
+        const get = await fetch(subUrl(id))
+        expect(get.status).toBe(200)
+        const body = (await get.json()) as Record<string, unknown>
+        expect(body.id).toBe(id)
+        expect(body.type).toBe(`webhook`)
+        expect(body.webhook_secret).toBeUndefined()
+        expect((body.webhook as Record<string, unknown>).url).toBe(receiver.url)
+      } finally {
+        await fetch(subUrl(id), { method: `DELETE` })
+        await receiver.close()
+      }
+    })
+
+    test(`rejects unsafe webhook URLs`, async () => {
+      const id = `sub-${ts()}`
+      const res = await fetch(subUrl(id), {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({
+          type: `webhook`,
+          pattern: `events/*`,
+          webhook: { url: `http://10.0.0.1/hook` },
+        }),
+      })
+      expect(res.status).toBe(400)
+      const body = (await res.json()) as { error: { code: string } }
+      expect(body.error.code).toBe(`WEBHOOK_URL_REJECTED`)
+    })
+
+    test(`webhook synchronous done auto-acks the wake snapshot`, async () => {
+      const receiver = await createWebhookReceiver({ response: { done: true } })
+      const id = `sub-${ts()}`
+      const path = `events/sync-${ts()}`
+      try {
+        const create = await fetch(subUrl(id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            pattern: `events/*`,
+            webhook: { url: receiver.url },
+            lease_ttl_ms: 1000,
+          }),
+        })
+        expect(create.status).toBe(201)
+
+        await fetch(streamUrl(path), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({ event: `created` }),
+        })
+
+        const notification = await receiver.waitForRequest()
+        expect(notification.signature).toMatch(/^t=\d+,sha256=/)
+        expect(notification.body.subscription_id).toBe(id)
+        expect(notification.body.callback_url).toBe(
+          `${getBaseUrl()}/v1/stream-meta/subscriptions/${id}/callback`
+        )
+        const stream = (
+          notification.body.streams as Array<{
+            path: string
+            tail_offset: string
+            has_pending: boolean
+          }>
+        ).find((item) => item.path === path)!
+        expect(stream.path).toBe(path)
+        expect(stream.has_pending).toBe(true)
+
+        await waitForCondition(async () => {
+          const get = await fetch(subUrl(id))
+          const body = (await get.json()) as {
+            streams: Array<{ path: string; acked_offset: string }>
+          }
+          return body.streams.some(
+            (item) =>
+              item.path === path && item.acked_offset === stream.tail_offset
+          )
+        })
+      } finally {
+        await fetch(subUrl(id), { method: `DELETE` })
+        await receiver.close()
+      }
+    })
+
+    test(`webhook callback acks and fences stale wake generations`, async () => {
+      const receiver = await createWebhookReceiver()
+      const id = `sub-${ts()}`
+      const path = `events/callback-${ts()}`
+      try {
+        await fetch(subUrl(id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            pattern: `events/*`,
+            webhook: { url: receiver.url },
+            lease_ttl_ms: 1000,
+          }),
+        })
+        await fetch(streamUrl(path), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({ event: `created` }),
+        })
+
+        const notification = await receiver.waitForRequest()
+        const body = notification.body as {
+          callback_url: string
+          callback_token: string
+          wake_id: string
+          generation: number
+          streams: Array<{ path: string; tail_offset: string }>
+        }
+        const tail = body.streams.find(
+          (stream) => stream.path === path
+        )!.tail_offset
+        const ackBody = {
+          wake_id: body.wake_id,
+          generation: body.generation,
+          acks: [{ stream: path, offset: tail }],
+          done: true,
+        }
+
+        const callback = await fetch(body.callback_url, {
+          method: `POST`,
+          headers: {
+            "content-type": `application/json`,
+            authorization: `Bearer ${body.callback_token}`,
+          },
+          body: JSON.stringify(ackBody),
+        })
+        expect(callback.status).toBe(200)
+        expect(await callback.json()).toEqual({ ok: true, next_wake: false })
+
+        const stale = await fetch(body.callback_url, {
+          method: `POST`,
+          headers: {
+            "content-type": `application/json`,
+            authorization: `Bearer ${body.callback_token}`,
+          },
+          body: JSON.stringify(ackBody),
+        })
+        expect(stale.status).toBe(409)
+        const staleBody = (await stale.json()) as { error: { code: string } }
+        expect(staleBody.error.code).toBe(`FENCED`)
+      } finally {
+        await fetch(subUrl(id), { method: `DELETE` })
+        await receiver.close()
+      }
+    })
+
+    test(`adds and removes explicit subscription streams`, async () => {
+      const receiver = await createWebhookReceiver()
+      const id = `sub-${ts()}`
+      try {
+        const create = await fetch(subUrl(id), {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            streams: [`manual/a`],
+            webhook: { url: receiver.url },
+          }),
+        })
+        expect(create.status).toBe(201)
+
+        const add = await fetch(`${subUrl(id)}/streams`, {
+          method: `POST`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({ streams: [`manual/b`] }),
+        })
+        expect(add.status).toBe(204)
+
+        const remove = await fetch(
+          `${subUrl(id)}/streams/${encodeURIComponent(`manual/b`)}`,
+          { method: `DELETE` }
+        )
+        expect(remove.status).toBe(204)
+
+        const get = await fetch(subUrl(id))
+        const body = (await get.json()) as {
+          streams: Array<{ path: string; link_type: string }>
+        }
+        expect(body.streams).toContainEqual(
+          expect.objectContaining({ path: `manual/a`, link_type: `explicit` })
+        )
+        expect(body.streams.some((stream) => stream.path === `manual/b`)).toBe(
+          false
+        )
+      } finally {
+        await fetch(subUrl(id), { method: `DELETE` })
+        await receiver.close()
+      }
+    })
+
+    test(`pull-wake claim, ack, and release use subscription-scoped leases`, async () => {
+      const id = `pull-${ts()}`
+      const wakeStream = `wake/pool-${ts()}`
+      const path = `events/pull-${ts()}`
+
+      await fetch(streamUrl(wakeStream), {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+        body: `[]`,
+      })
+      const create = await fetch(subUrl(id), {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({
+          type: `pull-wake`,
+          pattern: `events/*`,
+          wake_stream: wakeStream,
+          lease_ttl_ms: 1000,
+        }),
+      })
+      expect(create.status).toBe(201)
+
+      await fetch(streamUrl(path), {
+        method: `PUT`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ event: `created` }),
+      })
+
+      await waitForCondition(async () => {
+        const res = await fetch(streamUrl(wakeStream))
+        const events = (await res.json()) as Array<{ subscription_id: string }>
+        return events.some((event) => event.subscription_id === id)
+      })
+
+      const claim = await fetch(`${subUrl(id)}/claim`, {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ worker: `worker-1` }),
+      })
+      expect(claim.status).toBe(200)
+      const claimed = (await claim.json()) as {
+        wake_id: string
+        generation: number
+        token: string
+        streams: Array<{ path: string; tail_offset: string }>
+      }
+      const tail = claimed.streams.find(
+        (stream) => stream.path === path
+      )!.tail_offset
+
+      const busy = await fetch(`${subUrl(id)}/claim`, {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ worker: `worker-2` }),
+      })
+      expect(busy.status).toBe(409)
+      const busyBody = (await busy.json()) as {
+        error: { code: string; current_holder: string }
+      }
+      expect(busyBody.error.code).toBe(`ALREADY_CLAIMED`)
+      expect(busyBody.error.current_holder).toBe(`worker-1`)
+
+      const ack = await fetch(`${subUrl(id)}/ack`, {
+        method: `POST`,
+        headers: {
+          "content-type": `application/json`,
+          authorization: `Bearer ${claimed.token}`,
+        },
+        body: JSON.stringify({
+          wake_id: claimed.wake_id,
+          generation: claimed.generation,
+          acks: [{ stream: path, offset: tail }],
+          done: true,
+        }),
+      })
+      expect(ack.status).toBe(200)
+      expect(await ack.json()).toEqual({ ok: true, next_wake: false })
+
+      await fetch(streamUrl(path), {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ event: `second` }),
+      })
+      const claim2 = await fetch(`${subUrl(id)}/claim`, {
+        method: `POST`,
+        headers: { "content-type": `application/json` },
+        body: JSON.stringify({ worker: `worker-1` }),
+      })
+      expect(claim2.status).toBe(200)
+      const claimed2 = (await claim2.json()) as {
+        wake_id: string
+        generation: number
+        token: string
+      }
+      const release = await fetch(`${subUrl(id)}/release`, {
+        method: `POST`,
+        headers: {
+          "content-type": `application/json`,
+          authorization: `Bearer ${claimed2.token}`,
+        },
+        body: JSON.stringify({
+          wake_id: claimed2.wake_id,
+          generation: claimed2.generation,
+        }),
+      })
+      expect(release.status).toBe(204)
     })
   })
 }

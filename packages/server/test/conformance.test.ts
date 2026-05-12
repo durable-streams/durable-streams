@@ -17,10 +17,14 @@ describe(`In-Memory Server Implementation`, () => {
   let server: DurableStreamTestServer
 
   // Use object with mutable property so conformance tests can access it
-  const config = { baseUrl: `` }
+  const config = { baseUrl: ``, subscriptions: true }
 
   beforeAll(async () => {
-    server = new DurableStreamTestServer({ port: 0, longPollTimeout: 500 })
+    server = new DurableStreamTestServer({
+      port: 0,
+      longPollTimeout: 500,
+      webhooks: true,
+    })
     await server.start()
     config.baseUrl = server.url
   })
@@ -42,7 +46,7 @@ describe(`File-Backed Server Implementation`, () => {
   let dataDir: string
 
   // Use object with mutable property so conformance tests can access it
-  const config = { baseUrl: `` }
+  const config = { baseUrl: ``, subscriptions: true }
 
   beforeAll(async () => {
     dataDir = fs.mkdtempSync(path.join(tmpdir(), `conformance-test-`))
@@ -50,6 +54,7 @@ describe(`File-Backed Server Implementation`, () => {
       dataDir,
       port: 0,
       longPollTimeout: 500,
+      webhooks: true,
     })
     await server.start()
     config.baseUrl = server.url

@@ -8,37 +8,38 @@ import { afterAll, beforeAll, describe } from "vitest"
 import { runConformanceTests } from "@durable-streams/server-conformance-tests"
 import type { ChildProcess } from "node:child_process"
 
+// Shared Caddy server for all test suites
+let caddy: ChildProcess | null = null
+const port = 4437
+const config = { baseUrl: `http://localhost:${port}` }
+
+beforeAll(async () => {
+  const caddyBinary = path.join(__dirname, `..`, `caddy`)
+  const caddyfile = path.join(__dirname, `Caddyfile`)
+
+  caddy = spawn(caddyBinary, [`run`, `--config`, caddyfile], {
+    stdio: [`ignore`, `pipe`, `pipe`],
+  })
+
+  caddy.stderr?.on(`data`, (data: Buffer) => {
+    process.stderr.write(`[caddy] ${data.toString()}`)
+  })
+
+  await waitForServer(config.baseUrl, 10000)
+}, 15000)
+
+afterAll(async () => {
+  if (caddy) {
+    caddy.kill(`SIGTERM`)
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+})
+
 // ============================================================================
 // Caddy Server Conformance Tests
 // ============================================================================
 
 describe(`Caddy Durable Streams Implementation`, () => {
-  let caddy: ChildProcess | null = null
-  const port = 4437
-
-  // Use object with mutable property so conformance tests can access it
-  const config = { baseUrl: `http://localhost:${port}` }
-
-  beforeAll(async () => {
-    const caddyBinary = path.join(__dirname, `..`, `caddy`)
-    const caddyfile = path.join(__dirname, `Caddyfile`)
-
-    // Start Caddy with test config (short long-poll timeout)
-    caddy = spawn(caddyBinary, [`run`, `--config`, caddyfile], {
-      stdio: [`ignore`, `pipe`, `pipe`],
-    })
-
-    // Wait for Caddy to be ready
-    await waitForServer(config.baseUrl, 10000)
-  }, 15000)
-
-  afterAll(async () => {
-    if (caddy) {
-      caddy.kill(`SIGTERM`)
-      await new Promise((resolve) => setTimeout(resolve, 500))
-    }
-  })
-
   runConformanceTests(config)
 })
 

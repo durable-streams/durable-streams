@@ -4,46 +4,44 @@
 
 import { createServer } from "node:http"
 import { deflateSync, gzipSync } from "node:zlib"
+import {
+  CURSOR_QUERY_PARAM,
+  LIVE_QUERY_PARAM,
+  OFFSET_QUERY_PARAM,
+  PRODUCER_EPOCH_HEADER,
+  PRODUCER_EXPECTED_SEQ_HEADER,
+  PRODUCER_ID_HEADER,
+  PRODUCER_RECEIVED_SEQ_HEADER,
+  PRODUCER_SEQ_HEADER,
+  SSE_CLOSED_FIELD,
+  SSE_CURSOR_FIELD,
+  SSE_OFFSET_FIELD,
+  STREAM_CLOSED_HEADER,
+  STREAM_CURSOR_HEADER,
+  STREAM_EXPIRES_AT_HEADER,
+  STREAM_OFFSET_HEADER,
+  STREAM_SEQ_HEADER,
+  STREAM_TTL_HEADER,
+  STREAM_UP_TO_DATE_HEADER,
+} from "@durable-streams/client"
 import { StreamStore } from "./store"
 import { FileBackedStreamStore } from "./file-store"
 import { generateResponseCursor } from "./cursor"
+import { SubscriptionManager } from "./subscription-manager"
+import { SubscriptionRoutes } from "./subscription-routes"
+import { serverLog } from "./log"
 import type { CursorOptions } from "./cursor"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { StreamLifecycleEvent, TestServerOptions } from "./types"
 
-// Protocol headers (aligned with PROTOCOL.md)
-const STREAM_OFFSET_HEADER = `Stream-Next-Offset`
-const STREAM_CURSOR_HEADER = `Stream-Cursor`
-const STREAM_UP_TO_DATE_HEADER = `Stream-Up-To-Date`
-const STREAM_SEQ_HEADER = `Stream-Seq`
-const STREAM_TTL_HEADER = `Stream-TTL`
-const STREAM_EXPIRES_AT_HEADER = `Stream-Expires-At`
 const STREAM_SSE_DATA_ENCODING_HEADER = `Stream-SSE-Data-Encoding`
 
-// Idempotent producer headers
-const PRODUCER_ID_HEADER = `Producer-Id`
-const PRODUCER_EPOCH_HEADER = `Producer-Epoch`
-const PRODUCER_SEQ_HEADER = `Producer-Seq`
-const PRODUCER_EXPECTED_SEQ_HEADER = `Producer-Expected-Seq`
-const PRODUCER_RECEIVED_SEQ_HEADER = `Producer-Received-Seq`
-
 // SSE control event fields (Protocol Section 5.7)
-const SSE_OFFSET_FIELD = `streamNextOffset`
-const SSE_CURSOR_FIELD = `streamCursor`
 const SSE_UP_TO_DATE_FIELD = `upToDate`
-const SSE_CLOSED_FIELD = `streamClosed`
-
-// Stream closure header
-const STREAM_CLOSED_HEADER = `Stream-Closed`
 
 // Fork headers (request headers only — not set on responses)
 const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
 const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
-
-// Query params
-const OFFSET_QUERY_PARAM = `offset`
-const LIVE_QUERY_PARAM = `live`
-const CURSOR_QUERY_PARAM = `cursor`
 
 /**
  * Encode data for SSE format.
@@ -161,6 +159,7 @@ export class DurableStreamTestServer {
       | `compression`
       | `cursorIntervalSeconds`
       | `cursorEpoch`
+      | `webhooks`
     >
   > & {
     dataDir?: string
@@ -168,12 +167,15 @@ export class DurableStreamTestServer {
     onStreamDeleted?: (event: StreamLifecycleEvent) => void | Promise<void>
     compression: boolean
     cursorOptions: CursorOptions
+    webhooks: boolean
   }
   private _url: string | null = null
   private activeSSEResponses = new Set<ServerResponse>()
   private isShuttingDown = false
   /** Injected faults for testing retry/resilience */
   private injectedFaults = new Map<string, InjectedFault>()
+  private subscriptionManager: SubscriptionManager | null = null
+  private subscriptionRoutes: SubscriptionRoutes | null = null
 
   constructor(options: TestServerOptions = {}) {
     // Choose store based on dataDir option
@@ -197,6 +199,7 @@ export class DurableStreamTestServer {
         intervalSeconds: options.cursorIntervalSeconds,
         epoch: options.cursorEpoch,
       },
+      webhooks: options.webhooks ?? false,
     }
   }
 
@@ -209,26 +212,65 @@ export class DurableStreamTestServer {
     }
 
     return new Promise((resolve, reject) => {
+      let settled = false
+      const resolveStart = (url: string): void => {
+        if (settled) return
+        settled = true
+        resolve(url)
+      }
+      const rejectStart = (err: unknown): void => {
+        if (settled) return
+        settled = true
+        const startError = err instanceof Error ? err : new Error(String(err))
+
+        void this.stop()
+          .catch((stopErr) => {
+            serverLog.error(`[server] Startup cleanup failed:`, stopErr)
+          })
+          .finally(() => {
+            reject(startError)
+          })
+      }
+
       this.server = createServer((req, res) => {
         this.handleRequest(req, res).catch((err) => {
-          console.error(`Request error:`, err)
+          serverLog.error(`Request error:`, err)
           if (!res.headersSent) {
             res.writeHead(500, { "content-type": `text/plain` })
             res.end(`Internal server error`)
           }
         })
       })
+      this.server.keepAliveTimeout = 65_000
+      this.server.headersTimeout = 70_000
 
-      this.server.on(`error`, reject)
+      this.server.on(`error`, (err) => {
+        if (!settled) {
+          rejectStart(err)
+          return
+        }
+        serverLog.error(`[server] Server error after startup:`, err)
+      })
 
-      this.server.listen(this.options.port, this.options.host, () => {
+      this.server.listen(this.options.port, this.options.host, 4096, () => {
         const addr = this.server!.address()
         if (typeof addr === `string`) {
           this._url = addr
         } else if (addr) {
-          this._url = `http://${this.options.host}:${addr.port}`
+          const host =
+            this.options.host === `0.0.0.0` ? `127.0.0.1` : this.options.host
+          this._url = `http://${host}:${addr.port}`
         }
-        resolve(this._url!)
+
+        this.subscriptionManager = new SubscriptionManager({
+          callbackBaseUrl: this._url!,
+          streamStore: this.store,
+          webhooksEnabled: this.options.webhooks,
+        })
+        this.subscriptionRoutes = new SubscriptionRoutes(
+          this.subscriptionManager
+        )
+        resolveStart(this._url!)
       })
     })
   }
@@ -243,6 +285,12 @@ export class DurableStreamTestServer {
 
     // Mark as shutting down to stop SSE handlers
     this.isShuttingDown = true
+
+    if (this.subscriptionManager) {
+      this.subscriptionManager.shutdown()
+      this.subscriptionManager = null
+      this.subscriptionRoutes = null
+    }
 
     // Cancel all pending long-polls and SSE waits to unblock connection handlers
     if (`cancelAllWaits` in this.store) {
@@ -294,6 +342,21 @@ export class DurableStreamTestServer {
    */
   clear(): void {
     this.store.clear()
+  }
+
+  /**
+   * Install a custom enrichPayload hook on the webhook manager.
+   * Used for testing enrichment failure/recovery behavior.
+   */
+  setEnrichPayload(
+    fn:
+      | ((
+          payload: Record<string, unknown>,
+          consumer: { primary_stream: string }
+        ) => Promise<Record<string, unknown>>)
+      | undefined
+  ): void {
+    void fn
   }
 
   /**
@@ -435,7 +498,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, x-write-token, etag, content-type, content-encoding, vary`
     )
 
     // Browser security headers (Protocol Section 10.7)
@@ -490,6 +553,16 @@ export class DurableStreamTestServer {
           res as ServerResponse & { _injectedFault?: InjectedFault }
         )._injectedFault = fault
       }
+    }
+
+    if (this.subscriptionRoutes && method) {
+      const handled = await this.subscriptionRoutes.handleRequest(
+        method,
+        path,
+        req,
+        res
+      )
+      if (handled) return
     }
 
     try {
@@ -697,6 +770,10 @@ export class DurableStreamTestServer {
           timestamp: Date.now(),
         })
       )
+    }
+
+    if (isNew && body.length > 0) {
+      await this.notifyStreamAppend(path)
     }
 
     // Return 201 for new streams, 200 for idempotent creates
@@ -1093,9 +1170,12 @@ export class DurableStreamTestServer {
       // Read current messages from offset
       const { messages, upToDate } = this.store.read(path, currentOffset)
       this.store.touchAccess(path)
+      let streamClosedAtTail = false
 
-      // Send data events for each message
-      for (const message of messages) {
+      // Send data events for each message. Each data event is immediately
+      // followed by its own control event so downstream consumers can
+      // associate an exact source offset with that message.
+      for (const [index, message] of messages.entries()) {
         // Format data based on content type and encoding
         let dataPayload: string
         if (useBase64) {
@@ -1115,48 +1195,65 @@ export class DurableStreamTestServer {
         res.write(encodeSSEData(dataPayload))
 
         currentOffset = message.offset
+        const currentStream = this.store.get(path)
+        const clientAtTail = currentOffset === currentStream!.currentOffset
+        const isLastMessage = index === messages.length - 1
+        const responseCursor = generateResponseCursor(
+          cursor,
+          this.options.cursorOptions
+        )
+        const controlData: Record<string, string | boolean> = {
+          [SSE_OFFSET_FIELD]: currentOffset,
+        }
+
+        if (currentStream?.closed && clientAtTail && isLastMessage) {
+          controlData[SSE_CLOSED_FIELD] = true
+          streamClosedAtTail = true
+        } else {
+          controlData[SSE_CURSOR_FIELD] = responseCursor
+          if (upToDate && isLastMessage) {
+            controlData[SSE_UP_TO_DATE_FIELD] = true
+          }
+        }
+
+        res.write(`event: control\n`)
+        res.write(encodeSSEData(JSON.stringify(controlData)))
       }
 
-      // Compute offset the same way as HTTP GET: last message's offset, or stream's current offset
-      // Re-fetch stream to get current state (may have been closed)
       const currentStream = this.store.get(path)
       const controlOffset =
         messages[messages.length - 1]?.offset ?? currentStream!.currentOffset
-
-      // Check if stream is closed and client is at tail
       const streamIsClosed = currentStream?.closed ?? false
       const clientAtTail = controlOffset === currentStream!.currentOffset
 
-      // Send control event with current offset/cursor (Protocol Section 5.7)
-      // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
-      const responseCursor = generateResponseCursor(
-        cursor,
-        this.options.cursorOptions
-      )
-      const controlData: Record<string, string | boolean> = {
-        [SSE_OFFSET_FIELD]: controlOffset,
+      if (streamClosedAtTail) {
+        break
       }
 
-      if (streamIsClosed && clientAtTail) {
-        // Final control event - stream is closed
-        // streamCursor is omitted when streamClosed is true per protocol
-        // upToDate is implied by streamClosed per protocol
-        controlData[SSE_CLOSED_FIELD] = true
-      } else {
-        // Normal control event - include cursor
-        controlData[SSE_CURSOR_FIELD] = responseCursor
-        // Include upToDate flag when client has caught up to head
-        if (upToDate) {
-          controlData[SSE_UP_TO_DATE_FIELD] = true
+      if (messages.length === 0) {
+        const responseCursor = generateResponseCursor(
+          cursor,
+          this.options.cursorOptions
+        )
+        const controlData: Record<string, string | boolean> = {
+          [SSE_OFFSET_FIELD]: controlOffset,
         }
-      }
 
-      res.write(`event: control\n`)
-      res.write(encodeSSEData(JSON.stringify(controlData)))
+        if (streamIsClosed && clientAtTail) {
+          controlData[SSE_CLOSED_FIELD] = true
+        } else {
+          controlData[SSE_CURSOR_FIELD] = responseCursor
+          if (upToDate) {
+            controlData[SSE_UP_TO_DATE_FIELD] = true
+          }
+        }
 
-      // Close SSE connection after sending streamClosed
-      if (streamIsClosed && clientAtTail) {
-        break // Exit loop, connection will be closed
+        res.write(`event: control\n`)
+        res.write(encodeSSEData(JSON.stringify(controlData)))
+
+        if (streamIsClosed && clientAtTail) {
+          break
+        }
       }
 
       // Update currentOffset for next iteration (use controlOffset for consistency)
@@ -1403,7 +1500,7 @@ export class DurableStreamTestServer {
       }
 
       // Close-only without producer headers (simple idempotent close)
-      const closeResult = this.store.closeStream(path)
+      const closeResult = await this.store.closeStream(path)
       if (!closeResult) {
         res.writeHead(404, { "content-type": `text/plain` })
         res.end(`Stream not found`)
@@ -1513,6 +1610,8 @@ export class DurableStreamTestServer {
         const statusCode = producerId !== undefined ? 200 : 204
         res.writeHead(statusCode, responseHeaders)
         res.end()
+
+        await this.notifyStreamAppend(path)
         return
       }
 
@@ -1575,6 +1674,17 @@ export class DurableStreamTestServer {
     }
     res.writeHead(204, responseHeaders)
     res.end()
+
+    await this.notifyStreamAppend(path)
+  }
+
+  private async notifyStreamAppend(path: string): Promise<void> {
+    if (!this.subscriptionManager) return
+    try {
+      await this.subscriptionManager.onStreamAppend(path)
+    } catch (err) {
+      serverLog.error(`[server] subscription append hook failed:`, err)
+    }
   }
 
   /**
@@ -1605,6 +1715,10 @@ export class DurableStreamTestServer {
           timestamp: Date.now(),
         })
       )
+    }
+
+    if (this.subscriptionManager) {
+      this.subscriptionManager.onStreamDeleted(path)
     }
 
     res.writeHead(204)
