@@ -209,13 +209,12 @@ function handleInit(array $cmd): array {
         'clientVersion' => version(),
         'features' => [
             'batching' => true,
-            'sse' => true,  // SSE now implemented
+            'sse' => true,
             'longPoll' => true,
             'streaming' => true,
             'dynamicHeaders' => true,
-            'retryOptions' => true,  // PHP has RetryOptions class
-            'batchItems' => true,    // PHP has maxBatchItems option
-            'strictZeroValidation' => true,  // PHP rejects 0 as invalid
+            'strictZeroValidation' => true,
+            'auto' => true,
         ],
     ];
 }
@@ -343,6 +342,8 @@ function handleRead(array $cmd): array {
             $live = LiveMode::LongPoll;
         } elseif ($cmd['live'] === 'sse') {
             $live = LiveMode::SSE;
+        } elseif ($cmd['live'] === true) {
+            $live = LiveMode::LongPoll;
         }
     }
 
@@ -896,19 +897,6 @@ function handleValidate(array $cmd): array {
 
     try {
         switch ($targetType) {
-            case 'retry-options':
-                // Test RetryOptions validation
-                new RetryOptions(
-                    maxRetries: $target['maxRetries'] ?? 3,
-                    initialDelayMs: $target['initialDelayMs'] ?? 100,
-                    maxDelayMs: $target['maxDelayMs'] ?? 5000,
-                    multiplier: $target['multiplier'] ?? 2.0,
-                );
-                return [
-                    'type' => 'validate',
-                    'success' => true,
-                ];
-
             case 'idempotent-producer':
                 // Test IdempotentProducer validation
                 // Note: IdempotentProducer doesn't currently validate all params
