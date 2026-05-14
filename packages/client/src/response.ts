@@ -426,8 +426,13 @@ export class StreamResponseImpl<
     void,
     undefined
   > | null> {
-    // Check if we should fall back to long-poll (state type encodes this)
-    if (!this.#syncState.shouldUseSse()) {
+    // While paused, let pull() reconnect after resume.
+    if (this.#syncState instanceof PausedState) {
+      return null
+    }
+
+    // handleConnectionEnd is SSE-only; non-SSE states fall back to long-poll.
+    if (!(this.#syncState instanceof SSEState)) {
       return null // Will cause fallback to long-poll
     }
 
@@ -435,10 +440,16 @@ export class StreamResponseImpl<
       return null
     }
 
+    // Pause aborts are intentional; don't count them as short connections.
+    const wasAborted =
+      this.#abortController.signal.aborted ||
+      (this.#requestAbortController?.signal.aborted === true &&
+        this.#requestAbortController.signal.reason === PAUSE_STREAM)
+
     // Pure state transition: check connection duration, manage counters
-    const result = (this.#syncState as SSEState).handleConnectionEnd(
+    const result = this.#syncState.handleConnectionEnd(
       Date.now(),
-      this.#abortController.signal.aborted,
+      wasAborted,
       this.#sseResilience
     )
     this.#syncState = result.state
@@ -725,6 +736,11 @@ export class StreamResponseImpl<
                   return
 
                 case `closed`:
+                  // During pause, done:true comes from aborting the request.
+                  // Keep the stream open; the next pull() handles resume/reconnect.
+                  if (this.#state !== `active`) {
+                    return
+                  }
                   this.#markClosed()
                   controller.close()
                   return
