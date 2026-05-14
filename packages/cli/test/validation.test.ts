@@ -63,6 +63,12 @@ describe(`buildStreamUrl`, () => {
       buildStreamUrl(`http://localhost:8080/prefix/v1/stream/group`, `stream-1`)
     ).toBe(`http://localhost:8080/prefix/v1/stream/group/stream-1`)
   })
+
+  it(`preserves slashes in hierarchical stream IDs`, () => {
+    expect(
+      buildStreamUrl(`https://api.example.com/v1/stream`, `tenant/chat/room-1`)
+    ).toBe(`https://api.example.com/v1/stream/tenant/chat/room-1`)
+  })
 })
 
 describe(`validateUrl`, () => {
@@ -220,10 +226,10 @@ describe(`validateStreamId`, () => {
     expect(result.error).toContain(`Invalid stream ID`)
   })
 
-  it(`returns error for ID with slashes`, () => {
+  it(`returns valid for ID with slashes`, () => {
     const result = validateStreamId(`path/to/stream`)
-    expect(result.valid).toBe(false)
-    expect(result.error).toContain(`Invalid stream ID`)
+    expect(result.valid).toBe(true)
+    expect(result.error).toBeUndefined()
   })
 
   it(`returns error for ID with special characters`, () => {

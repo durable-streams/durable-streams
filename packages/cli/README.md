@@ -57,6 +57,9 @@ export STREAM_URL=http://localhost:4437/v1/stream
 # Create a stream
 durable-stream-dev create my-stream
 
+# Stream IDs may include slashes for hierarchical names
+durable-stream-dev create account-123/chat/room-1
+
 # Write to the stream
 durable-stream-dev write my-stream "Hello, world!"
 
