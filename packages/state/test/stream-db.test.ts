@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
 import { DurableStream } from "@durable-streams/client"
 import { createStateSchema, createStreamDB } from "../src/stream-db"
@@ -67,6 +67,80 @@ describe(`Stream DB`, () => {
 
   afterAll(async () => {
     await server.stop()
+  })
+
+  it(`should pass configured live mode to the stream consumer`, async () => {
+    const streamState = createStateSchema({
+      users: {
+        schema: userSchema,
+        type: `user`,
+        primaryKey: `id`,
+      },
+    })
+
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          "Stream-Next-Offset": `0`,
+          "Stream-Up-To-Date": `true`,
+        },
+      })
+    )
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: `https://example.com/stream`,
+        contentType: `application/json`,
+        fetch: mockFetch,
+      },
+      live: `sse`,
+      state: streamState,
+    })
+
+    await db.preload()
+    db.close()
+
+    const firstUrl = new URL(mockFetch.mock.calls[0]![0] as string)
+    expect(firstUrl.searchParams.get(`live`)).toBe(`sse`)
+  })
+
+  it(`should disable live mode when configured with live false`, async () => {
+    const streamState = createStateSchema({
+      users: {
+        schema: userSchema,
+        type: `user`,
+        primaryKey: `id`,
+      },
+    })
+
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          "Stream-Next-Offset": `0`,
+          "Stream-Up-To-Date": `true`,
+        },
+      })
+    )
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: `https://example.com/stream`,
+        contentType: `application/json`,
+        fetch: mockFetch,
+      },
+      live: false,
+      state: streamState,
+    })
+
+    await db.preload()
+    db.close()
+
+    const firstUrl = new URL(mockFetch.mock.calls[0]![0] as string)
+    expect(firstUrl.searchParams.has(`live`)).toBe(false)
   })
 
   it(`should define stream state and create db with collections`, async () => {
