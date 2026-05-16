@@ -131,6 +131,7 @@ tests:
         path: ${streamPath}
         offset: ${initialOffset}
         live: long-poll
+        maxChunks: 1
         timeoutMs: 5000
         background: true
         as: longpollRead
@@ -164,6 +165,7 @@ tests:
         path: ${streamPath}
         offset: ${initialOffset}
         live: sse
+        maxChunks: 1
         timeoutMs: 5000
         background: true
         as: sseRead

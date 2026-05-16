@@ -123,13 +123,9 @@ def _stream_internal(
     if offset is not None:
         query_params[OFFSET_QUERY_PARAM] = offset
 
-    # Add live mode for explicit modes
-    is_sse = False
-    if live == "long-poll":
-        query_params[LIVE_QUERY_PARAM] = "long-poll"
-    elif live == "sse":
-        query_params[LIVE_QUERY_PARAM] = "sse"
-        is_sse = True
+    # Never set live on the initial request — catch-up responses without live
+    # are cacheable by CDNs/browsers. Live mode activates only after catching up.
+    is_sse = live == "sse"
 
     # Add cursor if provided
     if cursor:
@@ -149,10 +145,6 @@ def _stream_internal(
         # Apply any mutations from previous on_error calls
         current_headers = {**resolved_headers, **header_mutations}
         current_params = {**resolved_params, **param_mutations}
-
-        # Add Accept header for SSE mode (standard SSE negotiation)
-        if is_sse and "accept" not in {k.lower() for k in current_headers}:
-            current_headers["Accept"] = "text/event-stream"
 
         # Merge query params (user params + protocol params)
         all_params = {**current_params, **query_params}
@@ -222,16 +214,18 @@ def _stream_internal(
     captured_header_mutations = header_mutations.copy()
     captured_param_mutations = param_mutations.copy()
 
-    def fetch_next(next_offset: Offset, next_cursor: str | None) -> httpx.Response:
+    def fetch_next(next_offset: Offset, next_cursor: str | None, up_to_date: bool = False) -> httpx.Response:
         """Fetch the next chunk for live updates."""
         next_params: dict[str, str] = {}
         next_params[OFFSET_QUERY_PARAM] = next_offset
 
-        # For auto mode (True), use long-poll for subsequent requests
-        if live is True or live == "long-poll":
-            next_params[LIVE_QUERY_PARAM] = "long-poll"
-        elif live == "sse":
-            next_params[LIVE_QUERY_PARAM] = "sse"
+        # Only set live mode after catching up (up_to_date) — catch-up requests
+        # without live are cacheable by CDNs/browsers.
+        if up_to_date:
+            if live is True or live == "long-poll":
+                next_params[LIVE_QUERY_PARAM] = "long-poll"
+            elif live == "sse":
+                next_params[LIVE_QUERY_PARAM] = "sse"
 
         if next_cursor:
             next_params[CURSOR_QUERY_PARAM] = next_cursor
@@ -293,6 +287,41 @@ def _stream_internal(
                         continue
                 raise
 
+    def start_sse(next_offset: Offset, next_cursor: str | None) -> httpx.Response:
+        """Start the SSE live connection after HTTP catch-up."""
+        sse_params: dict[str, str] = {
+            OFFSET_QUERY_PARAM: next_offset,
+            LIVE_QUERY_PARAM: "sse",
+        }
+        if next_cursor:
+            sse_params[CURSOR_QUERY_PARAM] = next_cursor
+
+        resolved_hdrs = resolve_headers_sync(headers)
+        resolved_prms = resolve_params_sync(params)
+        final_hdrs = {**resolved_hdrs, **captured_header_mutations}
+        final_prms = {**resolved_prms, **captured_param_mutations}
+
+        if "accept" not in {k.lower() for k in final_hdrs}:
+            final_hdrs["Accept"] = "text/event-stream"
+
+        all_prms = {**final_prms, **sse_params}
+        sse_url = build_url_with_params(url, all_prms)
+
+        request = client.build_request(
+            "GET",
+            sse_url,
+            headers=final_hdrs,
+            timeout=timeout,
+            **kwargs,
+        )
+        resp = client.send(request, stream=True)
+        if not resp.is_success and resp.status_code != 204:
+            body = resp.read().decode("utf-8", errors="replace")
+            resp.close()
+            hdrs = parse_httpx_headers(resp.headers)
+            raise error_from_status(resp.status_code, url, body=body, headers=hdrs)
+        return resp
+
     return StreamResponse(
         url=url,
         response=response,
@@ -302,6 +331,7 @@ def _stream_internal(
         offset=meta.next_offset,  # Current offset from response headers
         cursor=meta.cursor,
         fetch_next=fetch_next,
+        start_sse=start_sse if is_sse else None,
         is_sse=is_sse,
         own_client=_own_client,
         encoding=encoding,

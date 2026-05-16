@@ -74,7 +74,8 @@ class StreamResponse(Generic[T]):
         start_offset: Offset | None,
         offset: Offset | None,
         cursor: str | None,
-        fetch_next: Callable[[Offset, str | None], httpx.Response],
+        fetch_next: Callable[[Offset, str | None, bool], httpx.Response],
+        start_sse: Callable[[Offset, str | None], httpx.Response] | None = None,
         is_sse: bool = False,
         own_client: bool = False,
         encoding: SSEEncoding | None = None,
@@ -87,6 +88,7 @@ class StreamResponse(Generic[T]):
         self._offset = offset or ""
         self._cursor = cursor
         self._fetch_next = fetch_next
+        self._start_sse = start_sse
         self._is_sse = is_sse
         self._own_client = own_client
 
@@ -164,6 +166,12 @@ class StreamResponse(Generic[T]):
             return not self._up_to_date
         # Otherwise, keep tailing until explicitly closed
         return True
+
+    def _is_empty_json_body(self, content: bytes) -> bool:
+        """Check if content is an empty JSON array from a JSON stream (no actual data)."""
+        if self._content_type and "json" in self._content_type.lower():
+            return content.strip() == b"[]"
+        return False
 
     def _decode_base64(self, data: str) -> bytes:
         """
@@ -308,7 +316,7 @@ class StreamResponse(Generic[T]):
 
         # Continue with live updates if needed
         while self._should_continue_live():
-            response = self._fetch_next(self._offset, self._cursor)
+            response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
             try:
                 self._update_metadata_from_response(response)
 
@@ -355,7 +363,48 @@ class StreamResponse(Generic[T]):
         import codecs
 
         if self._is_sse:
-            yield from self._iter_sse_text()
+            # Fetch-then-live: catch up via regular HTTP, then switch to SSE
+            decoder = codecs.getincrementaldecoder(encoding)("replace")
+            try:
+                for chunk in self._response.iter_bytes():
+                    text = decoder.decode(chunk)
+                    if text:
+                        yield text
+                final = decoder.decode(b"", final=True)
+                if final:
+                    yield final
+            finally:
+                self._response.close()
+
+            # Continue HTTP catch-up until caught up
+            while self._should_continue_live() and not self._up_to_date:
+                response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
+                decoder = codecs.getincrementaldecoder(encoding)("replace")
+                try:
+                    self._update_metadata_from_response(response)
+                    if response.status_code == 204:
+                        response.close()
+                        continue
+                    for chunk in response.iter_bytes():
+                        text = decoder.decode(chunk)
+                        if text:
+                            yield text
+                    final = decoder.decode(b"", final=True)
+                    if final:
+                        yield final
+                finally:
+                    response.close()
+
+            # Switch to SSE for live updates
+            if self._should_continue_live():
+                if self._start_sse is None:
+                    return
+                sse_response = self._start_sse(self._offset, self._cursor)
+                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                encoding_header = sse_response.headers.get(_ENC_HDR)
+                if encoding_header == "base64":
+                    self._encoding = "base64"
+                yield from self._iter_sse_text(sse_response)
         else:
             # Use incremental decoder for correct handling of multi-byte chars
             # split across chunk boundaries
@@ -373,7 +422,7 @@ class StreamResponse(Generic[T]):
                 self._response.close()
 
             while self._should_continue_live():
-                response = self._fetch_next(self._offset, self._cursor)
+                response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
                 decoder = codecs.getincrementaldecoder(encoding)("replace")
                 try:
                     self._update_metadata_from_response(response)
@@ -392,11 +441,13 @@ class StreamResponse(Generic[T]):
                 finally:
                     response.close()
 
-    def _iter_sse_text(self) -> Iterator[str]:
+    def _iter_sse_text(self, response: "httpx.Response | None" = None) -> Iterator[str]:
         """Iterate SSE data events as text."""
         from durable_streams._sse import SSEDataEvent, parse_sse_sync
 
-        for event in parse_sse_sync(self._response.iter_bytes()):
+        sse_response = response if response is not None else self._response
+
+        for event in parse_sse_sync(sse_response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
                 # If encoding is base64, decode and convert back to text
                 if self._encoding == "base64":
@@ -463,7 +514,42 @@ class StreamResponse(Generic[T]):
     ) -> Iterator[list[T]]:
         """Internal JSON batch iteration."""
         if self._is_sse:
-            yield from self._iter_sse_json_batches(decode)
+            # Fetch-then-live: catch up via regular HTTP, then switch to SSE
+            try:
+                content = self._response.read()
+                if content:
+                    items = decode_json_items(content, decode)
+                    if items:
+                        yield items
+            finally:
+                self._response.close()
+
+            # Continue HTTP catch-up until caught up
+            while self._should_continue_live() and not self._up_to_date:
+                response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
+                try:
+                    self._update_metadata_from_response(response)
+                    if response.status_code == 204:
+                        response.close()
+                        continue
+                    content = response.read()
+                    if content:
+                        items = decode_json_items(content, decode)
+                        if items:
+                            yield items
+                finally:
+                    response.close()
+
+            # Switch to SSE for live updates
+            if self._should_continue_live():
+                if self._start_sse is None:
+                    return
+                sse_response = self._start_sse(self._offset, self._cursor)
+                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                encoding_header = sse_response.headers.get(_ENC_HDR)
+                if encoding_header == "base64":
+                    self._encoding = "base64"
+                yield from self._iter_sse_json_batches(decode, sse_response)
         else:
             # Read and parse the first response
             try:
@@ -477,7 +563,7 @@ class StreamResponse(Generic[T]):
 
             # Continue with live updates if needed
             while self._should_continue_live():
-                response = self._fetch_next(self._offset, self._cursor)
+                response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
                 try:
                     self._update_metadata_from_response(response)
 
@@ -496,11 +582,14 @@ class StreamResponse(Generic[T]):
     def _iter_sse_json_batches(
         self,
         decode: Callable[[Any], T] | None,
+        response: "httpx.Response | None" = None,
     ) -> Iterator[list[T]]:
         """Iterate SSE data events as JSON batches."""
         from durable_streams._sse import SSEDataEvent, parse_sse_sync
 
-        for event in parse_sse_sync(self._response.iter_bytes()):
+        sse_response = response if response is not None else self._response
+
+        for event in parse_sse_sync(sse_response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
                 # If encoding is base64, decode first
                 if self._encoding == "base64":
@@ -554,7 +643,53 @@ class StreamResponse(Generic[T]):
     ) -> Iterator[StreamEvent[Any]]:
         """Internal event iteration."""
         if self._is_sse:
-            yield from self._iter_sse_events(mode, decode)
+            # Fetch-then-live: catch up via regular HTTP, then switch to SSE
+            # Phase 1: Read initial response as regular HTTP
+            try:
+                content = self._response.read()
+                if content and not self._is_empty_json_body(content):
+                    data = self._convert_content(content, mode, encoding, decode)
+                    yield StreamEvent(
+                        data=data,
+                        next_offset=self._offset,
+                        up_to_date=self._up_to_date,
+                        cursor=self._cursor,
+                    )
+            finally:
+                self._response.close()
+
+            # Continue HTTP catch-up until caught up
+            while self._should_continue_live() and not self._up_to_date:
+                response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
+                try:
+                    self._update_metadata_from_response(response)
+
+                    if response.status_code == 204:
+                        response.close()
+                        continue
+
+                    content = response.read()
+                    if content and not self._is_empty_json_body(content):
+                        data = self._convert_content(content, mode, encoding, decode)
+                        yield StreamEvent(
+                            data=data,
+                            next_offset=self._offset,
+                            up_to_date=self._up_to_date,
+                            cursor=self._cursor,
+                        )
+                finally:
+                    response.close()
+
+            # Phase 2: Switch to SSE for live updates
+            if self._should_continue_live():
+                if self._start_sse is None:
+                    return
+                sse_response = self._start_sse(self._offset, self._cursor)
+                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                encoding_header = sse_response.headers.get(_ENC_HDR)
+                if encoding_header == "base64":
+                    self._encoding = "base64"
+                yield from self._iter_sse_events(mode, decode, sse_response)
         else:
             # Handle first response
             try:
@@ -572,7 +707,7 @@ class StreamResponse(Generic[T]):
 
             # Continue with live updates
             while self._should_continue_live():
-                response = self._fetch_next(self._offset, self._cursor)
+                response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
                 try:
                     self._update_metadata_from_response(response)
 
@@ -616,6 +751,7 @@ class StreamResponse(Generic[T]):
         self,
         mode: Literal["bytes", "text", "json", "json_batches"],
         decode: Callable[[Any], T] | None,
+        response: "httpx.Response | None" = None,
     ) -> Iterator[StreamEvent[Any]]:
         """
         Iterate SSE events with metadata.
@@ -632,10 +768,12 @@ class StreamResponse(Generic[T]):
         """
         from durable_streams._sse import SSEDataEvent, parse_sse_sync
 
+        sse_response = response if response is not None else self._response
+
         # Buffer to hold data events until we see their control event
         buffered_data: list[Any] = []
 
-        for event in parse_sse_sync(self._response.iter_bytes()):
+        for event in parse_sse_sync(sse_response.iter_bytes()):
             if isinstance(event, SSEDataEvent):
                 # If encoding is base64, decode first
                 if self._encoding == "base64":
@@ -728,7 +866,7 @@ class StreamResponse(Generic[T]):
         while not self._up_to_date:
             if self._live is False:
                 break
-            response = self._fetch_next(self._offset, self._cursor)
+            response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
             try:
                 self._update_metadata_from_response(response)
 
@@ -823,7 +961,7 @@ class StreamResponse(Generic[T]):
         while not self._up_to_date:
             if self._live is False:
                 break
-            response = self._fetch_next(self._offset, self._cursor)
+            response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
             try:
                 self._update_metadata_from_response(response)
 
@@ -891,7 +1029,7 @@ class StreamResponse(Generic[T]):
         while not self._up_to_date:
             if self._live is False:
                 break
-            response = self._fetch_next(self._offset, self._cursor)
+            response = self._fetch_next(self._offset, self._cursor, self._up_to_date)
             try:
                 self._update_metadata_from_response(response)
 
@@ -936,7 +1074,8 @@ class AsyncStreamResponse(Generic[T]):
         start_offset: Offset | None,
         offset: Offset | None,
         cursor: str | None,
-        fetch_next: Callable[[Offset, str | None], Any],  # Returns awaitable
+        fetch_next: Callable[[Offset, str | None, bool], Any],  # Returns awaitable
+        start_sse: Callable[[Offset, str | None], Any] | None = None,  # Returns awaitable
         is_sse: bool = False,
         own_client: bool = False,
         encoding: SSEEncoding | None = None,
@@ -949,6 +1088,7 @@ class AsyncStreamResponse(Generic[T]):
         self._offset = offset or ""
         self._cursor = cursor
         self._fetch_next = fetch_next
+        self._start_sse = start_sse
         self._is_sse = is_sse
         self._own_client = own_client
 
@@ -1025,6 +1165,12 @@ class AsyncStreamResponse(Generic[T]):
             return not self._up_to_date
         # Otherwise, keep tailing until explicitly closed
         return True
+
+    def _is_empty_json_body(self, content: bytes) -> bool:
+        """Check if content is an empty JSON array from a JSON stream (no actual data)."""
+        if self._content_type and "json" in self._content_type.lower():
+            return content.strip() == b"[]"
+        return False
 
     def _decode_base64(self, data: str) -> bytes:
         """
@@ -1156,7 +1302,7 @@ class AsyncStreamResponse(Generic[T]):
             await self._response.aclose()
 
         while self._should_continue_live():
-            response = await self._fetch_next(self._offset, self._cursor)
+            response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
             try:
                 self._update_metadata_from_response(response)
 
@@ -1199,8 +1345,49 @@ class AsyncStreamResponse(Generic[T]):
         import codecs
 
         if self._is_sse:
-            async for text in self._aiter_sse_text():
-                yield text
+            # Fetch-then-live: catch up via regular HTTP, then switch to SSE
+            decoder = codecs.getincrementaldecoder(encoding)("replace")
+            try:
+                async for chunk in self._response.aiter_bytes():
+                    text = decoder.decode(chunk)
+                    if text:
+                        yield text
+                final = decoder.decode(b"", final=True)
+                if final:
+                    yield final
+            finally:
+                await self._response.aclose()
+
+            # Continue HTTP catch-up until caught up
+            while self._should_continue_live() and not self._up_to_date:
+                response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
+                decoder = codecs.getincrementaldecoder(encoding)("replace")
+                try:
+                    self._update_metadata_from_response(response)
+                    if response.status_code == 204:
+                        await response.aclose()
+                        continue
+                    async for chunk in response.aiter_bytes():
+                        text = decoder.decode(chunk)
+                        if text:
+                            yield text
+                    final = decoder.decode(b"", final=True)
+                    if final:
+                        yield final
+                finally:
+                    await response.aclose()
+
+            # Switch to SSE for live updates
+            if self._should_continue_live():
+                if self._start_sse is None:
+                    return
+                sse_response = await self._start_sse(self._offset, self._cursor)
+                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                encoding_header = sse_response.headers.get(_ENC_HDR)
+                if encoding_header == "base64":
+                    self._encoding = "base64"
+                async for text in self._aiter_sse_text(sse_response):
+                    yield text
         else:
             # Use incremental decoder for correct handling of multi-byte chars
             # split across chunk boundaries
@@ -1218,7 +1405,7 @@ class AsyncStreamResponse(Generic[T]):
                 await self._response.aclose()
 
             while self._should_continue_live():
-                response = await self._fetch_next(self._offset, self._cursor)
+                response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
                 decoder = codecs.getincrementaldecoder(encoding)("replace")
                 try:
                     self._update_metadata_from_response(response)
@@ -1237,11 +1424,13 @@ class AsyncStreamResponse(Generic[T]):
                 finally:
                     await response.aclose()
 
-    async def _aiter_sse_text(self) -> AsyncIterator[str]:
+    async def _aiter_sse_text(self, response: "httpx.Response | None" = None) -> AsyncIterator[str]:
         """Iterate SSE data events as text."""
         from durable_streams._sse import SSEDataEvent, parse_sse_async
 
-        async for event in parse_sse_async(self._response.aiter_bytes()):
+        sse_response = response if response is not None else self._response
+
+        async for event in parse_sse_async(sse_response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):
                 # If encoding is base64, decode and convert back to text
                 if self._encoding == "base64":
@@ -1290,8 +1479,43 @@ class AsyncStreamResponse(Generic[T]):
     ) -> AsyncIterator[list[T]]:
         """Internal async JSON batch iteration."""
         if self._is_sse:
-            async for batch in self._aiter_sse_json_batches(decode):
-                yield batch
+            # Fetch-then-live: catch up via regular HTTP, then switch to SSE
+            try:
+                content = await self._response.aread()
+                if content:
+                    items = decode_json_items(content, decode)
+                    if items:
+                        yield items
+            finally:
+                await self._response.aclose()
+
+            # Continue HTTP catch-up until caught up
+            while self._should_continue_live() and not self._up_to_date:
+                response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
+                try:
+                    self._update_metadata_from_response(response)
+                    if response.status_code == 204:
+                        await response.aclose()
+                        continue
+                    content = await response.aread()
+                    if content:
+                        items = decode_json_items(content, decode)
+                        if items:
+                            yield items
+                finally:
+                    await response.aclose()
+
+            # Switch to SSE for live updates
+            if self._should_continue_live():
+                if self._start_sse is None:
+                    return
+                sse_response = await self._start_sse(self._offset, self._cursor)
+                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                encoding_header = sse_response.headers.get(_ENC_HDR)
+                if encoding_header == "base64":
+                    self._encoding = "base64"
+                async for batch in self._aiter_sse_json_batches(decode, sse_response):
+                    yield batch
         else:
             try:
                 content = await self._response.aread()
@@ -1303,7 +1527,7 @@ class AsyncStreamResponse(Generic[T]):
                 await self._response.aclose()
 
             while self._should_continue_live():
-                response = await self._fetch_next(self._offset, self._cursor)
+                response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
                 try:
                     self._update_metadata_from_response(response)
 
@@ -1322,11 +1546,14 @@ class AsyncStreamResponse(Generic[T]):
     async def _aiter_sse_json_batches(
         self,
         decode: Callable[[Any], T] | None,
+        response: "httpx.Response | None" = None,
     ) -> AsyncIterator[list[T]]:
         """Iterate SSE data events as JSON batches."""
         from durable_streams._sse import SSEDataEvent, parse_sse_async
 
-        async for event in parse_sse_async(self._response.aiter_bytes()):
+        sse_response = response if response is not None else self._response
+
+        async for event in parse_sse_async(sse_response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):
                 # If encoding is base64, decode first
                 if self._encoding == "base64":
@@ -1369,8 +1596,54 @@ class AsyncStreamResponse(Generic[T]):
     ) -> AsyncIterator[StreamEvent[Any]]:
         """Internal async event iteration."""
         if self._is_sse:
-            async for event in self._aiter_sse_events(mode, decode):
-                yield event
+            # Fetch-then-live: catch up via regular HTTP, then switch to SSE
+            # Phase 1: Read initial response as regular HTTP
+            try:
+                content = await self._response.aread()
+                if content and not self._is_empty_json_body(content):
+                    data = self._convert_content(content, mode, encoding, decode)
+                    yield StreamEvent(
+                        data=data,
+                        next_offset=self._offset,
+                        up_to_date=self._up_to_date,
+                        cursor=self._cursor,
+                    )
+            finally:
+                await self._response.aclose()
+
+            # Continue HTTP catch-up until caught up
+            while self._should_continue_live() and not self._up_to_date:
+                response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
+                try:
+                    self._update_metadata_from_response(response)
+
+                    if response.status_code == 204:
+                        await response.aclose()
+                        continue
+
+                    content = await response.aread()
+                    if content and not self._is_empty_json_body(content):
+                        data = self._convert_content(content, mode, encoding, decode)
+                        yield StreamEvent(
+                            data=data,
+                            next_offset=self._offset,
+                            up_to_date=self._up_to_date,
+                            cursor=self._cursor,
+                        )
+                finally:
+                    await response.aclose()
+
+            # Phase 2: Switch to SSE for live updates
+            if self._should_continue_live():
+                if self._start_sse is None:
+                    return
+                sse_response = await self._start_sse(self._offset, self._cursor)
+                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                encoding_header = sse_response.headers.get(_ENC_HDR)
+                if encoding_header == "base64":
+                    self._encoding = "base64"
+                async for event in self._aiter_sse_events(mode, decode, sse_response):
+                    yield event
         else:
             try:
                 content = await self._response.aread()
@@ -1386,7 +1659,7 @@ class AsyncStreamResponse(Generic[T]):
                 await self._response.aclose()
 
             while self._should_continue_live():
-                response = await self._fetch_next(self._offset, self._cursor)
+                response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
                 try:
                     self._update_metadata_from_response(response)
 
@@ -1428,6 +1701,7 @@ class AsyncStreamResponse(Generic[T]):
         self,
         mode: Literal["bytes", "text", "json", "json_batches"],
         decode: Callable[[Any], T] | None,
+        response: "httpx.Response | None" = None,
     ) -> AsyncIterator[StreamEvent[Any]]:
         """
         Iterate SSE events with metadata.
@@ -1444,10 +1718,12 @@ class AsyncStreamResponse(Generic[T]):
         """
         from durable_streams._sse import SSEDataEvent, parse_sse_async
 
+        sse_response = response if response is not None else self._response
+
         # Buffer to hold data events until we see their control event
         buffered_data: list[Any] = []
 
-        async for event in parse_sse_async(self._response.aiter_bytes()):
+        async for event in parse_sse_async(sse_response.aiter_bytes()):
             if isinstance(event, SSEDataEvent):
                 # If encoding is base64, decode first
                 if self._encoding == "base64":
@@ -1533,7 +1809,7 @@ class AsyncStreamResponse(Generic[T]):
         while not self._up_to_date:
             if self._live is False:
                 break
-            response = await self._fetch_next(self._offset, self._cursor)
+            response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
             try:
                 self._update_metadata_from_response(response)
 
@@ -1612,7 +1888,7 @@ class AsyncStreamResponse(Generic[T]):
         while not self._up_to_date:
             if self._live is False:
                 break
-            response = await self._fetch_next(self._offset, self._cursor)
+            response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
             try:
                 self._update_metadata_from_response(response)
 
@@ -1672,7 +1948,7 @@ class AsyncStreamResponse(Generic[T]):
         while not self._up_to_date:
             if self._live is False:
                 break
-            response = await self._fetch_next(self._offset, self._cursor)
+            response = await self._fetch_next(self._offset, self._cursor, self._up_to_date)
             try:
                 self._update_metadata_from_response(response)
 

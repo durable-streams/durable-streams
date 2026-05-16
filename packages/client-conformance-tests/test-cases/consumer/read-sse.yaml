@@ -289,13 +289,11 @@ tests:
           minChunks: 1
 
   - id: sse-strips-single-leading-space
-    name: SSE strips only single leading space
+    name: HTTP catch-up preserves leading spaces
     description: |
-      Per EventSource spec section 9.2.4: "If value starts with a
-      U+0020 SPACE character, remove it from value."
-      Only ONE space should be removed, preserving any additional spaces.
-      This prevents parsers from using trim() or similar which would
-      incorrectly strip all leading/trailing whitespace.
+      With fetch-then-live, existing data is delivered by HTTP catch-up before
+      the client transitions to SSE. EventSource data-line normalization only
+      applies to live SSE events, so catch-up must preserve leading spaces.
     setup:
       - action: create
         as: streamPath
@@ -309,5 +307,5 @@ tests:
         live: sse
         waitForUpToDate: true
         expect:
-          data: " two leading spaces"
+          data: "  two leading spaces"
           minChunks: 1

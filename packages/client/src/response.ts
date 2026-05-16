@@ -69,6 +69,7 @@ export interface StreamResponseConfig {
     offset: Offset,
     cursor: string | undefined,
     signal: AbortSignal,
+    upToDate: boolean,
     resumingFromPause?: boolean
   ) => Promise<Response>
   /** Function to start SSE connection and return a Response with SSE body */
@@ -685,6 +686,40 @@ export class StreamResponseImpl<
             }
           }
 
+          // Transition to SSE once caught up (fetch-then-live pattern)
+          if (
+            !sseEventIterator &&
+            this.upToDate &&
+            this.#startSSE &&
+            this.#shouldContinueLive()
+          ) {
+            if (this.#state === `pause-requested` || this.#state === `paused`) {
+              this.#state = `paused`
+              if (this.#pausePromise) {
+                await this.#pausePromise
+              }
+              if (this.#abortController.signal.aborted) {
+                this.#markClosed()
+                controller.close()
+                return
+              }
+            }
+
+            this.#markSSEConnectionStart()
+            this.#requestAbortController = new AbortController()
+            const sseResponse = await this.#startSSE(
+              this.offset,
+              this.cursor,
+              this.#requestAbortController.signal
+            )
+            if (sseResponse.body) {
+              sseEventIterator = parseSSEStream(
+                sseResponse.body,
+                this.#requestAbortController.signal
+              )
+            }
+          }
+
           // SSE mode: process events from the SSE stream
           if (sseEventIterator) {
             // Check for pause state before processing SSE events
@@ -776,6 +811,7 @@ export class StreamResponseImpl<
               this.offset,
               this.cursor,
               this.#requestAbortController.signal,
+              this.upToDate,
               resumingFromPause
             )
 
