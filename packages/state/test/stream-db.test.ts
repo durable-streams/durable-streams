@@ -106,6 +106,43 @@ describe(`Stream DB`, () => {
     expect(firstUrl.searchParams.get(`live`)).toBe(`sse`)
   })
 
+  it(`should disable live mode when configured with live false`, async () => {
+    const streamState = createStateSchema({
+      users: {
+        schema: userSchema,
+        type: `user`,
+        primaryKey: `id`,
+      },
+    })
+
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          "Stream-Next-Offset": `0`,
+          "Stream-Up-To-Date": `true`,
+        },
+      })
+    )
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: `https://example.com/stream`,
+        contentType: `application/json`,
+        fetch: mockFetch,
+      },
+      live: false,
+      state: streamState,
+    })
+
+    await db.preload()
+    db.close()
+
+    const firstUrl = new URL(mockFetch.mock.calls[0]![0] as string)
+    expect(firstUrl.searchParams.has(`live`)).toBe(false)
+  })
+
   it(`should define stream state and create db with collections`, async () => {
     // Define the stream state structure
     const streamState = createStateSchema({

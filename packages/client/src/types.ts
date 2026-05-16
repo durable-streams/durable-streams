@@ -921,7 +921,7 @@ export interface IdempotentProducerOptions {
    *
    * These are merged with headers configured on the DurableStream handle. Producer
    * headers take precedence over stream headers, except for protocol-controlled
-   * headers such as content-type and Producer-*.
+   * headers such as content-type, Producer-*, and Stream-Closed.
    */
   headers?: HeadersRecord
 

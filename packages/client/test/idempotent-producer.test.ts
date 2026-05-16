@@ -43,6 +43,8 @@ describe(`IdempotentProducer`, () => {
       "Producer-Id": `test-producer`,
       "Producer-Seq": `0`,
     })
+
+    await producer.close()
   })
 
   it(`should merge stream and producer headers on close requests`, async () => {
@@ -78,6 +80,49 @@ describe(`IdempotentProducer`, () => {
       "content-type": `text/plain`,
       "Producer-Id": `test-producer`,
       "Producer-Seq": `0`,
+      "Stream-Closed": `true`,
+    })
+  })
+
+  it(`should not allow custom headers to override producer protocol headers`, async () => {
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(null, {
+        status: 200,
+        headers: {
+          "Stream-Next-Offset": `1`,
+        },
+      })
+    )
+    const stream = new DurableStream({
+      url: `https://example.com/stream`,
+      contentType: `application/json`,
+    })
+    const producer = new IdempotentProducer(stream, `test-producer`, {
+      fetch: mockFetch,
+      headers: {
+        "content-type": `text/plain`,
+        "Producer-Id": `wrong-producer`,
+        "Producer-Epoch": `999`,
+        "Producer-Seq": `999`,
+        "Stream-Closed": `false`,
+      },
+    })
+
+    producer.append(JSON.stringify({ message: `hello` }))
+    await producer.flush()
+    await producer.close()
+
+    expect(mockFetch.mock.calls[0]![1]?.headers).toMatchObject({
+      "content-type": `application/json`,
+      "Producer-Id": `test-producer`,
+      "Producer-Epoch": `0`,
+      "Producer-Seq": `0`,
+    })
+    expect(mockFetch.mock.calls[1]![1]?.headers).toMatchObject({
+      "content-type": `application/json`,
+      "Producer-Id": `test-producer`,
+      "Producer-Epoch": `0`,
+      "Producer-Seq": `1`,
       "Stream-Closed": `true`,
     })
   })
