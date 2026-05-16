@@ -78,13 +78,14 @@ const db = createStreamDB({
     url: "https://api.example.com/streams/my-stream",
     contentType: "application/json",
   },
+  live: "sse", // optional: true, "long-poll", "sse", or false
   state: schema,
 })
 
 await db.preload()
 ```
 
-Calling `preload()` reads the stream from the beginning, materializes the current state, and then stays connected for live updates.
+Calling `preload()` reads the stream from the beginning, materializes the current state, and then stays connected for live updates. By default StreamDB uses the client default live behavior; pass `live: "sse"` or `live: "long-poll"` to force a transport.
 
 ## Reactive queries
 

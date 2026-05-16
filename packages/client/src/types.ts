@@ -917,6 +917,15 @@ export interface IdempotentProducerOptions {
   fetch?: typeof globalThis.fetch
 
   /**
+   * HTTP headers to include on producer batch and close requests.
+   *
+   * These are merged with headers configured on the DurableStream handle. Producer
+   * headers take precedence over stream headers, except for protocol-controlled
+   * headers such as content-type and Producer-*.
+   */
+  headers?: HeadersRecord
+
+  /**
    * AbortSignal for the producer lifecycle.
    */
   signal?: AbortSignal

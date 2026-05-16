@@ -20,9 +20,15 @@ import {
   STREAM_CLOSED_HEADER,
   STREAM_OFFSET_HEADER,
 } from "./constants"
+import { resolveHeaders } from "./utils"
 import type { queueAsPromised } from "fastq"
 import type { DurableStream } from "./stream"
-import type { CloseResult, IdempotentProducerOptions, Offset } from "./types"
+import type {
+  CloseResult,
+  HeadersRecord,
+  IdempotentProducerOptions,
+  Offset,
+} from "./types"
 
 /**
  * Error thrown when a producer's epoch is stale (zombie fencing).
@@ -127,6 +133,7 @@ export class IdempotentProducer {
   readonly #maxBatchBytes: number
   readonly #lingerMs: number
   readonly #fetchClient: typeof fetch
+  readonly #headers?: HeadersRecord
   readonly #signal?: AbortSignal
   readonly #onError?: (error: Error) => void
 
@@ -199,6 +206,7 @@ export class IdempotentProducer {
     this.#maxBatchBytes = maxBatchBytes
     this.#lingerMs = lingerMs
     this.#signal = opts?.signal
+    this.#headers = opts?.headers
     this.#onError = opts?.onError
     this.#fetchClient =
       opts?.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
@@ -417,8 +425,10 @@ export class IdempotentProducer {
 
     // Build headers - merge stream auth headers with producer headers
     const streamHeaders = await this.#stream.resolveHeaders()
+    const producerHeaders = await resolveHeaders(this.#headers)
     const headers: Record<string, string> = {
       ...streamHeaders,
+      ...producerHeaders,
       "content-type": contentType,
       [PRODUCER_ID_HEADER]: this.#producerId,
       [PRODUCER_EPOCH_HEADER]: this.#epoch.toString(),
@@ -696,8 +706,10 @@ export class IdempotentProducer {
 
     // Build headers - merge stream auth headers with producer headers
     const streamHeaders = await this.#stream.resolveHeaders()
+    const producerHeaders = await resolveHeaders(this.#headers)
     const headers: Record<string, string> = {
       ...streamHeaders,
+      ...producerHeaders,
       "content-type": contentType,
       [PRODUCER_ID_HEADER]: this.#producerId,
       [PRODUCER_EPOCH_HEADER]: epoch.toString(),

@@ -7,6 +7,7 @@ import type { StandardSchemaV1 } from "@standard-schema/spec"
 import type {
   DurableStream,
   DurableStreamOptions,
+  LiveMode,
   StreamResponse,
 } from "@durable-streams/client"
 
@@ -121,6 +122,8 @@ export interface CreateStreamDBOptions<
 > {
   /** Options for creating the durable stream (stream is created lazily on preload) */
   streamOptions: DurableStreamOptions
+  /** Live read mode used by the StreamDB consumer. Defaults to true. */
+  live?: LiveMode
   /** The stream state definition */
   state: TDef
   /** Optional factory function to create actions with db and stream context */
@@ -762,7 +765,7 @@ export function createStreamDB<
 ): TActions extends Record<string, never>
   ? StreamDB<TDef>
   : StreamDBWithActions<TDef, TActions> {
-  const { streamOptions, state, actions: actionsFactory } = options
+  const { streamOptions, state, actions: actionsFactory, live = true } = options
 
   // Create a stream handle (lightweight, doesn't connect until stream() is called)
   const stream = new DurableStreamClass(streamOptions)
@@ -807,7 +810,7 @@ export function createStreamDB<
 
     // Start streaming (this is where the connection actually happens)
     streamResponse = await stream.stream<StateEvent>({
-      live: true,
+      live,
       signal: abortController.signal,
     })
 
