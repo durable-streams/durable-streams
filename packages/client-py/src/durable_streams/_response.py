@@ -400,7 +400,9 @@ class StreamResponse(Generic[T]):
                 if self._start_sse is None:
                     return
                 sse_response = self._start_sse(self._offset, self._cursor)
-                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                from durable_streams._types import (
+                    STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR,
+                )
                 encoding_header = sse_response.headers.get(_ENC_HDR)
                 if encoding_header == "base64":
                     self._encoding = "base64"
@@ -441,7 +443,7 @@ class StreamResponse(Generic[T]):
                 finally:
                     response.close()
 
-    def _iter_sse_text(self, response: "httpx.Response | None" = None) -> Iterator[str]:
+    def _iter_sse_text(self, response: httpx.Response | None = None) -> Iterator[str]:
         """Iterate SSE data events as text."""
         from durable_streams._sse import SSEDataEvent, parse_sse_sync
 
@@ -545,7 +547,9 @@ class StreamResponse(Generic[T]):
                 if self._start_sse is None:
                     return
                 sse_response = self._start_sse(self._offset, self._cursor)
-                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                from durable_streams._types import (
+                    STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR,
+                )
                 encoding_header = sse_response.headers.get(_ENC_HDR)
                 if encoding_header == "base64":
                     self._encoding = "base64"
@@ -582,7 +586,7 @@ class StreamResponse(Generic[T]):
     def _iter_sse_json_batches(
         self,
         decode: Callable[[Any], T] | None,
-        response: "httpx.Response | None" = None,
+        response: httpx.Response | None = None,
     ) -> Iterator[list[T]]:
         """Iterate SSE data events as JSON batches."""
         from durable_streams._sse import SSEDataEvent, parse_sse_sync
@@ -685,7 +689,9 @@ class StreamResponse(Generic[T]):
                 if self._start_sse is None:
                     return
                 sse_response = self._start_sse(self._offset, self._cursor)
-                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                from durable_streams._types import (
+                    STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR,
+                )
                 encoding_header = sse_response.headers.get(_ENC_HDR)
                 if encoding_header == "base64":
                     self._encoding = "base64"
@@ -751,7 +757,7 @@ class StreamResponse(Generic[T]):
         self,
         mode: Literal["bytes", "text", "json", "json_batches"],
         decode: Callable[[Any], T] | None,
-        response: "httpx.Response | None" = None,
+        response: httpx.Response | None = None,
     ) -> Iterator[StreamEvent[Any]]:
         """
         Iterate SSE events with metadata.
@@ -1382,7 +1388,9 @@ class AsyncStreamResponse(Generic[T]):
                 if self._start_sse is None:
                     return
                 sse_response = await self._start_sse(self._offset, self._cursor)
-                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                from durable_streams._types import (
+                    STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR,
+                )
                 encoding_header = sse_response.headers.get(_ENC_HDR)
                 if encoding_header == "base64":
                     self._encoding = "base64"
@@ -1424,7 +1432,7 @@ class AsyncStreamResponse(Generic[T]):
                 finally:
                     await response.aclose()
 
-    async def _aiter_sse_text(self, response: "httpx.Response | None" = None) -> AsyncIterator[str]:
+    async def _aiter_sse_text(self, response: httpx.Response | None = None) -> AsyncIterator[str]:
         """Iterate SSE data events as text."""
         from durable_streams._sse import SSEDataEvent, parse_sse_async
 
@@ -1510,7 +1518,9 @@ class AsyncStreamResponse(Generic[T]):
                 if self._start_sse is None:
                     return
                 sse_response = await self._start_sse(self._offset, self._cursor)
-                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                from durable_streams._types import (
+                    STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR,
+                )
                 encoding_header = sse_response.headers.get(_ENC_HDR)
                 if encoding_header == "base64":
                     self._encoding = "base64"
@@ -1546,7 +1556,7 @@ class AsyncStreamResponse(Generic[T]):
     async def _aiter_sse_json_batches(
         self,
         decode: Callable[[Any], T] | None,
-        response: "httpx.Response | None" = None,
+        response: httpx.Response | None = None,
     ) -> AsyncIterator[list[T]]:
         """Iterate SSE data events as JSON batches."""
         from durable_streams._sse import SSEDataEvent, parse_sse_async
@@ -1638,7 +1648,9 @@ class AsyncStreamResponse(Generic[T]):
                 if self._start_sse is None:
                     return
                 sse_response = await self._start_sse(self._offset, self._cursor)
-                from durable_streams._types import STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR
+                from durable_streams._types import (
+                    STREAM_SSE_DATA_ENCODING_HEADER as _ENC_HDR,
+                )
                 encoding_header = sse_response.headers.get(_ENC_HDR)
                 if encoding_header == "base64":
                     self._encoding = "base64"
@@ -1701,7 +1713,7 @@ class AsyncStreamResponse(Generic[T]):
         self,
         mode: Literal["bytes", "text", "json", "json_batches"],
         decode: Callable[[Any], T] | None,
-        response: "httpx.Response | None" = None,
+        response: httpx.Response | None = None,
     ) -> AsyncIterator[StreamEvent[Any]]:
         """
         Iterate SSE events with metadata.
