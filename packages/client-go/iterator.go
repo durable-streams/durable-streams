@@ -81,9 +81,10 @@ type ChunkIterator struct {
 	doneOnce bool
 
 	// SSE state
-	sseParser      *sse.Parser
-	sseResponse    *http.Response
-	ssePending     *Chunk // Pending chunk from SSE data event
+	sseStarted      bool // true once SSE mode has been entered (stays true across reconnects)
+	sseParser       *sse.Parser
+	sseResponse     *http.Response
+	ssePending      *Chunk // Pending chunk from SSE data event
 	sseDataEncoding string // Detected from Stream-SSE-Data-Encoding response header
 
 	// initErr holds any validation error from Read() to be returned on first Next()
@@ -130,8 +131,11 @@ func (it *ChunkIterator) Next() (*Chunk, error) {
 	default:
 	}
 
-	// Handle SSE mode
-	if it.live == LiveModeSSE {
+	// Handle SSE mode — only after catching up (fetch-then-live pattern).
+	// Once SSE has started, stay in SSE mode across reconnects even if
+	// UpToDate is momentarily false.
+	if it.live == LiveModeSSE && (it.sseStarted || it.UpToDate) {
+		it.sseStarted = true
 		return it.nextSSE()
 	}
 
@@ -141,8 +145,16 @@ func (it *ChunkIterator) Next() (*Chunk, error) {
 
 // nextHTTP handles regular HTTP requests (catch-up and long-poll).
 func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
-	// Build the read URL
-	readURL := it.stream.buildReadURL(it.offset, it.live, it.cursor)
+	// Only set live mode when already caught up — catch-up requests without
+	// live are cacheable by CDNs/browsers (fetch-then-live pattern).
+	liveForRequest := LiveModeNone
+	if it.UpToDate {
+		switch it.live {
+		case LiveModeLongPoll, LiveModeSSE:
+			liveForRequest = LiveModeLongPoll
+		}
+	}
+	readURL := it.stream.buildReadURL(it.offset, liveForRequest, it.cursor)
 
 	// Create request
 	req, err := http.NewRequestWithContext(it.ctx, http.MethodGet, readURL, nil)

@@ -53,8 +53,7 @@ func TestBase64DecodeSSEData(t *testing.T) {
 			// Create SSE response with base64-encoded data
 			sseData := "event: data\ndata: " + encoded + "\n\nevent: control\ndata: {\"streamNextOffset\":\"100\"}\n\n"
 
-			// Create test server that returns Stream-SSE-Data-Encoding header
-			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			server := httptest.NewServer(catchUpThenSSE(func(w http.ResponseWriter, r *http.Request) {
 				w.Header().Set("Content-Type", "text/event-stream")
 				w.Header().Set("Stream-SSE-Data-Encoding", "base64")
 				w.WriteHeader(http.StatusOK)
@@ -75,6 +74,8 @@ func TestBase64DecodeSSEData(t *testing.T) {
 			)
 			defer it.Close()
 
+			mustCatchUp(t, it)
+
 			chunk, err := it.Next()
 			if err != nil {
 				t.Fatalf("unexpected error: %v", err)
@@ -92,7 +93,7 @@ func TestBase64DecodeInvalidData(t *testing.T) {
 	// Create SSE response with invalid base64 data
 	sseData := "event: data\ndata: !!!invalid-base64!!!\n\nevent: control\ndata: {\"streamNextOffset\":\"100\"}\n\n"
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(catchUpThenSSE(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Stream-SSE-Data-Encoding", "base64")
 		w.WriteHeader(http.StatusOK)
@@ -110,6 +111,8 @@ func TestBase64DecodeInvalidData(t *testing.T) {
 		WithLive(LiveModeSSE),
 	)
 	defer it.Close()
+
+	mustCatchUp(t, it)
 
 	_, err := it.Next()
 	if err == nil {
@@ -130,7 +133,7 @@ func TestBase64MultipleDataEvents(t *testing.T) {
 	// Create SSE response with two data events before control
 	sseData := "event: data\ndata: " + encoded1 + "\n\nevent: data\ndata: " + encoded2 + "\n\nevent: control\ndata: {\"streamNextOffset\":\"100\"}\n\n"
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	server := httptest.NewServer(catchUpThenSSE(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Stream-SSE-Data-Encoding", "base64")
 		w.WriteHeader(http.StatusOK)
@@ -148,6 +151,8 @@ func TestBase64MultipleDataEvents(t *testing.T) {
 		WithLive(LiveModeSSE),
 	)
 	defer it.Close()
+
+	mustCatchUp(t, it)
 
 	chunk, err := it.Next()
 	if err != nil {
@@ -166,8 +171,7 @@ func TestSSEWithoutEncodingPassesThroughData(t *testing.T) {
 	// Create SSE response with raw (non-base64) data
 	sseData := "event: data\ndata: " + rawData + "\n\nevent: control\ndata: {\"streamNextOffset\":\"100\"}\n\n"
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// No Stream-SSE-Data-Encoding header - data should pass through as-is
+	server := httptest.NewServer(catchUpThenSSE(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
 		w.Write([]byte(sseData))
@@ -180,9 +184,10 @@ func TestSSEWithoutEncodingPassesThroughData(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Read SSE without encoding option
 	it := stream.Read(ctx, WithLive(LiveModeSSE))
 	defer it.Close()
+
+	mustCatchUp(t, it)
 
 	chunk, err := it.Next()
 	if err != nil {
@@ -196,26 +201,25 @@ func TestSSEWithoutEncodingPassesThroughData(t *testing.T) {
 
 // TestStreamingWithBase64ReconnectDetectsEncoding tests that encoding is detected from response header on each SSE connection
 func TestStreamingWithBase64ReconnectDetectsEncoding(t *testing.T) {
-	callCount := 0
+	sseCallCount := 0
 	testData := []byte("test data")
 	encoded := base64.StdEncoding.EncodeToString(testData)
 
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		callCount++
+	server := httptest.NewServer(catchUpThenSSE(func(w http.ResponseWriter, r *http.Request) {
+		sseCallCount++
 
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Stream-SSE-Data-Encoding", "base64")
 		w.WriteHeader(http.StatusOK)
 
-		if callCount == 1 {
-			// First call: send data and close (simulating disconnect)
+		if sseCallCount == 1 {
+			// First SSE call: send data and close (simulating disconnect)
 			sseData := "event: data\ndata: " + encoded + "\n\nevent: control\ndata: {\"streamNextOffset\":\"100\"}\n\n"
 			w.Write([]byte(sseData))
-			// Let the handler return to close the connection
 			return
 		}
 
-		// Second call: send more data
+		// Second SSE call: send more data
 		sseData := "event: data\ndata: " + encoded + "\n\nevent: control\ndata: {\"streamNextOffset\":\"200\",\"upToDate\":true}\n\n"
 		w.Write([]byte(sseData))
 	}))
@@ -232,7 +236,9 @@ func TestStreamingWithBase64ReconnectDetectsEncoding(t *testing.T) {
 	)
 	defer it.Close()
 
-	// Read first chunk
+	mustCatchUp(t, it)
+
+	// Read first SSE chunk
 	chunk1, err := it.Next()
 	if err != nil {
 		t.Fatalf("first read error: %v", err)
@@ -250,9 +256,32 @@ func TestStreamingWithBase64ReconnectDetectsEncoding(t *testing.T) {
 		t.Errorf("second chunk: got %v, want %v", chunk2.Data, testData)
 	}
 
-	// Verify we made at least 2 calls (reconnected)
-	if callCount < 2 {
-		t.Errorf("expected at least 2 server calls, got %d", callCount)
+	// Verify we made at least 2 SSE calls (reconnected)
+	if sseCallCount < 2 {
+		t.Errorf("expected at least 2 SSE calls, got %d", sseCallCount)
+	}
+}
+
+// catchUpThenSSE wraps an SSE handler with a catch-up phase that immediately
+// returns up-to-date, simulating the fetch-then-live pattern used by all tests.
+func catchUpThenSSE(sseHandler http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("live") != "sse" {
+			w.Header().Set("Stream-Next-Offset", "0")
+			w.Header().Set("Stream-Up-To-Date", "true")
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		sseHandler(w, r)
+	}
+}
+
+// mustCatchUp calls it.Next() and fails the test if the catch-up request errors.
+func mustCatchUp(t *testing.T, it *ChunkIterator) {
+	t.Helper()
+	_, err := it.Next()
+	if err != nil {
+		t.Fatalf("unexpected error on catch-up: %v", err)
 	}
 }
 

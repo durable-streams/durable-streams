@@ -238,7 +238,7 @@ describe(`DurableStream`, () => {
       await handle.stream({ live: `long-poll` })
 
       const calledUrl = mockFetch.mock.calls[0]![0] as string
-      expect(calledUrl).toContain(`live=long-poll`)
+      expect(calledUrl).not.toContain(`live=`)
     })
 
     it(`should expose upToDate on response`, async () => {

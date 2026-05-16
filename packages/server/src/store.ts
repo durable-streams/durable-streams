@@ -723,12 +723,16 @@ export class StreamStore {
           seq: options.producerSeq!,
         }
       }
-      // Notify pending long-polls that stream is closed
-      this.notifyLongPollsClosed(path)
     }
 
-    // Notify any pending long-polls of new messages
+    // Notify pending long-polls of new messages before empty close signals.
+    // Append-and-close must deliver the final message with streamClosed
+    // metadata instead of waking readers with an empty close event first.
     this.notifyLongPolls(path)
+
+    if (options.close) {
+      this.notifyLongPollsClosed(path)
+    }
 
     // Return AppendResult if producer headers were used or stream was closed
     if (producerResult || options.close) {

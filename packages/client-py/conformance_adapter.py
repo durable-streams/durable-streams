@@ -499,7 +499,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     chunk_count = 1 if data else 0
                     while chunk_count < max_chunks and not (wait_for_up_to_date and up_to_date):
                         # Do a long-poll fetch for more data
-                        next_response = response._fetch_next(response.offset, response.cursor)
+                        next_response = response._fetch_next(response.offset, response.cursor, response.up_to_date)
                         response._update_metadata_from_response(next_response)
 
                         if next_response.status_code == 204:
