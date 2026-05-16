@@ -335,15 +335,28 @@ tests:
         contentType: text/plain
       - action: append
         path: ${streamPath}
-        data: "sse-data"
-      - action: close
-        path: ${streamPath}
+        data: "initial"
+        expect:
+          storeOffsetAs: tailOffset
     operations:
-      # Read via SSE - may need multiple chunks as SSE delivers data then control event
+      # Start at the tail, then close with a final body so the data is delivered
+      # as the SSE final event rather than as HTTP catch-up data.
       - action: read
         path: ${streamPath}
+        offset: ${tailOffset}
         live: sse
+        maxChunks: 1
         timeoutMs: 5000
+        background: true
+        as: readOp
+      - action: wait
+        ms: 200
+      - action: server-close
+        path: ${streamPath}
+        data: "sse-data"
+        contentType: text/plain
+      - action: await
+        ref: readOp
         expect:
           data: "sse-data"
           streamClosed: true
