@@ -10,6 +10,7 @@ import {
   STREAM_CLOSED_HEADER,
   STREAM_CURSOR_HEADER,
   STREAM_OFFSET_HEADER,
+  STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
 import { DurableStreamError } from "./error"
@@ -401,6 +402,13 @@ export class StreamResponseImpl<
     this.#syncState = this.#syncState.withSSEControl(controlEvent)
   }
 
+  #updateEncodingFromSSEResponse(response: Response): void {
+    this.#encoding =
+      response.headers.get(STREAM_SSE_DATA_ENCODING_HEADER) === `base64`
+        ? `base64`
+        : undefined
+  }
+
   /**
    * Mark the start of an SSE connection for duration tracking.
    * If the state is not SSEState (e.g., auto-detected SSE from content-type),
@@ -478,6 +486,7 @@ export class StreamResponseImpl<
       this.cursor,
       this.#requestAbortController.signal
     )
+    this.#updateEncodingFromSSEResponse(newSSEResponse)
     if (newSSEResponse.body) {
       return parseSSEStream(
         newSSEResponse.body,
@@ -664,6 +673,7 @@ export class StreamResponseImpl<
             if (isSSE && firstResponse.body) {
               // Track SSE connection start for resilience monitoring
               this.#markSSEConnectionStart()
+              this.#updateEncodingFromSSEResponse(firstResponse)
               // Create per-request abort controller for SSE connection
               this.#requestAbortController = new AbortController()
               // Start parsing SSE events
@@ -712,6 +722,7 @@ export class StreamResponseImpl<
               this.cursor,
               this.#requestAbortController.signal
             )
+            this.#updateEncodingFromSSEResponse(sseResponse)
             if (sseResponse.body) {
               sseEventIterator = parseSSEStream(
                 sseResponse.body,
