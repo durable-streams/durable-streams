@@ -649,7 +649,7 @@ func handleRead(cmd Command) Result {
 		streamClosed = streamClosed || chunk.StreamClosed
 
 		if len(chunks) >= maxChunks {
-			stoppedForMaxChunks = true
+			stoppedForMaxChunks = !chunk.StreamClosed
 			break
 		}
 

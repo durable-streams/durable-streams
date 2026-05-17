@@ -420,7 +420,7 @@ async Task<object> HandleRead(JsonElement root)
 
                 if (chunkCount >= maxChunks)
                 {
-                    stoppedForMaxChunks = true;
+                    stoppedForMaxChunks = !response.StreamClosed;
                     break;
                 }
                 if (upToDate && !waitForUpToDate && live == LiveMode.Off) break;

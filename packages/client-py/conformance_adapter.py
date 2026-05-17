@@ -458,7 +458,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     up_to_date = event.up_to_date
 
                     if chunk_count >= max_chunks:
-                        stopped_for_max_chunks = True
+                        stopped_for_max_chunks = not response.stream_closed
                         break
 
                     # For waitForUpToDate: stop when upToDate becomes True AND
@@ -544,7 +544,7 @@ def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         "chunks": chunks,
         "offset": final_offset,
         "upToDate": up_to_date,
-        "streamClosed": False if stopped_for_max_chunks else stream_closed,
+        "streamClosed": stream_closed and not stopped_for_max_chunks,
     }
     if headers_sent:
         result["headersSent"] = headers_sent
