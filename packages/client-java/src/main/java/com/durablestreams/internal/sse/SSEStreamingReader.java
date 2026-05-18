@@ -102,9 +102,27 @@ public final class SSEStreamingReader implements AutoCloseable {
      */
     public Chunk poll(long timeoutMs) throws DurableStreamException {
         try {
-            // Poll the queue first to ensure any queued errors are thrown
-            // even after the reader is closed (errors are queued before close)
-            ChunkOrError result = chunkQueue.poll(timeoutMs, TimeUnit.MILLISECONDS);
+            // Non-blocking drain: return any already-queued chunk immediately
+            ChunkOrError result = chunkQueue.poll();
+            if (result != null) {
+                if (result.error != null) throw result.error;
+                return result.chunk;
+            }
+
+            // If the reader is closed and the queue was empty, there may still
+            // be an item that was offered between our poll() and this check.
+            // Do one final drain to close the race window.
+            if (closed.get()) {
+                result = chunkQueue.poll();
+                if (result != null) {
+                    if (result.error != null) throw result.error;
+                    return result.chunk;
+                }
+                return null;
+            }
+
+            // Block until data arrives or timeout
+            result = chunkQueue.poll(timeoutMs, TimeUnit.MILLISECONDS);
             if (result == null) {
                 return null;
             }
