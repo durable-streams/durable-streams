@@ -71,6 +71,7 @@ const db = createStreamDB({
     url: "https://api.example.com/streams/my-stream",
     contentType: "application/json",
   },
+  live: "sse", // optional: true, "long-poll", "sse", or false
   state: schema,
 })
 

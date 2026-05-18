@@ -794,7 +794,7 @@ export class DurableStream {
   writable(
     opts?: Pick<
       IdempotentProducerOptions,
-      `lingerMs` | `maxBatchBytes` | `onError`
+      `headers` | `lingerMs` | `maxBatchBytes` | `onError`
     > & {
       producerId?: string
       signal?: AbortSignal
@@ -809,6 +809,7 @@ export class DurableStream {
 
     const producer = new IdempotentProducer(this, producerId, {
       autoClaim: true, // Ephemeral producer, auto-claim epoch
+      headers: opts?.headers,
       lingerMs: opts?.lingerMs,
       maxBatchBytes: opts?.maxBatchBytes,
       onError: (error) => {
