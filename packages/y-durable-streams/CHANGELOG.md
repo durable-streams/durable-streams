@@ -1,5 +1,26 @@
 # @durable-streams/y-durable-streams
 
+## 0.2.5
+
+### Patch Changes
+
+- Retain awareness subscription unsubscribe callback and clean it up on disconnect, matching the document updates subscription lifecycle ([#341](https://github.com/durable-streams/durable-streams/pull/341))
+
+- docs(yjs): inline example snippets, remove broken examples/ refs ([#337](https://github.com/durable-streams/durable-streams/pull/337))
+  - `yjs-editors`: add an inlined "Sharing doc/awareness via Context" section
+    showing the full `YjsRoomProvider` pattern (provider with `connect: false`,
+    listeners before connect, `status` + `synced` + `error` events, Strict
+    Mode-safe awareness re-seeding via ref, merge-not-overwrite `setUsername`).
+    Previously this pattern pointed at `examples/yjs-demo/...` which doesn't
+    ship in the npm package.
+  - `yjs-server`: add an inlined "Single-origin dev server" section showing
+    how to spawn Caddy alongside `YjsServer` and the matching dev Caddyfile
+    (DS route, Yjs route with `flush_interval -1`, Vite reverse proxy). Drops
+    prose "Source: examples/yjs-demo/Caddyfile" pointers.
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+
 ## 0.2.4
 
 ### Patch Changes

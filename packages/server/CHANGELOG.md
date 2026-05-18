@@ -1,5 +1,45 @@
 # @durable-streams/server
 
+## 0.3.2
+
+### Patch Changes
+
+- fix(server): serialize concurrent appends to the same stream ([#340](https://github.com/durable-streams/durable-streams/pull/340))
+
+  Without per-stream serialization, the file-backed `append()` had a race
+  in the read-modify-write of `streamMeta.currentOffset`: two concurrent
+  appenders could read the same starting offset, both compute the same
+  `newOffset`, both write a frame to the segment file, and only one's
+  LMDB metadata update would win. The file then contained two frames at
+  positions past the LMDB-tracked `currentOffset`, so subsequent
+  `getTailOffset` lookups (and `stream-next-offset` headers) lagged the
+  actual stream contents — causing valid `done`-callback acks at offsets
+  that the server's stale tail had never seen to be rejected with
+  `INVALID_OFFSET`.
+
+  Reproduced with N concurrent appends to one stream collapsing to a
+  single offset value (added as a regression test in
+  `packages/server/test/file-backed.test.ts`). The fix wraps `append()`
+  in a per-stream lock (mirrors `acquireProducerLock`), so the
+  read-currentOffset → write-frame → fsync → put-LMDB sequence runs
+  atomically per stream.
+
+- fix(server): fork PUT inherits source content type when Content-Type header is omitted ([#342](https://github.com/durable-streams/durable-streams/pull/342))
+
+  Per the protocol (Section 4.2), when forking a stream the `Content-Type` header is
+  optional — an omitted header means "inherit from source." The TS dev server was
+  defaulting empty Content-Type to `application/octet-stream` before the store could
+  inherit, causing fork creation to fail with `409 Conflict` (content-type mismatch)
+  whenever the source's content type differed from the default.
+
+  Adds a server conformance test (`Fork - Creation > should fork inheriting
+content-type when header omitted`) that exercises this behavior end-to-end:
+  fork response, HEAD, and a follow-up POST with the inherited content type.
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+  - @durable-streams/state@0.2.6
+
 ## 0.3.1
 
 ### Patch Changes

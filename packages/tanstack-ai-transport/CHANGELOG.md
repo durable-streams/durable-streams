@@ -1,5 +1,19 @@
 # @durable-streams/tanstack-ai-transport
 
+## 0.0.5
+
+### Patch Changes
+
+- docs(tanstack-ai): headers on connection, full read proxy, auth separation ([#337](https://github.com/durable-streams/durable-streams/pull/337))
+  - Document that custom headers (API keys) go on `durableStreamConnection`, not `useChat`
+  - Add full inline read proxy implementation (was "see examples/" which agents can't access)
+  - Separate DS auth from AI auth with clear table
+  - Add user-supplied API key pattern for apps with settings UI
+  - Recommend query params over dynamic route segments for chat id
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+
 ## 0.0.4
 
 ### Patch Changes

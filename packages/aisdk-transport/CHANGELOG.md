@@ -1,5 +1,20 @@
 # @durable-streams/aisdk-transport
 
+## 0.0.4
+
+### Patch Changes
+
+- docs(vercel-ai-sdk): inline read proxy, remove broken examples/ refs ([#337](https://github.com/durable-streams/durable-streams/pull/337))
+  - Inline the full read proxy implementation (hop-by-hop header stripping,
+    query-param forwarding, Authorization header injection) so agents don't
+    need to follow `examples/chat-aisdk/...` references that don't ship in
+    the npm package
+  - Drop prose "Source: examples/chat-aisdk/..." lines that pointed at files
+    only present in the monorepo, not in the published skill
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+
 ## 0.0.3
 
 ### Patch Changes

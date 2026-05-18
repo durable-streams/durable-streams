@@ -1,6 +1,6 @@
 {
   "name": "@durable-streams/aisdk-transport",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Vercel AI SDK transport adapters for Durable Streams",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
