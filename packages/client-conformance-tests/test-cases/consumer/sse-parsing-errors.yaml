@@ -49,6 +49,8 @@ tests:
       - action: append
         path: ${streamPath}
         data: "data-before-error"
+        expect:
+          storeOffsetAs: tailOffset
     operations:
       # Inject a control event with invalid JSON
       - action: inject-error
@@ -56,10 +58,14 @@ tests:
         injectSseEvent:
           eventType: "control"
           data: "{invalid json here"
-        count: 1
+        # Fetch-then-live makes an HTTP catch-up request before opening SSE.
+        # The first injected fault is consumed by catch-up; the second is
+        # delivered on the live SSE request.
+        count: 2
       # Client should throw a parse error
       - action: read
         path: ${streamPath}
+        offset: ${tailOffset}
         live: sse
         maxChunks: 1
         expect:
@@ -77,6 +83,8 @@ tests:
       - action: append
         path: ${streamPath}
         data: "actual-data"
+        expect:
+          storeOffsetAs: tailOffset
     operations:
       # Inject a control event with empty data
       - action: inject-error
@@ -84,10 +92,14 @@ tests:
         injectSseEvent:
           eventType: "control"
           data: ""
-        count: 1
+        # Fetch-then-live makes an HTTP catch-up request before opening SSE.
+        # The first injected fault is consumed by catch-up; the second is
+        # delivered on the live SSE request.
+        count: 2
       # Client should throw because empty is not valid JSON
       - action: read
         path: ${streamPath}
+        offset: ${tailOffset}
         live: sse
         maxChunks: 1
         expect:

@@ -491,29 +491,74 @@ async function main() {
 
   const command = args[0]
 
-  // Helper to validate and get stream ID
+  // Helper to validate and get stream ID.
   function getStreamId(): string {
+    return getStreamIdAndArgs().streamId
+  }
+
+  // Helper to validate and get stream ID while allowing command-specific flags
+  // before the stream_id, e.g. `durable-stream create --json sessions/abc`.
+  function getStreamIdAndArgs(): {
+    streamId: string
+    commandArgs: Array<string>
+  } {
     if (args.length < 2) {
       stderr.write(`Error: Missing stream_id\n`)
       stderr.write(`  Usage: durable-stream ${command} <stream_id>\n`)
       process.exit(1)
     }
-    const streamId = args[1]!
-    const validation = validateStreamId(streamId)
-    if (!validation.valid) {
-      stderr.write(`Error: ${validation.error}\n`)
-      process.exit(1)
+
+    const leadingFlags: Array<string> = []
+    const commandArgs = args.slice(1)
+
+    for (let i = 0; i < commandArgs.length; i++) {
+      const arg = commandArgs[i]!
+
+      if (arg === `--json` || arg === `--batch-json`) {
+        leadingFlags.push(arg)
+        continue
+      }
+
+      if (arg.startsWith(`--content-type=`)) {
+        leadingFlags.push(arg)
+        continue
+      }
+
+      if (arg === `--content-type`) {
+        leadingFlags.push(arg)
+        const value = commandArgs[i + 1]
+        if (value !== undefined) {
+          leadingFlags.push(value)
+          i += 1
+        }
+        continue
+      }
+
+      const streamId = arg
+      const validation = validateStreamId(streamId)
+      if (!validation.valid) {
+        stderr.write(`Error: ${validation.error}\n`)
+        process.exit(1)
+      }
+
+      return {
+        streamId,
+        commandArgs: [...leadingFlags, ...commandArgs.slice(i + 1)],
+      }
     }
-    return streamId
+
+    stderr.write(`Error: Missing stream_id\n`)
+    stderr.write(`  Usage: durable-stream ${command} <stream_id>\n`)
+    process.exit(1)
   }
 
   switch (command) {
     case `create`: {
-      const streamId = getStreamId()
+      const { streamId, commandArgs } = getStreamIdAndArgs()
 
       let createArgs: ParsedCreateArgs
       try {
-        createArgs = parseCreateArgs(args.slice(2))
+        createArgs = parseCreateArgs(commandArgs)
       } catch (error) {
         stderr.write(`Error: ${getErrorMessage(error)}\n`)
         process.exit(1)
@@ -529,11 +574,11 @@ async function main() {
     }
 
     case `write`: {
-      const streamId = getStreamId()
+      const { streamId, commandArgs } = getStreamIdAndArgs()
 
       let parsed: ParsedWriteArgs
       try {
-        parsed = parseWriteArgs(args.slice(2))
+        parsed = parseWriteArgs(commandArgs)
       } catch (error) {
         stderr.write(`Error: ${getErrorMessage(error)}\n`)
         process.exit(1)

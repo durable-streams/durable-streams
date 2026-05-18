@@ -294,20 +294,33 @@ tests:
       Per EventSource spec section 9.2.4: "If value starts with a
       U+0020 SPACE character, remove it from value."
       Only ONE space should be removed, preserving any additional spaces.
-      This prevents parsers from using trim() or similar which would
-      incorrectly strip all leading/trailing whitespace.
+      This test appends data after the reader reaches the tail so every client
+      receives the payload through SSE, including fetch-then-live clients.
     setup:
       - action: create
         as: streamPath
         contentType: text/plain
       - action: append
         path: ${streamPath}
-        data: "  two leading spaces"
+        data: "initial"
+        expect:
+          storeOffsetAs: tailOffset
     operations:
       - action: read
         path: ${streamPath}
+        offset: ${tailOffset}
         live: sse
-        waitForUpToDate: true
+        maxChunks: 1
+        timeoutMs: 10000
+        background: true
+        as: readOp
+      - action: wait
+        ms: 200
+      - action: server-append
+        path: ${streamPath}
+        data: "  two leading spaces"
+      - action: await
+        ref: readOp
         expect:
           data: " two leading spaces"
           minChunks: 1

@@ -1187,8 +1187,10 @@ export class DurableStreamTestServer {
         // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
         if (this.isShuttingDown || !isConnected) break
 
-        // Check if stream was closed during wait
-        if (result.streamClosed) {
+        // Check if stream was closed during wait. If the close also appended
+        // final data, let the next loop iteration deliver those messages
+        // before emitting the streamClosed control event.
+        if (result.streamClosed && result.messages.length === 0) {
           const finalControlData: Record<string, string | boolean> = {
             [SSE_OFFSET_FIELD]: currentOffset,
             [SSE_CLOSED_FIELD]: true,

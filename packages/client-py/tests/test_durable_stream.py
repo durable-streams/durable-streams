@@ -215,8 +215,8 @@ class TestDurableStreamStream:
         called_url = get_streaming_url(mock_client)
         assert "offset=1_11" in called_url
 
-    def test_stream_includes_live_mode_in_query_params(self):
-        """Should include live mode in query params."""
+    def test_stream_omits_live_mode_from_initial_catchup_request(self):
+        """Should omit live mode from the initial catch-up request."""
         mock_client = MagicMock(spec=httpx.Client)
         mock_response = MockResponse(
             b"data",
@@ -235,7 +235,7 @@ class TestDurableStreamStream:
         handle.stream(live="long-poll")
 
         called_url = get_streaming_url(mock_client)
-        assert "live=long-poll" in called_url
+        assert "live=long-poll" not in called_url
 
     def test_stream_exposes_up_to_date_on_response(self):
         """Should expose upToDate on response."""

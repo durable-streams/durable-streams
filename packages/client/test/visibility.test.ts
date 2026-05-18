@@ -279,8 +279,8 @@ describe(`visibility handling`, () => {
       // Verify we have at least 4 requests
       expect(capturedUrls.length).toBeGreaterThanOrEqual(4)
 
-      // First request (initial) has live=long-poll
-      expect(capturedUrls[0]).toContain(`live=long-poll`)
+      // First request (initial) has no live param (cacheable catch-up)
+      expect(capturedUrls[0]).not.toContain(`live=`)
 
       // Second request (subsequent long-poll) has live=long-poll
       expect(capturedUrls[1]).toContain(`live=long-poll`)

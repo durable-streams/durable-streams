@@ -136,12 +136,9 @@ async function streamInternal<TJson = unknown>(
   const startOffset = options.offset ?? `-1`
   fetchUrl.searchParams.set(OFFSET_QUERY_PARAM, startOffset)
 
-  // Set live query param for explicit modes
-  // true means auto-select (no query param, handled by consumption method)
+  // Never set live on the initial request — catch-up responses without live
+  // are cacheable by CDNs/browsers. Live mode activates only after catching up.
   const live: LiveMode = options.live ?? true
-  if (live === `long-poll` || live === `sse`) {
-    fetchUrl.searchParams.set(LIVE_QUERY_PARAM, live)
-  }
 
   // Add custom params
   const params = await resolveParams(options.params)
@@ -212,17 +209,17 @@ async function streamInternal<TJson = unknown>(
     offset: Offset,
     cursor: string | undefined,
     signal: AbortSignal,
+    upToDate: boolean,
     resumingFromPause?: boolean
   ): Promise<Response> => {
     const nextUrl = new URL(url)
     nextUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
 
-    // For subsequent requests, set live mode unless resuming from pause
-    // (resuming from pause needs immediate response for UI status)
-    if (!resumingFromPause) {
-      if (live === `sse`) {
-        nextUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
-      } else if (live === true || live === `long-poll`) {
+    // Only set live mode after catching up (upToDate) — catch-up requests
+    // without live are cacheable by CDNs/browsers.
+    // Also skip live when resuming from pause (needs immediate response for UI status).
+    if (upToDate && !resumingFromPause) {
+      if (live === true || live === `long-poll`) {
         nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
       }
     }

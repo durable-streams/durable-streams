@@ -105,7 +105,7 @@ export function validateAuth(auth: string): ValidationResult {
 /**
  * Validate a stream ID.
  * Must be 1-256 characters containing only: letters, numbers, underscores,
- * hyphens, dots, and colons (URL-safe characters).
+ * hyphens, dots, colons, and forward slashes (URL path-safe characters).
  */
 export function validateStreamId(streamId: string): ValidationResult {
   if (!streamId || !streamId.trim()) {
@@ -115,12 +115,13 @@ export function validateStreamId(streamId: string): ValidationResult {
     }
   }
 
-  // Stream IDs should be URL-safe
-  const validPattern = /^[a-zA-Z0-9_\-.:]+$/
+  // Stream IDs should be URL path-safe. Slashes are allowed so callers can
+  // address hierarchical stream IDs such as "account/chat/room-1".
+  const validPattern = /^[a-zA-Z0-9_\-.:/]+$/
   if (!validPattern.test(streamId)) {
     return {
       valid: false,
-      error: `Invalid stream ID: "${streamId}"\n  Stream IDs can only contain letters, numbers, underscores, hyphens, dots, and colons`,
+      error: `Invalid stream ID: "${streamId}"\n  Stream IDs can only contain letters, numbers, underscores, hyphens, dots, colons, and slashes`,
     }
   }
 

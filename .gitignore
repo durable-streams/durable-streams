@@ -194,6 +194,8 @@ target/
 .claude/settings.local.json
 .beads
 examples/yjs-demo/.tanstack
+.opentrace/
+.tool-versions
 
 # Local Netlify folder
 .netlify

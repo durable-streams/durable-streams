@@ -65,6 +65,9 @@ durable-stream create <stream_id> [options]
 # Create a plain stream
 durable-stream create my-stream
 
+# Create a hierarchical stream ID
+durable-stream create account-123/chat/room-1
+
 # Create a JSON stream
 durable-stream create events --json
 
