@@ -78,8 +78,20 @@ describe(`Stream DB`, () => {
       },
     })
 
-    const mockFetch = vi.fn().mockResolvedValue(
-      new Response(JSON.stringify([]), {
+    let callCount = 0
+    const mockFetch = vi.fn().mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            "Stream-Next-Offset": `0`,
+            "Stream-Up-To-Date": `true`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([]), {
         status: 200,
         headers: {
           "content-type": `application/json`,
@@ -87,7 +99,7 @@ describe(`Stream DB`, () => {
           "Stream-Up-To-Date": `true`,
         },
       })
-    )
+    })
 
     const db = createStreamDB({
       streamOptions: {
@@ -95,7 +107,7 @@ describe(`Stream DB`, () => {
         contentType: `application/json`,
         fetch: mockFetch,
       },
-      live: `sse`,
+      live: `long-poll`,
       state: streamState,
     })
 
@@ -103,7 +115,11 @@ describe(`Stream DB`, () => {
     db.close()
 
     const firstUrl = new URL(mockFetch.mock.calls[0]![0] as string)
-    expect(firstUrl.searchParams.get(`live`)).toBe(`sse`)
+    expect(firstUrl.searchParams.has(`live`)).toBe(false)
+
+    expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2)
+    const secondUrl = new URL(mockFetch.mock.calls[1]![0] as string)
+    expect(secondUrl.searchParams.get(`live`)).toBe(`long-poll`)
   })
 
   it(`should disable live mode when configured with live false`, async () => {
