@@ -1,5 +1,15 @@
 # @durable-streams/client
 
+## 0.2.4
+
+### Patch Changes
+
+- Implement fetch-then-live pattern: initial requests omit the `live` query parameter so catch-up responses are cacheable by CDNs and browsers. Live mode (long-poll or SSE) activates only after the client reaches up-to-date. ([#354](https://github.com/durable-streams/durable-streams/pull/354))
+
+  For SSE mode, a dedicated `startSSE` path opens a persistent connection only after HTTP catch-up completes, replacing the previous single-connection approach.
+
+- Add first-class live mode configuration to `createStreamDB()` so callers can force `"sse"` or `"long-poll"`, and add `headers` to `IdempotentProducerOptions` for producer batch and close requests. ([#353](https://github.com/durable-streams/durable-streams/pull/353))
+
 ## 0.2.3
 
 ### Patch Changes

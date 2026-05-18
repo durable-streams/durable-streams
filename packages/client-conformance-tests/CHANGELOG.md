@@ -1,5 +1,17 @@
 # @durable-streams/client-conformance-tests
 
+## 0.2.6
+
+### Patch Changes
+
+- Implement fetch-then-live pattern: initial requests omit the `live` query parameter so catch-up responses are cacheable by CDNs and browsers. Live mode (long-poll or SSE) activates only after the client reaches up-to-date. ([#354](https://github.com/durable-streams/durable-streams/pull/354))
+
+  For SSE mode, a dedicated `startSSE` path opens a persistent connection only after HTTP catch-up completes, replacing the previous single-connection approach.
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`33cb090`](https://github.com/durable-streams/durable-streams/commit/33cb09076b5eeb278e671a7afc9963bffd940872), [`bcc757e`](https://github.com/durable-streams/durable-streams/commit/bcc757eca91a22436f7d32859f471a7abe774310), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+  - @durable-streams/server@0.3.2
+
 ## 0.2.5
 
 ### Patch Changes

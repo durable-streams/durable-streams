@@ -1,5 +1,14 @@
 # @durable-streams/state
 
+## 0.2.6
+
+### Patch Changes
+
+- Add first-class live mode configuration to `createStreamDB()` so callers can force `"sse"` or `"long-poll"`, and add `headers` to `IdempotentProducerOptions` for producer batch and close requests. ([#353](https://github.com/durable-streams/durable-streams/pull/353))
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+
 ## 0.2.5
 
 ### Patch Changes
