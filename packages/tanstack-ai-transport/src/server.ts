@@ -88,14 +88,28 @@ async function writeSourceToStream(
 ): Promise<string> {
   let finalOffset = ``
   let sourceError: unknown = undefined
+  let appendError: unknown = undefined
+  let lastAppend: Promise<void> = Promise.resolve()
+
+  const trackAppend = (p: Promise<void>): Promise<void> => {
+    const tracked = p.catch((err) => {
+      if (appendError === undefined) appendError = err
+    })
+    lastAppend = tracked
+    return tracked
+  }
+
   try {
     for await (const chunk of source) {
-      await stream.append(JSON.stringify(chunk), { contentType })
+      if (appendError !== undefined) break
+      trackAppend(stream.append(JSON.stringify(chunk), { contentType }))
     }
   } catch (error) {
     sourceError = error
   } finally {
-    // Always close so readers can terminate loading state.
+    // Drain pending appends; queue is FIFO + concurrency 1, so awaiting
+    // the latest tracked promise also awaits everything before it.
+    await lastAppend
     try {
       const closeResult = await stream.close()
       finalOffset = closeResult.finalOffset
@@ -104,11 +118,15 @@ async function writeSourceToStream(
         !(
           error instanceof DurableStreamError && error.code === `STREAM_CLOSED`
         ) &&
-        sourceError === undefined
+        sourceError === undefined &&
+        appendError === undefined
       ) {
         sourceError = error
       }
     }
+  }
+  if (appendError !== undefined) {
+    throw appendError
   }
   if (sourceError !== undefined) {
     throw sourceError
@@ -184,11 +202,18 @@ export async function appendSanitizedChunksToStream(
   chunks: ReadonlyArray<TanStackChunk>,
   contentType: string = DEFAULT_CONTENT_TYPE
 ): Promise<void> {
+  let appendError: unknown = undefined
+  let lastAppend: Promise<void> = Promise.resolve()
   for (const chunk of chunks) {
-    await stream.append(JSON.stringify(sanitizeChunkForStorage(chunk)), {
-      contentType,
-    })
+    if (appendError !== undefined) break
+    lastAppend = stream
+      .append(JSON.stringify(sanitizeChunkForStorage(chunk)), { contentType })
+      .catch((err) => {
+        if (appendError === undefined) appendError = err
+      })
   }
+  await lastAppend
+  if (appendError !== undefined) throw appendError
 }
 
 export async function pipeSanitizedChunksToStream(
@@ -196,11 +221,21 @@ export async function pipeSanitizedChunksToStream(
   stream: DurableStream,
   contentType: string = DEFAULT_CONTENT_TYPE
 ): Promise<void> {
-  for await (const chunk of source) {
-    await stream.append(JSON.stringify(sanitizeChunkForStorage(chunk)), {
-      contentType,
-    })
+  let appendError: unknown = undefined
+  let lastAppend: Promise<void> = Promise.resolve()
+  try {
+    for await (const chunk of source) {
+      if (appendError !== undefined) break
+      lastAppend = stream
+        .append(JSON.stringify(sanitizeChunkForStorage(chunk)), { contentType })
+        .catch((err) => {
+          if (appendError === undefined) appendError = err
+        })
+    }
+  } finally {
+    await lastAppend
   }
+  if (appendError !== undefined) throw appendError
 }
 
 export async function toDurableStreamResponse(
