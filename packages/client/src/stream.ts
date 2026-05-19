@@ -121,7 +121,7 @@ export interface DurableStreamOptions extends StreamHandleOptions {
  *   contentType: "application/json"
  * });
  *
- * // Write data
+ * // Single write
  * await stream.append(JSON.stringify({ message: "hello" }));
  *
  * // Read with the new API
@@ -439,9 +439,14 @@ export class DurableStream {
   /**
    * Append a single payload to the stream.
    *
-   * When batching is enabled (default), multiple append() calls made while
-   * a POST is in-flight will be batched together into a single request.
-   * This significantly improves throughput for high-frequency writes.
+   * Batching: when batching is enabled (default), append() calls that overlap
+   * in time (e.g. fired without awaiting each one) are coalesced into a
+   * single POST while a prior POST is in flight. If every call is awaited
+   * before the next is issued, no batching happens — each call becomes its
+   * own roundtrip. For tight loops driving an async iterable (e.g. LLM
+   * token streams), prefer `appendStream()` / `writable()` which pipe the
+   * source over a single POST, or fire `append()` calls without awaiting
+   * each one and await the last promise (and `close()`) at the end.
    *
    * - `body` must be string or Uint8Array.
    * - For JSON streams, pass pre-serialized JSON strings.
@@ -451,7 +456,7 @@ export class DurableStream {
    *
    * @example
    * ```typescript
-   * // JSON stream - pass pre-serialized JSON
+   * // JSON stream - pass pre-serialized JSON (single write)
    * await stream.append(JSON.stringify({ message: "hello" }));
    *
    * // Byte stream
@@ -460,6 +465,14 @@ export class DurableStream {
    *
    * // Promise value - awaited before buffering
    * await stream.append(fetchData());
+   *
+   * // High-frequency writes from an async iterable - fire-and-track-last
+   * let last: Promise<void> = Promise.resolve();
+   * for await (const chunk of source) {
+   *   last = stream.append(JSON.stringify(chunk));
+   * }
+   * await last;
+   * await stream.close();
    * ```
    */
   async append(
