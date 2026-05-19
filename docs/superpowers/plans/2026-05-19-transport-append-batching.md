@@ -15,17 +15,20 @@
 Issue: https://github.com/durable-streams/durable-streams/issues/355
 
 Current offending loops (both have identical shape):
+
 - `packages/aisdk-transport/src/server.ts:53-54`
 - `packages/tanstack-ai-transport/src/server.ts:92-93`
 - `packages/tanstack-ai-transport/src/server.ts:194-204` (`pipeSanitizedChunksToStream`)
 - `packages/tanstack-ai-transport/src/server.ts:182-192` (`appendSanitizedChunksToStream` — same pattern for a known-length array)
 
 Client batching internals (read-only context):
+
 - `packages/client/src/stream.ts:155` (`#buffer`), `:177` (`fastq.promise(..., 1)`), `:465-476` (`append` dispatch), `:534-588` (`#appendWithBatching` + `#batchWorker`).
 
 Existing tests for tanstack-ai-transport: `packages/tanstack-ai-transport/test/session-transport.test.ts` (mocks `@durable-streams/client` via `vi.hoisted`). aisdk-transport currently has no tests; the root `vitest.config.ts` will need a new project entry.
 
 Docs that teach the slow pattern:
+
 - `packages/client/src/stream.ts:125` (JSDoc on the class), `:455-459` (JSDoc on `append`)
 - `packages/client/README.md:1133`
 - `docs/stream-db.md:152,181,199,218-220,250` (note: these are correct usage for StateDB; do **not** modify — StateDB is the consumer there, not the AI transports)
@@ -35,6 +38,7 @@ Docs that teach the slow pattern:
 ## File Structure
 
 **Modify:**
+
 - `packages/aisdk-transport/src/server.ts` — rewrite `writeSourceToStream` to fire-and-track-last
 - `packages/aisdk-transport/package.json` — add `vitest` devDep and `test` script
 - `packages/aisdk-transport/README.md` — fix README example if it teaches per-chunk await
@@ -45,10 +49,12 @@ Docs that teach the slow pattern:
 - `.changeset/` — add a single patch changeset covering both transports + client docs
 
 **Create:**
+
 - `packages/aisdk-transport/test/server.test.ts` — unit tests for new `writeSourceToStream`
 - `packages/tanstack-ai-transport/test/server.test.ts` — unit tests for the three modified server helpers
 
 **No changes:**
+
 - `packages/client/src/stream.ts` runtime behaviour — the fix lives in the transports.
 - Conformance tests — this is transport behaviour, not protocol behaviour; the per-language client conformance suite doesn't exercise these transports. (See CLAUDE.md's testing philosophy: conformance tests verify the protocol; these are TS-only transport adapters.)
 
@@ -57,6 +63,7 @@ Docs that teach the slow pattern:
 ## Task 1: Add aisdk-transport to vitest workspace + package scripts
 
 **Files:**
+
 - Modify: `vitest.config.ts` (root)
 - Modify: `packages/aisdk-transport/package.json`
 
@@ -118,6 +125,7 @@ git commit -m "chore(aisdk-transport): wire up vitest workspace project"
 ## Task 2: TanStack — failing test for non-blocking append loop
 
 **Files:**
+
 - Create: `packages/tanstack-ai-transport/test/server.test.ts`
 
 We assert that the rewritten `writeSourceToStream` does NOT wait for each `append()` to resolve before pulling the next chunk from the source. The test holds all `append()` calls pending until the source iterator finishes, then resolves them all — proving the loop ran ahead of `append`.
@@ -269,9 +277,7 @@ describe(`tanstack-ai-transport writeSourceToStream batching`, () => {
     closeMock.mockReset().mockResolvedValue({ finalOffset: `0` })
 
     appendMock.mockImplementationOnce(() => Promise.resolve())
-    appendMock.mockImplementationOnce(() =>
-      Promise.reject(new Error(`boom`))
-    )
+    appendMock.mockImplementationOnce(() => Promise.reject(new Error(`boom`)))
 
     const source = (async function* () {
       yield { type: `TEXT_MESSAGE_CONTENT`, delta: `a` }
@@ -358,6 +364,7 @@ git commit -m "test(tanstack-ai-transport): failing tests for non-blocking appen
 ## Task 3: TanStack — implement non-blocking append loop
 
 **Files:**
+
 - Modify: `packages/tanstack-ai-transport/src/server.ts:84-117` (`writeSourceToStream`)
 - Modify: `packages/tanstack-ai-transport/src/server.ts:182-192` (`appendSanitizedChunksToStream`)
 - Modify: `packages/tanstack-ai-transport/src/server.ts:194-204` (`pipeSanitizedChunksToStream`)
@@ -561,6 +568,7 @@ git commit -m "fix(tanstack-ai-transport): engage client batching by not awaitin
 ## Task 4: AI SDK — failing test for non-blocking append loop
 
 **Files:**
+
 - Create: `packages/aisdk-transport/test/server.test.ts`
 
 - [ ] **Step 1: Write the failing test file**
@@ -570,43 +578,48 @@ Create `packages/aisdk-transport/test/server.test.ts`:
 ```ts
 import { describe, expect, it, vi } from "vitest"
 
-const { appendMock, closeMock, createMock, MockDurableStream, MockDurableStreamError } =
-  vi.hoisted(() => {
-    const appendMock = vi.fn()
-    const closeMock = vi.fn()
-    const createMock = vi.fn()
+const {
+  appendMock,
+  closeMock,
+  createMock,
+  MockDurableStream,
+  MockDurableStreamError,
+} = vi.hoisted(() => {
+  const appendMock = vi.fn()
+  const closeMock = vi.fn()
+  const createMock = vi.fn()
 
-    class MockDurableStream {
-      constructor(_opts: any) {}
-      create(...args: Array<any>) {
-        return createMock(...args)
-      }
-      append(...args: Array<any>) {
-        return appendMock(...args)
-      }
-      close(...args: Array<any>) {
-        return closeMock(...args)
-      }
+  class MockDurableStream {
+    constructor(_opts: any) {}
+    create(...args: Array<any>) {
+      return createMock(...args)
     }
+    append(...args: Array<any>) {
+      return appendMock(...args)
+    }
+    close(...args: Array<any>) {
+      return closeMock(...args)
+    }
+  }
 
-    class MockDurableStreamError extends Error {
-      status?: number
-      code?: string
-      constructor(message: string, opts?: { status?: number; code?: string }) {
-        super(message)
-        this.status = opts?.status
-        this.code = opts?.code
-      }
+  class MockDurableStreamError extends Error {
+    status?: number
+    code?: string
+    constructor(message: string, opts?: { status?: number; code?: string }) {
+      super(message)
+      this.status = opts?.status
+      this.code = opts?.code
     }
+  }
 
-    return {
-      appendMock,
-      closeMock,
-      createMock,
-      MockDurableStream,
-      MockDurableStreamError,
-    }
-  })
+  return {
+    appendMock,
+    closeMock,
+    createMock,
+    MockDurableStream,
+    MockDurableStreamError,
+  }
+})
 
 vi.mock(`@durable-streams/client`, () => ({
   DurableStream: MockDurableStream,
@@ -717,9 +730,7 @@ describe(`aisdk-transport writeSourceToStream batching`, () => {
     closeMock.mockReset().mockResolvedValue({ finalOffset: `0` })
 
     appendMock.mockImplementationOnce(() => Promise.resolve())
-    appendMock.mockImplementationOnce(() =>
-      Promise.reject(new Error(`boom`))
-    )
+    appendMock.mockImplementationOnce(() => Promise.reject(new Error(`boom`)))
 
     const source = (async function* () {
       yield { type: `text-delta`, text: `a` }
@@ -757,6 +768,7 @@ git commit -m "test(aisdk-transport): failing tests for non-blocking append loop
 ## Task 5: AI SDK — implement non-blocking append loop
 
 **Files:**
+
 - Modify: `packages/aisdk-transport/src/server.ts:45-78` (`writeSourceToStream`)
 
 - [ ] **Step 1: Replace `writeSourceToStream`**
@@ -876,6 +888,7 @@ git commit -m "fix(aisdk-transport): engage client batching by not awaiting each
 ## Task 6: Update client docs that teach the slow pattern
 
 **Files:**
+
 - Modify: `packages/client/src/stream.ts:115-134` (class JSDoc) and `:452-464` (append JSDoc)
 - Modify: `packages/client/README.md` around `:1133`
 
@@ -885,7 +898,7 @@ The current JSDoc shows `await stream.append(JSON.stringify({ message: "hello" }
 
 Find at `packages/client/src/stream.ts:115-134`:
 
-```ts
+````ts
 /**
  * A handle to a remote durable stream for read/write operations.
  *
@@ -914,11 +927,11 @@ Find at `packages/client/src/stream.ts:115-134`:
  * });
  * ```
  */
-```
+````
 
 Replace with:
 
-```ts
+````ts
 /**
  * A handle to a remote durable stream for read/write operations.
  *
@@ -947,7 +960,7 @@ Replace with:
  * });
  * ```
  */
-```
+````
 
 (This change is just the comment "Write data" → "Single write" — the substantive guidance lives on `append()` and is referenced from there.)
 
@@ -955,85 +968,85 @@ Replace with:
 
 Find at `packages/client/src/stream.ts:439-464`:
 
-```ts
-  /**
-   * Append a single payload to the stream.
-   *
-   * When batching is enabled (default), multiple append() calls made while
-   * a POST is in-flight will be batched together into a single request.
-   * This significantly improves throughput for high-frequency writes.
-   *
-   * - `body` must be string or Uint8Array.
-   * - For JSON streams, pass pre-serialized JSON strings.
-   * - `body` may also be a Promise that resolves to string or Uint8Array.
-   * - Strings are encoded as UTF-8.
-   * - `seq` (if provided) is sent as stream-seq (writer coordination).
-   *
-   * @example
-   * ```typescript
-   * // JSON stream - pass pre-serialized JSON
-   * await stream.append(JSON.stringify({ message: "hello" }));
-   *
-   * // Byte stream
-   * await stream.append("raw text data");
-   * await stream.append(new Uint8Array([1, 2, 3]));
-   *
-   * // Promise value - awaited before buffering
-   * await stream.append(fetchData());
-   * ```
-   */
-```
+````ts
+/**
+ * Append a single payload to the stream.
+ *
+ * When batching is enabled (default), multiple append() calls made while
+ * a POST is in-flight will be batched together into a single request.
+ * This significantly improves throughput for high-frequency writes.
+ *
+ * - `body` must be string or Uint8Array.
+ * - For JSON streams, pass pre-serialized JSON strings.
+ * - `body` may also be a Promise that resolves to string or Uint8Array.
+ * - Strings are encoded as UTF-8.
+ * - `seq` (if provided) is sent as stream-seq (writer coordination).
+ *
+ * @example
+ * ```typescript
+ * // JSON stream - pass pre-serialized JSON
+ * await stream.append(JSON.stringify({ message: "hello" }));
+ *
+ * // Byte stream
+ * await stream.append("raw text data");
+ * await stream.append(new Uint8Array([1, 2, 3]));
+ *
+ * // Promise value - awaited before buffering
+ * await stream.append(fetchData());
+ * ```
+ */
+````
 
 Replace with:
 
-```ts
-  /**
-   * Append a single payload to the stream.
-   *
-   * Batching: when batching is enabled (default), append() calls that overlap
-   * in time (e.g. fired without awaiting each one) are coalesced into a
-   * single POST while a prior POST is in flight. If every call is awaited
-   * before the next is issued, no batching happens — each call becomes its
-   * own roundtrip. For tight loops driving an async iterable (e.g. LLM
-   * token streams), prefer `appendStream()` / `writable()` which pipe the
-   * source over a single POST, or fire `append()` calls without awaiting
-   * each one and await the last promise (and `close()`) at the end.
-   *
-   * - `body` must be string or Uint8Array.
-   * - For JSON streams, pass pre-serialized JSON strings.
-   * - `body` may also be a Promise that resolves to string or Uint8Array.
-   * - Strings are encoded as UTF-8.
-   * - `seq` (if provided) is sent as stream-seq (writer coordination).
-   *
-   * @example
-   * ```typescript
-   * // JSON stream - pass pre-serialized JSON (single write)
-   * await stream.append(JSON.stringify({ message: "hello" }));
-   *
-   * // Byte stream
-   * await stream.append("raw text data");
-   * await stream.append(new Uint8Array([1, 2, 3]));
-   *
-   * // Promise value - awaited before buffering
-   * await stream.append(fetchData());
-   *
-   * // High-frequency writes from an async iterable - fire-and-track-last
-   * let last: Promise<void> = Promise.resolve();
-   * for await (const chunk of source) {
-   *   last = stream.append(JSON.stringify(chunk));
-   * }
-   * await last;
-   * await stream.close();
-   * ```
-   */
-```
+````ts
+/**
+ * Append a single payload to the stream.
+ *
+ * Batching: when batching is enabled (default), append() calls that overlap
+ * in time (e.g. fired without awaiting each one) are coalesced into a
+ * single POST while a prior POST is in flight. If every call is awaited
+ * before the next is issued, no batching happens — each call becomes its
+ * own roundtrip. For tight loops driving an async iterable (e.g. LLM
+ * token streams), prefer `appendStream()` / `writable()` which pipe the
+ * source over a single POST, or fire `append()` calls without awaiting
+ * each one and await the last promise (and `close()`) at the end.
+ *
+ * - `body` must be string or Uint8Array.
+ * - For JSON streams, pass pre-serialized JSON strings.
+ * - `body` may also be a Promise that resolves to string or Uint8Array.
+ * - Strings are encoded as UTF-8.
+ * - `seq` (if provided) is sent as stream-seq (writer coordination).
+ *
+ * @example
+ * ```typescript
+ * // JSON stream - pass pre-serialized JSON (single write)
+ * await stream.append(JSON.stringify({ message: "hello" }));
+ *
+ * // Byte stream
+ * await stream.append("raw text data");
+ * await stream.append(new Uint8Array([1, 2, 3]));
+ *
+ * // Promise value - awaited before buffering
+ * await stream.append(fetchData());
+ *
+ * // High-frequency writes from an async iterable - fire-and-track-last
+ * let last: Promise<void> = Promise.resolve();
+ * for await (const chunk of source) {
+ *   last = stream.append(JSON.stringify(chunk));
+ * }
+ * await last;
+ * await stream.close();
+ * ```
+ */
+````
 
 - [ ] **Step 3: Update `packages/client/README.md`**
 
 Find at `packages/client/README.md:1133` (and surrounding context — grep the file to locate the example). The example currently reads:
 
 ```ts
-  await stream.append("data")
+await stream.append("data")
 ```
 
 Add a short note after the example block that introduces batching. Use Read to view 30 lines around `:1133` first, then edit to add a note like:
@@ -1064,6 +1077,7 @@ git commit -m "docs(client): warn against per-chunk awaited append() in tight lo
 ## Task 7: Update aisdk-transport and tanstack-ai-transport READMEs if they teach the slow pattern
 
 **Files:**
+
 - Read: `packages/aisdk-transport/README.md`
 - Read: `packages/tanstack-ai-transport/README.md`
 - Modify (conditional): same files if they contain a `for await … await stream.append` example
@@ -1071,6 +1085,7 @@ git commit -m "docs(client): warn against per-chunk awaited append() in tight lo
 - [ ] **Step 1: Inspect both READMEs**
 
 Run:
+
 ```bash
 grep -n "stream.append\|for await" packages/aisdk-transport/README.md packages/tanstack-ai-transport/README.md
 ```
@@ -1108,6 +1123,7 @@ If no diff, skip the commit.
 ## Task 8: Add changeset
 
 **Files:**
+
 - Create: `.changeset/transport-append-batching.md`
 
 - [ ] **Step 1: Write the changeset**
@@ -1156,6 +1172,7 @@ Expected: all projects pass, including `aisdk-transport`, `tanstack-transport`, 
 - [ ] **Step 2: Run typecheck across affected packages**
 
 Run:
+
 ```bash
 pnpm --filter @durable-streams/client typecheck
 pnpm --filter @durable-streams/aisdk-transport typecheck
@@ -1167,6 +1184,7 @@ Expected: all pass.
 - [ ] **Step 3: Build affected packages**
 
 Run:
+
 ```bash
 pnpm --filter @durable-streams/aisdk-transport build
 pnpm --filter @durable-streams/tanstack-ai-transport build
@@ -1177,6 +1195,7 @@ Expected: clean builds.
 - [ ] **Step 4: Smoke test against a real server (optional but recommended)**
 
 If a local Caddy server or dev server is available:
+
 1. Start the dev server: `pnpm --filter @durable-streams/server dev` (or follow repo docs)
 2. Write a small ad-hoc script that pipes 100 chunks through `toDurableStreamResponse` (aisdk-transport variant) and measures wall-clock from "source iterator drained" to "response returned" in `mode: "await"`. With the fix, the time after source completion should be ≈1 RTT (one or two POSTs left in the queue), not 100 × RTT.
 
@@ -1186,21 +1205,22 @@ This step is optional because the unit tests in Tasks 2 and 4 already prove the 
 
 ## Test Plan Summary
 
-| Layer | Test | What it proves |
-|---|---|---|
-| Unit (tanstack-ai-transport) | `does not block source iteration on append() resolution` | `for await` loop runs ahead of `append()` resolution — all chunks reach `append` before any resolves |
-| Unit (tanstack-ai-transport) | `awaits all pending appends before close()` | Pending writes drain before `stream.close()` — no truncation |
-| Unit (tanstack-ai-transport) | `surfaces append errors from the latest pending promise` | Append failures still propagate to the caller after the fire-and-track refactor |
-| Unit (tanstack-ai-transport) | `pipeSanitizedChunksToStream does not block on append()` | Same property for the chat-session pipe helper |
-| Unit (tanstack-ai-transport) | `appendSanitizedChunksToStream fires all appends without per-item blocking` | Same property for the bounded-array helper |
-| Unit (aisdk-transport) | `does not block source iteration on append() resolution` | Same as above for the AI SDK transport |
-| Unit (aisdk-transport) | `awaits pending appends before close()` | Same as above |
-| Unit (aisdk-transport) | `surfaces append errors` | Same as above |
-| Existing | `tanstack durable session transport` suite | Regression check on the existing tanstack chat session path |
-| Existing | `pnpm test:run` (client, server, state, etc.) | Nothing else broken |
+| Layer                        | Test                                                                        | What it proves                                                                                       |
+| ---------------------------- | --------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------- |
+| Unit (tanstack-ai-transport) | `does not block source iteration on append() resolution`                    | `for await` loop runs ahead of `append()` resolution — all chunks reach `append` before any resolves |
+| Unit (tanstack-ai-transport) | `awaits all pending appends before close()`                                 | Pending writes drain before `stream.close()` — no truncation                                         |
+| Unit (tanstack-ai-transport) | `surfaces append errors from the latest pending promise`                    | Append failures still propagate to the caller after the fire-and-track refactor                      |
+| Unit (tanstack-ai-transport) | `pipeSanitizedChunksToStream does not block on append()`                    | Same property for the chat-session pipe helper                                                       |
+| Unit (tanstack-ai-transport) | `appendSanitizedChunksToStream fires all appends without per-item blocking` | Same property for the bounded-array helper                                                           |
+| Unit (aisdk-transport)       | `does not block source iteration on append() resolution`                    | Same as above for the AI SDK transport                                                               |
+| Unit (aisdk-transport)       | `awaits pending appends before close()`                                     | Same as above                                                                                        |
+| Unit (aisdk-transport)       | `surfaces append errors`                                                    | Same as above                                                                                        |
+| Existing                     | `tanstack durable session transport` suite                                  | Regression check on the existing tanstack chat session path                                          |
+| Existing                     | `pnpm test:run` (client, server, state, etc.)                               | Nothing else broken                                                                                  |
 
 **Why not conformance tests?** CLAUDE.md asks us to prefer conformance tests, but this bug lives in TypeScript-only transport adapters (aisdk-transport, tanstack-ai-transport), not in the protocol or any client SDK. The conformance suite is language-agnostic protocol verification — adding "did the transport adapter coalesce appends?" there would test something only one language has. The protocol behaviour (idempotent batched POSTs) is already covered by existing conformance tests. Unit tests in each transport package are the right layer.
 
 **Manual / out-of-scope:**
+
 - A `lingerMs` option on `append()` (issue #355 option 2) — deferred. The fire-and-track approach in the transports gets the win without the timer-based debounce. Worth a follow-up issue if anyone wants the same fix automatically for user code that still awaits each append.
 - Stream-DB docs at `docs/stream-db.md` — left untouched. StateDB is a different consumer with different semantics (one append per logical mutation, not a tight loop of tokens), so the awaited pattern is fine there.
