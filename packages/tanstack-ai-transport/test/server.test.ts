@@ -42,11 +42,17 @@ vi.mock(`@durable-streams/client`, () => ({
   DurableStreamError: MockDurableStreamError,
 }))
 
-function deferred<T = void>() {
-  let resolve!: (v: T) => void
+type Deferred = {
+  promise: Promise<void>
+  resolve: () => void
+  reject: (e: unknown) => void
+}
+
+function deferred(): Deferred {
+  let resolve!: () => void
   let reject!: (e: unknown) => void
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res
+  const promise = new Promise<void>((res, rej) => {
+    resolve = () => res()
     reject = rej
   })
   return { promise, resolve, reject }
@@ -57,7 +63,7 @@ describe(`tanstack-ai-transport writeSourceToStream batching`, () => {
     appendMock.mockReset()
     closeMock.mockReset().mockResolvedValue({ finalOffset: `0` })
 
-    const pendings: Array<ReturnType<typeof deferred>> = []
+    const pendings: Array<Deferred> = []
     appendMock.mockImplementation(() => {
       const d = deferred()
       pendings.push(d)
@@ -101,7 +107,7 @@ describe(`tanstack-ai-transport writeSourceToStream batching`, () => {
     let appendsResolvedAt = -1
     let tick = 0
 
-    const pendings: Array<ReturnType<typeof deferred>> = []
+    const pendings: Array<Deferred> = []
     appendMock.mockImplementation(() => {
       const d = deferred()
       pendings.push(d)
@@ -161,7 +167,7 @@ describe(`tanstack-ai-transport writeSourceToStream batching`, () => {
 describe(`tanstack-ai-transport pipeSanitizedChunksToStream batching`, () => {
   it(`does not block on append()`, async () => {
     appendMock.mockReset()
-    const pendings: Array<ReturnType<typeof deferred>> = []
+    const pendings: Array<Deferred> = []
     appendMock.mockImplementation(() => {
       const d = deferred()
       pendings.push(d)
@@ -188,7 +194,7 @@ describe(`tanstack-ai-transport pipeSanitizedChunksToStream batching`, () => {
 describe(`tanstack-ai-transport appendSanitizedChunksToStream batching`, () => {
   it(`fires all appends without per-item blocking`, async () => {
     appendMock.mockReset()
-    const pendings: Array<ReturnType<typeof deferred>> = []
+    const pendings: Array<Deferred> = []
     appendMock.mockImplementation(() => {
       const d = deferred()
       pendings.push(d)
