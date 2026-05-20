@@ -49,13 +49,24 @@ async function writeSourceToStream(
 ): Promise<string> {
   let finalOffset = ``
   let sourceError: unknown = undefined
+  let appendError: unknown = undefined
+  let lastAppend: Promise<void> = Promise.resolve()
+
   try {
     for await (const chunk of source) {
-      await stream.append(JSON.stringify(chunk), { contentType })
+      if (appendError !== undefined) break
+      lastAppend = stream
+        .append(JSON.stringify(chunk), { contentType })
+        .catch((err) => {
+          if (appendError === undefined) appendError = err
+        })
     }
   } catch (error) {
     sourceError = error
   } finally {
+    // Drain queued appends before closing. The client queue is FIFO with
+    // concurrency 1, so awaiting the last tracked promise drains all prior ones.
+    await lastAppend
     try {
       const closeResult = await stream.close()
       finalOffset = closeResult.finalOffset
@@ -64,13 +75,17 @@ async function writeSourceToStream(
         !(
           error instanceof DurableStreamError && error.code === `STREAM_CLOSED`
         ) &&
-        sourceError === undefined
+        sourceError === undefined &&
+        appendError === undefined
       ) {
         sourceError = error
       }
     }
   }
 
+  if (appendError !== undefined) {
+    throw appendError
+  }
   if (sourceError !== undefined) {
     throw sourceError
   }
