@@ -102,6 +102,14 @@ export default defineConfig({
         },
         resolve: { alias },
       }),
+      defineProject({
+        test: {
+          name: "aisdk-transport",
+          include: ["packages/aisdk-transport/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
     ],
     coverage: {
       provider: `v8`,

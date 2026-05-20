@@ -1138,6 +1138,13 @@ try {
 }
 ```
 
+> **Performance note:** `append()` calls that overlap in time (fired without
+> awaiting) are batched into a single POST by default. If you `await` every
+> call inside a tight loop the batching never engages. For loops over an
+> async iterable (e.g. LLM streams), prefer `appendStream()` / `writable()`,
+> or fire `append()` without awaiting and await only the last promise (and
+> `close()`) at the end.
+
 ---
 
 ## Types
