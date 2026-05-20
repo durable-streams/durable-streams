@@ -1,5 +1,12 @@
 # @durable-streams/example-proxy-chat-tanstack
 
+## 0.0.6
+
+### Patch Changes
+
+- Updated dependencies [[`c654e5c`](https://github.com/durable-streams/durable-streams/commit/c654e5c7d8d4ca21b1cbfc233cbbe2d2b1f09b8e)]:
+  - @durable-streams/tanstack-ai-transport@0.0.6
+
 ## 0.0.5
 
 ### Patch Changes
