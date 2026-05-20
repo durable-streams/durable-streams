@@ -1,7 +1,6 @@
 ---
 "@durable-streams/aisdk-transport": patch
 "@durable-streams/tanstack-ai-transport": patch
-"@durable-streams/client": patch
 ---
 
 Engage client-side batching in AI SDK and TanStack AI transport response

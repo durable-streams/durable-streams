@@ -91,18 +91,14 @@ async function writeSourceToStream(
   let appendError: unknown = undefined
   let lastAppend: Promise<void> = Promise.resolve()
 
-  const trackAppend = (p: Promise<void>): Promise<void> => {
-    const tracked = p.catch((err) => {
-      if (appendError === undefined) appendError = err
-    })
-    lastAppend = tracked
-    return tracked
-  }
-
   try {
     for await (const chunk of source) {
       if (appendError !== undefined) break
-      trackAppend(stream.append(JSON.stringify(chunk), { contentType }))
+      lastAppend = stream
+        .append(JSON.stringify(chunk), { contentType })
+        .catch((err) => {
+          if (appendError === undefined) appendError = err
+        })
     }
   } catch (error) {
     sourceError = error
@@ -205,7 +201,6 @@ export async function appendSanitizedChunksToStream(
   let appendError: unknown = undefined
   let lastAppend: Promise<void> = Promise.resolve()
   for (const chunk of chunks) {
-    if (appendError !== undefined) break
     lastAppend = stream
       .append(JSON.stringify(sanitizeChunkForStorage(chunk)), { contentType })
       .catch((err) => {
@@ -223,6 +218,9 @@ export async function pipeSanitizedChunksToStream(
 ): Promise<void> {
   let appendError: unknown = undefined
   let lastAppend: Promise<void> = Promise.resolve()
+  // Source errors propagate to the caller (toDurableChatSessionResponse handles
+  // them via .catch on the outer task), unlike writeSourceToStream which owns
+  // the close lifecycle and must catch source errors to still close the stream.
   try {
     for await (const chunk of source) {
       if (appendError !== undefined) break
