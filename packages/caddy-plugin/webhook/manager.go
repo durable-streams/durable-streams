@@ -8,6 +8,7 @@ import (
 	"math"
 	"math/rand"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -153,7 +154,7 @@ func (m *Manager) wakeConsumer(consumer *ConsumerInstance, triggeredBy []string)
 
 func (m *Manager) deliverWebhook(consumer *ConsumerInstance, sub *Subscription, payload map[string]interface{}) {
 	body, _ := json.Marshal(payload)
-	signature := SignWebhookPayload(string(body), sub.WebhookSecret)
+	signature := SignWebhookPayload(string(body))
 
 	req, err := http.NewRequest("POST", sub.Webhook, bytes.NewReader(body))
 	if err != nil {
@@ -408,7 +409,15 @@ func (m *Manager) resetLivenessTimeout(consumer *ConsumerInstance) {
 }
 
 func (m *Manager) buildCallbackURL(consumerID string) string {
-	return m.callbackBaseURL + "/callback/" + consumerID
+	return m.publicURL("/callback/" + consumerID)
+}
+
+func (m *Manager) buildJWKSURL() string {
+	return m.publicURL("/__ds/jwks.json")
+}
+
+func (m *Manager) publicURL(path string) string {
+	return strings.TrimRight(m.callbackBaseURL, "/") + path
 }
 
 func (m *Manager) isShuttingDown() bool {

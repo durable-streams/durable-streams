@@ -19,7 +19,6 @@ type Subscription struct {
 	SubscriptionID string `json:"subscription_id"`
 	Pattern        string `json:"pattern"`
 	Webhook        string `json:"webhook"`
-	WebhookSecret  string `json:"webhook_secret,omitempty"`
 	Description    string `json:"description,omitempty"`
 }
 

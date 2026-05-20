@@ -21,6 +21,10 @@ func NewRoutes(manager *Manager) *Routes {
 // Returns true if the request was handled, false if it should be passed through.
 func (rt *Routes) HandleRequest(w http.ResponseWriter, r *http.Request) bool {
 	path := r.URL.Path
+	if path == "/__ds/jwks.json" || strings.HasSuffix(path, "/__ds/jwks.json") {
+		rt.handleJWKS(w, r)
+		return true
+	}
 
 	// Use RawPath for callback routes to preserve percent-encoded consumer IDs.
 	// Consumer IDs contain encoded stream paths (e.g. sub:%2Fv1%2Fstream),
@@ -73,16 +77,33 @@ func (rt *Routes) HandleRequest(w http.ResponseWriter, r *http.Request) bool {
 }
 
 // serializeSubscription builds the API response for a subscription, omitting internal fields.
-func serializeSubscription(sub *Subscription) map[string]interface{} {
+func (rt *Routes) serializeSubscription(sub *Subscription) map[string]interface{} {
 	resp := map[string]interface{}{
 		"subscription_id": sub.SubscriptionID,
 		"pattern":         sub.Pattern,
-		"webhook":         sub.Webhook,
+		"webhook": map[string]interface{}{
+			"url": sub.Webhook,
+			"signing": map[string]string{
+				"alg":      "ed25519",
+				"kid":      GetWebhookSigningKeyID(),
+				"jwks_url": rt.Manager.buildJWKSURL(),
+			},
+		},
 	}
 	if sub.Description != "" {
 		resp["description"] = sub.Description
 	}
 	return resp
+}
+
+func (rt *Routes) handleJWKS(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "Method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Content-Type", "application/jwk-set+json")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	json.NewEncoder(w).Encode(GetWebhookJWKS())
 }
 
 func (rt *Routes) handleCreateSubscription(w http.ResponseWriter, r *http.Request, pattern, subscriptionID string) {
@@ -118,10 +139,7 @@ func (rt *Routes) handleCreateSubscription(w http.ResponseWriter, r *http.Reques
 		return
 	}
 
-	resp := serializeSubscription(sub)
-	if created {
-		resp["webhook_secret"] = sub.WebhookSecret
-	}
+	resp := rt.serializeSubscription(sub)
 
 	status := http.StatusOK
 	if created {
@@ -141,7 +159,7 @@ func (rt *Routes) handleGetSubscription(w http.ResponseWriter, subscriptionID st
 	}
 
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(serializeSubscription(sub))
+	json.NewEncoder(w).Encode(rt.serializeSubscription(sub))
 }
 
 func (rt *Routes) handleDeleteSubscription(w http.ResponseWriter, subscriptionID string) {
@@ -154,7 +172,7 @@ func (rt *Routes) handleListSubscriptions(w http.ResponseWriter, pattern string)
 
 	items := make([]map[string]interface{}, 0, len(subs))
 	for _, sub := range subs {
-		items = append(items, serializeSubscription(sub))
+		items = append(items, rt.serializeSubscription(sub))
 	}
 
 	w.Header().Set("Content-Type", "application/json")

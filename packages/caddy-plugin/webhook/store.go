@@ -44,7 +44,6 @@ func (s *Store) CreateSubscription(subscriptionID, pattern, webhook string, desc
 		SubscriptionID: subscriptionID,
 		Pattern:        pattern,
 		Webhook:        webhook,
-		WebhookSecret:  GenerateWebhookSecret(),
 		Description:    description,
 	}
 
