@@ -3,7 +3,9 @@ package store
 import (
 	"bytes"
 	"context"
+	"encoding/binary"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -330,6 +332,159 @@ func TestFileStore_Persistence(t *testing.T) {
 		if !bytes.Equal(messages[0].Data, []byte("hello")) {
 			t.Error("data mismatch after reopen")
 		}
+	}
+}
+
+func TestRecoverStore_TruncatesCorruptSegmentTail(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "filestore-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	var segPath string
+	{
+		store, err := NewFileStore(FileStoreConfig{DataDir: tmpDir})
+		if err != nil {
+			t.Fatalf("failed to create store: %v", err)
+		}
+
+		if _, _, err := store.Create("/test", CreateOptions{ContentType: "text/plain"}); err != nil {
+			t.Fatalf("Create failed: %v", err)
+		}
+		if _, err := store.Append("/test", []byte("before"), AppendOptions{}); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+
+		segPath = filepath.Join(tmpDir, "streams", store.dirCache["/test"], SegmentFileName)
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+	}
+
+	validInfo, err := os.Stat(segPath)
+	if err != nil {
+		t.Fatalf("failed to stat clean segment: %v", err)
+	}
+	validSize := validInfo.Size()
+
+	file, err := os.OpenFile(segPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open segment for corruption: %v", err)
+	}
+	var corruptLen [LengthPrefixSize]byte
+	binary.BigEndian.PutUint32(corruptLen[:], MaxMessageSize+1)
+	if _, err := file.Write(corruptLen[:]); err != nil {
+		file.Close()
+		t.Fatalf("failed to append corrupt length: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("failed to close corrupted segment: %v", err)
+	}
+
+	if err := RecoverStore(tmpDir); err != nil {
+		t.Fatalf("RecoverStore failed: %v", err)
+	}
+
+	recoveredInfo, err := os.Stat(segPath)
+	if err != nil {
+		t.Fatalf("failed to stat recovered segment: %v", err)
+	}
+	if recoveredInfo.Size() != validSize {
+		t.Fatalf("expected segment size %d after recovery, got %d", validSize, recoveredInfo.Size())
+	}
+
+	store, err := NewFileStore(FileStoreConfig{DataDir: tmpDir})
+	if err != nil {
+		t.Fatalf("failed to reopen store: %v", err)
+	}
+	defer store.Close()
+
+	if _, err := store.Append("/test", []byte("after"), AppendOptions{}); err != nil {
+		t.Fatalf("Append after recovery failed: %v", err)
+	}
+
+	messages, _, err := store.Read("/test", ZeroOffset)
+	if err != nil {
+		t.Fatalf("Read after recovery failed: %v", err)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("expected 2 messages after recovery append, got %d", len(messages))
+	}
+	if !bytes.Equal(messages[0].Data, []byte("before")) || !bytes.Equal(messages[1].Data, []byte("after")) {
+		t.Fatalf("unexpected messages after recovery: %q, %q", messages[0].Data, messages[1].Data)
+	}
+}
+
+func TestRecoverStoreWithEvents_ReportsTruncation(t *testing.T) {
+	tmpDir, err := os.MkdirTemp("", "filestore-test-*")
+	if err != nil {
+		t.Fatalf("failed to create temp dir: %v", err)
+	}
+	defer os.RemoveAll(tmpDir)
+
+	var segPath string
+	{
+		store, err := NewFileStore(FileStoreConfig{DataDir: tmpDir})
+		if err != nil {
+			t.Fatalf("failed to create store: %v", err)
+		}
+
+		if _, _, err := store.Create("/test", CreateOptions{ContentType: "text/plain"}); err != nil {
+			t.Fatalf("Create failed: %v", err)
+		}
+		if _, err := store.Append("/test", []byte("before"), AppendOptions{}); err != nil {
+			t.Fatalf("Append failed: %v", err)
+		}
+
+		segPath = filepath.Join(tmpDir, "streams", store.dirCache["/test"], SegmentFileName)
+		if err := store.Close(); err != nil {
+			t.Fatalf("Close failed: %v", err)
+		}
+	}
+
+	validInfo, err := os.Stat(segPath)
+	if err != nil {
+		t.Fatalf("failed to stat clean segment: %v", err)
+	}
+
+	file, err := os.OpenFile(segPath, os.O_APPEND|os.O_WRONLY, 0644)
+	if err != nil {
+		t.Fatalf("failed to open segment for corruption: %v", err)
+	}
+	corruptTail := []byte{0xff, 0xff, 0xff, 0xff}
+	if _, err := file.Write(corruptTail); err != nil {
+		file.Close()
+		t.Fatalf("failed to append corrupt tail: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatalf("failed to close corrupted segment: %v", err)
+	}
+
+	var events []RecoveryEvent
+	if err := RecoverStoreWithEvents(tmpDir, func(event RecoveryEvent) {
+		events = append(events, event)
+	}); err != nil {
+		t.Fatalf("RecoverStoreWithEvents failed: %v", err)
+	}
+
+	if len(events) != 1 {
+		t.Fatalf("expected 1 recovery event, got %d", len(events))
+	}
+	if events[0].StreamPath != "/test" {
+		t.Fatalf("expected stream path /test, got %q", events[0].StreamPath)
+	}
+	if events[0].SegmentPath != segPath {
+		t.Fatalf("expected segment path %q, got %q", segPath, events[0].SegmentPath)
+	}
+	if events[0].OriginalSize != uint64(validInfo.Size()+int64(len(corruptTail))) {
+		t.Fatalf("unexpected original size: %d", events[0].OriginalSize)
+	}
+	if events[0].RecoveredSize != uint64(validInfo.Size()) {
+		t.Fatalf("unexpected recovered size: %d", events[0].RecoveredSize)
+	}
+	if events[0].DiscardedBytes != uint64(len(corruptTail)) {
+		t.Fatalf("expected %d discarded bytes, got %d", len(corruptTail), events[0].DiscardedBytes)
 	}
 }
 

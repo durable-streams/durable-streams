@@ -66,6 +66,16 @@ func (h *Handler) Provision(ctx caddy.Context) error {
 		h.logger.Info("using in-memory store (no data_dir configured)")
 	} else {
 		// Use file-backed store
+		if err := store.RecoverStoreWithEvents(h.DataDir, func(event store.RecoveryEvent) {
+			h.logger.Warn("truncated corrupt segment tail during recovery",
+				zap.String("stream", event.StreamPath),
+				zap.String("segment", event.SegmentPath),
+				zap.Uint64("original_size", event.OriginalSize),
+				zap.Uint64("recovered_size", event.RecoveredSize),
+				zap.Uint64("discarded_bytes", event.DiscardedBytes))
+		}); err != nil {
+			return fmt.Errorf("failed to recover store: %w", err)
+		}
 		fileStore, err := store.NewFileStore(store.FileStoreConfig{
 			DataDir:        h.DataDir,
 			MaxFileHandles: h.MaxFileHandles,
