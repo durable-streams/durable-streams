@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -1204,8 +1205,22 @@ func generateDirectoryName(path string) (string, error) {
 
 // Recovery functions
 
+// RecoveryEvent describes a repair made during store recovery.
+type RecoveryEvent struct {
+	StreamPath     string
+	SegmentPath    string
+	OriginalSize   uint64
+	RecoveredSize  uint64
+	DiscardedBytes uint64
+}
+
 // RecoverStore performs recovery on a file store, reconciling bbolt with segment files
 func RecoverStore(dataDir string) error {
+	return RecoverStoreWithEvents(dataDir, nil)
+}
+
+// RecoverStoreWithEvents performs recovery and calls onEvent for each repair.
+func RecoverStoreWithEvents(dataDir string, onEvent func(RecoveryEvent)) error {
 	metaDir := filepath.Join(dataDir, "metadata")
 	metaStore, err := NewBboltMetadataStore(metaDir)
 	if err != nil {
@@ -1218,16 +1233,13 @@ func RecoverStore(dataDir string) error {
 	return metaStore.ForEach(func(meta *StreamMetadata, dirName string) error {
 		segPath := filepath.Join(streamsDir, dirName, SegmentFileName)
 
-		// Check if segment exists
-		if _, err := os.Stat(segPath); os.IsNotExist(err) {
-			// Orphaned metadata - delete it
-			return metaStore.Delete(meta.Path)
-		}
-
-		// Scan segment to get true offset
-		trueOffset, err := ScanSegment(segPath)
+		trueOffset, err := recoverSegment(segPath, meta.Path, onEvent)
 		if err != nil {
-			return fmt.Errorf("failed to scan segment for %s: %w", meta.Path, err)
+			if errors.Is(err, os.ErrNotExist) {
+				// Orphaned metadata - delete it
+				return metaStore.Delete(meta.Path)
+			}
+			return err
 		}
 
 		// Reconcile if mismatch
@@ -1239,6 +1251,49 @@ func RecoverStore(dataDir string) error {
 
 		return nil
 	})
+}
+
+func recoverSegment(segPath, streamPath string, onEvent func(RecoveryEvent)) (offset Offset, err error) {
+	f, err := os.OpenFile(segPath, os.O_RDWR, 0644)
+	if err != nil {
+		return Offset{}, fmt.Errorf("failed to open segment for recovery %s: %w", streamPath, err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("failed to close segment for %s: %w", streamPath, closeErr)
+		}
+	}()
+
+	trueOffset, err := ScanSegmentFile(f)
+	if err != nil {
+		return Offset{}, fmt.Errorf("failed to scan segment for %s: %w", streamPath, err)
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		return Offset{}, fmt.Errorf("failed to stat segment for %s: %w", streamPath, err)
+	}
+
+	originalSize := uint64(info.Size())
+	if originalSize > trueOffset.ByteOffset {
+		if err := f.Truncate(int64(trueOffset.ByteOffset)); err != nil {
+			return Offset{}, fmt.Errorf("failed to truncate segment for %s: %w", streamPath, err)
+		}
+		if err := f.Sync(); err != nil {
+			return Offset{}, fmt.Errorf("failed to sync segment for %s: %w", streamPath, err)
+		}
+		if onEvent != nil {
+			onEvent(RecoveryEvent{
+				StreamPath:     streamPath,
+				SegmentPath:    segPath,
+				OriginalSize:   originalSize,
+				RecoveredSize:  trueOffset.ByteOffset,
+				DiscardedBytes: originalSize - trueOffset.ByteOffset,
+			})
+		}
+	}
+
+	return trueOffset, nil
 }
 
 // Note: longPollManager and processJSONAppend are defined in memory_store.go
