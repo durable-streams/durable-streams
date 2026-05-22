@@ -10,6 +10,7 @@ This package gives you:
 - Server helpers to write TanStack chunks into Durable Streams
 - Chat-session helpers for echoing user prompts and enforcing JSON stream format
 - Snapshot materialization helpers for SSR hydration + resume offsets
+- Hooks for extending write and read pipelines with custom logic
 
 Use this when you want chat sessions that survive refreshes/reconnects and can be shared across multiple clients.
 
@@ -105,12 +106,13 @@ Creates a TanStack-compatible `connection` object with:
 
 `DurableStreamConnectionOptions`:
 
-- `sendUrl: string` (required) - where `send(...)` POSTs
-- `readUrl?: string` - where `subscribe(...)` reads from (defaults to `sendUrl`)
-- `initialOffset?: string` - initial durable offset for resuming
-- `emitSnapshotOnSubscribe?: boolean` (default `true`) - emit synthetic `MESSAGES_SNAPSHOT` on initial catch-up
-- `headers?: HeadersInit` - applied to both read and write requests
-- `fetchClient?: typeof fetch` - custom fetch implementation
+- `sendUrl: string` (required) — where `send(...)` POSTs
+- `readUrl?: string` — where `subscribe(...)` reads from (defaults to `sendUrl`)
+- `initialOffset?: string` — initial durable offset for resuming
+- `emitSnapshotOnSubscribe?: boolean` (default `true`) — emit synthetic `MESSAGES_SNAPSHOT` on initial catch-up
+- `headers?: HeadersInit` — applied to both read and write requests
+- `fetchClient?: typeof fetch` — custom fetch implementation
+- `onCustomChunk?: CustomChunkHandler` — called for each `CUSTOM` chunk during snapshot materialization; return a modified messages array or `undefined` to skip
 
 Behavior:
 
@@ -127,6 +129,7 @@ Input:
 - `readUrl: string`
 - `headers?: HeadersInit`
 - `offset?: string`
+- `onCustomChunk?: CustomChunkHandler` — called for each `CUSTOM` chunk; return a modified messages array or `undefined` to skip
 
 Returns:
 
@@ -145,10 +148,11 @@ High-level helper for chat session writes.
 `ToDurableChatSessionResponseOptions`:
 
 - `stream: DurableChatSessionStreamTarget` (`writeUrl`, `headers`, `createIfMissing`)
-- `newMessages: DurableSessionMessage[]` - explicitly appended prompt messages
-- `responseStream: AsyncIterable<TanStackChunk>` - model chunk source
+- `newMessages: DurableSessionMessage[]` — explicitly appended prompt messages
+- `responseStream: AsyncIterable<TanStackChunk>` — model chunk source
 - `mode?: "immediate" | "await"` (default `immediate`)
 - `waitUntil?: (promise: Promise<unknown>) => void`
+- `onMessageWritten?: OnMessageWritten` — called after each complete message is written with `{ messageId, role, offset, append, flush }`. When provided, the write pipeline uses an `IdempotentProducer` with per-message flushes for precise offset tracking. The `append` and `flush` callbacks let you write additional data (e.g. `CUSTOM` marker chunks) after each message. Without this hook, chunks are appended directly for lower overhead.
 
 Notes:
 
@@ -203,6 +207,9 @@ Pipes async chunk source with `sanitizeChunkForStorage` applied.
 - `DurableSessionMessage`
 - `DurableSessionMessagePart`
 - `WaitUntil`
+- `OnMessageWritten`
+- `MessageWrittenInfo`
+- `CustomChunkHandler`
 
 ## Response contract
 

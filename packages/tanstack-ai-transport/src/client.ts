@@ -1,6 +1,7 @@
 import { stream } from "@durable-streams/client"
 import type { StreamResponse } from "@durable-streams/client"
 import type {
+  CustomChunkHandler,
   DurableSessionConnection,
   DurableStreamConnection,
   DurableStreamConnectionOptions,
@@ -92,7 +93,8 @@ export function durableStreamConnection(
         if (!hasEmittedSnapshot) {
           snapshotMessages = applyChunksToMessages(
             snapshotMessages,
-            batch.items
+            batch.items,
+            options.onCustomChunk
           )
 
           if (!batch.upToDate) {
@@ -247,7 +249,8 @@ function findLastTextPartIndex(parts: Array<any>): number {
 
 function applyChunksToMessages(
   currentMessages: Array<any>,
-  chunks: ReadonlyArray<TanStackChunk>
+  chunks: ReadonlyArray<TanStackChunk>,
+  onCustomChunk?: CustomChunkHandler
 ): Array<any> {
   let messages = [...currentMessages]
 
@@ -317,6 +320,14 @@ function applyChunksToMessages(
       }
       continue
     }
+
+    if (chunk.type === `CUSTOM` && onCustomChunk) {
+      const result = onCustomChunk(chunk, messages)
+      if (result) {
+        messages = result
+      }
+      continue
+    }
   }
 
   return messages
@@ -341,6 +352,7 @@ export async function materializeSnapshotFromDurableStream(options: {
   readUrl: string
   headers?: HeadersInit
   offset?: string
+  onCustomChunk?: CustomChunkHandler
 }): Promise<{ messages: Array<any>; offset?: string }> {
   const streamResponse = await stream<TanStackChunk>({
     url: options.readUrl,
@@ -351,7 +363,7 @@ export async function materializeSnapshotFromDurableStream(options: {
   })
   const chunks = await streamResponse.json<TanStackChunk>()
   return {
-    messages: applyChunksToMessages([], chunks),
+    messages: applyChunksToMessages([], chunks, options.onCustomChunk),
     offset: streamResponse.offset,
   }
 }

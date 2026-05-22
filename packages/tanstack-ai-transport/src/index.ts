@@ -17,6 +17,7 @@ export {
 } from "./client"
 
 export type {
+  CustomChunkHandler,
   DurableChatSessionStreamTarget,
   DurableSessionConnection,
   DurableSessionMessage,
@@ -24,6 +25,8 @@ export type {
   DurableStreamConnection,
   DurableStreamConnectionOptions,
   DurableStreamTarget,
+  MessageWrittenInfo,
+  OnMessageWritten,
   TanStackChunk,
   ToDurableStreamResponseMode,
   ToDurableChatSessionResponseOptions,

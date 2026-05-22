@@ -20,6 +20,7 @@ export type DurableStreamConnectionOptions = {
   emitSnapshotOnSubscribe?: boolean
   headers?: HeadersInit
   fetchClient?: typeof fetch
+  onCustomChunk?: CustomChunkHandler
 }
 
 export type DurableStreamTarget = {
@@ -58,10 +59,28 @@ export type DurableSessionMessage = {
   parts?: Array<DurableSessionMessagePart>
 }
 
+export type MessageWrittenInfo = {
+  messageId: string
+  role: string
+  offset: string
+  append: (data: string) => void
+  flush: () => Promise<{ offset: string; duplicate: boolean }>
+}
+
+export type OnMessageWritten = (
+  info: MessageWrittenInfo
+) => void | Promise<void>
+
+export type CustomChunkHandler = (
+  chunk: TanStackChunk,
+  messages: Array<any>
+) => Array<any> | undefined | void
+
 export type ToDurableChatSessionResponseOptions = {
   stream: DurableChatSessionStreamTarget
   newMessages: Array<DurableSessionMessage>
   responseStream: AsyncIterable<TanStackChunk>
   mode?: ToDurableStreamResponseMode
   waitUntil?: WaitUntil
+  onMessageWritten?: OnMessageWritten
 }

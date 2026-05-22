@@ -149,6 +149,12 @@ export class IdempotentProducer {
   #closeResult: CloseResult | null = null
   #pendingFinalMessage?: Uint8Array | string
 
+  // Last batch result for flush() return value
+  #lastBatchResult: { offset: Offset; duplicate: boolean } = {
+    offset: ``,
+    duplicate: false,
+  }
+
   // When autoClaim is true, we must wait for the first batch to complete
   // before allowing pipelining (to know what epoch was claimed)
   #epochClaimed: boolean
@@ -310,9 +316,12 @@ export class IdempotentProducer {
   /**
    * Send any pending batch immediately and wait for all in-flight batches.
    *
-   * Call this before shutdown to ensure all messages are delivered.
+   * Returns the acknowledged offset and duplicate status for the last
+   * flushed batch. Use this to capture exact write boundaries.
+   *
+   * @returns The offset and duplicate status of the last batch sent
    */
-  async flush(): Promise<void> {
+  async flush(): Promise<{ offset: Offset; duplicate: boolean }> {
     // Clear linger timeout
     if (this.#lingerTimeout) {
       clearTimeout(this.#lingerTimeout)
@@ -326,6 +335,8 @@ export class IdempotentProducer {
 
     // Wait for queue to drain
     await this.#queue.drained()
+
+    return this.#lastBatchResult
   }
 
   /**
@@ -564,7 +575,8 @@ export class IdempotentProducer {
     const epoch = this.#epoch
 
     try {
-      await this.#doSendBatch(batch, seq, epoch)
+      const result = await this.#doSendBatch(batch, seq, epoch)
+      this.#lastBatchResult = result
 
       // Mark epoch as claimed after first successful batch
       // This enables full pipelining for subsequent batches
