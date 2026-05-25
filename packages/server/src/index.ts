@@ -25,3 +25,17 @@ export type {
   StreamLifecycleEvent,
   StreamLifecycleHook,
 } from "./types"
+export { SubscriptionManager, validateWebhookUrl } from "./subscription-manager"
+export { SubscriptionRoutes } from "./subscription-routes"
+export type {
+  SubscriptionCallbackRequest,
+  SubscriptionCreateInput,
+  SubscriptionError,
+  SubscriptionErrorCode,
+  SubscriptionRecord,
+  SubscriptionStatus,
+  SubscriptionStreamInfo,
+  SubscriptionStreamLink,
+  SubscriptionType,
+} from "./subscription-types"
+export { globMatch } from "./glob"

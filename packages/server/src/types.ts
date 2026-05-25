@@ -206,6 +206,14 @@ export interface TestServerOptions {
    * Default: October 9, 2024 00:00:00 UTC.
    */
   cursorEpoch?: Date
+
+  /**
+   * Enable webhook subscriptions.
+   * Pull-wake subscription routes are always mounted, but type=webhook creates
+   * are rejected unless this is true.
+   * Default: false.
+   */
+  webhooks?: boolean
 }
 
 /**
