@@ -923,7 +923,10 @@ export class FileBackedStreamStore {
         const parts = streamMeta.currentOffset.split(`_`).map(Number)
         const readSeq = parts[0]!
         const byteOffset = parts[1]!
-        const newByteOffset = byteOffset + forkSubOffsetPrefix.length
+        // Match append()'s frame-inclusive offset advance (4-byte length
+        // prefix + payload + 1-byte newline) so reads with a capByte don't
+        // truncate the materialized prefix when later chained-fork resolves.
+        const newByteOffset = byteOffset + forkSubOffsetPrefix.length + 5
         streamMeta.currentOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
         // Persist the user-supplied sub-offset verbatim for idempotent
         // re-creation matching, not the encoded byte length.
