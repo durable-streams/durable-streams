@@ -401,7 +401,10 @@ export class StreamStore {
       const parts = stream.currentOffset.split(`_`).map(Number)
       const readSeq = parts[0]!
       const byteOffset = parts[1]!
-      const newByteOffset = byteOffset + forkSubOffsetPrefix.length
+      // Match append()'s frame-inclusive offset advance (4-byte length
+      // prefix + payload + 1-byte newline) so reads with a capByte don't
+      // truncate the materialized prefix when later chained-fork resolves.
+      const newByteOffset = byteOffset + forkSubOffsetPrefix.length + 5
       const newOffset = `${String(readSeq).padStart(16, `0`)}_${String(newByteOffset).padStart(16, `0`)}`
       stream.messages.push({
         data: forkSubOffsetPrefix,
