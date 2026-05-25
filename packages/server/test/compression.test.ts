@@ -41,7 +41,7 @@ function rawRequest(
           for (const [key, value] of Object.entries(res.headers)) {
             if (typeof value === `string`) {
               headers[key] = value
-            } else if (Array.isArray(value)) {
+            } else if (Array.isArray(value) && value[0] !== undefined) {
               headers[key] = value[0]
             }
           }
