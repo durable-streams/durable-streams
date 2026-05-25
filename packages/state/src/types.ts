@@ -31,6 +31,8 @@ export type ChangeHeaders = {
   operation: Operation
   txid?: string
   timestamp?: string
+  from?: string
+  offset?: string
 }
 
 /**
