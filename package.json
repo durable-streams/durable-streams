@@ -55,5 +55,9 @@
       "prettier --write"
     ]
   },
-  "pnpm": {}
+  "pnpm": {
+    "overrides": {
+      "@tanstack/db": "0.6.0"
+    }
+  }
 }
