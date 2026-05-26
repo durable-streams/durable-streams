@@ -1,5 +1,38 @@
 # @durable-streams/server
 
+## 0.3.3
+
+### Patch Changes
+
+- feat(server): add reserved subscription APIs ([#361](https://github.com/durable-streams/durable-streams/pull/361))
+
+  The protocol now reserves `/v1/stream/__ds/*` for subscription control APIs.
+  The TypeScript server implements webhook and pull-wake subscription lifecycle,
+  stream membership, webhook callback ack, pull-wake claim/ack/release, and JWKS
+  discovery for webhook signature verification.
+
+  The server conformance package now includes opt-in coverage for the reserved
+  subscription APIs.
+
+- fix(server): sign subscription webhooks with discoverable public keys ([#361](https://github.com/durable-streams/durable-streams/pull/361))
+
+  Webhook subscriptions now use Ed25519 request signatures and expose the
+  server's public verification keys from the Durable Streams control namespace,
+  removing the need for receivers to store per-subscription shared secrets.
+
+- fix(server): flatten file-backed stream storage ([#360](https://github.com/durable-streams/durable-streams/pull/360))
+
+  The file-backed store now uses one segment log file per stream instead of a
+  nested per-stream directory, keeps offsets aligned to the actual frame layout,
+  and tightens crash recovery around truncated frames.
+
+  This also adds focused read/create microbench scripts for evaluating the file
+  store path and restores the server package typecheck configuration.
+
+- Updated dependencies [[`feb0c4c`](https://github.com/durable-streams/durable-streams/commit/feb0c4cc7d69278f0f0ed398b3618f74fd1ed24d)]:
+  - @durable-streams/state@0.2.7
+  - @durable-streams/client@0.2.4
+
 ## 0.3.2
 
 ### Patch Changes

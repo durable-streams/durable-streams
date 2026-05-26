@@ -1,5 +1,19 @@
 # @durable-streams/state
 
+## 0.2.7
+
+### Patch Changes
+
+- feat(state): expose StreamDB offsets and subscription hooks ([#365](https://github.com/durable-streams/durable-streams/pull/365))
+
+  StreamDB can now reuse an existing DurableStream instance, expose the latest
+  consumed offset, and notify callers around JSON stream batches. Collection IDs
+  are scoped by stream URL to avoid cross-stream collisions, and live replayed
+  inserts are normalized to updates when they match existing rows.
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.4
+
 ## 0.2.6
 
 ### Patch Changes

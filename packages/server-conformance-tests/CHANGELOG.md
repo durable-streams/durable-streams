@@ -1,5 +1,28 @@
 # @durable-streams/server-conformance-tests
 
+## 0.3.2
+
+### Patch Changes
+
+- feat(server): add reserved subscription APIs ([#361](https://github.com/durable-streams/durable-streams/pull/361))
+
+  The protocol now reserves `/v1/stream/__ds/*` for subscription control APIs.
+  The TypeScript server implements webhook and pull-wake subscription lifecycle,
+  stream membership, webhook callback ack, pull-wake claim/ack/release, and JWKS
+  discovery for webhook signature verification.
+
+  The server conformance package now includes opt-in coverage for the reserved
+  subscription APIs.
+
+- fix(server): sign subscription webhooks with discoverable public keys ([#361](https://github.com/durable-streams/durable-streams/pull/361))
+
+  Webhook subscriptions now use Ed25519 request signatures and expose the
+  server's public verification keys from the Durable Streams control namespace,
+  removing the need for receivers to store per-subscription shared secrets.
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.4
+
 ## 0.3.1
 
 ### Patch Changes
