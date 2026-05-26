@@ -852,7 +852,14 @@ export function createStreamDB<
   } = options
 
   // Reuse provided stream or create a new one
-  const stream = options.stream ?? new DurableStreamClass(streamOptions!)
+  const stream =
+    options.stream ??
+    (() => {
+      if (!streamOptions) {
+        throw new Error(`createStreamDB requires stream or streamOptions`)
+      }
+      return new DurableStreamClass(streamOptions)
+    })()
 
   // Create the event dispatcher
   const dispatcher = new EventDispatcher()
