@@ -148,6 +148,7 @@ export class IdempotentProducer {
   #closed = false
   #closeResult: CloseResult | null = null
   #pendingFinalMessage?: Uint8Array | string
+  #lastSuccessfulOffset: Offset | undefined
 
   // When autoClaim is true, we must wait for the first batch to complete
   // before allowing pipelining (to know what epoch was claimed)
@@ -443,6 +444,7 @@ export class IdempotentProducer {
       // Only increment seq on success (retry-safe)
       this.#nextSeq = seqForThisRequest + 1
       const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
+      this.#recordSuccessfulOffset(finalOffset)
       return { finalOffset }
     }
 
@@ -451,6 +453,7 @@ export class IdempotentProducer {
       // Only increment seq on success (retry-safe)
       this.#nextSeq = seqForThisRequest + 1
       const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
+      this.#recordSuccessfulOffset(finalOffset)
       return { finalOffset }
     }
 
@@ -520,6 +523,14 @@ export class IdempotentProducer {
     return this.#queue.length()
   }
 
+  /**
+   * The greatest non-empty stream offset returned by a successful producer
+   * append or close request.
+   */
+  get lastSuccessfulOffset(): Offset | undefined {
+    return this.#lastSuccessfulOffset
+  }
+
   // ============================================================================
   // Private implementation
   // ============================================================================
@@ -564,7 +575,8 @@ export class IdempotentProducer {
     const epoch = this.#epoch
 
     try {
-      await this.#doSendBatch(batch, seq, epoch)
+      const result = await this.#doSendBatch(batch, seq, epoch)
+      this.#recordSuccessfulOffset(result.offset)
 
       // Mark epoch as claimed after first successful batch
       // This enables full pipelining for subsequent batches
@@ -583,6 +595,15 @@ export class IdempotentProducer {
         this.#onError(error as Error)
       }
       throw error
+    }
+  }
+
+  #recordSuccessfulOffset(offset: Offset | undefined): void {
+    if (
+      offset &&
+      (!this.#lastSuccessfulOffset || offset > this.#lastSuccessfulOffset)
+    ) {
+      this.#lastSuccessfulOffset = offset
     }
   }
 
