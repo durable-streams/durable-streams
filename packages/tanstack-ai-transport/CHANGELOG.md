@@ -1,5 +1,12 @@
 # @durable-streams/tanstack-ai-transport
 
+## 0.0.7
+
+### Patch Changes
+
+- Updated dependencies [[`6afab5f`](https://github.com/durable-streams/durable-streams/commit/6afab5f8258999ff1794749ad9d0d9bd0c823625)]:
+  - @durable-streams/client@0.2.5
+
 ## 0.0.6
 
 ### Patch Changes

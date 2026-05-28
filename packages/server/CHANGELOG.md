@@ -1,5 +1,20 @@
 # @durable-streams/server
 
+## 0.3.4
+
+### Patch Changes
+
+- Restore the TypeScript client surface expected by Durable Streams consumers: ([#369](https://github.com/durable-streams/durable-streams/pull/369))
+  publish the SSE control-event constants from the package entrypoint and expose
+  `IdempotentProducer.lastSuccessfulOffset` after successful writes or closes.
+
+  Republish the server against the fixed client package so `DurableStreamTestServer`
+  can import the SSE constants from `@durable-streams/client`.
+
+- Updated dependencies [[`6afab5f`](https://github.com/durable-streams/durable-streams/commit/6afab5f8258999ff1794749ad9d0d9bd0c823625)]:
+  - @durable-streams/client@0.2.5
+  - @durable-streams/state@0.2.8
+
 ## 0.3.3
 
 ### Patch Changes
