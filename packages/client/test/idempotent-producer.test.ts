@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest"
 import {
+  PRODUCER_SEQ_HEADER,
   SSE_CLOSED_FIELD,
   SSE_CURSOR_FIELD,
   SSE_OFFSET_FIELD,
@@ -111,6 +112,60 @@ describe(`IdempotentProducer`, () => {
     )
     await flushed
 
+    expect(producer.lastSuccessfulOffset).toBe(offset(0, 10))
+  })
+
+  it(`waits for the first auto-claiming batch before sending later batches`, async () => {
+    let resolveFirst: ((response: Response) => void) | undefined
+    const first = new Promise<Response>((resolve) => {
+      resolveFirst = resolve
+    })
+    const mockFetch = vi
+      .fn()
+      .mockReturnValueOnce(first)
+      .mockResolvedValueOnce(
+        new Response(null, {
+          status: 200,
+          headers: { [STREAM_OFFSET_HEADER]: offset(0, 10) },
+        })
+      )
+    const stream = new DurableStream({
+      url: `https://example.com/stream`,
+      contentType: `text/plain`,
+    })
+    const producer = new IdempotentProducer(stream, `test-producer`, {
+      autoClaim: true,
+      fetch: mockFetch,
+      maxBatchBytes: 1,
+    })
+
+    producer.append(`a`)
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1))
+    producer.append(`b`)
+    let flushResolved = false
+    const flushed = producer.flush().then(() => {
+      flushResolved = true
+    })
+    await Promise.resolve()
+
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+    expect(flushResolved).toBe(false)
+
+    resolveFirst!(
+      new Response(null, {
+        status: 200,
+        headers: { [STREAM_OFFSET_HEADER]: offset(0, 5) },
+      })
+    )
+    await flushed
+
+    expect(mockFetch).toHaveBeenCalledTimes(2)
+    expect(
+      new Headers(mockFetch.mock.calls[0]![1]?.headers).get(PRODUCER_SEQ_HEADER)
+    ).toBe(`0`)
+    expect(
+      new Headers(mockFetch.mock.calls[1]![1]?.headers).get(PRODUCER_SEQ_HEADER)
+    ).toBe(`1`)
     expect(producer.lastSuccessfulOffset).toBe(offset(0, 10))
   })
 

@@ -145,6 +145,7 @@ export class IdempotentProducer {
   // Pipelining via fastq
   readonly #queue: queueAsPromised<BatchTask>
   readonly #maxInFlight: number
+  readonly #deferredEnqueues = new Set<Promise<void>>()
   #closed = false
   #closeResult: CloseResult | null = null
   #pendingFinalMessage?: Uint8Array | string
@@ -325,8 +326,12 @@ export class IdempotentProducer {
       this.#enqueuePendingBatch()
     }
 
-    // Wait for queue to drain
-    await this.#queue.drained()
+    // Wait for the queue and any batches deferred behind the auto-claim
+    // barrier. A deferred enqueue can push more queue work after a drain.
+    do {
+      await this.#queue.drained()
+      await Promise.all(this.#deferredEnqueues)
+    } while (this.#deferredEnqueues.size > 0 || this.inFlightCount > 0)
   }
 
   /**
@@ -520,7 +525,7 @@ export class IdempotentProducer {
    * Number of batches currently in flight.
    */
   get inFlightCount(): number {
-    return this.#queue.length()
+    return this.#queue.length() + this.#queue.running()
   }
 
   /**
@@ -543,28 +548,39 @@ export class IdempotentProducer {
 
     // Take the current batch
     const batch = this.#pendingBatch
-    const seq = this.#nextSeq
-
     this.#pendingBatch = []
     this.#batchBytes = 0
-    this.#nextSeq++
 
     // When autoClaim is enabled and epoch hasn't been claimed yet,
     // we must wait for any in-flight batch to complete before sending more.
     // This ensures the first batch claims the epoch before pipelining begins.
-    if (this.#autoClaim && !this.#epochClaimed && this.#queue.length() > 0) {
-      // Wait for queue to drain, then push
-      this.#queue.drained().then(() => {
-        this.#queue.push({ batch, seq }).catch(() => {
-          // Error handling is done in #batchWorker
+    if (this.#autoClaim && !this.#epochClaimed && this.inFlightCount > 0) {
+      // Wait for queue to drain, then reserve the next sequence number. Do not
+      // reserve the sequence before the first auto-claiming batch can reset it.
+      const deferred = this.#queue
+        .drained()
+        .then(() => {
+          this.#pushBatch(batch)
         })
+        .finally(() => {
+          this.#deferredEnqueues.delete(deferred)
+        })
+      this.#deferredEnqueues.add(deferred)
+      deferred.catch(() => {
+        // Error handling is done by the queue and flush awaits this promise.
       })
     } else {
       // Push to fastq - it handles concurrency automatically
-      this.#queue.push({ batch, seq }).catch(() => {
-        // Error handling is done in #batchWorker
-      })
+      this.#pushBatch(batch)
     }
+  }
+
+  #pushBatch(batch: Array<PendingEntry>): void {
+    const seq = this.#nextSeq
+    this.#nextSeq++
+    this.#queue.push({ batch, seq }).catch(() => {
+      // Error handling is done in #batchWorker
+    })
   }
 
   /**
