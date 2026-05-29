@@ -94,7 +94,7 @@ export default defineConfig({
           },
           {
             text: "livetrace",
-            link: "https://livetrace.necmttn.com/durable-streams",
+            link: "https://livetrace.necmttn.com/docs/integrations/durable-streams",
           },
         ],
       },
