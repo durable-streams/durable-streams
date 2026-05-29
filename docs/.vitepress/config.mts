@@ -92,6 +92,10 @@ export default defineConfig({
             text: "AnyCable",
             link: "https://docs.anycable.io/anycable-go/durable_streams",
           },
+          {
+            text: "livetrace",
+            link: "https://livetrace.necmttn.com/docs/integrations/durable-streams",
+          },
         ],
       },
       {
