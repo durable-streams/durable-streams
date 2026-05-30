@@ -19,18 +19,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           fetch-depth: 0
 
       - name: Setup pnpm
-        uses: pnpm/action-setup@v4
+        uses: pnpm/action-setup@f40ffcd9367d9f12939873eb1018b921a783ffaa
 
       - name: Setup Node.js
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
-          cache: pnpm
           registry-url: "https://registry.npmjs.org"
 
       # Workaround for npm/cli#9151: Node 22.22.2 ships npm 10.9.7 which
@@ -54,7 +53,7 @@ jobs:
 
       - name: Create Release Pull Request or Publish to npm
         id: changesets
-        uses: changesets/action@v1.5.3
+        uses: changesets/action@8eb63fb4cfc7f9643537c7d39d0b68c835012a19
         with:
           version: pnpm run changeset:version
           publish: pnpm run changeset:publish
@@ -65,6 +64,6 @@ jobs:
 
       - name: Comment on PRs about release
         if: steps.changesets.outputs.published == 'true'
-        uses: tanstack/config/.github/comment-on-release@main
+        uses: tanstack/config/.github/comment-on-release@a4c6d06ed525a310901e3e9fbed9b2301ebecfd5
         with:
           published-packages: ${{ steps.changesets.outputs.publishedPackages }}
