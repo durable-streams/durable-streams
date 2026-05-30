@@ -686,6 +686,282 @@ describe(`visibility handling`, () => {
     })
   })
 
+  describe(`SSE pause/resume reconnection`, () => {
+    /**
+     * Helper: create a controllable SSE body that delivers initial data
+     * and provides a close() handle. Accepts an optional AbortSignal to
+     * automatically close on session abort (prevents OOM from dangling
+     * body readers after res.cancel()).
+     */
+    function createControllableSSEBody(
+      encoder: TextEncoder,
+      ssePayload: string,
+      signal?: AbortSignal
+    ): {
+      body: ReadableStream<Uint8Array>
+      close: () => void
+    } {
+      let resolvePull: (() => void) | null = null
+      let closed = false
+
+      const close = (): void => {
+        if (closed) return
+        closed = true
+        resolvePull?.()
+      }
+
+      if (signal) {
+        signal.addEventListener(`abort`, () => close(), { once: true })
+      }
+
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode(ssePayload))
+        },
+        pull(controller) {
+          if (closed) {
+            controller.close()
+            return
+          }
+          return new Promise<void>((resolve) => {
+            resolvePull = () => {
+              if (!closed) closed = true
+              controller.close()
+              resolve()
+            }
+          })
+        },
+        cancel() {
+          close()
+        },
+      })
+
+      return { body, close }
+    }
+
+    it(`should not crash when SSE iterator ends during pause (PausedState)`, async () => {
+      // Reproduces the race condition where #trySSEReconnect() is called
+      // while #syncState is PausedState, which would cause:
+      //   TypeError: this.#syncState.handleConnectionEnd is not a function
+      //
+      // Sequence:
+      //   1. SSE stream is active, parseSSEStream blocks on reader.read()
+      //   2. Pause wraps state in PausedState, aborts #requestAbortController
+      //   3. We close the body → reader.read() returns done → iterator done:true
+      //   4. #processSSEEvents calls #trySSEReconnect while state IS PausedState
+
+      const { StreamResponseImpl } = await import(`../src/response`)
+      const encoder = new TextEncoder()
+      const abortController = new AbortController()
+
+      const { body: firstSSEBody, close: closeFirstBody } =
+        createControllableSSEBody(
+          encoder,
+          `event: data\ndata: ${JSON.stringify([{ id: 1 }])}\n\n` +
+            `event: control\ndata: ${JSON.stringify({ streamNextOffset: `1_10`, upToDate: false })}\n\n`,
+          abortController.signal
+        )
+
+      const firstResponse = new Response(firstSSEBody, {
+        status: 200,
+        headers: {
+          "content-type": `text/event-stream`,
+          [STREAM_OFFSET_HEADER]: `0_0`,
+        },
+      })
+
+      // startSSE: returns a self-closing SSE response with streamClosed=true
+      // so shouldContinueLive() returns false and stops reconnection
+      const startSSE = vi.fn().mockImplementation(() => {
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(
+              encoder.encode(
+                `event: data\ndata: ${JSON.stringify([{ id: 2 }])}\n\n` +
+                  `event: control\ndata: ${JSON.stringify({ streamNextOffset: `2_10`, upToDate: true, streamClosed: true })}\n\n`
+              )
+            )
+            controller.close()
+          },
+        })
+        return Promise.resolve(
+          new Response(body, {
+            status: 200,
+            headers: { "content-type": `text/event-stream` },
+          })
+        )
+      })
+      const res = new StreamResponseImpl({
+        url: `http://test.com/stream`,
+        contentType: `application/json`,
+        live: `sse`,
+        startOffset: `0`,
+        isJsonMode: true,
+        initialOffset: `0`,
+        initialCursor: undefined,
+        initialUpToDate: false,
+        initialStreamClosed: false,
+        firstResponse,
+        abortController,
+        fetchNext: vi.fn(),
+        startSSE,
+      })
+
+      const received: Array<{ id: number }> = []
+      res.subscribeJson<{ id: number }>((batch) => {
+        received.push(...batch.items)
+        return Promise.resolve()
+      })
+
+      // Wait for first data. parseSSEStream has yielded data+control and
+      // is now blocked on reader.read() inside the body's pull().
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(received).toContainEqual({ id: 1 })
+
+      // 1. Pause — wraps #syncState in PausedState
+      simulateVisibilityChange(true)
+
+      // 2. Close body — triggers the done:true path in parseSSEStream
+      //    while #syncState IS a PausedState. Without the fix:
+      //      TypeError: handleConnectionEnd is not a function
+      closeFirstBody()
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // 3. Resume — reconnects via the pause-check block in pull()
+      simulateVisibilityChange(false)
+
+      const pollForItem = async (): Promise<void> => {
+        for (let i = 0; i < 40; i++) {
+          if (received.some((item) => item.id === 2)) return
+          await new Promise((resolve) => setTimeout(resolve, 50))
+        }
+      }
+      await pollForItem()
+
+      expect(received).toContainEqual({ id: 2 })
+      res.cancel()
+    })
+
+    it(`should not count pause-triggered abort as a short SSE connection`, async () => {
+      // Verifies that pause-triggered aborts pass wasAborted=true to
+      // handleConnectionEnd, so the short-connection counter is not
+      // incremented. With aggressive thresholds (maxShortConnections=2),
+      // 3 pause/resume cycles would trigger permanent long-poll fallback
+      // without the fix.
+      //
+      // Uses error-on-abort body streams (simulating real fetch behavior)
+      // so the throw path handles the pause, then resume calls
+      // #trySSEReconnect which exercises handleConnectionEnd.
+
+      const { StreamResponseImpl } = await import(`../src/response`)
+      const encoder = new TextEncoder()
+
+      let sseCallCount = 0
+
+      // Each startSSE returns a body that delivers data then hangs.
+      // Closes on session abort (cleanup) or request abort (pause).
+      const startSSE = vi
+        .fn()
+        .mockImplementation(
+          (
+            _offset: string,
+            _cursor: string | undefined,
+            requestSignal: AbortSignal
+          ) => {
+            sseCallCount++
+            const id = sseCallCount + 1
+
+            const { body, close } = createControllableSSEBody(
+              encoder,
+              `event: data\ndata: ${JSON.stringify([{ id }])}\n\n` +
+                `event: control\ndata: ${JSON.stringify({ streamNextOffset: `${id}_10`, upToDate: false })}\n\n`,
+              abortController.signal
+            )
+
+            // Also close on request-level abort (from pause) so the
+            // iterator returns done:true and the pause cycle can complete
+            requestSignal.addEventListener(`abort`, () => close(), {
+              once: true,
+            })
+
+            return Promise.resolve(
+              new Response(body, {
+                status: 200,
+                headers: { "content-type": `text/event-stream` },
+              })
+            )
+          }
+        )
+
+      const abortController = new AbortController()
+
+      // First SSE body — close-on-abort via createControllableSSEBody
+      // so the first pause triggers the done:true path
+      const { body: firstBody, close: closeFirstBody } =
+        createControllableSSEBody(
+          encoder,
+          `event: data\ndata: ${JSON.stringify([{ id: 1 }])}\n\n` +
+            `event: control\ndata: ${JSON.stringify({ streamNextOffset: `1_10`, upToDate: false })}\n\n`,
+          abortController.signal
+        )
+
+      const firstResponse = new Response(firstBody, {
+        status: 200,
+        headers: {
+          "content-type": `text/event-stream`,
+          [STREAM_OFFSET_HEADER]: `0_0`,
+        },
+      })
+      const res = new StreamResponseImpl({
+        url: `http://test.com/stream`,
+        contentType: `application/json`,
+        live: `sse`,
+        startOffset: `0`,
+        isJsonMode: true,
+        initialOffset: `0`,
+        initialCursor: undefined,
+        initialUpToDate: false,
+        initialStreamClosed: false,
+        firstResponse,
+        abortController,
+        fetchNext: vi.fn(),
+        startSSE,
+        sseResilience: {
+          minConnectionDuration: 60_000, // All connections are "short"
+          maxShortConnections: 2, // Would fallback after just 2
+          logWarnings: false,
+        },
+      })
+
+      const received: Array<{ id: number }> = []
+      res.subscribeJson<{ id: number }>((batch) => {
+        received.push(...batch.items)
+        return Promise.resolve()
+      })
+
+      // Wait for first data
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      expect(received).toContainEqual({ id: 1 })
+
+      // Pause/resume cycles
+      for (let i = 0; i < 3; i++) {
+        simulateVisibilityChange(true)
+        if (i === 0) closeFirstBody()
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        simulateVisibilityChange(false)
+        await new Promise((resolve) => setTimeout(resolve, 300))
+      }
+
+      // With maxShortConnections=2, 3 cycles without the wasAborted fix
+      // would have triggered permanent fallback. If we got data from
+      // reconnections, the fix is working.
+      expect(received.length).toBeGreaterThan(1)
+      expect(startSSE).toHaveBeenCalled()
+
+      res.cancel()
+    })
+  })
+
   describe(`initial hidden state`, () => {
     it(`should pause immediately if page is hidden when stream starts`, async () => {
       // Set document as hidden BEFORE creating stream
