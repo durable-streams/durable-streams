@@ -1676,55 +1676,6 @@ func handleValidate(_ cmd: Command) async -> Result {
 
         return Result(type: "validate", success: true)
 
-    case "retry-options":
-        // Validate RetryOptions configuration
-        let maxRetries = target.maxRetries ?? 3
-        let initialDelayMs = target.initialDelayMs ?? 100
-        let maxDelayMs = target.maxDelayMs ?? 5000
-        let multiplier = target.multiplier ?? 2.0
-
-        if maxRetries < 0 {
-            return Result(
-                type: "error",
-                success: false,
-                commandType: "validate",
-                errorCode: "INVALID_ARGUMENT",
-                message: "maxRetries must be non-negative"
-            )
-        }
-
-        if initialDelayMs <= 0 {
-            return Result(
-                type: "error",
-                success: false,
-                commandType: "validate",
-                errorCode: "INVALID_ARGUMENT",
-                message: "initialDelayMs must be positive"
-            )
-        }
-
-        if maxDelayMs < initialDelayMs {
-            return Result(
-                type: "error",
-                success: false,
-                commandType: "validate",
-                errorCode: "INVALID_ARGUMENT",
-                message: "maxDelayMs must be >= initialDelayMs"
-            )
-        }
-
-        if multiplier < 1.0 {
-            return Result(
-                type: "error",
-                success: false,
-                commandType: "validate",
-                errorCode: "INVALID_ARGUMENT",
-                message: "multiplier must be >= 1.0"
-            )
-        }
-
-        return Result(type: "validate", success: true)
-
     default:
         return Result(
             type: "error",
