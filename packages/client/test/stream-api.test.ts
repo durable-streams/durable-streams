@@ -1261,7 +1261,8 @@ describe(`fast-loop integration with stream`, () => {
     expect(urlsWithCacheBuster.length).toBeGreaterThan(0)
 
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining(`fast retry loop`)
+      expect.stringContaining(`fast retry loop`),
+      expect.any(Error)
     )
 
     warnSpy.mockRestore()

@@ -954,7 +954,8 @@ export class StreamResponseImpl<
                   break
                 case `clear-and-reset`:
                   console.warn(
-                    `[durable-streams] Detected fast retry loop. Adding cache buster.`
+                    `[durable-streams] Detected fast retry loop. Adding cache buster.`,
+                    new Error(`stack trace`)
                   )
                   this.#syncState = new StaleRetryState(
                     {
