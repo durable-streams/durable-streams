@@ -194,6 +194,7 @@ class TestStreamBasicFunctionality:
             stream(
                 "https://example.com/stream",
                 client=mock_client,
+                offset="1_0",
                 live="long-poll",
             )
 

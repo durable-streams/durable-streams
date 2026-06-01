@@ -279,7 +279,11 @@ async def _astream_internal(
 
     # Never set live on the initial request — catch-up responses without live
     # are cacheable by CDNs/browsers. Live mode activates only after catching up.
+    # If a concrete resume offset is provided for explicit long-poll, the request
+    # is already a live resume and must receive live-response cursor validation.
     is_sse = live == "sse"
+    if live == "long-poll" and offset not in (None, "now"):
+        query_params[LIVE_QUERY_PARAM] = "long-poll"
 
     if cursor:
         query_params[CURSOR_QUERY_PARAM] = cursor
@@ -334,7 +338,7 @@ async def _astream_internal(
             validate_response_headers(
                 headers_dict,
                 request_url,
-                require_cursor=live in ("long-poll", "sse"),
+                require_cursor=live == "long-poll" and offset not in (None, "now"),
             )
 
             break
