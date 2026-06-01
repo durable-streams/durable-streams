@@ -183,7 +183,11 @@ def _stream_internal(
                 raise error
 
             headers_dict = parse_httpx_headers(response.headers)
-            validate_response_headers(headers_dict, request_url)
+            validate_response_headers(
+                headers_dict,
+                request_url,
+                require_cursor=live in ("long-poll", "sse"),
+            )
 
             break
 

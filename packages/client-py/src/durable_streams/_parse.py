@@ -81,13 +81,17 @@ def parse_response_headers(headers: dict[str, str]) -> ResponseMetadata:
     )
 
 
-def validate_response_headers(headers: dict[str, str], request_url: str) -> None:
+def validate_response_headers(
+    headers: dict[str, str], request_url: str, *, require_cursor: bool = False
+) -> None:
     """
     Validate that required protocol headers are present on a successful response.
 
     `Stream-Next-Offset` is always required for successful GET responses.
     `Stream-Cursor` is required for explicit live requests unless the response
-    marks the stream as closed.
+    marks the stream as closed. Callers may pass `require_cursor=True` when the
+    logical request is live but the wire request intentionally omits `live` for
+    cacheable catch-up.
     """
 
     lower_headers = {k.lower(): v for k, v in headers.items()}
@@ -102,7 +106,7 @@ def validate_response_headers(headers: dict[str, str], request_url: str) -> None
         lower_headers.get(STREAM_CLOSED_HEADER.lower(), "").lower() == "true"
     )
     if (
-        live_param is not None
+        (require_cursor or live_param is not None)
         and not stream_closed
         and STREAM_CURSOR_HEADER.lower() not in lower_headers
     ):
