@@ -189,7 +189,16 @@ async function streamInternal<TJson = unknown>(
 
   // Never set live on the initial request — catch-up responses without live
   // are cacheable by CDNs/browsers. Live mode activates only after catching up.
+  // If a concrete resume offset is provided for explicit long-poll, the request
+  // is already a live resume and must receive live-response cursor validation.
   const live: LiveMode = options.live ?? true
+  if (
+    live === `long-poll` &&
+    options.offset !== undefined &&
+    options.offset !== `now`
+  ) {
+    fetchUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
+  }
 
   // Add custom params
   const params = await resolveParams(options.params)
