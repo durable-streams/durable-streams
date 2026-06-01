@@ -3,9 +3,10 @@
  * General correctness tests are in the conformance suite.
  */
 
-import * as fs from "node:fs"
+import fs from "node:fs"
 import * as path from "node:path"
 import { tmpdir } from "node:os"
+import { syncBuiltinESMExports } from "node:module"
 import { afterEach, beforeEach, describe, expect, test } from "vitest"
 import {
   DurableStreamTestServer,
@@ -322,6 +323,36 @@ describe(`Recovery and Crash Consistency`, () => {
     expect(decode(messages[0]!.data)).toBe(`persisted message`)
 
     await server2.stop()
+  })
+
+  test(`should not commit a sub-offset fork when prefix fsync fails`, async () => {
+    server.store.create(`/source`, { contentType: `text/plain` })
+    await server.store.append(`/source`, encode(`hello`))
+
+    const originalFsyncSync = fs.fsyncSync
+    fs.fsyncSync = () => {
+      throw new Error(`fsync failed intentionally`)
+    }
+    syncBuiltinESMExports()
+
+    try {
+      await expect(
+        server.store.create(`/fork`, {
+          contentType: `text/plain`,
+          forkedFrom: `/source`,
+          forkOffset: `0000000000000000_0000000000000000`,
+          forkSubOffset: 3,
+        })
+      ).rejects.toThrow(`fsync failed intentionally`)
+    } finally {
+      fs.fsyncSync = originalFsyncSync
+      syncBuiltinESMExports()
+    }
+
+    expect(server.store.has(`/fork`)).toBe(false)
+
+    const sourceMeta = (server.store as any).db.get(`stream:/source`)
+    expect(sourceMeta.refCount ?? 0).toBe(0)
   })
 })
 

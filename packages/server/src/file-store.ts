@@ -907,10 +907,8 @@ export class FileBackedStreamStore {
     try {
       // Materialize the sub-offset prefix as the first framed message
       // in the new segment before persisting metadata or opening the
-      // write stream — `openWriteStream` opens with `flags: 'a'` so a
-      // pre-existing file is appended to, not truncated. We also
-      // advance `currentOffset` and stamp `forkSubOffset` so the
-      // metadata written below reflects the post-prefix state.
+      // write stream. The prefix must be fsynced before the LMDB commit
+      // so metadata never acknowledges bytes that are not durable.
       if (forkSubOffsetPrefix && forkSubOffsetPrefix.length > 0) {
         const lengthBuf = Buffer.allocUnsafe(4)
         lengthBuf.writeUInt32BE(forkSubOffsetPrefix.length, 0)
@@ -919,7 +917,28 @@ export class FileBackedStreamStore {
           Buffer.from(forkSubOffsetPrefix),
           Buffer.from(`\n`),
         ])
-        fs.writeFileSync(segmentPath, frameBuf)
+
+        const fd = fs.openSync(segmentPath, `wx`)
+        try {
+          let written = 0
+          while (written < frameBuf.length) {
+            const bytesWritten = fs.writeSync(
+              fd,
+              frameBuf,
+              written,
+              frameBuf.length - written,
+              written
+            )
+            if (bytesWritten === 0) {
+              throw new Error(`failed to write sub-offset prefix frame`)
+            }
+            written += bytesWritten
+          }
+          fs.fsyncSync(fd)
+        } finally {
+          fs.closeSync(fd)
+        }
+
         const parts = streamMeta.currentOffset.split(`_`).map(Number)
         const readSeq = parts[0]!
         const byteOffset = parts[1]!
@@ -947,7 +966,7 @@ export class FileBackedStreamStore {
         }
       }
       serverLog.error(
-        `[FileBackedStreamStore] Error creating stream (LMDB put):`,
+        `[FileBackedStreamStore] Error creating stream before metadata commit:`,
         err
       )
       throw err
