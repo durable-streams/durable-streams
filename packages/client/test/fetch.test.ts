@@ -149,6 +149,27 @@ describe(`createFetchWithBackoff`, () => {
     expect(mockFetchClient).toHaveBeenCalledTimes(1)
   })
 
+  it(`should not issue another fetch when aborted during backoff sleep`, async () => {
+    const mockAbortController = new AbortController()
+    const signal = mockAbortController.signal
+    mockFetchClient.mockResolvedValue(new Response(null, { status: 503 }))
+
+    const fetchWithBackoff = createFetchWithBackoff(mockFetchClient, {
+      initialDelay: 1000,
+      maxDelay: 1000,
+      multiplier: 1,
+      maxRetries: 5,
+    })
+
+    setTimeout(() => mockAbortController.abort(), 5)
+
+    await expect(
+      fetchWithBackoff(`https://example.com`, { signal })
+    ).rejects.toThrow(FetchBackoffAbortError)
+
+    expect(mockFetchClient).toHaveBeenCalledTimes(1)
+  })
+
   it(`should not retry when a client error (4xx) occurs`, async () => {
     const mockErrorResponse = new Response(null, {
       status: 403,
@@ -499,6 +520,24 @@ describe(`createFetchWithResponseHeadersCheck`, () => {
 
     expect(result).toBe(mockResponse)
     expect(result.status).toBe(404)
+  })
+
+  it(`should validate live headers when input is a Request object`, async () => {
+    const mockResponse = new Response(`data`, {
+      status: 200,
+      headers: {
+        [STREAM_OFFSET_HEADER]: `1`,
+        [STREAM_CURSOR_HEADER]: `cursor-1`,
+      },
+    })
+    mockFetch.mockResolvedValue(mockResponse)
+
+    const checkedFetch = createFetchWithResponseHeadersCheck(mockFetch)
+    const result = await checkedFetch(
+      new Request(`http://example.com?offset=0&live=long-poll`)
+    )
+
+    expect(result).toBe(mockResponse)
   })
 })
 

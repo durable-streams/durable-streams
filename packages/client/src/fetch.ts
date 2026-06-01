@@ -240,17 +240,11 @@ export function createFetchWithBackoff(
           }
 
           // Wait for the calculated duration (cancellable via abort signal)
-          await new Promise<void>((resolve) => {
-            const timer = setTimeout(resolve, waitMs)
-            options?.signal?.addEventListener(
-              `abort`,
-              () => {
-                clearTimeout(timer)
-                resolve()
-              },
-              { once: true }
-            )
-          })
+          if (options?.signal) {
+            await sleepWithAbort(waitMs, options.signal)
+          } else {
+            await new Promise<void>((resolve) => setTimeout(resolve, waitMs))
+          }
 
           // Increase the delay for the next attempt (capped at maxDelay)
           delay = Math.min(delay * multiplier, maxDelay)
@@ -329,7 +323,7 @@ export function createFetchWithResponseHeadersCheck(
     const res = await fetchClient(...args)
     if (res.status < 200 || res.status >= 300) return res
 
-    const url = args[0].toString()
+    const url = getRequestUrl(args[0])
     const missing: Array<string> = []
 
     if (!res.headers.has(STREAM_OFFSET_HEADER)) {
@@ -606,18 +600,11 @@ export function createFetchWithChunkBuffer(
     }
 
     const prefetched = queue.consume(...args)
-    let response: Response
-    if (prefetched) {
-      const prefetchedResponse = await prefetched
-      // If prefetch failed, fall back to fresh fetch
-      if (!prefetchedResponse.ok) {
-        response = await fetchClient(...args)
-      } else {
-        response = prefetchedResponse
-      }
-    } else {
-      response = await fetchClient(...args)
-    }
+    const prefetchedResponse = prefetched ? await prefetched : undefined
+    // Use prefetched response if available and successful, otherwise fetch fresh
+    const response = prefetchedResponse?.ok
+      ? prefetchedResponse
+      : await fetchClient(...args)
 
     const requestUrl = new URL(url)
     const nextUrl = getNextChunkUrl(requestUrl, response)

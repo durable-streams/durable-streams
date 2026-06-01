@@ -82,6 +82,31 @@ describe(`stream() function`, () => {
       )
     })
 
+    it(`should include live=long-poll on initial resumed long-poll request`, async () => {
+      mockFetch.mockResolvedValue(
+        new Response(`data`, {
+          status: 200,
+          headers: {
+            [STREAM_OFFSET_HEADER]: `2_10`,
+            [STREAM_CURSOR_HEADER]: `cursor_1`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        offset: `1_5`,
+        live: `long-poll`,
+      })
+
+      expect(mockFetch).toHaveBeenCalledWith(
+        `https://example.com/stream?offset=1_5&live=long-poll`,
+        expect.anything()
+      )
+    })
+
     it(`should set live query param for explicit modes`, async () => {
       mockFetch.mockResolvedValue(
         new Response(`data`, {
