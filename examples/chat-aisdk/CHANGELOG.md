@@ -1,5 +1,12 @@
 # @durable-streams/example-chat-aisdk
 
+## 0.0.6
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @durable-streams/aisdk-transport@0.0.7
+
 ## 0.0.5
 
 ### Patch Changes

@@ -1,5 +1,16 @@
 # @durable-streams/state
 
+## 0.2.9
+
+### Patch Changes
+
+- Fix idempotent producer auto-claim sequencing so later batches wait for the ([#371](https://github.com/durable-streams/durable-streams/pull/371))
+  first running batch to claim its epoch before reserving and sending subsequent
+  sequence numbers. `flush()` now also waits for batches held behind the initial
+  auto-claim barrier.
+- Updated dependencies [[`92c0821`](https://github.com/durable-streams/durable-streams/commit/92c082152f7be8327f0c055d8b224494e5e71f76)]:
+  - @durable-streams/client@0.2.6
+
 ## 0.2.8
 
 ### Patch Changes
