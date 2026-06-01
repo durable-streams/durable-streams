@@ -51,12 +51,12 @@ type Chunk struct {
 //
 // Always call Close() when done to release resources.
 type ChunkIterator struct {
-	stream   *Stream
-	ctx      context.Context
-	cancel   context.CancelFunc
-	offset   Offset
-	live     LiveMode
-	cursor   string
+	stream  *Stream
+	ctx     context.Context
+	cancel  context.CancelFunc
+	offset  Offset
+	live    LiveMode
+	cursor  string
 	headers map[string]string
 	timeout time.Duration
 
@@ -154,6 +154,10 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		case LiveModeLongPoll, LiveModeSSE:
 			liveForRequest = LiveModeLongPoll
 		}
+	} else if it.live == LiveModeLongPoll && !it.offset.IsStart() && it.offset != Offset("now") {
+		// A concrete offset with explicit long-poll is a resumed live request.
+		// Include live on the wire so missing Stream-Cursor is validated.
+		liveForRequest = LiveModeLongPoll
 	}
 	readURL := it.stream.buildReadURL(it.offset, liveForRequest, it.cursor)
 
@@ -183,7 +187,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 	switch resp.StatusCode {
 	case http.StatusOK:
 		// Validate required protocol headers
-		if err := it.validateResponseHeaders(resp); err != nil {
+		if err := it.validateResponseHeaders(resp, liveForRequest); err != nil {
 			io.Copy(io.Discard, resp.Body)
 			return nil, err
 		}
@@ -228,7 +232,7 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 
 	case http.StatusNoContent:
 		// Validate required protocol headers
-		if err := it.validateResponseHeaders(resp); err != nil {
+		if err := it.validateResponseHeaders(resp, liveForRequest); err != nil {
 			return nil, err
 		}
 
@@ -507,7 +511,7 @@ func (it *ChunkIterator) Close() error {
 
 // validateResponseHeaders checks that required protocol headers are present
 // on a 2xx response. Returns a StreamError if any required header is missing.
-func (it *ChunkIterator) validateResponseHeaders(resp *http.Response) error {
+func (it *ChunkIterator) validateResponseHeaders(resp *http.Response, liveForRequest LiveMode) error {
 	var missing []string
 
 	// Stream-Next-Offset is required on all 2xx responses
@@ -516,7 +520,7 @@ func (it *ChunkIterator) validateResponseHeaders(resp *http.Response) error {
 	}
 
 	// Stream-Cursor is required on live responses unless stream is closed
-	if it.live != LiveModeNone {
+	if liveForRequest != LiveModeNone {
 		streamClosed := resp.Header.Get(headerStreamClosed) == "true"
 		if !streamClosed && resp.Header.Get(headerStreamCursor) == "" {
 			missing = append(missing, headerStreamCursor)
