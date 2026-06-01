@@ -890,4 +890,108 @@ describe(`onError handler error visibility`, () => {
 
     warnSpy.mockRestore()
   })
+
+  it(`backs off before retrying when onError returns retry options`, async () => {
+    const randomSpy = vi.spyOn(Math, `random`).mockReturnValue(0.5)
+    const requestTimes: Array<number> = []
+
+    mockFetch.mockImplementation(async () => {
+      requestTimes.push(Date.now())
+      return new Response(`Bad Request`, {
+        status: 400,
+        statusText: `Bad Request`,
+      })
+    })
+
+    const abortController = new AbortController()
+    const streamPromise = stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      signal: abortController.signal,
+      backoffOptions: {
+        initialDelay: 100,
+        maxDelay: 100,
+        multiplier: 1,
+        maxRetries: 0,
+      },
+      onError: () => ({}),
+    })
+
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(2), {
+      timeout: 500,
+    })
+
+    expect(requestTimes[1]! - requestTimes[0]!).toBeGreaterThanOrEqual(40)
+    expect(requestTimes[1]! - requestTimes[0]!).toBeLessThan(200)
+
+    abortController.abort()
+    await expect(streamPromise).rejects.toThrow()
+    randomSpy.mockRestore()
+  })
+
+  it(`tears down promptly when aborted during onError backoff`, async () => {
+    const randomSpy = vi.spyOn(Math, `random`).mockReturnValue(1)
+    const abortController = new AbortController()
+
+    mockFetch.mockResolvedValue(
+      new Response(`Bad Request`, {
+        status: 400,
+        statusText: `Bad Request`,
+      })
+    )
+
+    const streamPromise = stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      signal: abortController.signal,
+      backoffOptions: {
+        initialDelay: 10_000,
+        maxDelay: 10_000,
+        multiplier: 1,
+        maxRetries: 0,
+      },
+      onError: () => ({}),
+    })
+
+    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1), {
+      timeout: 500,
+    })
+
+    const abortTime = Date.now()
+    abortController.abort()
+
+    await expect(streamPromise).rejects.toThrow()
+    expect(Date.now() - abortTime).toBeLessThan(500)
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+
+    randomSpy.mockRestore()
+  })
+
+  it(`onError retry loop is bounded for persistent initial request errors`, async () => {
+    mockFetch.mockResolvedValue(
+      new Response(`Bad Request`, {
+        status: 400,
+        statusText: `Bad Request`,
+      })
+    )
+
+    const onError = vi.fn(() => ({}))
+
+    await expect(
+      stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        backoffOptions: {
+          initialDelay: 1,
+          maxDelay: 1,
+          multiplier: 1,
+          maxRetries: 0,
+        },
+        onError,
+      })
+    ).rejects.toThrow()
+
+    expect(onError).toHaveBeenCalledTimes(50)
+    expect(mockFetch.mock.calls.length).toBeLessThan(100)
+  })
 })
