@@ -242,31 +242,18 @@ jobs:
           path: packages/caddy-plugin/caddy
           retention-days: 1
 
-  # Parallel conformance test shards
+  # Server conformance tests against the Caddy plugin.
+  #
+  # Runs the entire suite in a single job. This previously used an 8-way matrix
+  # sharded by `--testNamePattern`, but that was an allowlist of describe-block
+  # names that drifted out of sync with the suite: ~half the tests (all Fork
+  # suites, every Stream-Closure suite, idempotent producers, most property
+  # tests) matched no pattern and were silently never run. The full suite takes
+  # ~40s, so sharding isn't worth the maintenance hazard — run everything.
   caddy-conformance:
     runs-on: ubuntu-latest
     needs: [build, build-caddy]
-    strategy:
-      fail-fast: false
-      matrix:
-        shard:
-          - name: "basic"
-            pattern: "Basic Stream Operations|Append Operations|Read Operations"
-          - name: "http-protocol"
-            pattern: "HTTP Protocol|Case-Insensitivity|Content-Type Validation"
-          - name: "long-poll"
-            pattern: "Long-Poll Operations|Long-Poll Edge Cases"
-          - name: "ttl-expiry"
-            pattern: "TTL and Expiry Validation|TTL and Expiry Edge Cases"
-          - name: "metadata"
-            pattern: "HEAD Metadata|Caching and ETag"
-          - name: "advanced"
-            pattern: "Offset Validation and Resumability|Protocol Edge Cases|Chunking and Large Payloads"
-          - name: "streaming"
-            pattern: "SSE Mode|JSON Mode"
-          - name: "consistency"
-            pattern: "Read-Your-Writes Consistency|Property-Based Tests"
-    name: conformance (${{ matrix.shard.name }})
+    name: conformance
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -297,6 +284,5 @@ jobs:
       - name: Make Caddy executable
         run: chmod +x packages/caddy-plugin/caddy
 
-      - name: Run conformance tests (${{ matrix.shard.name }})
-        run: |
-          pnpm vitest run --project caddy --testNamePattern "${{ matrix.shard.pattern }}"
+      - name: Run conformance tests
+        run: pnpm vitest run --project caddy

@@ -329,6 +329,18 @@ export class StreamStore {
 
       sourceContentType = sourceStream.contentType
 
+      // Reject a content-type mismatch up front, before taking a reference on
+      // the source. Doing this after the refCount increment below would leak a
+      // reference on the failed fork and pin the source in a soft-deleted state.
+      if (
+        options.contentType &&
+        options.contentType.trim() !== `` &&
+        normalizeContentType(options.contentType) !==
+          normalizeContentType(sourceContentType)
+      ) {
+        throw new Error(`Content type mismatch with source stream`)
+      }
+
       // Resolve fork offset: use provided or source's currentOffset
       if (options.forkOffset) {
         forkOffset = options.forkOffset
@@ -358,18 +370,14 @@ export class StreamStore {
       sourceStream.refCount++
     }
 
-    // Determine content type: use options, or inherit from source if fork
+    // Determine content type: use options, or inherit from source if fork. A
+    // fork content-type mismatch is already rejected above, before the source
+    // refCount is taken.
     let contentType = options.contentType
     if (!contentType || contentType.trim() === ``) {
       if (isFork) {
         contentType = sourceContentType
       }
-    } else if (
-      isFork &&
-      normalizeContentType(contentType) !==
-        normalizeContentType(sourceContentType)
-    ) {
-      throw new Error(`Content type mismatch with source stream`)
     }
 
     // Compute effective expiry for forks
