@@ -1109,7 +1109,8 @@ export class StreamResponseImpl<
                 await this.#onError(err)
               } catch (handlerErr) {
                 console.warn(
-                  `[durable-streams] onError handler threw while processing MissingHeadersError: ${handlerErr}`
+                  `[durable-streams] onError handler threw while processing MissingHeadersError: ${handlerErr}`,
+                  new Error(`stack trace`)
                 )
               }
             }
@@ -1169,7 +1170,8 @@ export class StreamResponseImpl<
                 }
               } catch (handlerErr) {
                 console.warn(
-                  `[durable-streams] onError handler threw during error recovery: ${handlerErr}`
+                  `[durable-streams] onError handler threw during error recovery: ${handlerErr}`,
+                  new Error(`stack trace`)
                 )
               }
             }

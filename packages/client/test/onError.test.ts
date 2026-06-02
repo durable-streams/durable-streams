@@ -829,7 +829,8 @@ describe(`onError handler error visibility`, () => {
     // BUG: The handler error is silently swallowed by `catch { /* ignore */ }`
     // Expected: console.warn should be called with the handler error
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining(`handler crashed!`)
+      expect.stringContaining(`handler crashed!`),
+      expect.any(Error)
     )
 
     warnSpy.mockRestore()
@@ -881,7 +882,8 @@ describe(`onError handler error visibility`, () => {
     // BUG: The handler error is silently swallowed by `catch { /* ignore */ }`
     // Expected: console.warn should be called with the handler error
     expect(warnSpy).toHaveBeenCalledWith(
-      expect.stringContaining(`handler exploded!`)
+      expect.stringContaining(`handler exploded!`),
+      expect.any(Error)
     )
 
     warnSpy.mockRestore()
