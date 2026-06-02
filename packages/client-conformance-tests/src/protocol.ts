@@ -741,10 +741,24 @@ export function parseCommand(line: string): TestCommand {
 }
 
 /**
+ * Escape Unicode line separators (U+2028, U+2029) that `JSON.stringify` leaves
+ * raw. These are legal inside JSON strings, but Node 24's `readline` treats them
+ * as line terminators — so a single newline-delimited protocol message
+ * containing one would be split across multiple `line` events, desyncing the
+ * command/response stream. The escaped sequences are still valid JSON and parse
+ * back to the identical characters.
+ */
+function escapeLineSeparators(json: string): string {
+  return json
+    .replace(new RegExp(String.fromCharCode(0x2028), `g`), `\\u2028`)
+    .replace(new RegExp(String.fromCharCode(0x2029), `g`), `\\u2029`)
+}
+
+/**
  * Serialize a TestResult to a JSON line.
  */
 export function serializeResult(result: TestResult): string {
-  return JSON.stringify(result)
+  return escapeLineSeparators(JSON.stringify(result))
 }
 
 /**
@@ -758,7 +772,7 @@ export function parseResult(line: string): TestResult {
  * Serialize a TestCommand to a JSON line.
  */
 export function serializeCommand(command: TestCommand): string {
-  return JSON.stringify(command)
+  return escapeLineSeparators(JSON.stringify(command))
 }
 
 /**
