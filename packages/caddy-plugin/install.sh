@@ -16,15 +16,15 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 info() {
-    printf "${GREEN}==>${NC} %s\n" "$1"
+    printf "${GREEN}==>${NC} %s\n" "$1" >&2
 }
 
 warn() {
-    printf "${YELLOW}Warning:${NC} %s\n" "$1"
+    printf "${YELLOW}Warning:${NC} %s\n" "$1" >&2
 }
 
 error() {
-    printf "${RED}Error:${NC} %s\n" "$1"
+    printf "${RED}Error:${NC} %s\n" "$1" >&2
     exit 1
 }
 
@@ -54,16 +54,17 @@ detect_arch() {
 
 # Get latest version from GitHub
 get_latest_version() {
+    # Find latest release with a v* tag (caddy releases), not @* tags (npm packages)
     if command -v curl >/dev/null 2>&1; then
-        VERSION=$(curl -s "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"caddy-v([^"]+)".*/\1/')
+        VERSION=$(curl -s "https://api.github.com/repos/${REPO}/releases" | grep -o '"tag_name": *"v[0-9][^"]*"' | head -1 | grep -o 'v[0-9][^"]*' | sed 's/^v//')
     elif command -v wget >/dev/null 2>&1; then
-        VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name":' | sed -E 's/.*"caddy-v([^"]+)".*/\1/')
+        VERSION=$(wget -qO- "https://api.github.com/repos/${REPO}/releases" | grep -o '"tag_name": *"v[0-9][^"]*"' | head -1 | grep -o 'v[0-9][^"]*' | sed 's/^v//')
     else
         error "curl or wget is required"
     fi
 
     if [ -z "$VERSION" ]; then
-        error "Could not determine latest version"
+        error "Could not determine latest version. No caddy releases found."
     fi
 
     echo "$VERSION"
@@ -85,7 +86,7 @@ download_and_extract() {
     fi
 
     FILENAME="${BINARY_NAME}_${version}_${os}_${arch}.${EXT}"
-    URL="https://github.com/${REPO}/releases/download/caddy-v${version}/${FILENAME}"
+    URL="https://github.com/${REPO}/releases/download/v${version}/${FILENAME}"
 
     info "Downloading ${BINARY_NAME} v${version} for ${os}/${arch}..."
 
@@ -138,7 +139,7 @@ install_binary() {
 # Main installation process
 main() {
     info "Durable Streams Server Installer"
-    echo ""
+    echo "" >&2
 
     # Get version (use argument or fetch latest)
     if [ -n "$1" ]; then
@@ -154,7 +155,7 @@ main() {
     OS=$(detect_os)
     ARCH=$(detect_arch)
     info "Detected system: ${OS}/${ARCH}"
-    echo ""
+    echo "" >&2
 
     # Download and extract
     TMP_DIR=$(download_and_extract "$VERSION" "$OS" "$ARCH")
@@ -164,16 +165,16 @@ main() {
 
     # Verify installation
     if command -v "$BINARY_NAME" >/dev/null 2>&1; then
-        echo ""
+        echo "" >&2
         info "✓ Installation successful!"
-        echo ""
-        echo "  Run '${BINARY_NAME} --help' to get started"
-        echo "  Run '${BINARY_NAME} version' to verify the installation"
-        echo ""
+        echo "" >&2
+        echo "  Run '${BINARY_NAME} --help' to get started" >&2
+        echo "  Run '${BINARY_NAME} version' to verify the installation" >&2
+        echo "" >&2
     else
         warn "Installation completed, but ${BINARY_NAME} not found in PATH"
-        echo "  You may need to add ${INSTALL_DIR} to your PATH"
-        echo "  Or run directly: ${INSTALL_DIR}/${BINARY_NAME}"
+        echo "  You may need to add ${INSTALL_DIR} to your PATH" >&2
+        echo "  Or run directly: ${INSTALL_DIR}/${BINARY_NAME}" >&2
     fi
 }
 
