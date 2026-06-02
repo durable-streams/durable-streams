@@ -7380,6 +7380,70 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         // Connection should close quickly, not wait for timeout
         expect(elapsed).toBeLessThan(10000)
       })
+
+      test(`sse-live-reader-receives-final-append-on-close: live reader at tail receives data appended atomically with the close`, async () => {
+        // A live SSE reader that is caught up at the tail must receive data that
+        // is appended atomically with a stream close (POST + Stream-Closed),
+        // followed by the closing control event. A naive server can lose the
+        // final append when the close races the reader's internal poll cycle:
+        // it emits the streamClosed control without first delivering the data.
+        //
+        // The close is timed across a spread of delays to probe that race
+        // window; a correct server delivers the data regardless of timing, so
+        // this never produces false failures against a compliant implementation.
+        const delaysMs = [40, 60, 75, 82, 85, 88, 90, 90, 92, 92, 95, 98]
+
+        for (let i = 0; i < delaysMs.length; i++) {
+          const streamPath = `/v1/stream/sse-live-final-append-${Date.now()}-${i}`
+
+          // Create with initial content and capture the tail offset.
+          const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `PUT`,
+            headers: { "Content-Type": `text/plain` },
+            body: `initial`,
+          })
+          const tailOffset = createResponse.headers.get(STREAM_OFFSET_HEADER)
+
+          // Start a live SSE reader AT the tail, so it is caught up and waiting
+          // for new data at the moment the stream is closed. Do not await yet.
+          const ssePromise = fetchSSE(
+            `${getBaseUrl()}${streamPath}?offset=${tailOffset}&live=sse`,
+            { timeoutMs: 5000, maxChunks: 30, untilContent: `streamClosed` }
+          )
+
+          // Let the reader connect and reach the tail, then close after the
+          // per-iteration delay.
+          await new Promise((resolve) => setTimeout(resolve, delaysMs[i]))
+
+          // Append a final message AND close atomically (append-and-close).
+          await fetch(`${getBaseUrl()}${streamPath}`, {
+            method: `POST`,
+            headers: {
+              "Content-Type": `text/plain`,
+              [STREAM_CLOSED_HEADER]: `true`,
+            },
+            body: `sse-data`,
+          })
+
+          const { received } = await ssePromise
+          const events = parseSSEEvents(received)
+
+          // The live reader MUST receive the data appended as part of the close.
+          const dataEvents = events.filter((e) => e.type === `data`)
+          const allData = dataEvents.map((e) => e.data).join(``)
+          expect(
+            allData,
+            `iteration ${i} (close ${delaysMs[i]}ms after connect): live SSE reader must receive data appended atomically with the close`
+          ).toContain(`sse-data`)
+
+          // ...followed by a closing control event with streamClosed: true.
+          const controlEvents = events.filter((e) => e.type === `control`)
+          expect(controlEvents.length).toBeGreaterThan(0)
+          const lastControl = controlEvents[controlEvents.length - 1]!
+          const controlData = JSON.parse(lastControl.data)
+          expect(controlData.streamClosed).toBe(true)
+        }
+      })
     })
 
     // ========================================================================
@@ -10121,6 +10185,39 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         },
       })
       expect(forkRes.status).toBe(409)
+    })
+
+    test(`rejected fork (content-type mismatch) does not leak a source reference`, async () => {
+      const id = uniqueId()
+      const sourcePath = `/v1/stream/fork-ct-noleak-src-${id}`
+      const forkPath = `/v1/stream/fork-ct-noleak-fork-${id}`
+
+      await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `text/plain` },
+        body: `data`,
+      })
+
+      // Fork attempt with a mismatched content type is rejected.
+      const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Content-Type": `application/json`,
+          [STREAM_FORKED_FROM_HEADER]: sourcePath,
+        },
+      })
+      expect(forkRes.status).toBe(409)
+
+      // The rejected fork must not have taken a reference on the source: the
+      // source has no live forks, so DELETE fully removes it rather than
+      // soft-deleting it. A leaked reference would pin the source in a
+      // soft-deleted state, so the path would report 410 (gone) afterward
+      // instead of 404 (not found).
+      await fetch(`${getBaseUrl()}${sourcePath}`, { method: `DELETE` })
+      const headRes = await fetch(`${getBaseUrl()}${sourcePath}`, {
+        method: `HEAD`,
+      })
+      expect(headRes.status).toBe(404)
     })
 
     test(`should cascade GC when last fork is deleted`, async () => {

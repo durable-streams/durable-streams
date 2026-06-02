@@ -168,6 +168,13 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		sourceMeta = sourceMetaEntry
 		sourceContentType = sourceMeta.ContentType
 
+		// Reject a content-type mismatch up front, before taking a reference on
+		// the source. Doing this after IncrementRefCount would leak a reference
+		// on the failed fork and pin the source in a soft-deleted state forever.
+		if opts.ContentType != "" && !strings.EqualFold(opts.ContentType, sourceContentType) {
+			return nil, false, ErrContentTypeMismatch
+		}
+
 		// Resolve fork offset: use opts.ForkOffset if set, else source's CurrentOffset
 		if opts.ForkOffset != nil {
 			forkOffset = *opts.ForkOffset
@@ -209,7 +216,9 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		sourceMeta.RefCount++
 	}
 
-	// Determine content type: use opts.ContentType, or inherit from source if fork
+	// Determine content type: use opts.ContentType, or inherit from source if
+	// fork. A fork content-type mismatch is already rejected above, before the
+	// source refcount is taken.
 	contentType := opts.ContentType
 	if contentType == "" {
 		if isFork {
@@ -217,8 +226,6 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		} else {
 			contentType = "application/octet-stream"
 		}
-	} else if isFork && !strings.EqualFold(contentType, sourceContentType) {
-		return nil, false, ErrContentTypeMismatch
 	}
 
 	// Generate unique directory name
@@ -400,9 +407,10 @@ func (s *FileStore) Delete(path string) error {
 		return ErrStreamNotFound
 	}
 
-	// Already soft-deleted: idempotent success
+	// Already soft-deleted: the stream is gone for direct operations (a
+	// soft-deleted stream returns 410 Gone for GET/HEAD/POST/DELETE).
 	if meta.SoftDeleted {
-		return nil
+		return ErrStreamSoftDeleted
 	}
 
 	// If there are forks referencing this stream, soft-delete instead

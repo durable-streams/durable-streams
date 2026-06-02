@@ -539,7 +539,7 @@ Deletes the stream and all its data. In-flight reads may terminate with a `404 N
 
 **Soft-delete:** When a stream has active forks (reference count > 0), the server **MUST** transition the stream to a soft-deleted state rather than fully removing it. A soft-deleted stream returns `410 Gone` for direct operations, blocks path re-creation via `PUT` (`409 Conflict`), and preserves data for fork readers. When the last fork referencing the stream is deleted, the server cleans up the stream's data via cascading garbage collection (see Section 4.2). This cleanup **MAY** occur asynchronously.
 
-Deleting an already soft-deleted stream **MUST** return `204 No Content` (idempotent).
+Deleting an already soft-deleted stream **MUST** return `410 Gone`, consistent with all other direct operations on a soft-deleted stream (`GET`, `HEAD`, `POST`, `DELETE`).
 
 ### 5.5. Stream Metadata
 

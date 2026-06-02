@@ -211,6 +211,9 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		if errors.Is(err, store.ErrConfigMismatch) {
 			return newHTTPError(http.StatusConflict, "stream exists with different configuration")
 		}
+		if errors.Is(err, store.ErrContentTypeMismatch) {
+			return newHTTPError(http.StatusConflict, "fork content type does not match source stream")
+		}
 		return err
 	}
 
@@ -733,26 +736,38 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				if streamIsClosed && clientAtTail {
 					return nil
 				}
+			} else if streamIsClosed {
+				// Initial control was already sent and the stream has since been
+				// closed with no further data to deliver (e.g. a close-only
+				// request). Emit the final control event with streamClosed and
+				// close the connection. (Data appended atomically with a close is
+				// handled by the len(messages) > 0 branch above on this same
+				// iteration.)
+				clientAtTail := currentMeta != nil && currentOffset.Equal(currentMeta.CurrentOffset)
+				if clientAtTail {
+					control := map[string]interface{}{
+						"streamNextOffset": currentOffset.String(),
+						"streamClosed":     true,
+					}
+					controlJSON, _ := json.Marshal(control)
+					fmt.Fprintf(w, "event: control\n")
+					fmt.Fprintf(w, "data:%s\n\n", controlJSON)
+					flusher.Flush()
+					return nil
+				}
 			}
 
-			// Wait for more data or stream closure
+			// Wait for more data or stream closure, then loop back to the top
+			// of the loop. We deliberately do NOT emit the closing control event
+			// here: if the stream was closed with a final append, that data must
+			// be drained by the Read at the top of the next iteration and sent as
+			// a data event before the closing control event. Emitting it here
+			// (with the stale currentOffset) would silently drop the final append
+			// for a live reader that was caught up at the tail.
 			timeout := 100 * time.Millisecond
 			waitCtx, cancel := context.WithTimeout(ctx, timeout)
-			_, _, streamClosed, _ := h.store.WaitForMessages(waitCtx, path, currentOffset, timeout)
+			h.store.WaitForMessages(waitCtx, path, currentOffset, timeout)
 			cancel()
-
-			// If stream was closed during wait, send final control event
-			if streamClosed {
-				control := map[string]interface{}{
-					"streamNextOffset": currentOffset.String(),
-					"streamClosed":     true,
-				}
-				controlJSON, _ := json.Marshal(control)
-				fmt.Fprintf(w, "event: control\n")
-				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
-				flusher.Flush()
-				return nil
-			}
 		}
 	}
 }
@@ -990,6 +1005,9 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request, path stri
 	if err != nil {
 		if errors.Is(err, store.ErrStreamNotFound) {
 			return newHTTPError(http.StatusNotFound, "stream not found")
+		}
+		if errors.Is(err, store.ErrStreamSoftDeleted) {
+			return newHTTPError(http.StatusGone, "stream has been deleted")
 		}
 		return err
 	}
