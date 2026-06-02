@@ -594,7 +594,7 @@ export class StreamResponseImpl<
         this.#sseResilience.backoffBaseDelay * Math.pow(2, backoffAttempt)
       )
       const delayMs = Math.floor(Math.random() * maxDelay)
-      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      await sleepWithAbort(delayMs, this.#abortController.signal)
     }
 
     // Track new connection start
@@ -651,21 +651,15 @@ export class StreamResponseImpl<
     const { done, value: event } = await sseEventIterator.next()
 
     if (done) {
-      // SSE stream ended - try to reconnect
-      try {
-        const reconnect = await this.#trySSEReconnect()
-        if (reconnect.type === `reconnected`) {
-          return { type: `continue`, newIterator: reconnect.iterator }
-        }
-        if (reconnect.type === `fallback-to-long-poll`) {
-          return { type: `fallback-to-long-poll` }
-        }
-      } catch (err) {
-        return {
-          type: `error`,
-          error:
-            err instanceof Error ? err : new Error(`SSE reconnection failed`),
-        }
+      // SSE stream ended - try to reconnect. Let reconnect failures throw into
+      // pull()'s shared recovery path so onError/backoff/overrides apply to SSE
+      // reconnects the same way they apply to long-poll fetches.
+      const reconnect = await this.#trySSEReconnect()
+      if (reconnect.type === `reconnected`) {
+        return { type: `continue`, newIterator: reconnect.iterator }
+      }
+      if (reconnect.type === `fallback-to-long-poll`) {
+        return { type: `fallback-to-long-poll` }
       }
       return { type: `closed` }
     }

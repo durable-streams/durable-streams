@@ -900,6 +900,30 @@ describe(`createFetchWithChunkBuffer`, () => {
     expect(prefetchInit?.cache).toBe(`no-store`)
     expect(prefetchInit?.redirect).toBe(`manual`)
   })
+
+  it(`aborts speculative prefetch when parent request signal aborts`, async () => {
+    const parentAbort = new AbortController()
+    const firstResponse = new Response(`first`, {
+      status: 200,
+      headers: { [STREAM_OFFSET_HEADER]: `10` },
+    })
+    const abortSpy = vi.fn()
+    const mockFetch = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(firstResponse)
+      .mockImplementationOnce((_url, init) => {
+        init?.signal?.addEventListener(`abort`, abortSpy)
+        return new Promise(() => {})
+      })
+    const bufferedFetch = createFetchWithChunkBuffer(mockFetch)
+
+    await bufferedFetch(`http://example.com/?offset=0`, {
+      signal: parentAbort.signal,
+    })
+    parentAbort.abort(`stream-cancelled`)
+
+    expect(abortSpy).toHaveBeenCalledTimes(1)
+  })
 })
 
 // ============================================================================

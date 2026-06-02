@@ -501,6 +501,17 @@ function getPrefetchKey(...args: Parameters<typeof fetch>): string {
   })
 }
 
+function getRequestSignal(
+  input: Parameters<typeof fetch>[0],
+  init?: Parameters<typeof fetch>[1]
+): AbortSignal | undefined {
+  if (init?.signal) return init.signal
+  if (typeof Request !== `undefined` && input instanceof Request) {
+    return input.signal
+  }
+  return undefined
+}
+
 function getPrefetchInit(
   input: Parameters<typeof fetch>[0],
   init: Parameters<typeof fetch>[1],
@@ -553,12 +564,13 @@ export class PrefetchQueue {
     return entry.promise
   }
 
-  prefetch(url: string, init?: RequestInit): void {
+  prefetch(url: string, init?: RequestInit, parentSignal?: AbortSignal): void {
     const key = getPrefetchKey(url, init)
     if (this.#queue.has(key)) return
     if (this.#queue.size >= this.#maxChunks) return
 
     const abort = new AbortController()
+    chainAborter(abort, parentSignal)
 
     const promise = this.#fetchClient(
       url,
@@ -617,10 +629,14 @@ export function createFetchWithChunkBuffer(
     const requestUrl = new URL(url)
     const nextUrl = getNextChunkUrl(requestUrl, response)
     if (nextUrl) {
-      queue.prefetch(nextUrl.toString(), {
-        ...getCompatibleRequestOptions(args[0], args[1]),
-        headers: getRequestHeaders(args[0], args[1]),
-      })
+      queue.prefetch(
+        nextUrl.toString(),
+        {
+          ...getCompatibleRequestOptions(args[0], args[1]),
+          headers: getRequestHeaders(args[0], args[1]),
+        },
+        getRequestSignal(args[0], args[1])
+      )
     }
 
     return response
