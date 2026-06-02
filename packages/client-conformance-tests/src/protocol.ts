@@ -744,7 +744,7 @@ export function parseCommand(line: string): TestCommand {
  * Serialize a TestResult to a JSON line.
  */
 export function serializeResult(result: TestResult): string {
-  return JSON.stringify(result)
+  return serializeJsonLine(result)
 }
 
 /**
@@ -758,7 +758,13 @@ export function parseResult(line: string): TestResult {
  * Serialize a TestCommand to a JSON line.
  */
 export function serializeCommand(command: TestCommand): string {
-  return JSON.stringify(command)
+  return serializeJsonLine(command)
+}
+
+function serializeJsonLine(value: unknown): string {
+  return JSON.stringify(value).replace(/[\u2028\u2029]/g, (char) =>
+    char === `\u2028` ? `\\u2028` : `\\u2029`
+  )
 }
 
 /**
