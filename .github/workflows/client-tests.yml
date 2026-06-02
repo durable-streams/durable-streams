@@ -27,7 +27,34 @@ jobs:
             node_modules/.pnpm
           retention-days: 1
 
-  # Parallel conformance tests by client
+  # TypeScript conformance across supported Node.js release lines.
+  conformance-typescript:
+    needs: build-ts
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        node-version: [22, 24, 26]
+    name: conformance (typescript, node ${{ matrix.node-version }})
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: pnpm
+
+      - run: pnpm install --frozen-lockfile
+      - uses: actions/download-artifact@v4
+        with:
+          name: ts-build
+
+      - name: Run TypeScript conformance tests
+        run: |
+          cd packages/client-conformance-tests
+          pnpm tsx src/cli.ts --run ts
+
+  # Parallel conformance tests by non-TypeScript client
   conformance:
     needs: build-ts
     runs-on: ubuntu-latest
@@ -35,9 +62,6 @@ jobs:
       fail-fast: false
       matrix:
         client:
-          - name: typescript
-            cmd: ts
-            setup: ""
           - name: go
             cmd: ../../packages/client-go/conformance-adapter
             setup: |
