@@ -1,5 +1,14 @@
 # @durable-streams/yjs-demo
 
+## 0.1.3
+
+### Patch Changes
+
+- Updated dependencies [[`cdb142e`](https://github.com/durable-streams/durable-streams/commit/cdb142e24fd8f005d827b4b37035b00c848ff523), [`8b33e59`](https://github.com/durable-streams/durable-streams/commit/8b33e5929dddaae8b529fd561d024b832a861eaf)]:
+  - @durable-streams/state@0.3.0
+  - @durable-streams/client@0.2.6
+  - @durable-streams/y-durable-streams@0.2.7
+
 ## 0.1.2
 
 ### Patch Changes

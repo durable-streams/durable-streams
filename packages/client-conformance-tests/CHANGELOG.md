@@ -1,5 +1,15 @@
 # @durable-streams/client-conformance-tests
 
+## 0.2.10
+
+### Patch Changes
+
+- Escape Unicode line separator characters in the JSONL adapter protocol so Node 24 readline does not split conformance test commands mid-payload. ([#378](https://github.com/durable-streams/durable-streams/pull/378))
+
+- Updated dependencies [[`f380bca`](https://github.com/durable-streams/durable-streams/commit/f380bcafe11d0291d63e6ff96041d13cbf0cf976)]:
+  - @durable-streams/server@0.3.6
+  - @durable-streams/client@0.2.6
+
 ## 0.2.9
 
 ### Patch Changes
