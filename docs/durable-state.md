@@ -117,7 +117,7 @@ const allUsers = state.getType("user") // Map of all users
 
 For applications that need reactive queries, filtering, joins, and optimistic updates, use [StreamDB](stream-db.md).
 
-StreamDB is the `createStreamDB` / `StreamDB` layer in `@durable-streams/state`, built on top of State Streams and [TanStack DB](https://tanstack.com/db).
+StreamDB is the `createStreamDB` / `StreamDB` layer in `@durable-streams/state/db`, built on top of State Streams and [TanStack DB](https://tanstack.com/db).
 
 ## Durable Sessions
 
