@@ -5,10 +5,19 @@ Building blocks for transmitting structured state over Durable Streams. Use thes
 ## Installation
 
 ```bash
+pnpm add @durable-streams/state
+```
+
+The package exposes two entry points:
+
+- **`@durable-streams/state`** — the db-free protocol surface: `createStateSchema` and event helpers, `MaterializedState`, and the event types/guards. No extra dependencies.
+- **`@durable-streams/state/db`** — the reactive, TanStack DB-backed layer (`createStreamDB`, live queries, optimistic actions). This entry requires the `@tanstack/db` peer dependency:
+
+```bash
 pnpm add @durable-streams/state @tanstack/db
 ```
 
-> **Note:** `@tanstack/db` is a peer dependency that must be installed alongside this package. This ensures type compatibility when using StreamDB collections with TanStack DB's query utilities like `useLiveQuery` from `@tanstack/react-db`.
+> **Note:** `@tanstack/db` is a peer dependency of the `/db` entry only. Installing it ensures type compatibility when using StreamDB collections with TanStack DB's query utilities like `useLiveQuery` from `@tanstack/react-db`.
 
 ## Overview
 
@@ -49,7 +58,8 @@ const allTokens = state.getType("token")
 Add schemas and validation for structured entities:
 
 ```typescript
-import { createStateSchema, createStreamDB } from "@durable-streams/state"
+import { createStateSchema } from "@durable-streams/state"
+import { createStreamDB } from "@durable-streams/state/db"
 
 // Define your schema
 const schema = createStateSchema({

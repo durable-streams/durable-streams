@@ -28,7 +28,7 @@ optimistic actions, and transaction confirmation.
 ## Setup
 
 ```typescript
-import { createStreamDB, createStateSchema } from "@durable-streams/state"
+import { createStreamDB, createStateSchema } from "@durable-streams/state/db"
 import { DurableStream } from "@durable-streams/client"
 import { z } from "zod"
 
@@ -83,7 +83,7 @@ StreamDB collections are TanStack DB collections. Use framework adapters for rea
 
 ```typescript
 import { useLiveQuery } from "@tanstack/react-db"
-import { eq } from "@durable-streams/state"
+import { eq } from "@durable-streams/state/db"
 
 // List query — destructure { data } with a default empty array
 function UserList() {
@@ -111,7 +111,7 @@ function UserProfile({ userId }: { userId: string }) {
 ### Optimistic actions with server confirmation
 
 ```typescript
-import { createStreamDB, createStateSchema } from "@durable-streams/state"
+import { createStreamDB, createStateSchema } from "@durable-streams/state/db"
 import { z } from "zod"
 
 const schema = createStateSchema({
