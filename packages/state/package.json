@@ -65,6 +65,11 @@
   "peerDependencies": {
     "@tanstack/db": ">=0.6.0 <1.0.0"
   },
+  "peerDependenciesMeta": {
+    "@tanstack/db": {
+      "optional": true
+    }
+  },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
     "@tanstack/db": "0.6.0",
