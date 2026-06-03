@@ -1,5 +1,13 @@
 # @durable-streams/client-conformance-tests
 
+## 0.2.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @durable-streams/server@0.3.7
+  - @durable-streams/client@0.2.6
+
 ## 0.2.10
 
 ### Patch Changes

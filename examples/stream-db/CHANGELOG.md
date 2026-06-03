@@ -1,5 +1,12 @@
 # @durable-streams/stream-db-example
 
+## 0.0.9
+
+### Patch Changes
+
+- Updated dependencies [[`72e168d`](https://github.com/durable-streams/durable-streams/commit/72e168d5104c60aba3405e54a8c64e33c7e9a1c1)]:
+  - @durable-streams/state@0.3.1
+
 ## 0.0.8
 
 ### Patch Changes

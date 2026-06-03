@@ -1,5 +1,14 @@
 # @durable-streams/state
 
+## 0.3.1
+
+### Patch Changes
+
+- Mark `@tanstack/db` as an optional peer dependency. The TanStack DB surface lives behind the `@durable-streams/state/db` subpath and the main entry is db-free, so consumers that don't use the reactive layer no longer get unmet-peer warnings (or errors under strict pnpm). ([#383](https://github.com/durable-streams/durable-streams/pull/383))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.6
+
 ## 0.3.0
 
 ### Minor Changes
