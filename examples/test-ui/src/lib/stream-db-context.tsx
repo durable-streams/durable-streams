@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useMemo, useState } from "react"
 import { DurableStream } from "@durable-streams/client"
-import { createStreamDB } from "@durable-streams/state"
+import { createStreamDB } from "@durable-streams/state/db"
 import { presenceStateSchema, registryStateSchema } from "./schemas"
 import type { PresenceData, StreamMetadata } from "./schemas"
 import type { ReactNode } from "react"

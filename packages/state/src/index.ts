@@ -1,3 +1,11 @@
+// Main entry: the db-free surface of the state protocol.
+//
+// Everything exported here works without @tanstack/db installed — defining
+// schemas, constructing/validating change events, and materializing state
+// in-memory. The reactive, TanStack DB-backed StreamDB layer (createStreamDB,
+// live queries, optimistic actions) lives under the `@durable-streams/state/db`
+// subpath, which carries the `@tanstack/db` peer dependency.
+
 // Types
 export type {
   Operation,
@@ -11,66 +19,15 @@ export type {
 
 export { isChangeEvent, isControlEvent } from "./types"
 
-// Classes
+// In-memory materialization
 export { MaterializedState } from "./materialized-state"
 
-// Stream DB
-export {
-  createStreamDB,
-  createStateSchema,
-  getStreamDBCollectionId,
-} from "./stream-db"
+// Schema definition + event construction (producer side)
+export { createStateSchema } from "./schema"
 export type {
   CollectionDefinition,
   CollectionEventHelpers,
   CollectionWithHelpers,
   StreamStateDefinition,
   StateSchema,
-  CreateStreamDBOptions,
-  StreamDB,
-  StreamDBMethods,
-  StreamDBUtils,
-  StreamDBWithActions,
-  ActionFactory,
-  ActionMap,
-  ActionDefinition,
-} from "./stream-db"
-
-// Re-export key types and utilities from @tanstack/db for convenience
-// This ensures consumers can use the same module resolution for type compatibility
-export type { Collection, SyncConfig } from "@tanstack/db"
-export {
-  createCollection,
-  createLiveQueryCollection,
-  createOptimisticAction,
-  createTransaction,
-  deepEquals,
-  localOnlyCollectionOptions,
-  queryOnce,
-  // Comparison operators
-  eq,
-  gt,
-  gte,
-  lt,
-  lte,
-  like,
-  ilike,
-  inArray,
-  // Logical operators
-  and,
-  or,
-  not,
-  // Null checking
-  isNull,
-  isUndefined,
-  // Aggregate functions
-  count,
-  sum,
-  avg,
-  min,
-  max,
-  // Includes/projection functions
-  concat,
-  coalesce,
-  toArray,
-} from "@tanstack/db"
+} from "./schema"

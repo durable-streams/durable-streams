@@ -33,6 +33,16 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./db": {
+      "import": {
+        "types": "./dist/db.d.ts",
+        "default": "./dist/db.js"
+      },
+      "require": {
+        "types": "./dist/db.d.cts",
+        "default": "./dist/db.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,
