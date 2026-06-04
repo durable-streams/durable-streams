@@ -20,8 +20,8 @@
     "typecheck": "tsc --build && pnpm -r --filter '@durable-streams/example-*' typecheck",
     "prepare": "husky",
     "changeset": "changeset",
-    "changeset:version": "changeset version && pnpm install --no-frozen-lockfile",
-    "changeset:publish": "pnpm build && changeset publish",
+    "changeset:version": "changeset version && node scripts/sync-python-versions.mjs && pnpm install --no-frozen-lockfile",
+    "changeset:publish": "pnpm build && changeset publish && node scripts/publish-python.mjs",
     "docs:dev": "pnpm --filter @durable-streams/docs dev",
     "docs:build": "pnpm --filter @durable-streams/docs build",
     "docs:preview": "pnpm --filter @durable-streams/docs preview"
