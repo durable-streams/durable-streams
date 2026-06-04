@@ -40,6 +40,10 @@ var (
 
 	// ErrBadRequest indicates a malformed request (400).
 	ErrBadRequest = errors.New("durablestreams: bad request")
+
+	// ErrMissingHeader indicates a 2xx response was missing a required protocol header.
+	// This usually means a proxy or CDN is stripping headers.
+	ErrMissingHeader = errors.New("durablestreams: missing required protocol header")
 )
 
 // StreamError wraps errors with additional context about the failed operation.

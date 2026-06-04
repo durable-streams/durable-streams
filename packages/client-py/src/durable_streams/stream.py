@@ -12,9 +12,14 @@ from typing import Any
 import httpx
 
 from durable_streams._errors import (
+    MissingHeadersError,
     error_from_status,
 )
-from durable_streams._parse import parse_httpx_headers, parse_response_headers
+from durable_streams._parse import (
+    parse_httpx_headers,
+    parse_response_headers,
+    validate_response_headers,
+)
 from durable_streams._response import StreamResponse
 from durable_streams._types import (
     CURSOR_QUERY_PARAM,
@@ -32,6 +37,17 @@ from durable_streams._util import (
     resolve_headers_sync,
     resolve_params_sync,
 )
+
+ON_ERROR_MAX_RETRIES = 50
+
+
+def _sleep_before_retry(retry_count: int) -> None:
+    """Full-jitter backoff for on_error retries, aligned with TypeScript."""
+    import random
+    import time
+
+    cap = min(32.0, 1.0 * (2 ** min(retry_count - 1, 5)))
+    time.sleep(random.uniform(0, cap))
 
 
 def stream(
@@ -125,7 +141,11 @@ def _stream_internal(
 
     # Never set live on the initial request — catch-up responses without live
     # are cacheable by CDNs/browsers. Live mode activates only after catching up.
+    # If a concrete resume offset is provided for explicit long-poll, the request
+    # is already a live resume and must receive live-response cursor validation.
     is_sse = live == "sse"
+    if live == "long-poll" and offset not in (None, "now"):
+        query_params[LIVE_QUERY_PARAM] = "long-poll"
 
     # Add cursor if provided
     if cursor:
@@ -136,6 +156,7 @@ def _stream_internal(
     param_mutations: dict[str, str] = {}
 
     # Make the initial request with retry loop for on_error
+    retry_count = 0
     while True:
         # Re-resolve headers/params on each retry so callables (e.g., token fetchers)
         # can return fresh values
@@ -177,9 +198,18 @@ def _stream_internal(
                 )
                 raise error
 
+            headers_dict = parse_httpx_headers(response.headers)
+            validate_response_headers(
+                headers_dict,
+                request_url,
+                require_cursor=live == "long-poll" and offset not in (None, "now"),
+            )
+
             break
 
         except Exception as e:
+            if isinstance(e, MissingHeadersError):
+                raise
             # If there's an on_error handler, give it a chance to recover
             if on_error is not None:
                 retry_opts = on_error(e)
@@ -187,6 +217,11 @@ def _stream_internal(
                 if retry_opts is None:
                     # No recovery, re-raise
                     raise
+
+                if retry_count >= ON_ERROR_MAX_RETRIES:
+                    raise
+                retry_count += 1
+                _sleep_before_retry(retry_count)
 
                 # Accumulate mutations for retry and for fetch_next
                 if "params" in retry_opts:
@@ -246,6 +281,7 @@ def _stream_internal(
         next_url = build_url_with_params(url, all_prms)
 
         # Retry loop with on_error for follow-up requests
+        retry_count = 0
         while True:
             try:
                 # Use streaming mode for live fetches
@@ -271,18 +307,30 @@ def _stream_internal(
                     )
                     raise error
 
+                hdrs = parse_httpx_headers(resp.headers)
+                validate_response_headers(hdrs, next_url)
+
                 return resp
             except Exception as e:
+                if isinstance(e, MissingHeadersError):
+                    raise
                 # Apply on_error for follow-up requests too
                 if on_error is not None:
                     retry_opts = on_error(e)
                     if retry_opts is not None:
+                        if retry_count >= ON_ERROR_MAX_RETRIES:
+                            raise
+                        retry_count += 1
+                        _sleep_before_retry(retry_count)
+
                         # Apply retry mutations
                         if "params" in retry_opts:
+                            captured_param_mutations.update(retry_opts["params"])
                             final_prms = {**final_prms, **retry_opts["params"]}
                             all_prms = {**final_prms, **next_params}
                             next_url = build_url_with_params(url, all_prms)
                         if "headers" in retry_opts:
+                            captured_header_mutations.update(retry_opts["headers"])
                             final_hdrs = {**final_hdrs, **retry_opts["headers"]}
                         continue
                 raise
@@ -320,6 +368,12 @@ def _stream_internal(
             resp.close()
             hdrs = parse_httpx_headers(resp.headers)
             raise error_from_status(resp.status_code, url, body=body, headers=hdrs)
+        try:
+            hdrs = parse_httpx_headers(resp.headers)
+            validate_response_headers(hdrs, sse_url)
+        except Exception:
+            resp.close()
+            raise
         return resp
 
     return StreamResponse(

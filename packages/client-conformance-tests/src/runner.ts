@@ -858,6 +858,7 @@ async function executeOperation(
             corruptBody: op.corruptBody,
             jitterMs: op.jitterMs,
             injectSseEvent: op.injectSseEvent,
+            stripHeaders: op.stripHeaders,
           }),
         })
 
@@ -873,6 +874,8 @@ async function executeOperation(
         if (op.probability != null) faultTypes.push(`p=${op.probability}`)
         if (op.injectSseEvent)
           faultTypes.push(`sse:${op.injectSseEvent.eventType}`)
+        if (op.stripHeaders)
+          faultTypes.push(`strip:${op.stripHeaders.join(`,`)}`)
         const faultDesc = faultTypes.join(`,`) || `unknown`
 
         if (verbose) {
@@ -1015,6 +1018,13 @@ function validateExpectation(
   expect: Record<string, unknown> | undefined
 ): string | null {
   if (!expect) return null
+
+  // Check error expectation (expect the operation to fail)
+  if (expect.error === true) {
+    if (result.success) {
+      return `Expected operation to fail with an error, but it succeeded`
+    }
+  }
 
   // Check status
   if (expect.status !== undefined && `status` in result) {

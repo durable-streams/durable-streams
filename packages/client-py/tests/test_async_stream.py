@@ -6,6 +6,7 @@ Tests the async API matching the sync API coverage.
 
 from __future__ import annotations
 
+import importlib
 from unittest.mock import AsyncMock, MagicMock
 
 import httpx
@@ -13,6 +14,8 @@ import pytest
 
 from durable_streams import (
     AsyncDurableStream,
+    DurableStreamError,
+    MissingHeadersError,
     StreamConsumedError,
     astream,
 )
@@ -64,6 +67,15 @@ def setup_async_mock_client_error(mock_response: MockAsyncResponse) -> MagicMock
     captured_request = MagicMock()
     mock_client.build_request.return_value = captured_request
     mock_client.send = AsyncMock(return_value=mock_response)
+    return mock_client
+
+
+def setup_async_mock_client_multi(responses: list[MockAsyncResponse]) -> MagicMock:
+    """Set up a mock httpx.AsyncClient with multiple responses."""
+    mock_client = MagicMock(spec=httpx.AsyncClient)
+    captured_request = MagicMock()
+    mock_client.build_request.return_value = captured_request
+    mock_client.send = AsyncMock(side_effect=responses)
     return mock_client
 
 
@@ -145,6 +157,122 @@ class TestAstreamBasicFunctionality:
         called_url = get_async_request_url(mock_client)
         assert "offset=1_5" in called_url
         await res.aclose()
+
+    @pytest.mark.anyio
+    async def test_astream_throws_on_missing_offset_header(self):
+        """Should fail fast when a successful response omits Stream-Next-Offset."""
+        mock_response = MockAsyncResponse(
+            b"data",
+            headers={
+                "content-type": "text/plain",
+            },
+        )
+        mock_client = setup_async_mock_client(mock_response)
+
+        with pytest.raises(MissingHeadersError) as exc_info:
+            await astream("https://example.com/stream", client=mock_client)
+
+        assert exc_info.value.missing_headers == ["Stream-Next-Offset"]
+
+    @pytest.mark.anyio
+    async def test_astream_throws_on_missing_cursor_for_live_response(self):
+        """Should fail fast when an explicit live response omits Stream-Cursor."""
+        mock_response = MockAsyncResponse(
+            b"data",
+            headers={
+                "content-type": "text/plain",
+                "Stream-Next-Offset": "1_4",
+            },
+        )
+        mock_client = setup_async_mock_client(mock_response)
+
+        with pytest.raises(MissingHeadersError) as exc_info:
+            await astream(
+                "https://example.com/stream",
+                client=mock_client,
+                offset="1_0",
+                live="long-poll",
+            )
+
+        assert exc_info.value.missing_headers == ["Stream-Cursor"]
+
+    @pytest.mark.anyio
+    async def test_astream_throws_on_missing_headers_for_sse_response(self):
+        """Should validate durable-stream headers before parsing an SSE response."""
+        initial_response = MockAsyncResponse(
+            b"",
+            headers={
+                "Stream-Next-Offset": "1_0",
+                "Stream-Cursor": "cursor-1",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+        sse_response = MockAsyncResponse(
+            b'data: hello\nevent: control\ndata: {"upToDate":true,"streamNextOffset":"2_0"}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
+        sse_response.aclose = AsyncMock()
+        mock_client = setup_async_mock_client_multi([initial_response, sse_response])
+
+        res = await astream("https://example.com/stream", client=mock_client, live="sse")
+
+        with pytest.raises(MissingHeadersError) as exc_info:
+            async for _chunk in res.iter_text():
+                break
+
+        assert exc_info.value.missing_headers == ["Stream-Next-Offset", "Stream-Cursor"]
+        sse_response.aclose.assert_awaited_once()
+
+    @pytest.mark.anyio
+    async def test_astream_stops_when_stream_closed_header_is_set(self):
+        """Live iteration should stop when the stream is closed."""
+        mock_response = MockAsyncResponse(
+            b"chunk1",
+            headers={
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+                "Stream-Closed": "true",
+            },
+        )
+        mock_client = setup_async_mock_client(mock_response)
+
+        res = await astream("https://example.com/stream", client=mock_client, live="long-poll")
+
+        chunks = []
+        async for chunk in res.iter_text():
+            chunks.append(chunk)
+        assert chunks == ["chunk1"]
+        assert res.stream_closed is True
+        assert mock_client.send.call_count == 1
+
+    @pytest.mark.anyio
+    async def test_astream_sse_text_updates_stream_closed_from_control_event(self):
+        """SSE text iteration should store streamClosed from control events."""
+        initial_response = MockAsyncResponse(
+            b"",
+            headers={
+                "Stream-Next-Offset": "1_0",
+                "Stream-Cursor": "cursor-1",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+        sse_response = MockAsyncResponse(
+            'event: data\ndata: hello\n\nevent: control\ndata: {"upToDate":true,"streamNextOffset":"2_0","streamClosed":true}\n\n',
+            headers={
+                "content-type": "text/event-stream",
+                "Stream-Next-Offset": "1_0",
+                "Stream-Cursor": "cursor-1",
+            },
+        )
+        mock_client = setup_async_mock_client_multi([initial_response, sse_response])
+
+        res = await astream("https://example.com/stream", client=mock_client, live="sse")
+
+        chunks = []
+        async for chunk in res.iter_text():
+            chunks.append(chunk)
+        assert chunks == ["hello"]
+        assert res.stream_closed is True
 
 
 class TestAsyncStreamResponseConsumption:
@@ -531,6 +659,113 @@ class TestAsyncDurableStreamErrors:
             await handle.append("data", seq="old-seq")
 
         await handle.aclose()
+
+
+class TestAsyncOnErrorCallback:
+    """Tests for async on_error callback handling."""
+
+    @pytest.mark.anyio
+    async def test_on_error_initial_retries_are_bounded(self, monkeypatch: pytest.MonkeyPatch):
+        """Initial on_error retries should stop after the retry limit."""
+        async def no_sleep(_retry: int) -> None:
+            return None
+
+        astream_module = importlib.import_module("durable_streams.astream")
+        monkeypatch.setattr(astream_module, "_sleep_before_retry", no_sleep)
+        mock_client = setup_async_mock_client_multi([MockAsyncResponse(b"Error", status_code=500)] * 51)
+        errors = 0
+
+        async def on_error_handler(_e: Exception) -> dict[str, object] | None:
+            nonlocal errors
+            errors += 1
+            return {"headers": {"x-retry": str(errors)}}
+
+        with pytest.raises(DurableStreamError):
+            await astream("https://example.com/stream", client=mock_client, on_error=on_error_handler)
+
+        assert errors == 51
+        assert mock_client.send.call_count == 51
+
+    @pytest.mark.anyio
+    async def test_on_error_followup_retries_are_bounded(self, monkeypatch: pytest.MonkeyPatch):
+        """Follow-up on_error retries should stop after the retry limit."""
+        async def no_sleep(_retry: int) -> None:
+            return None
+
+        astream_module = importlib.import_module("durable_streams.astream")
+        monkeypatch.setattr(astream_module, "_sleep_before_retry", no_sleep)
+        responses = [
+            MockAsyncResponse(
+                b"a",
+                headers={"Stream-Next-Offset": "1_1", "Stream-Cursor": "cursor-1"},
+            ),
+            *[MockAsyncResponse(b"Error", status_code=500) for _ in range(51)],
+        ]
+        mock_client = setup_async_mock_client_multi(responses)
+        errors = 0
+
+        async def on_error_handler(_e: Exception) -> dict[str, object] | None:
+            nonlocal errors
+            errors += 1
+            return {"headers": {"x-retry": str(errors)}}
+
+        res = await astream(
+            "https://example.com/stream",
+            client=mock_client,
+            live="long-poll",
+            on_error=on_error_handler,
+        )
+
+        with pytest.raises(DurableStreamError):
+            await res.read_bytes()
+
+        assert errors == 51
+        assert mock_client.send.call_count == 52
+
+    @pytest.mark.anyio
+    async def test_on_error_followup_header_mutations_persist(self):
+        """Follow-up retry headers should persist to later follow-up requests."""
+        responses = [
+            MockAsyncResponse(
+                b"a",
+                headers={
+                    "Stream-Next-Offset": "1_1",
+                    "Stream-Cursor": "cursor-1",
+                },
+            ),
+            MockAsyncResponse(b"Unauthorized", status_code=401),
+            MockAsyncResponse(
+                b"b",
+                headers={
+                    "Stream-Next-Offset": "2_1",
+                    "Stream-Cursor": "cursor-2",
+                },
+            ),
+            MockAsyncResponse(
+                b"c",
+                headers={
+                    "Stream-Next-Offset": "3_1",
+                    "Stream-Cursor": "cursor-3",
+                    "Stream-Up-To-Date": "true",
+                },
+            ),
+        ]
+        mock_client = setup_async_mock_client_multi(responses)
+
+        async def on_error_handler(_e: Exception) -> dict[str, object] | None:
+            return {"headers": {"Authorization": "Bearer refreshed"}}
+
+        res = await astream(
+            "https://example.com/stream",
+            client=mock_client,
+            live="long-poll",
+            headers={"Authorization": "Bearer old"},
+            on_error=on_error_handler,
+        )
+
+        assert await res.read_bytes() == b"abc"
+        assert get_async_request_headers(mock_client, 2)["Authorization"] == "Bearer refreshed"
+        assert get_async_request_headers(mock_client, 3)["Authorization"] == "Bearer refreshed"
 
 
 class TestAsyncFunctionHeaders:

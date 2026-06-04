@@ -133,11 +133,28 @@ module DurableStreams
   # @param response [HTTP::Response] HTTP response
   # @param defaults [Hash] Default values for missing headers
   # @return [Hash] Parsed header values
-  def self.parse_stream_headers(response, defaults = {})
+  def self.parse_stream_headers(response, defaults = {}, live: false, url: nil)
+    validate_stream_headers!(response, live: live, status: response.status, url: url)
+
     {
       next_offset: response[STREAM_NEXT_OFFSET_HEADER] || defaults[:next_offset],
       cursor: response[STREAM_CURSOR_HEADER] || defaults[:cursor],
       up_to_date: response[STREAM_UP_TO_DATE_HEADER] == "true"
     }
+  end
+
+  def self.validate_stream_headers!(response, live: false, status: nil, url: nil)
+    next_offset = response[STREAM_NEXT_OFFSET_HEADER]
+    if next_offset.nil? || next_offset.empty?
+      raise FetchError.new("Server did not return #{STREAM_NEXT_OFFSET_HEADER} header", url: url)
+    end
+
+    return unless live && status.to_i == 200
+    return if response[STREAM_CLOSED_HEADER]&.downcase == "true"
+
+    cursor = response[STREAM_CURSOR_HEADER]
+    if cursor.nil? || cursor.empty?
+      raise FetchError.new("Server did not return #{STREAM_CURSOR_HEADER} header", url: url)
+    end
   end
 end

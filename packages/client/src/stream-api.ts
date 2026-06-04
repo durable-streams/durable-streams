@@ -5,6 +5,7 @@
  */
 
 import {
+  CACHE_BUSTER_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   OFFSET_QUERY_PARAM,
   STREAM_CLOSED_HEADER,
@@ -13,16 +14,37 @@ import {
   STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
-import { DurableStreamError, FetchBackoffAbortError } from "./error"
-import { BackoffDefaults, createFetchWithBackoff } from "./fetch"
+import {
+  DurableStreamError,
+  FetchBackoffAbortError,
+  MissingHeadersError,
+} from "./error"
+import {
+  BackoffDefaults,
+  ON_ERROR_MAX_RETRIES,
+  createFetchWithBackoff,
+  createFetchWithChunkBuffer,
+  createFetchWithConsumedBody,
+  createFetchWithResponseHeadersCheck,
+  getFullJitterBackoffMs,
+  sleepWithAbort,
+} from "./fetch"
 import { StreamResponseImpl } from "./response"
+import { UpToDateTracker, canonicalStreamKey } from "./up-to-date-tracker"
 import {
   handleErrorResponse,
   resolveHeaders,
   resolveParams,
   warnIfUsingHttpInBrowser,
 } from "./utils"
-import type { LiveMode, Offset, StreamOptions, StreamResponse } from "./types"
+import type {
+  HeadersRecord,
+  LiveMode,
+  Offset,
+  ParamsRecord,
+  StreamOptions,
+  StreamResponse,
+} from "./types"
 
 /**
  * Create a streaming session to read from a durable stream.
@@ -72,6 +94,24 @@ export async function stream<TJson = unknown>(
   let currentHeaders = options.headers
   let currentParams = options.params
 
+  const abortController = new AbortController()
+  if (options.signal?.aborted) {
+    abortController.abort(options.signal.reason)
+  } else if (options.signal) {
+    options.signal.addEventListener(
+      `abort`,
+      () => abortController.abort(options.signal?.reason),
+      { once: true }
+    )
+  }
+
+  if (abortController.signal.aborted) {
+    throw new DurableStreamError(`Stream request was aborted`, `UNKNOWN`)
+  }
+
+  const backoffOptions = options.backoffOptions ?? BackoffDefaults
+  let onErrorRetryAttempt = 0
+
   // Retry loop for onError handling
   // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
   while (true) {
@@ -80,10 +120,20 @@ export async function stream<TJson = unknown>(
         ...options,
         headers: currentHeaders,
         params: currentParams,
+        signal: abortController.signal,
       })
     } catch (err) {
+      // Non-retryable errors bypass onError entirely
+      if (err instanceof MissingHeadersError) {
+        throw err
+      }
+
       // If there's an onError handler, give it a chance to recover
       if (options.onError) {
+        if (onErrorRetryAttempt >= ON_ERROR_MAX_RETRIES) {
+          throw err
+        }
+
         const retryOpts = await options.onError(
           err instanceof Error ? err : new Error(String(err))
         )
@@ -92,6 +142,8 @@ export async function stream<TJson = unknown>(
         if (retryOpts === undefined) {
           throw err
         }
+
+        onErrorRetryAttempt++
 
         // Merge returned params/headers for retry
         if (retryOpts.params) {
@@ -106,6 +158,11 @@ export async function stream<TJson = unknown>(
             ...retryOpts.headers,
           }
         }
+
+        await sleepWithAbort(
+          getFullJitterBackoffMs(onErrorRetryAttempt, backoffOptions),
+          abortController.signal
+        )
 
         // Continue to retry with updated options
         continue
@@ -138,7 +195,16 @@ async function streamInternal<TJson = unknown>(
 
   // Never set live on the initial request — catch-up responses without live
   // are cacheable by CDNs/browsers. Live mode activates only after catching up.
+  // If a concrete resume offset is provided for explicit long-poll, the request
+  // is already a live resume and must receive live-response cursor validation.
   const live: LiveMode = options.live ?? true
+  if (
+    live === `long-poll` &&
+    options.offset !== undefined &&
+    options.offset !== `now`
+  ) {
+    fetchUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
+  }
 
   // Add custom params
   const params = await resolveParams(options.params)
@@ -151,7 +217,9 @@ async function streamInternal<TJson = unknown>(
 
   // Create abort controller
   const abortController = new AbortController()
-  if (options.signal) {
+  if (options.signal?.aborted) {
+    abortController.abort(options.signal.reason)
+  } else if (options.signal) {
     options.signal.addEventListener(
       `abort`,
       () => abortController.abort(options.signal?.reason),
@@ -159,17 +227,47 @@ async function streamInternal<TJson = unknown>(
     )
   }
 
-  // Get fetch client with backoff
+  if (abortController.signal.aborted) {
+    throw new DurableStreamError(`Stream request was aborted`, `UNKNOWN`)
+  }
+
+  // Build fetch client chains
   const baseFetchClient =
     options.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
   const backoffOptions = options.backoffOptions ?? BackoffDefaults
-  const fetchClient = createFetchWithBackoff(baseFetchClient, backoffOptions)
+  const backoffClient = createFetchWithBackoff(baseFetchClient, backoffOptions)
 
-  // Make the first request
-  // Backoff client will throw FetchError for non-OK responses
+  // Base chain for chunk fetches (no prefetch):
+  const baseChunkClient = createFetchWithConsumedBody(
+    createFetchWithResponseHeadersCheck(backoffClient)
+  )
+
+  // For subsequent chunk fetches with speculative prefetch:
+  const prefetchChunkClient = createFetchWithConsumedBody(
+    createFetchWithResponseHeadersCheck(
+      createFetchWithChunkBuffer(backoffClient, options.prefetchOptions)
+    )
+  )
+
+  const hasDynamicValues = (record?: HeadersRecord | ParamsRecord): boolean =>
+    Object.values(record ?? {}).some((value) => typeof value === `function`)
+
+  // Prefetch reuses the current request's resolved headers/params for the
+  // speculative next request. That is only safe for static records; dynamic
+  // header/param functions must be resolved once per logical poll.
+  const baseOptionsHaveDynamicRequestValues =
+    hasDynamicValues(options.headers) || hasDynamicValues(options.params)
+
+  // For SSE connections (must NOT consume body — it's a long-lived stream):
+  const sseFetchClient = createFetchWithResponseHeadersCheck(backoffClient)
+
+  // Make the first request. This is always a regular catch-up request (even
+  // before SSE live mode), so use the consumed-body chunk client for first
+  // response hardening. SSE uses sseFetchClient only for the later live request.
+  const firstRequestClient = baseChunkClient
   let firstResponse: Response
   try {
-    firstResponse = await fetchClient(fetchUrl.toString(), {
+    firstResponse = await firstRequestClient(fetchUrl.toString(), {
       method: `GET`,
       headers,
       signal: abortController.signal,
@@ -210,16 +308,25 @@ async function streamInternal<TJson = unknown>(
     cursor: string | undefined,
     signal: AbortSignal,
     upToDate: boolean,
-    resumingFromPause?: boolean
+    resumingFromPause?: boolean,
+    cacheBuster?: string,
+    overrideHeaders?: HeadersRecord,
+    overrideParams?: ParamsRecord
   ): Promise<Response> => {
     const nextUrl = new URL(url)
     nextUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
+
+    if (cacheBuster) {
+      nextUrl.searchParams.set(CACHE_BUSTER_QUERY_PARAM, cacheBuster)
+    }
 
     // Only set live mode after catching up (upToDate) — catch-up requests
     // without live are cacheable by CDNs/browsers.
     // Also skip live when resuming from pause (needs immediate response for UI status).
     if (upToDate && !resumingFromPause) {
-      if (live === true || live === `long-poll`) {
+      if (live === `sse`) {
+        nextUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
+      } else if (live === true || live === `long-poll`) {
         nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
       }
     }
@@ -234,7 +341,27 @@ async function streamInternal<TJson = unknown>(
       nextUrl.searchParams.set(key, value)
     }
 
-    const nextHeaders = await resolveHeaders(options.headers)
+    // Apply onError override params (resolve functions same as base params)
+    if (overrideParams) {
+      const resolvedOverrideParams = await resolveParams(overrideParams)
+      for (const [key, value] of Object.entries(resolvedOverrideParams)) {
+        nextUrl.searchParams.set(key, value)
+      }
+    }
+
+    const nextHeaders = {
+      ...(await resolveHeaders(options.headers)),
+      ...(await resolveHeaders(overrideHeaders)),
+    }
+
+    const requestHasDynamicValues =
+      baseOptionsHaveDynamicRequestValues ||
+      hasDynamicValues(overrideHeaders) ||
+      hasDynamicValues(overrideParams)
+
+    const fetchClient = requestHasDynamicValues
+      ? baseChunkClient
+      : prefetchChunkClient
 
     const response = await fetchClient(nextUrl.toString(), {
       method: `GET`,
@@ -255,7 +382,9 @@ async function streamInternal<TJson = unknown>(
       ? async (
           offset: Offset,
           cursor: string | undefined,
-          signal: AbortSignal
+          signal: AbortSignal,
+          overrideHeaders?: HeadersRecord,
+          overrideParams?: ParamsRecord
         ): Promise<Response> => {
           const sseUrl = new URL(url)
           sseUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
@@ -269,10 +398,19 @@ async function streamInternal<TJson = unknown>(
           for (const [key, value] of Object.entries(sseParams)) {
             sseUrl.searchParams.set(key, value)
           }
+          if (overrideParams) {
+            const resolvedOverrideParams = await resolveParams(overrideParams)
+            for (const [key, value] of Object.entries(resolvedOverrideParams)) {
+              sseUrl.searchParams.set(key, value)
+            }
+          }
 
-          const sseHeaders = await resolveHeaders(options.headers)
+          const sseHeaders = {
+            ...(await resolveHeaders(options.headers)),
+            ...(await resolveHeaders(overrideHeaders)),
+          }
 
-          const response = await fetchClient(sseUrl.toString(), {
+          const response = await sseFetchClient(sseUrl.toString(), {
             method: `GET`,
             headers: sseHeaders,
             signal,
@@ -285,6 +423,14 @@ async function streamInternal<TJson = unknown>(
           return response
         }
       : undefined
+
+  // Create up-to-date tracker if storage is provided
+  const upToDateTracker = options.upToDateStorage
+    ? new UpToDateTracker(options.upToDateStorage)
+    : undefined
+  const streamKey = options.upToDateStorage
+    ? canonicalStreamKey(fetchUrl.toString())
+    : undefined
 
   // Create and return the StreamResponse
   return new StreamResponseImpl<TJson>({
@@ -303,5 +449,10 @@ async function streamInternal<TJson = unknown>(
     startSSE,
     sseResilience: options.sseResilience,
     encoding,
+    onError: options.onError,
+    upToDateTracker,
+    streamKey,
+    fastLoopOptions: options.fastLoopOptions,
+    backoffOptions,
   })
 }

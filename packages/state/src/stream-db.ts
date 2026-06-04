@@ -638,7 +638,7 @@ export function createStreamDB<
         definition.type,
         dispatcher,
         definition.primaryKey,
-        (key) => collection.get(key) as object | undefined
+        (key) => collection.get(key)
       ),
       startSync: true, // Start syncing immediately
       // Disable GC - we manage lifecycle via db.close()

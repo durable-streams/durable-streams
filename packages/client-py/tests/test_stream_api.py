@@ -6,6 +6,7 @@ Matches TypeScript client test coverage from stream-api.test.ts.
 
 from __future__ import annotations
 
+import importlib
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -14,6 +15,7 @@ import pytest
 
 from durable_streams import (
     DurableStreamError,
+    MissingHeadersError,
     StreamConsumedError,
     stream,
 )
@@ -148,6 +150,7 @@ class TestStreamBasicFunctionality:
             b"data",
             headers={
                 "Stream-Next-Offset": "1_5",
+                "Stream-Cursor": "cursor-1",
                 "Stream-Up-To-Date": "true",
             },
         )
@@ -161,6 +164,67 @@ class TestStreamBasicFunctionality:
 
         called_url = get_request_url(mock_client)
         assert "live=long-poll" not in called_url
+
+    def test_stream_throws_on_missing_offset_header(self):
+        """Should fail fast when a successful response omits Stream-Next-Offset."""
+        mock_response = MockResponse(
+            b"data",
+            headers={
+                "content-type": "text/plain",
+            },
+        )
+        mock_client = setup_mock_client(mock_response)
+
+        with pytest.raises(MissingHeadersError) as exc_info:
+            stream("https://example.com/stream", client=mock_client)
+
+        assert exc_info.value.missing_headers == ["Stream-Next-Offset"]
+
+    def test_stream_throws_on_missing_cursor_for_live_response(self):
+        """Should fail fast when an explicit live response omits Stream-Cursor."""
+        mock_response = MockResponse(
+            b"data",
+            headers={
+                "content-type": "text/plain",
+                "Stream-Next-Offset": "1_4",
+            },
+        )
+        mock_client = setup_mock_client(mock_response)
+
+        with pytest.raises(MissingHeadersError) as exc_info:
+            stream(
+                "https://example.com/stream",
+                client=mock_client,
+                offset="1_0",
+                live="long-poll",
+            )
+
+        assert exc_info.value.missing_headers == ["Stream-Cursor"]
+
+    def test_stream_throws_on_missing_headers_for_sse_response(self):
+        """Should validate durable-stream headers before parsing an SSE response."""
+        initial_response = MockResponse(
+            b"",
+            headers={
+                "Stream-Next-Offset": "1_0",
+                "Stream-Cursor": "cursor-1",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+        sse_response = MockResponse(
+            b'data: hello\nevent: control\ndata: {"upToDate":true,"streamNextOffset":"2_0"}\n\n',
+            headers={"content-type": "text/event-stream"},
+        )
+        sse_response.close = MagicMock()
+        mock_client = setup_mock_client_multi([initial_response, sse_response])
+
+        res = stream("https://example.com/stream", client=mock_client, live="sse")
+
+        with pytest.raises(MissingHeadersError) as exc_info:
+            next(res.iter_text())
+
+        assert exc_info.value.missing_headers == ["Stream-Next-Offset", "Stream-Cursor"]
+        sse_response.close.assert_called_once()
 
 
 class TestStreamResponseConsumption:
@@ -611,6 +675,7 @@ class TestLiveModeSemantics:
             b"chunk1",
             headers={
                 "Stream-Next-Offset": "1_5",
+                "Stream-Cursor": "cursor-1",
                 # No Stream-Up-To-Date header = not up to date,
             },
         )
@@ -620,6 +685,7 @@ class TestLiveModeSemantics:
             b"chunk2",
             headers={
                 "Stream-Next-Offset": "2_10",
+                "Stream-Cursor": "cursor-2",
                 "Stream-Up-To-Date": "true",
             },
         )
@@ -637,6 +703,49 @@ class TestLiveModeSemantics:
 
         assert mock_client.send.call_count == 2
         assert data == b"chunk1chunk2"
+
+    def test_stops_when_stream_closed_header_is_set(self):
+        """Live iteration should stop when the stream is closed."""
+        mock_response = MockResponse(
+            b"chunk1",
+            headers={
+                "Stream-Next-Offset": "1_5",
+                "Stream-Up-To-Date": "true",
+                "Stream-Closed": "true",
+            },
+        )
+        mock_client = setup_mock_client(mock_response)
+
+        res = stream("https://example.com/stream", client=mock_client, live="long-poll")
+
+        assert list(res.iter_text()) == ["chunk1"]
+        assert res.stream_closed is True
+        assert mock_client.send.call_count == 1
+
+    def test_sse_text_updates_stream_closed_from_control_event(self):
+        """SSE text iteration should store streamClosed from control events."""
+        initial_response = MockResponse(
+            b"",
+            headers={
+                "Stream-Next-Offset": "1_0",
+                "Stream-Cursor": "cursor-1",
+                "Stream-Up-To-Date": "true",
+            },
+        )
+        sse_response = MockResponse(
+            'event: data\ndata: hello\n\nevent: control\ndata: {"upToDate":true,"streamNextOffset":"2_0","streamClosed":true}\n\n',
+            headers={
+                "content-type": "text/event-stream",
+                "Stream-Next-Offset": "1_0",
+                "Stream-Cursor": "cursor-1",
+            },
+        )
+        mock_client = setup_mock_client_multi([initial_response, sse_response])
+
+        res = stream("https://example.com/stream", client=mock_client, live="sse")
+
+        assert list(res.iter_text()) == ["hello"]
+        assert res.stream_closed is True
 
     def test_stops_at_up_to_date_with_json(self):
         """Should stop at upToDate when live: false with read_json()."""
@@ -721,6 +830,100 @@ class TestOnErrorCallback:
 
         assert mock_client.send.call_count == 2
         assert res.url == "https://example.com/stream"
+
+    def test_on_error_initial_retries_are_bounded(self, monkeypatch: pytest.MonkeyPatch):
+        """Initial on_error retries should stop after the retry limit."""
+        stream_module = importlib.import_module("durable_streams.stream")
+        monkeypatch.setattr(stream_module, "_sleep_before_retry", lambda _retry: None)
+        mock_client = setup_mock_client_multi([MockResponse(b"Error", status_code=500)] * 51)
+        errors = 0
+
+        def on_error_handler(_e: Exception) -> dict[str, Any] | None:
+            nonlocal errors
+            errors += 1
+            return {"headers": {"x-retry": str(errors)}}
+
+        with pytest.raises(DurableStreamError):
+            stream("https://example.com/stream", client=mock_client, on_error=on_error_handler)
+
+        assert errors == 51
+        assert mock_client.send.call_count == 51
+
+    def test_on_error_followup_retries_are_bounded(self, monkeypatch: pytest.MonkeyPatch):
+        """Follow-up on_error retries should stop after the retry limit."""
+        stream_module = importlib.import_module("durable_streams.stream")
+        monkeypatch.setattr(stream_module, "_sleep_before_retry", lambda _retry: None)
+        responses = [
+            MockResponse(
+                b"a",
+                headers={"Stream-Next-Offset": "1_1", "Stream-Cursor": "cursor-1"},
+            ),
+            *[MockResponse(b"Error", status_code=500) for _ in range(51)],
+        ]
+        mock_client = setup_mock_client_multi(responses)
+        errors = 0
+
+        def on_error_handler(_e: Exception) -> dict[str, Any] | None:
+            nonlocal errors
+            errors += 1
+            return {"headers": {"x-retry": str(errors)}}
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live="long-poll",
+            on_error=on_error_handler,
+        )
+
+        with pytest.raises(DurableStreamError):
+            res.read_bytes()
+
+        assert errors == 51
+        assert mock_client.send.call_count == 52
+
+    def test_on_error_followup_header_mutations_persist(self):
+        """Follow-up retry headers should persist to later follow-up requests."""
+        responses = [
+            MockResponse(
+                b"a",
+                headers={
+                    "Stream-Next-Offset": "1_1",
+                    "Stream-Cursor": "cursor-1",
+                },
+            ),
+            MockResponse(b"Unauthorized", status_code=401),
+            MockResponse(
+                b"b",
+                headers={
+                    "Stream-Next-Offset": "2_1",
+                    "Stream-Cursor": "cursor-2",
+                },
+            ),
+            MockResponse(
+                b"c",
+                headers={
+                    "Stream-Next-Offset": "3_1",
+                    "Stream-Cursor": "cursor-3",
+                    "Stream-Up-To-Date": "true",
+                },
+            ),
+        ]
+        mock_client = setup_mock_client_multi(responses)
+
+        def on_error_handler(_e: Exception) -> dict[str, Any] | None:
+            return {"headers": {"Authorization": "Bearer refreshed"}}
+
+        res = stream(
+            "https://example.com/stream",
+            client=mock_client,
+            live="long-poll",
+            headers={"Authorization": "Bearer old"},
+            on_error=on_error_handler,
+        )
+
+        assert res.read_bytes() == b"abc"
+        assert get_request_headers(mock_client, 2)["Authorization"] == "Bearer refreshed"
+        assert get_request_headers(mock_client, 3)["Authorization"] == "Bearer refreshed"
 
 
 class TestParams:
@@ -852,6 +1055,7 @@ class TestJsonBatches:
             headers={
                 "content-type": "application/json",
                 "Stream-Next-Offset": "1_5",
+                "Stream-Cursor": "cursor-1",
                 # No Stream-Up-To-Date header = not up to date,
             },
         )
@@ -860,6 +1064,7 @@ class TestJsonBatches:
             headers={
                 "content-type": "application/json",
                 "Stream-Next-Offset": "2_10",
+                "Stream-Cursor": "cursor-2",
                 "Stream-Up-To-Date": "true",
             },
         )

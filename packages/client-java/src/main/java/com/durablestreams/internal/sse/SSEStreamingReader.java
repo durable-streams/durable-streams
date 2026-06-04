@@ -1,6 +1,7 @@
 package com.durablestreams.internal.sse;
 
 import com.durablestreams.exception.DurableStreamException;
+import com.durablestreams.exception.MissingHeadersException;
 import com.durablestreams.exception.ParseErrorException;
 import com.durablestreams.exception.StreamNotFoundException;
 import com.durablestreams.model.Chunk;
@@ -76,6 +77,8 @@ public final class SSEStreamingReader implements AutoCloseable {
                 throw new DurableStreamException("SSE connection failed with status: " + status, status);
             }
 
+            validateInitialHeaders();
+
             // Detect encoding from response header
             this.encoding = response.headers()
                     .firstValue("Stream-SSE-Data-Encoding")
@@ -93,6 +96,24 @@ public final class SSEStreamingReader implements AutoCloseable {
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
             throw new DurableStreamException("SSE connection interrupted", e);
+        }
+    }
+
+    private void validateInitialHeaders() throws MissingHeadersException {
+        String url = request.uri().toString();
+        String nextOffset = response.headers().firstValue("Stream-Next-Offset").orElse(null);
+        if (nextOffset == null || nextOffset.isBlank()) {
+            throw new MissingHeadersException("Missing required Stream-Next-Offset header for " + url);
+        }
+
+        String streamClosed = response.headers().firstValue("Stream-Closed").orElse(null);
+        if ("true".equalsIgnoreCase(streamClosed)) {
+            return;
+        }
+
+        String cursor = response.headers().firstValue("Stream-Cursor").orElse(null);
+        if (cursor == null || cursor.isBlank()) {
+            throw new MissingHeadersException("Missing required Stream-Cursor header for " + url);
         }
     }
 

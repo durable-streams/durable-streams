@@ -184,8 +184,14 @@ final class StreamResponse implements IteratorAggregate
         $resolvedHeaders = $this->resolveHeaders();
 
         try {
-            return $this->client->get($url, $resolvedHeaders, $this->timeout);
+            $response = $this->client->get($url, $resolvedHeaders, $this->timeout);
+            $this->validateReadResponseHeaders($response);
+            return $response;
         } catch (DurableStreamException $e) {
+            if ($e->getErrorCode() === 'MISSING_HEADERS') {
+                throw $e;
+            }
+
             // If we have an error handler, give it a chance to recover
             if ($this->onError !== null) {
                 $result = ($this->onError)($e);
@@ -200,6 +206,58 @@ final class StreamResponse implements IteratorAggregate
 
             // No recovery - rethrow
             throw $e;
+        }
+    }
+
+    private function validateReadResponseHeaders(HttpResponse $response): void
+    {
+        $offset = $response->getOffset();
+        if ($offset === null || $offset === '') {
+            throw new DurableStreamException(
+                "Missing required Stream-Next-Offset header for {$this->url}",
+                'MISSING_HEADERS'
+            );
+        }
+
+        if (!$this->live) {
+            return;
+        }
+
+        $streamClosed = strtolower($response->getHeader('stream-closed') ?? '');
+        if ($streamClosed === 'true') {
+            return;
+        }
+
+        $cursor = $response->getCursor();
+        if ($cursor === null || $cursor === '') {
+            throw new DurableStreamException(
+                "Missing required Stream-Cursor header for {$this->url}",
+                'MISSING_HEADERS'
+            );
+        }
+    }
+
+    private function validateSseBootstrapHeaders(SSEStreamHandle $stream): void
+    {
+        $offset = $stream->getHeader('stream-next-offset');
+        if ($offset === null || $offset === '') {
+            throw new DurableStreamException(
+                "Missing required Stream-Next-Offset header for {$this->url}",
+                'MISSING_HEADERS'
+            );
+        }
+
+        $streamClosed = strtolower($stream->getHeader('stream-closed') ?? '');
+        if ($streamClosed === 'true') {
+            return;
+        }
+
+        $cursor = $stream->getHeader('stream-cursor');
+        if ($cursor === null || $cursor === '') {
+            throw new DurableStreamException(
+                "Missing required Stream-Cursor header for {$this->url}",
+                'MISSING_HEADERS'
+            );
         }
     }
 
@@ -329,6 +387,7 @@ final class StreamResponse implements IteratorAggregate
 
         // Open SSE stream
         $stream = $this->client->openStream($sseUrl, $resolvedHeaders, $this->timeout);
+        $this->validateSseBootstrapHeaders($stream);
 
         // Detect encoding from response header (server auto-sets for binary streams)
         $encoding = $stream->getHeader('Stream-SSE-Data-Encoding');

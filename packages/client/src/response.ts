@@ -13,19 +13,43 @@ import {
   STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_UP_TO_DATE_HEADER,
 } from "./constants"
-import { DurableStreamError } from "./error"
+import { DurableStreamError, FetchError, MissingHeadersError } from "./error"
+import { FastLoopDetector } from "./fast-loop-detection"
+import {
+  BackoffDefaults,
+  ON_ERROR_MAX_RETRIES,
+  getFullJitterBackoffMs,
+  sleepWithAbort,
+} from "./fetch"
+import { PauseLock } from "./pause-lock"
 import { parseSSEStream } from "./sse"
-import { LongPollState, PausedState, SSEState } from "./stream-response-state"
+import {
+  ActiveState,
+  ErrorState,
+  LiveState,
+  PausedState,
+  ReplayingState,
+  StaleRetryState,
+  SyncingState,
+  createCacheBuster,
+} from "./stream-response-state"
+import { subscribeToWakeDetection } from "./wake-detection"
+import type { BackoffOptions } from "./fetch"
+import type { FastLoopDetectorOptions } from "./fast-loop-detection"
+import type { UpToDateTracker } from "./up-to-date-tracker"
 import type { ReadableStreamAsyncIterable } from "./asyncIterableReadableStream"
-import type { SSEControlEvent, SSEEvent } from "./sse"
-import type { StreamResponseState } from "./stream-response-state"
+import type { SSEEvent } from "./sse"
+import type { StreamState } from "./stream-response-state"
 import type {
   ByteChunk,
+  HeadersRecord,
   StreamResponse as IStreamResponse,
   JsonBatch,
   LiveMode,
   Offset,
+  ParamsRecord,
   SSEResilienceOptions,
+  StreamErrorHandler,
   TextChunk,
 } from "./types"
 
@@ -35,9 +59,9 @@ import type {
 const PAUSE_STREAM = `PAUSE_STREAM`
 
 /**
- * State machine for visibility-based pause/resume.
+ * Constant used as abort reason when the system wakes from sleep.
  */
-type StreamState = `active` | `pause-requested` | `paused`
+const SYSTEM_WAKE = `SYSTEM_WAKE`
 
 /**
  * Internal configuration for creating a StreamResponse.
@@ -71,18 +95,33 @@ export interface StreamResponseConfig {
     cursor: string | undefined,
     signal: AbortSignal,
     upToDate: boolean,
-    resumingFromPause?: boolean
+    resumingFromPause?: boolean,
+    cacheBuster?: string,
+    overrideHeaders?: HeadersRecord,
+    overrideParams?: ParamsRecord
   ) => Promise<Response>
   /** Function to start SSE connection and return a Response with SSE body */
   startSSE?: (
     offset: Offset,
     cursor: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    overrideHeaders?: HeadersRecord,
+    overrideParams?: ParamsRecord
   ) => Promise<Response>
   /** SSE resilience options */
   sseResilience?: SSEResilienceOptions
   /** Encoding for SSE data events */
   encoding?: `base64`
+  /** Error handler for mid-stream recoverable errors */
+  onError?: StreamErrorHandler
+  /** Up-to-date tracker for replay mode entry */
+  upToDateTracker?: UpToDateTracker
+  /** Canonical stream key for up-to-date tracking */
+  streamKey?: string
+  /** Options for the fast loop detector */
+  fastLoopOptions?: FastLoopDetectorOptions
+  /** Backoff options for onError retry delays */
+  backoffOptions?: BackoffOptions
 }
 
 /**
@@ -105,7 +144,7 @@ export class StreamResponseImpl<
   #isLoading: boolean
 
   // --- Evolving state (immutable state machine) ---
-  #syncState: StreamResponseState
+  #syncState: StreamState
 
   // --- Internal state ---
   #isJsonMode: boolean
@@ -117,12 +156,14 @@ export class StreamResponseImpl<
   #closed: Promise<void>
   #stopAfterUpToDate = false
   #consumptionMethod: string | null = null
+  #overrideHeaders?: HeadersRecord
+  #overrideParams?: ParamsRecord
 
   // --- Visibility/Pause State ---
-  #state: StreamState = `active`
+  #pauseLock: PauseLock
   #requestAbortController?: AbortController
   #unsubscribeFromVisibilityChanges?: () => void
-  #pausePromise?: Promise<void>
+  #unsubscribeFromWakeDetection?: () => void
   #pauseResolve?: () => void
 
   // --- SSE Resilience Config ---
@@ -130,6 +171,21 @@ export class StreamResponseImpl<
 
   // --- SSE Encoding State ---
   #encoding?: `base64`
+
+  // --- Error Recovery ---
+  #onError?: StreamErrorHandler
+  #backoffOptions: BackoffOptions
+  #onErrorRetryAttempt = 0
+
+  // --- Fast Loop Detection ---
+  #fastLoopDetector: FastLoopDetector
+
+  // --- Replay Mode / Up-to-date Tracking ---
+  #upToDateTracker?: UpToDateTracker
+  #streamKey?: string
+
+  // --- Duplicate URL Guard ---
+  #duplicateUrlCount = 0
 
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
@@ -140,17 +196,40 @@ export class StreamResponseImpl<
     this.live = config.live
     this.startOffset = config.startOffset
 
-    // Initialize immutable state machine — SSEState if SSE is available,
-    // LongPollState otherwise. The type encodes whether SSE has fallen back.
-    const syncFields = {
+    // Initialize immutable state machine — SyncingState since we already
+    // have the first response metadata.
+    this.#syncState = new SyncingState({
       offset: config.initialOffset,
       cursor: config.initialCursor,
       upToDate: config.initialUpToDate,
       streamClosed: config.initialStreamClosed,
+    })
+
+    // Check replay mode entry (one-shot, after first response)
+    if (
+      config.upToDateTracker &&
+      config.streamKey &&
+      !this.#syncState.upToDate
+    ) {
+      const replayCursor = config.upToDateTracker.shouldEnterReplayMode(
+        config.streamKey
+      )
+      if (
+        replayCursor &&
+        this.#syncState instanceof ActiveState &&
+        this.#syncState.canEnterReplayMode()
+      ) {
+        this.#syncState = new ReplayingState(
+          {
+            offset: this.#syncState.offset,
+            cursor: this.#syncState.cursor,
+            upToDate: this.#syncState.upToDate,
+            streamClosed: this.#syncState.streamClosed,
+          },
+          replayCursor
+        )
+      }
     }
-    this.#syncState = config.startSSE
-      ? new SSEState(syncFields)
-      : new LongPollState(syncFields)
 
     // Initialize response metadata from first response
     this.#headers = config.firstResponse.headers
@@ -180,9 +259,32 @@ export class StreamResponseImpl<
     // Initialize SSE encoding
     this.#encoding = config.encoding
 
+    // Initialize error handler
+    this.#onError = config.onError
+    this.#backoffOptions = config.backoffOptions ?? BackoffDefaults
+
+    // Initialize fast loop detector
+    this.#fastLoopDetector = new FastLoopDetector(config.fastLoopOptions)
+
+    // Initialize replay mode tracking
+    this.#upToDateTracker = config.upToDateTracker
+    this.#streamKey = config.streamKey
+
     this.#closed = new Promise((resolve, reject) => {
       this.#closedResolve = resolve
       this.#closedReject = reject
+    })
+
+    // Initialize PauseLock for visibility-based pause/resume
+    this.#pauseLock = new PauseLock({
+      onAcquired: () => {
+        this.#syncState = this.#syncState.pause()
+        this.#requestAbortController?.abort(PAUSE_STREAM)
+      },
+      onReleased: () => {
+        this.#pauseResolve?.()
+        this.#pauseResolve = undefined
+      },
     })
 
     // Create the core response stream
@@ -196,7 +298,6 @@ export class StreamResponseImpl<
         this.#requestAbortController?.abort(this.#abortController.signal.reason)
         // Unblock pull() if paused, so it can see the abort and close
         this.#pauseResolve?.()
-        this.#pausePromise = undefined
         this.#pauseResolve = undefined
       },
       { once: true }
@@ -220,9 +321,12 @@ export class StreamResponseImpl<
     ) {
       const visibilityHandler = (): void => {
         if (document.hidden) {
-          this.#pause()
+          this.#pauseLock.acquire(`visibility`)
         } else {
-          this.#resume()
+          if (this.#abortController.signal.aborted) {
+            return
+          }
+          this.#pauseLock.release(`visibility`)
         }
       }
 
@@ -238,51 +342,8 @@ export class StreamResponseImpl<
 
       // Check initial state - page might already be hidden when stream starts
       if (document.hidden) {
-        this.#pause()
+        this.#pauseLock.acquire(`visibility`)
       }
-    }
-  }
-
-  /**
-   * Pause the stream when page becomes hidden.
-   * Aborts any in-flight request to free resources.
-   * Creates a promise that pull() will await while paused.
-   */
-  #pause(): void {
-    if (this.#state === `active`) {
-      this.#state = `pause-requested`
-      // Wrap state in PausedState to preserve it across pause/resume
-      this.#syncState = this.#syncState.pause()
-      // Create promise that pull() will await
-      this.#pausePromise = new Promise((resolve) => {
-        this.#pauseResolve = resolve
-      })
-      // Abort current request if any
-      this.#requestAbortController?.abort(PAUSE_STREAM)
-    }
-  }
-
-  /**
-   * Resume the stream when page becomes visible.
-   * Resolves the pause promise to unblock pull().
-   */
-  #resume(): void {
-    if (this.#state === `paused` || this.#state === `pause-requested`) {
-      // Don't resume if the user's signal is already aborted
-      if (this.#abortController.signal.aborted) {
-        return
-      }
-
-      // Unwrap PausedState to restore the inner state
-      if (this.#syncState instanceof PausedState) {
-        this.#syncState = this.#syncState.resume().state
-      }
-
-      // Transition to active and resolve the pause promise
-      this.#state = `active`
-      this.#pauseResolve?.()
-      this.#pausePromise = undefined
-      this.#pauseResolve = undefined
     }
   }
 
@@ -342,11 +403,15 @@ export class StreamResponseImpl<
 
   #markClosed(): void {
     this.#unsubscribeFromVisibilityChanges?.()
+    this.#unsubscribeFromWakeDetection?.()
+    this.#unsubscribeFromWakeDetection = undefined
     this.#closedResolve()
   }
 
   #markError(err: Error): void {
     this.#unsubscribeFromVisibilityChanges?.()
+    this.#unsubscribeFromWakeDetection?.()
+    this.#unsubscribeFromWakeDetection = undefined
     this.#closedReject(err)
   }
 
@@ -369,24 +434,38 @@ export class StreamResponseImpl<
    * and whether we've received upToDate or streamClosed.
    */
   #shouldContinueLive(): boolean {
-    return this.#syncState.shouldContinueLive(
-      this.#stopAfterUpToDate,
-      this.live
-    )
+    if (this.#stopAfterUpToDate && this.#syncState.upToDate) return false
+    if (this.live === false) return false
+    if (this.#syncState.streamClosed) return false
+    return true
   }
 
   /**
    * Update state from response headers.
    */
   #updateStateFromResponse(response: Response): void {
-    // Immutable state transition
-    this.#syncState = this.#syncState.withResponseMetadata({
+    // Immutable state transition via new state machine
+    const transition = this.#syncState.handleResponseMetadata({
       offset: response.headers.get(STREAM_OFFSET_HEADER) || undefined,
       cursor: response.headers.get(STREAM_CURSOR_HEADER) || undefined,
       upToDate: response.headers.has(STREAM_UP_TO_DATE_HEADER),
       streamClosed:
         response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`,
     })
+    this.#syncState = transition.state
+
+    // Record cursor on up-to-date for replay mode dedup
+    if (
+      this.#upToDateTracker &&
+      this.#streamKey &&
+      this.#syncState.upToDate &&
+      this.#syncState.cursor
+    ) {
+      this.#upToDateTracker.recordUpToDate(
+        this.#streamKey,
+        this.#syncState.cursor
+      )
+    }
 
     // Update response metadata to reflect latest server response
     this.#headers = response.headers
@@ -397,9 +476,22 @@ export class StreamResponseImpl<
 
   /**
    * Update instance state from an SSE control event.
+   * Maps SSE control fields to a response metadata update.
    */
-  #updateStateFromSSEControl(controlEvent: SSEControlEvent): void {
-    this.#syncState = this.#syncState.withSSEControl(controlEvent)
+  #updateStateFromSSEControl(controlEvent: {
+    streamNextOffset: Offset
+    streamCursor?: string
+    upToDate?: boolean
+    streamClosed?: boolean
+  }): void {
+    const streamClosed = controlEvent.streamClosed ?? false
+    const transition = this.#syncState.handleResponseMetadata({
+      offset: controlEvent.streamNextOffset,
+      cursor: controlEvent.streamCursor,
+      upToDate: streamClosed ? true : (controlEvent.upToDate ?? false),
+      streamClosed,
+    })
+    this.#syncState = transition.state
   }
 
   #updateEncodingFromSSEResponse(response: Response): void {
@@ -410,49 +502,78 @@ export class StreamResponseImpl<
   }
 
   /**
+   * SSE connection start time for duration tracking.
+   */
+  #sseConnectionStartTime: number | undefined
+
+  /**
    * Mark the start of an SSE connection for duration tracking.
-   * If the state is not SSEState (e.g., auto-detected SSE from content-type),
-   * transitions to SSEState first.
+   * If the state is not yet LiveState, transition to it (we're now live via SSE).
    */
   #markSSEConnectionStart(): void {
-    if (!(this.#syncState instanceof SSEState)) {
-      this.#syncState = new SSEState({
+    if (!(this.#syncState instanceof LiveState)) {
+      this.#syncState = new LiveState({
         offset: this.#syncState.offset,
         cursor: this.#syncState.cursor,
         upToDate: this.#syncState.upToDate,
         streamClosed: this.#syncState.streamClosed,
       })
     }
-    this.#syncState = (this.#syncState as SSEState).startConnection(Date.now())
+    this.#sseConnectionStartTime = Date.now()
   }
 
   /**
-   * Try to reconnect SSE and return the new iterator, or null if reconnection
-   * is not possible or fails.
+   * Try to reconnect SSE, fall back to long-poll, or close if reconnection is
+   * not possible.
    */
-  async #trySSEReconnect(): Promise<AsyncGenerator<
-    SSEEvent,
-    void,
-    undefined
-  > | null> {
-    // Check if we should fall back to long-poll (state type encodes this)
-    if (!this.#syncState.shouldUseSse()) {
-      return null // Will cause fallback to long-poll
+  async #trySSEReconnect(): Promise<
+    | {
+        type: `reconnected`
+        iterator: AsyncGenerator<SSEEvent, void, undefined>
+      }
+    | { type: `fallback-to-long-poll` }
+    | { type: `closed` }
+  > {
+    // Check if we should fall back to long-poll
+    const sseEnabled = this.#startSSE !== undefined
+    if (!(this.#syncState instanceof LiveState)) {
+      return { type: `closed` }
+    }
+    if (
+      !this.#syncState.shouldUseSse({
+        liveSseEnabled: sseEnabled,
+        resumingFromPause: false,
+      })
+    ) {
+      return this.#syncState.sseFallbackToLongPolling
+        ? { type: `fallback-to-long-poll` }
+        : { type: `closed` }
     }
 
     if (!this.#shouldContinueLive() || !this.#startSSE) {
-      return null
+      return { type: `closed` }
     }
 
-    // Pure state transition: check connection duration, manage counters
-    const result = (this.#syncState as SSEState).handleConnectionEnd(
-      Date.now(),
-      this.#abortController.signal.aborted,
-      this.#sseResilience
-    )
+    // Check connection duration via LiveState
+    const connectionDuration =
+      this.#sseConnectionStartTime !== undefined
+        ? Date.now() - this.#sseConnectionStartTime
+        : 0
+    const result = this.#syncState.handleSseConnectionClosed({
+      connectionDuration,
+      wasAborted: this.#abortController.signal.aborted,
+      minConnectionDuration: this.#sseResilience.minConnectionDuration,
+      maxShortConnections: this.#sseResilience.maxShortConnections,
+    })
     this.#syncState = result.state
 
-    if (result.action === `fallback`) {
+    // Check if we fell back to long-polling
+    const sseCloseResult = result as {
+      state: LiveState
+      fellBackToLongPolling?: boolean
+      wasShortConnection?: boolean
+    }
+    if (sseCloseResult.fellBackToLongPolling) {
       if (this.#sseResilience.logWarnings) {
         console.warn(
           `[Durable Streams] SSE connections are closing immediately (possibly due to proxy buffering or misconfiguration). ` +
@@ -461,18 +582,19 @@ export class StreamResponseImpl<
             `Configuration: Nginx add 'X-Accel-Buffering: no', Caddy add 'flush_interval -1' to reverse_proxy.`
         )
       }
-      return null // Fallback to long-poll was triggered
+      return { type: `fallback-to-long-poll` }
     }
 
-    if (result.action === `reconnect`) {
-      // Host applies jitter/delay — state machine only returns backoffAttempt
+    // If it was a short connection but not yet at threshold, apply backoff
+    if (sseCloseResult.wasShortConnection) {
+      const backoffAttempt = (result.state as LiveState)
+        .consecutiveShortConnections
       const maxDelay = Math.min(
         this.#sseResilience.backoffMaxDelay,
-        this.#sseResilience.backoffBaseDelay *
-          Math.pow(2, result.backoffAttempt)
+        this.#sseResilience.backoffBaseDelay * Math.pow(2, backoffAttempt)
       )
       const delayMs = Math.floor(Math.random() * maxDelay)
-      await new Promise((resolve) => setTimeout(resolve, delayMs))
+      await sleepWithAbort(delayMs, this.#abortController.signal)
     }
 
     // Track new connection start
@@ -484,16 +606,21 @@ export class StreamResponseImpl<
     const newSSEResponse = await this.#startSSE(
       this.offset,
       this.cursor,
-      this.#requestAbortController.signal
+      this.#requestAbortController.signal,
+      this.#overrideHeaders,
+      this.#overrideParams
     )
     this.#updateEncodingFromSSEResponse(newSSEResponse)
     if (newSSEResponse.body) {
-      return parseSSEStream(
-        newSSEResponse.body,
-        this.#requestAbortController.signal
-      )
+      return {
+        type: `reconnected`,
+        iterator: parseSSEStream(
+          newSSEResponse.body,
+          this.#requestAbortController.signal
+        ),
+      }
     }
-    return null
+    return { type: `closed` }
   }
 
   /**
@@ -511,8 +638,10 @@ export class StreamResponseImpl<
         type: `response`
         response: Response
         newIterator?: AsyncGenerator<SSEEvent, void, undefined>
+        fallbackToLongPoll?: boolean
       }
     | { type: `closed` }
+    | { type: `fallback-to-long-poll` }
     | { type: `error`; error: Error }
     | {
         type: `continue`
@@ -522,18 +651,15 @@ export class StreamResponseImpl<
     const { done, value: event } = await sseEventIterator.next()
 
     if (done) {
-      // SSE stream ended - try to reconnect
-      try {
-        const newIterator = await this.#trySSEReconnect()
-        if (newIterator) {
-          return { type: `continue`, newIterator }
-        }
-      } catch (err) {
-        return {
-          type: `error`,
-          error:
-            err instanceof Error ? err : new Error(`SSE reconnection failed`),
-        }
+      // SSE stream ended - try to reconnect. Let reconnect failures throw into
+      // pull()'s shared recovery path so onError/backoff/overrides apply to SSE
+      // reconnects the same way they apply to long-poll fetches.
+      const reconnect = await this.#trySSEReconnect()
+      if (reconnect.type === `reconnected`) {
+        return { type: `continue`, newIterator: reconnect.iterator }
+      }
+      if (reconnect.type === `fallback-to-long-poll`) {
+        return { type: `fallback-to-long-poll` }
       }
       return { type: `closed` }
     }
@@ -549,8 +675,8 @@ export class StreamResponseImpl<
     // If upToDate is signaled, yield an empty response so subscribers receive the signal
     // This is important for empty streams and for subscribers waiting for catch-up completion
     if (event.upToDate) {
-      const response = createSSESyntheticResponse(
-        ``,
+      const response = createSSESyntheticResponseFromParts(
+        [``],
         event.streamNextOffset,
         event.streamCursor,
         true,
@@ -580,6 +706,7 @@ export class StreamResponseImpl<
         type: `response`
         response: Response
         newIterator?: AsyncGenerator<SSEEvent, void, undefined>
+        fallbackToLongPoll?: boolean
       }
     | { type: `error`; error: Error }
   > {
@@ -607,11 +734,13 @@ export class StreamResponseImpl<
 
         // Try to reconnect
         try {
-          const newIterator = await this.#trySSEReconnect()
+          const reconnect = await this.#trySSEReconnect()
           return {
             type: `response`,
             response,
-            newIterator: newIterator ?? undefined,
+            newIterator:
+              reconnect.type === `reconnected` ? reconnect.iterator : undefined,
+            fallbackToLongPoll: reconnect.type === `fallback-to-long-poll`,
           }
         } catch (err) {
           return {
@@ -655,9 +784,16 @@ export class StreamResponseImpl<
     let firstResponseYielded = false
     let sseEventIterator: AsyncGenerator<SSEEvent, void, undefined> | null =
       null
+    let lastRequestUrl: string | undefined
 
     return new ReadableStream<Response>({
       pull: async (controller) => {
+        if (!this.#unsubscribeFromWakeDetection) {
+          this.#unsubscribeFromWakeDetection = subscribeToWakeDetection({
+            onWake: () => this.#requestAbortController?.abort(SYSTEM_WAKE),
+          })
+        }
+
         try {
           // First, yield the held first response (for non-SSE modes)
           // For SSE mode, the first response IS the SSE stream, so we start parsing it
@@ -703,10 +839,12 @@ export class StreamResponseImpl<
             this.#startSSE &&
             this.#shouldContinueLive()
           ) {
-            if (this.#state === `pause-requested` || this.#state === `paused`) {
-              this.#state = `paused`
-              if (this.#pausePromise) {
-                await this.#pausePromise
+            if (this.#pauseLock.isPaused) {
+              await new Promise<void>((resolve) => {
+                this.#pauseResolve = resolve
+              })
+              if (this.#syncState instanceof PausedState) {
+                this.#syncState = this.#syncState.resume()
               }
               if (this.#abortController.signal.aborted) {
                 this.#markClosed()
@@ -720,7 +858,9 @@ export class StreamResponseImpl<
             const sseResponse = await this.#startSSE(
               this.offset,
               this.cursor,
-              this.#requestAbortController.signal
+              this.#requestAbortController.signal,
+              this.#overrideHeaders,
+              this.#overrideParams
             )
             this.#updateEncodingFromSSEResponse(sseResponse)
             if (sseResponse.body) {
@@ -734,10 +874,13 @@ export class StreamResponseImpl<
           // SSE mode: process events from the SSE stream
           if (sseEventIterator) {
             // Check for pause state before processing SSE events
-            if (this.#state === `pause-requested` || this.#state === `paused`) {
-              this.#state = `paused`
-              if (this.#pausePromise) {
-                await this.#pausePromise
+            if (this.#pauseLock.isPaused) {
+              await new Promise<void>((resolve) => {
+                this.#pauseResolve = resolve
+              })
+              // Unwrap PausedState after resume
+              if (this.#syncState instanceof PausedState) {
+                this.#syncState = this.#syncState.resume()
               }
               // After resume, check if we should still continue
               if (this.#abortController.signal.aborted) {
@@ -746,9 +889,12 @@ export class StreamResponseImpl<
                 return
               }
               // Reconnect SSE after resume
-              const newIterator = await this.#trySSEReconnect()
-              if (newIterator) {
-                sseEventIterator = newIterator
+              const reconnect = await this.#trySSEReconnect()
+              if (reconnect.type === `reconnected`) {
+                sseEventIterator = reconnect.iterator
+              } else if (reconnect.type === `fallback-to-long-poll`) {
+                sseEventIterator = null
+                return
               } else {
                 // Could not reconnect - close the stream
                 this.#markClosed()
@@ -766,6 +912,8 @@ export class StreamResponseImpl<
                 case `response`:
                   if (result.newIterator) {
                     sseEventIterator = result.newIterator
+                  } else if (result.fallbackToLongPoll) {
+                    sseEventIterator = null
                   }
                   controller.enqueue(result.response)
                   return
@@ -778,6 +926,10 @@ export class StreamResponseImpl<
                 case `error`:
                   this.#markError(result.error)
                   controller.error(result.error)
+                  return
+
+                case `fallback-to-long-poll`:
+                  sseEventIterator = null
                   return
 
                 case `continue`:
@@ -795,10 +947,13 @@ export class StreamResponseImpl<
             // the old #justResumedFromPause one-shot field. If we enter the pause
             // branch and wake up without abort, we just resumed.
             let resumingFromPause = false
-            if (this.#state === `pause-requested` || this.#state === `paused`) {
-              this.#state = `paused`
-              if (this.#pausePromise) {
-                await this.#pausePromise
+            if (this.#pauseLock.isPaused) {
+              await new Promise<void>((resolve) => {
+                this.#pauseResolve = resolve
+              })
+              // Unwrap PausedState after resume
+              if (this.#syncState instanceof PausedState) {
+                this.#syncState = this.#syncState.resume()
               }
               // After resume, check if we should still continue
               if (this.#abortController.signal.aborted) {
@@ -815,18 +970,113 @@ export class StreamResponseImpl<
               return
             }
 
+            // Fast loop detection for non-live (catch-up) requests
+            const isLiveRequest = this.#syncState instanceof LiveState
+            if (!isLiveRequest) {
+              const loopResult = this.#fastLoopDetector.check(
+                this.#syncState.offset
+              )
+              switch (loopResult.action) {
+                case `ok`:
+                  break
+                case `clear-and-reset`:
+                  console.warn(
+                    `[durable-streams] Detected fast retry loop. Adding cache buster.`,
+                    new Error(`stack trace`)
+                  )
+                  this.#syncState = new StaleRetryState(
+                    {
+                      offset: this.#syncState.offset,
+                      cursor: this.#syncState.cursor,
+                      upToDate: this.#syncState.upToDate,
+                      streamClosed: this.#syncState.streamClosed,
+                    },
+                    createCacheBuster()
+                  )
+                  break
+                case `backoff`:
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, loopResult.delayMs)
+                  )
+                  break
+                case `fatal`:
+                  throw new FetchError(
+                    502,
+                    loopResult.message,
+                    undefined,
+                    {},
+                    this.url
+                  )
+              }
+            }
+
+            // Duplicate-URL guard: detect when the same request would be made repeatedly
+            let cacheBuster: string | undefined =
+              this.#syncState instanceof StaleRetryState
+                ? this.#syncState.cacheBuster
+                : undefined
+            const requestKey = `${this.offset}|${this.cursor ?? ``}`
+            if (!isLiveRequest && lastRequestUrl === requestKey) {
+              this.#duplicateUrlCount++
+              if (this.#duplicateUrlCount >= 5) {
+                throw new FetchError(
+                  502,
+                  undefined,
+                  undefined,
+                  {},
+                  this.url,
+                  `Same URL requested 5 times consecutively. This indicates a proxy or CDN misconfiguration.`
+                )
+              }
+              cacheBuster = createCacheBuster()
+            } else {
+              this.#duplicateUrlCount = 0
+            }
+            lastRequestUrl = requestKey
+
             // Create a new AbortController for this request (so we can abort on pause)
             this.#requestAbortController = new AbortController()
 
+            const prevOffset = this.offset
             const response = await this.#fetchNext(
               this.offset,
               this.cursor,
               this.#requestAbortController.signal,
               this.upToDate,
-              resumingFromPause
+              resumingFromPause,
+              cacheBuster,
+              this.#overrideHeaders,
+              this.#overrideParams
             )
 
             this.#updateStateFromResponse(response)
+            this.#onErrorRetryAttempt = 0
+
+            // Trigger message batch transition (SyncingState -> LiveState on upToDate)
+            let suppressBatch = false
+            if (this.#syncState instanceof ActiveState) {
+              const batchResult = this.#syncState.handleMessageBatch({
+                hasMessages: true,
+                hasUpToDateMessage: this.#syncState.upToDate,
+                isSse: false,
+                currentCursor: this.#syncState.cursor,
+              })
+              this.#syncState = batchResult.state
+              suppressBatch = batchResult.suppressBatch
+            }
+
+            // Reset fast loop detector on offset advance or live request
+            if (
+              this.offset !== prevOffset ||
+              this.#syncState instanceof LiveState
+            ) {
+              this.#fastLoopDetector.reset()
+            }
+
+            if (suppressBatch) {
+              return
+            }
+
             controller.enqueue(response)
             // Let the next pull() decide whether to close based on upToDate
             return
@@ -843,11 +1093,29 @@ export class StreamResponseImpl<
             this.#requestAbortController?.signal.aborted &&
             this.#requestAbortController.signal.reason === PAUSE_STREAM
           ) {
-            // Only transition to paused if we're still in pause-requested state
-            if (this.#state === `pause-requested`) {
-              this.#state = `paused`
+            return
+          }
+
+          if (this.#requestAbortController?.signal.reason === SYSTEM_WAKE) {
+            // System woke from sleep — restart from current offset
+            return // pull() will be called again, triggering a fresh request
+          }
+
+          // Non-retryable errors — notify via onError but don't retry
+          // (stripped headers are not recoverable)
+          if (err instanceof MissingHeadersError) {
+            if (this.#onError) {
+              try {
+                await this.#onError(err)
+              } catch (handlerErr) {
+                console.warn(
+                  `[durable-streams] onError handler threw while processing MissingHeadersError: ${handlerErr}`,
+                  new Error(`stack trace`)
+                )
+              }
             }
-            // Return - either we're paused, or already resumed and next pull will proceed
+            this.#markError(err)
+            controller.error(err)
             return
           }
 
@@ -855,8 +1123,62 @@ export class StreamResponseImpl<
             this.#markClosed()
             controller.close()
           } else {
-            this.#markError(err instanceof Error ? err : new Error(String(err)))
-            controller.error(err)
+            const errorObj = toError(err)
+
+            // Recoverable error — try onError handler
+            if (this.#onError) {
+              if (this.#syncState instanceof ActiveState) {
+                this.#syncState = this.#syncState.toErrorState(errorObj)
+              }
+              if (this.#onErrorRetryAttempt >= ON_ERROR_MAX_RETRIES) {
+                this.#markError(errorObj)
+                controller.error(errorObj)
+                return
+              }
+
+              try {
+                const retryOpts = await this.#onError(errorObj)
+                if (retryOpts !== undefined) {
+                  this.#onErrorRetryAttempt++
+
+                  // Apply returned headers/params for subsequent requests
+                  if (retryOpts.headers) {
+                    this.#overrideHeaders = {
+                      ...this.#overrideHeaders,
+                      ...retryOpts.headers,
+                    }
+                  }
+                  if (retryOpts.params) {
+                    this.#overrideParams = {
+                      ...this.#overrideParams,
+                      ...retryOpts.params,
+                    }
+                  }
+                  // User wants to retry — unwrap ErrorState
+                  if (this.#syncState instanceof ErrorState) {
+                    this.#syncState = this.#syncState.retry()
+                  }
+                  this.#fastLoopDetector.reset()
+                  await sleepWithAbort(
+                    getFullJitterBackoffMs(
+                      this.#onErrorRetryAttempt,
+                      this.#backoffOptions
+                    ),
+                    this.#abortController.signal
+                  )
+                  return // pull() will be called again
+                }
+              } catch (handlerErr) {
+                console.warn(
+                  `[durable-streams] onError handler threw during error recovery: ${handlerErr}`,
+                  new Error(`stack trace`)
+                )
+              }
+            }
+
+            // Fatal — propagate error
+            this.#markError(errorObj)
+            controller.error(errorObj)
           }
         }
       },
@@ -927,25 +1249,8 @@ export class StreamResponseImpl<
       while (!result.done) {
         // Capture upToDate BEFORE parsing (to avoid race with prefetch)
         const wasUpToDate = this.upToDate
-        // Get response text first (handles empty responses gracefully)
         const text = await result.value.text()
-        const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-        let parsed: T | Array<T>
-        try {
-          parsed = JSON.parse(content) as T | Array<T>
-        } catch (err) {
-          const preview =
-            content.length > 100 ? content.slice(0, 100) + `...` : content
-          throw new DurableStreamError(
-            `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
-            `PARSE_ERROR`
-          )
-        }
-        if (Array.isArray(parsed)) {
-          items.push(...parsed)
-        } else {
-          items.push(parsed)
-        }
+        items.push(...parseJsonText<T>(text))
         // Check if THIS response had upToDate set when we started reading it
         if (wasUpToDate) break
         result = await reader.read()
@@ -1032,7 +1337,7 @@ export class StreamResponseImpl<
           } catch {
             // Ignore abort errors
           }
-          this.#markError(err instanceof Error ? err : new Error(String(err)))
+          this.#markError(toError(err))
         }
       } finally {
         reader.releaseLock()
@@ -1069,21 +1374,8 @@ export class StreamResponseImpl<
         while (!result.done) {
           const response = result.value
 
-          // Parse JSON and flatten arrays (handle empty responses gracefully)
           const text = await response.text()
-          const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-          let parsed: TJson | Array<TJson>
-          try {
-            parsed = JSON.parse(content) as TJson | Array<TJson>
-          } catch (err) {
-            const preview =
-              content.length > 100 ? content.slice(0, 100) + `...` : content
-            throw new DurableStreamError(
-              `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
-              `PARSE_ERROR`
-            )
-          }
-          pendingItems = Array.isArray(parsed) ? parsed : [parsed]
+          pendingItems = parseJsonText<TJson>(text)
 
           if (pendingItems.length > 0) {
             controller.enqueue(pendingItems.shift())
@@ -1157,23 +1449,9 @@ export class StreamResponseImpl<
               this.streamClosed
             )
 
-          // Get response text first (handles empty responses gracefully)
           const text = await response.text()
-          const content = text.trim() || `[]` // Default to empty array if no content or whitespace
-          let parsed: T | Array<T>
-          try {
-            parsed = JSON.parse(content) as T | Array<T>
-          } catch (err) {
-            const preview =
-              content.length > 100 ? content.slice(0, 100) + `...` : content
-            throw new DurableStreamError(
-              `Failed to parse JSON response: ${err instanceof Error ? err.message : String(err)}. Data: ${preview}`,
-              `PARSE_ERROR`
-            )
-          }
-          const items = Array.isArray(parsed) ? parsed : [parsed]
+          const items = parseJsonText<T>(text)
 
-          // Await callback (handles both sync and async)
           await subscriber({
             items,
             offset,
@@ -1190,7 +1468,7 @@ export class StreamResponseImpl<
         const isAborted = abortController.signal.aborted
         const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
         if (!isAborted && !isBodyError) {
-          this.#markError(e instanceof Error ? e : new Error(String(e)))
+          this.#markError(toError(e))
         } else {
           this.#markClosed()
         }
@@ -1249,7 +1527,7 @@ export class StreamResponseImpl<
         const isAborted = abortController.signal.aborted
         const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
         if (!isAborted && !isBodyError) {
-          this.#markError(e instanceof Error ? e : new Error(String(e)))
+          this.#markError(toError(e))
         } else {
           this.#markClosed()
         }
@@ -1308,7 +1586,7 @@ export class StreamResponseImpl<
         const isAborted = abortController.signal.aborted
         const isBodyError = e instanceof TypeError && String(e).includes(`Body`)
         if (!isAborted && !isBodyError) {
-          this.#markError(e instanceof Error ? e : new Error(String(e)))
+          this.#markError(toError(e))
         } else {
           this.#markClosed()
         }
@@ -1343,6 +1621,33 @@ export class StreamResponseImpl<
 // =================================
 // Pure helper functions
 // =================================
+
+/**
+ * Coerce an unknown caught value to an Error instance.
+ */
+function toError(err: unknown): Error {
+  return err instanceof Error ? err : new Error(String(err))
+}
+
+/**
+ * Parse JSON text from a response body, normalizing empty content to an empty array.
+ * Throws a DurableStreamError with a preview of the invalid data on parse failure.
+ */
+function parseJsonText<T>(text: string): Array<T> {
+  const content = text.trim() || `[]`
+  let parsed: T | Array<T>
+  try {
+    parsed = JSON.parse(content) as T | Array<T>
+  } catch (err) {
+    const preview =
+      content.length > 100 ? content.slice(0, 100) + `...` : content
+    throw new DurableStreamError(
+      `Failed to parse JSON response: ${toError(err).message}. Data: ${preview}`,
+      `PARSE_ERROR`
+    )
+  }
+  return Array.isArray(parsed) ? parsed : [parsed]
+}
 
 /**
  * Extract stream metadata from Response headers.
@@ -1414,30 +1719,6 @@ function decodeBase64(base64Str: string): Uint8Array {
 }
 
 /**
- * Create a synthetic Response from SSE data with proper headers.
- * Includes offset/cursor/upToDate/streamClosed in headers so subscribers can read them.
- */
-function createSSESyntheticResponse(
-  data: string,
-  offset: Offset,
-  cursor: string | undefined,
-  upToDate: boolean,
-  streamClosed: boolean,
-  contentType: string | undefined,
-  encoding: `base64` | undefined
-): Response {
-  return createSSESyntheticResponseFromParts(
-    [data],
-    offset,
-    cursor,
-    upToDate,
-    streamClosed,
-    contentType,
-    encoding
-  )
-}
-
-/**
  * Create a synthetic Response from multiple SSE data parts.
  * For base64 mode, each part is independently encoded, so we decode each
  * separately and concatenate the binary results.
@@ -1492,10 +1773,10 @@ function createSSESyntheticResponseFromParts(
         0
       )
       const combined = new Uint8Array(totalLength)
-      let offset = 0
+      let byteOffset = 0
       for (const part of decodedParts) {
-        combined.set(part, offset)
-        offset += part.length
+        combined.set(part, byteOffset)
+        byteOffset += part.length
       }
       body = combined.buffer
     }

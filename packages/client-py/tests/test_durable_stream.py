@@ -222,6 +222,7 @@ class TestDurableStreamStream:
             b"data",
             headers={
                 "Stream-Next-Offset": "1_5",
+                "Stream-Cursor": "cursor-1",
                 "Stream-Up-To-Date": "true",
             },
         )

@@ -207,3 +207,19 @@ export class InvalidSignalError extends Error {
     this.name = `InvalidSignalError`
   }
 }
+
+/**
+ * Error thrown when a response is missing required protocol headers.
+ * This usually indicates a proxy or CDN is stripping headers.
+ */
+export class MissingHeadersError extends Error {
+  readonly missingHeaders: Array<string>
+  constructor(missingHeaders: Array<string>, url: string) {
+    super(
+      `Response from ${url} is missing required protocol headers: ${missingHeaders.join(`, `)}. ` +
+        `This usually means a proxy or CDN is stripping headers.`
+    )
+    this.name = `MissingHeadersError`
+    this.missingHeaders = missingHeaders
+  }
+}

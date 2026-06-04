@@ -94,6 +94,7 @@ export {
   MissingStreamUrlError,
   InvalidSignalError,
   StreamClosedError,
+  MissingHeadersError,
 } from "./error"
 
 // ============================================================================
@@ -104,8 +105,41 @@ export {
   type BackoffOptions,
   BackoffDefaults,
   createFetchWithBackoff,
+  createFetchWithChunkBuffer,
   createFetchWithConsumedBody,
+  createFetchWithResponseHeadersCheck,
+  getNextChunkUrl,
+  PrefetchQueue,
+  validateBackoffOptions,
 } from "./fetch"
+
+// ============================================================================
+// Pause Lock
+// ============================================================================
+
+export { PauseLock } from "./pause-lock"
+
+// ============================================================================
+// Fast Loop Detection
+// ============================================================================
+
+export {
+  FastLoopDetector,
+  type FastLoopDetectorOptions,
+  type FastLoopResult,
+} from "./fast-loop-detection"
+
+// ============================================================================
+// Up-to-date tracking (CDN replay dedup)
+// ============================================================================
+
+export {
+  type UpToDateStorage,
+  InMemoryUpToDateStorage,
+  LocalStorageUpToDateStorage,
+  UpToDateTracker,
+  canonicalStreamKey,
+} from "./up-to-date-tracker"
 
 // ============================================================================
 // Constants (for advanced users)

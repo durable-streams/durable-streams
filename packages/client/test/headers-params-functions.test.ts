@@ -9,10 +9,10 @@ import { DurableStream } from "../src/stream"
 import { IdempotentProducer } from "../src/idempotent-producer"
 
 describe(`function-based headers and params`, () => {
-  let mockFetch: ReturnType<typeof vi.fn>
+  let mockFetch: typeof fetch & ReturnType<typeof vi.fn>
 
   beforeEach(() => {
-    mockFetch = vi.fn().mockResolvedValue(
+    mockFetch = vi.fn<typeof fetch>().mockResolvedValue(
       new Response(JSON.stringify([]), {
         status: 200,
         headers: {
@@ -36,7 +36,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(headerFn).toHaveBeenCalledOnce()
-      expect(mockFetch.mock.calls[0][1].headers).toMatchObject({
+      expect(mockFetch.mock.calls[0]![1].headers).toMatchObject({
         Authorization: `Bearer token-123`,
       })
     })
@@ -53,7 +53,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(headerFn).toHaveBeenCalledOnce()
-      expect(mockFetch.mock.calls[0][1].headers).toMatchObject({
+      expect(mockFetch.mock.calls[0]![1].headers).toMatchObject({
         Authorization: `Bearer async-token`,
       })
     })
@@ -73,7 +73,7 @@ describe(`function-based headers and params`, () => {
 
       expect(authFn).toHaveBeenCalledOnce()
       expect(tenantFn).toHaveBeenCalledOnce()
-      expect(mockFetch.mock.calls[0][1].headers).toMatchObject({
+      expect(mockFetch.mock.calls[0]![1].headers).toMatchObject({
         Authorization: `Bearer token`,
         "X-Tenant-Id": `tenant-123`,
       })
@@ -92,7 +92,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(dynamicFn).toHaveBeenCalledOnce()
-      expect(mockFetch.mock.calls[0][1].headers).toMatchObject({
+      expect(mockFetch.mock.calls[0]![1].headers).toMatchObject({
         "X-Static": `static-value`,
         "X-Dynamic": `dynamic-value`,
       })
@@ -112,7 +112,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(paramFn).toHaveBeenCalledOnce()
-      const url = new URL(mockFetch.mock.calls[0][0])
+      const url = new URL(mockFetch.mock.calls[0]![0])
       expect(url.searchParams.get(`tenant`)).toBe(`tenant-abc`)
     })
 
@@ -128,7 +128,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(paramFn).toHaveBeenCalledOnce()
-      const url = new URL(mockFetch.mock.calls[0][0])
+      const url = new URL(mockFetch.mock.calls[0]![0])
       expect(url.searchParams.get(`tenant`)).toBe(`async-tenant`)
     })
 
@@ -147,7 +147,7 @@ describe(`function-based headers and params`, () => {
 
       expect(tenantFn).toHaveBeenCalledOnce()
       expect(regionFn).toHaveBeenCalledOnce()
-      const url = new URL(mockFetch.mock.calls[0][0])
+      const url = new URL(mockFetch.mock.calls[0]![0])
       expect(url.searchParams.get(`tenant`)).toBe(`tenant-123`)
       expect(url.searchParams.get(`region`)).toBe(`us-west`)
     })
@@ -165,7 +165,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(dynamicFn).toHaveBeenCalledOnce()
-      const url = new URL(mockFetch.mock.calls[0][0])
+      const url = new URL(mockFetch.mock.calls[0]![0])
       expect(url.searchParams.get(`static`)).toBe(`value`)
       expect(url.searchParams.get(`dynamic`)).toBe(`dynamic`)
     })
@@ -188,7 +188,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(mockFetch).toHaveBeenCalled()
-      const headers = mockFetch.mock.calls[0][1].headers
+      const headers = mockFetch.mock.calls[0]![1].headers
       expect(headers).toMatchObject({
         "X-Handle-Header": `from-handle`,
         "X-Call-Header": `from-call`,
@@ -211,7 +211,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(mockFetch).toHaveBeenCalled()
-      const headers = mockFetch.mock.calls[0][1].headers
+      const headers = mockFetch.mock.calls[0]![1].headers
       expect(headers.Authorization).toBe(`Bearer call-token`)
     })
 
@@ -231,7 +231,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(mockFetch).toHaveBeenCalled()
-      const url = new URL(mockFetch.mock.calls[0][0])
+      const url = new URL(mockFetch.mock.calls[0]![0])
       expect(url.searchParams.get(`tenant`)).toBe(`handle-tenant`)
       expect(url.searchParams.get(`region`)).toBe(`call-region`)
     })
@@ -252,7 +252,7 @@ describe(`function-based headers and params`, () => {
       })
 
       expect(mockFetch).toHaveBeenCalled()
-      const url = new URL(mockFetch.mock.calls[0][0])
+      const url = new URL(mockFetch.mock.calls[0]![0])
       expect(url.searchParams.get(`tenant`)).toBe(`call-tenant`)
     })
 
@@ -270,7 +270,7 @@ describe(`function-based headers and params`, () => {
       await handle.stream()
 
       expect(headerFn).toHaveBeenCalled()
-      expect(mockFetch.mock.calls[0][1].headers).toMatchObject({
+      expect(mockFetch.mock.calls[0]![1].headers).toMatchObject({
         Authorization: `Bearer dynamic-token`,
       })
     })
@@ -289,7 +289,7 @@ describe(`function-based headers and params`, () => {
       await handle.stream()
 
       expect(paramFn).toHaveBeenCalled()
-      const url = new URL(mockFetch.mock.calls[0][0])
+      const url = new URL(mockFetch.mock.calls[0]![0])
       expect(url.searchParams.get(`tenant`)).toBe(`dynamic-tenant`)
     })
   })
@@ -313,18 +313,18 @@ describe(`function-based headers and params`, () => {
       expect(headerFn).toHaveBeenCalledOnce()
       expect(paramFn).toHaveBeenCalledOnce()
 
-      expect(mockFetch.mock.calls[0][1].headers).toMatchObject({
+      expect(mockFetch.mock.calls[0]![1].headers).toMatchObject({
         Authorization: `Bearer token`,
       })
 
-      const url = new URL(mockFetch.mock.calls[0][0])
+      const url = new URL(mockFetch.mock.calls[0]![0])
       expect(url.searchParams.get(`tenant`)).toBe(`tenant-123`)
     })
   })
 
   describe(`producer header merging`, () => {
     it(`should merge stream and producer headers on batch requests`, async () => {
-      const mockFetch = vi.fn().mockResolvedValue(
+      const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(
         new Response(null, {
           status: 200,
           headers: {
@@ -368,7 +368,7 @@ describe(`function-based headers and params`, () => {
     })
 
     it(`should merge stream and producer headers on close requests`, async () => {
-      const mockFetch = vi.fn().mockResolvedValue(
+      const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(
         new Response(null, {
           status: 200,
           headers: {
@@ -405,7 +405,7 @@ describe(`function-based headers and params`, () => {
     })
 
     it(`should not allow custom headers to override producer protocol headers`, async () => {
-      const mockFetch = vi.fn().mockResolvedValue(
+      const mockFetch = vi.fn<typeof fetch>().mockResolvedValue(
         new Response(null, {
           status: 200,
           headers: {
@@ -465,6 +465,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `1`,
+              "Stream-Cursor": `cursor_1`,
             },
           })
         } else {
@@ -473,6 +474,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `2`,
+              "Stream-Cursor": `cursor_2`,
               "Stream-Up-To-Date": `true`,
             },
           })
@@ -505,15 +507,15 @@ describe(`function-based headers and params`, () => {
       // Header function should be called multiple times (per-request resolution)
       // At least once for initial request and once for the poll
       expect(headerFn.mock.calls.length).toBeGreaterThanOrEqual(2)
-      expect(mockFetch.mock.calls[0][1].headers.Authorization).toMatch(
+      expect(mockFetch.mock.calls[0]![1].headers.Authorization).toMatch(
         /^Bearer token-/
       )
-      expect(mockFetch.mock.calls[1][1].headers.Authorization).toMatch(
+      expect(mockFetch.mock.calls[1]![1].headers.Authorization).toMatch(
         /^Bearer token-/
       )
       // Verify different values were used (per-request resolution working)
-      expect(mockFetch.mock.calls[0][1].headers.Authorization).not.toBe(
-        mockFetch.mock.calls[1][1].headers.Authorization
+      expect(mockFetch.mock.calls[0]![1].headers.Authorization).not.toBe(
+        mockFetch.mock.calls[1]![1].headers.Authorization
       )
       expect(items).toHaveLength(2)
     })
@@ -534,6 +536,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `1`,
+              "Stream-Cursor": `cursor_1`,
             },
           })
         } else {
@@ -542,6 +545,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `2`,
+              "Stream-Cursor": `cursor_2`,
               "Stream-Up-To-Date": `true`,
             },
           })
@@ -575,8 +579,8 @@ describe(`function-based headers and params`, () => {
       // At least once for initial request and once for the poll
       expect(paramFn.mock.calls.length).toBeGreaterThanOrEqual(2)
 
-      const url1 = new URL(mockFetch.mock.calls[0][0])
-      const url2 = new URL(mockFetch.mock.calls[1][0])
+      const url1 = new URL(mockFetch.mock.calls[0]![0])
+      const url2 = new URL(mockFetch.mock.calls[1]![0])
 
       expect(url1.searchParams.get(`tenant`)).toMatch(/^tenant-/)
       expect(url2.searchParams.get(`tenant`)).toMatch(/^tenant-/)
@@ -611,6 +615,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `1`,
+              "Stream-Cursor": `cursor_1`,
             },
           })
         } else if (fetchCallCount === 2) {
@@ -619,6 +624,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `2`,
+              "Stream-Cursor": `cursor_2`,
             },
           })
         } else {
@@ -627,6 +633,7 @@ describe(`function-based headers and params`, () => {
             headers: {
               "content-type": `application/json`,
               "Stream-Next-Offset": `3`,
+              "Stream-Cursor": `cursor_3`,
               "Stream-Up-To-Date": `true`,
             },
           })
@@ -668,8 +675,8 @@ describe(`function-based headers and params`, () => {
       const authValues = new Set()
       const tenantValues = new Set()
       for (let i = 0; i < 3; i++) {
-        authValues.add(mockFetch.mock.calls[i][1].headers.Authorization)
-        const url = new URL(mockFetch.mock.calls[i][0])
+        authValues.add(mockFetch.mock.calls[i]![1].headers.Authorization)
+        const url = new URL(mockFetch.mock.calls[i]![0])
         tenantValues.add(url.searchParams.get(`tenant`))
       }
       // All 3 requests should have different auth tokens and tenant values

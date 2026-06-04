@@ -455,6 +455,8 @@ export interface InjectErrorOperation {
     /** Event data (will be sent as-is) */
     data: string
   }
+  /** Strip these response headers (simulates proxy/CDN stripping headers) */
+  stripHeaders?: Array<string>
 }
 
 /**
@@ -626,6 +628,8 @@ export interface AppendBatchExpectation extends BaseExpectation {
 
 export interface ReadExpectation extends BaseExpectation {
   status?: 200 | 204 | 404 | number
+  /** Expect the operation to fail with an error */
+  error?: boolean
   /** Expected data content (exact match) */
   data?: string
   /** Expected data to contain (substring) */

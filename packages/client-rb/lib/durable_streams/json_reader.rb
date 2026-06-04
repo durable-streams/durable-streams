@@ -120,6 +120,7 @@ module DurableStreams
       # Handle 204 No Content (long-poll timeout)
       # Still parse headers as they contain offset info
       if response.status == 204
+        DurableStreams.validate_stream_headers!(response, live: @live != false, status: response.status, url: @stream.url)
         @next_offset = response[STREAM_NEXT_OFFSET_HEADER] || @next_offset
         @cursor = response[STREAM_CURSOR_HEADER] || @cursor
         @up_to_date = true
@@ -131,7 +132,12 @@ module DurableStreams
                                                headers: response.headers)
       end
 
-      headers = DurableStreams.parse_stream_headers(response, next_offset: @next_offset, cursor: @cursor)
+      headers = DurableStreams.parse_stream_headers(
+        response,
+        { next_offset: @next_offset, cursor: @cursor },
+        live: @live != false,
+        url: @stream.url
+      )
       @next_offset = headers[:next_offset]
       @cursor = headers[:cursor]
       @up_to_date = headers[:up_to_date]

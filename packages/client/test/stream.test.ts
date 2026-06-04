@@ -118,6 +118,7 @@ describe(`DurableStream`, () => {
         expect.objectContaining({ method: `HEAD` })
       )
       expect(result.exists).toBe(true)
+      if (!result.exists) throw new Error(`expected stream to exist`)
       expect(result.contentType).toBe(`application/json`)
       expect(result.offset).toBe(`1_0`)
       expect(result.etag).toBe(`abc123`)
@@ -225,6 +226,7 @@ describe(`DurableStream`, () => {
           status: 200,
           headers: {
             "Stream-Next-Offset": `1_5`,
+            "Stream-Cursor": `cursor_1`,
             "Stream-Up-To-Date": `true`,
           },
         })
@@ -316,6 +318,7 @@ describe(`DurableStream`, () => {
       })
 
       expect(result.exists).toBe(true)
+      if (!result.exists) throw new Error(`expected stream to exist`)
       expect(result.contentType).toBe(`text/plain`)
       expect(result.offset).toBe(`5_100`)
     })
