@@ -14,6 +14,7 @@ import {
   registerConnection,
   unregisterConnection,
 } from "./upstream"
+import { buildBackendUrl, resolveBackendHeaders } from "./backend"
 import { sendError } from "./response"
 import type { ProxyServerOptions } from "./types"
 import type { IncomingMessage, ServerResponse } from "node:http"
@@ -250,13 +251,17 @@ export async function handleCreateStream(
   contentTypeStore.set(streamId, upstreamContentType)
 
   // Create stream on underlying durable streams server
-  const streamPath = `/v1/streams/${streamId}`
-  const fullStreamUrl = new URL(streamPath, options.durableStreamsUrl)
+  const fullStreamUrl = buildBackendUrl(options, streamId)
+  const backendHdrs = await resolveBackendHeaders(options, {
+    streamId,
+    method: `PUT`,
+  })
 
   try {
-    const createResponse = await fetch(fullStreamUrl.toString(), {
+    const createResponse = await fetch(fullStreamUrl, {
       method: `PUT`,
       headers: {
+        ...backendHdrs,
         "Content-Type": `application/octet-stream`,
         "Stream-TTL": String(options.streamTtlSeconds ?? 86400),
       },
@@ -312,6 +317,8 @@ export async function handleCreateStream(
       durableStreamsUrl: options.durableStreamsUrl,
       streamId,
       signal: abortController.signal,
+      streamPath: options.streamPath,
+      backendHeaders: options.backendHeaders,
     })
       .catch(async (error) => {
         console.error(
@@ -320,13 +327,15 @@ export async function handleCreateStream(
         )
         // Attempt to close the stream so readers don't hang indefinitely
         try {
-          const closeUrl = new URL(
-            `/v1/streams/${streamId}`,
-            options.durableStreamsUrl
-          )
-          await fetch(closeUrl.toString(), {
+          const closeUrl = buildBackendUrl(options, streamId)
+          const closeHdrs = await resolveBackendHeaders(options, {
+            streamId,
+            method: `POST`,
+          })
+          await fetch(closeUrl, {
             method: `POST`,
             headers: {
+              ...closeHdrs,
               "Stream-Closed": `true`,
               "Content-Length": `0`,
             },

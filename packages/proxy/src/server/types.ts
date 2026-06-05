@@ -22,6 +22,16 @@ export interface ProxyServerOptions {
   urlExpirationSeconds?: number
   /** Maximum response size in bytes (default: 100MB) */
   maxResponseBytes?: number
+  /** Build the backend URL path for a stream. Default: (id) => `/v1/streams/${id}` */
+  streamPath?: (streamId: string) => string
+  /** Headers to include on all requests to the durable-streams backend.
+   *  Static object or async function for per-request headers (e.g., short-lived JWTs). */
+  backendHeaders?:
+    | Record<string, string>
+    | ((ctx: {
+        streamId: string
+        method: string
+      }) => Record<string, string> | Promise<Record<string, string>>)
 }
 
 /**

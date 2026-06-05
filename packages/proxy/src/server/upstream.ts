@@ -5,7 +5,8 @@
  * their response bodies to durable storage with batching.
  */
 
-import type { UpstreamConnection } from "./types"
+import { buildBackendUrl, resolveBackendHeaders } from "./backend"
+import type { ProxyServerOptions, UpstreamConnection } from "./types"
 
 /**
  * Registry of active upstream connections.
@@ -77,6 +78,10 @@ export interface PipeUpstreamOptions {
   batchTimeThreshold?: number
   /** Inactivity timeout in ms (default: 10 minutes) */
   inactivityTimeout?: number
+  /** Build the backend URL path for a stream */
+  streamPath?: ProxyServerOptions[`streamPath`]
+  /** Headers to include on all requests to the durable-streams backend */
+  backendHeaders?: ProxyServerOptions[`backendHeaders`]
 }
 
 /**
@@ -116,9 +121,15 @@ export async function pipeUpstreamBody(
     batchSizeThreshold = 4096, // 4KB
     batchTimeThreshold = 50, // 50ms
     inactivityTimeout = 600000, // 10 minutes
+    streamPath: streamPathFn,
+    backendHeaders,
   } = options
 
-  const streamPath = `/v1/streams/${streamId}`
+  const backendOpts = {
+    durableStreamsUrl,
+    streamPath: streamPathFn,
+    backendHeaders,
+  }
 
   let buffer: Array<Uint8Array> = []
   let bufferSize = 0
@@ -156,10 +167,15 @@ export async function pipeUpstreamBody(
     batchStartTime = null
 
     // POST to underlying stream
-    const url = new URL(streamPath, durableStreamsUrl)
-    const response = await fetch(url.toString(), {
+    const url = buildBackendUrl(backendOpts, streamId)
+    const extra = await resolveBackendHeaders(backendOpts, {
+      streamId,
+      method: `POST`,
+    })
+    const response = await fetch(url, {
       method: `POST`,
       headers: {
+        ...extra,
         "Content-Type": `application/octet-stream`,
       },
       body: data as unknown as BodyInit,
@@ -174,10 +190,15 @@ export async function pipeUpstreamBody(
 
   const closeStream = async (): Promise<void> => {
     // Mark the stream as closed
-    const url = new URL(streamPath, durableStreamsUrl)
-    const response = await fetch(url.toString(), {
+    const url = buildBackendUrl(backendOpts, streamId)
+    const extra = await resolveBackendHeaders(backendOpts, {
+      streamId,
+      method: `POST`,
+    })
+    const response = await fetch(url, {
       method: `POST`,
       headers: {
+        ...extra,
         "Stream-Closed": `true`,
         "Content-Length": `0`,
       },

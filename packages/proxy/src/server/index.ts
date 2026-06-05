@@ -118,3 +118,4 @@ export {
   HOP_BY_HOP_HEADERS,
 } from "./allowlist"
 export { sendError, sendJson } from "./response"
+export { buildBackendUrl, resolveBackendHeaders } from "./backend"

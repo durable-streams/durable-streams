@@ -7,6 +7,7 @@
  */
 
 import { validateServiceJwt } from "./tokens"
+import { buildBackendUrl, resolveBackendHeaders } from "./backend"
 import { sendError } from "./response"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { ProxyServerOptions } from "./types"
@@ -50,12 +51,17 @@ export async function handleHeadStream(
   }
 
   // Get metadata from underlying durable stream
-  const dsUrl = new URL(`/v1/streams/${streamId}`, options.durableStreamsUrl)
+  const dsUrl = buildBackendUrl(options, streamId)
 
   try {
     // Use HEAD request to underlying server
-    const dsResponse = await fetch(dsUrl.toString(), {
+    const extra = await resolveBackendHeaders(options, {
+      streamId,
       method: `HEAD`,
+    })
+    const dsResponse = await fetch(dsUrl, {
+      method: `HEAD`,
+      headers: extra,
     })
 
     if (dsResponse.status === 404) {
