@@ -206,3 +206,6 @@ examples/yjs-demo/.tanstack
 
 # MacOS
 .DS_Store
+
+# Local benchmark/conformance data
+/.streams-dev/

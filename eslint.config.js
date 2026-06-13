@@ -19,6 +19,7 @@ export default [
       `**/tsup.config.ts`,
       `packages/caddy-plugin/**`,
       `packages/client-py/**`,
+      `packages/server-rust/**`,
       `scripts/**`,
       `**/bin/**`,
     ],
