@@ -62,6 +62,23 @@ jobs:
             --manifest-path packages/server-rust/Cargo.toml \
             --target ${{ matrix.target }}
 
+      # Each target builds on a native runner, so the freshly-built binary runs
+      # here — boot it and hit /health so a miscompiled or wrong-arch artifact
+      # can't ship silently.
+      - name: Smoke test
+        shell: bash
+        run: |
+          bin="packages/server-rust/target/${{ matrix.target }}/release/durable-streams-server"
+          "$bin" --port 4599 --data-dir "$RUNNER_TEMP/smoke" &
+          pid=$!
+          ok=
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:4599/health | grep -q ok; then ok=1; break; fi
+            sleep 0.3
+          done
+          kill "$pid" 2>/dev/null || true
+          test -n "$ok" || { echo "server did not answer /health"; exit 1; }
+
       - name: Package and checksum
         run: |
           version="${GITHUB_REF_NAME#server-rust-}"

@@ -209,3 +209,4 @@ examples/yjs-demo/.tanstack
 
 # Local benchmark/conformance data
 /.streams-dev/
+benchmark-results.json
