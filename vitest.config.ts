@@ -49,6 +49,16 @@ export default defineConfig({
       }),
       defineProject({
         test: {
+          name: "server-rust",
+          include: ["packages/server-rust/conformance/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+          testTimeout: 30000,
+          hookTimeout: 30000,
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
           name: "state",
           include: ["packages/state/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
