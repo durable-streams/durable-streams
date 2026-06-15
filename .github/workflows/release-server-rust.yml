@@ -1,0 +1,50 @@
+name: Release server-rust binaries
+
+# Tag the commit to release, e.g.:
+#   git tag server-rust-v0.1.0 && git push origin server-rust-v0.1.0
+# Builds the durable-streams-server binary for linux + macOS (x86_64 + arm64)
+# and attaches the tarballs (+ SHA-256 checksums) to a GitHub Release.
+on:
+  push:
+    tags:
+      - "server-rust-v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: x86_64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: aarch64-unknown-linux-gnu
+            os: ubuntu-latest
+          - target: x86_64-apple-darwin
+            os: macos-latest
+          - target: aarch64-apple-darwin
+            os: macos-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build and upload
+        uses: taiki-e/upload-rust-binary-action@v1
+        with:
+          bin: durable-streams-server
+          target: ${{ matrix.target }}
+          manifest-path: packages/server-rust/Cargo.toml
+          archive: durable-streams-server-$tag-$target
+          checksum: sha256
+          # The action cross-compiles aarch64-linux via `cross` automatically.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
