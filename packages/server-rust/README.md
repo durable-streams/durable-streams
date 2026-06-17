@@ -112,17 +112,16 @@ Measured on a dedicated 12-core Xeon (Linux 6.8): the server runs in its own
 cgroup and `wrk` is `taskset`-pinned to disjoint cores (a reserved core keeps
 `sshd` schedulable), CPU governor `performance`, 3 repeats per cell.
 
-**Reads** (conn 256):
+**Reads** (8 cores, conn 256):
 
 | read size | throughput | server CPU |
 | --------- | ---------- | ---------- |
-| 1 KB      | _pending_  | _pending_  |
-| 16 KB     | _pending_  | _pending_  |
-| 1 MB      | _pending_  | _pending_  |
+| 1 KB      | 236k /s    | 508 %      |
+| 16 KB     | 160k /s    | 456 %      |
+| 1 MB      | 11.2k /s   | 266 %      |
 
-**Read scaling by server cores** (1 KB, conn 256): _pending_
+**Read scaling by server cores** (1 KB, conn 256): 2c → **193k /s**, 4c → **256k /s**, 8c → 236k /s (the load generator on its 3 cores saturates past 4 server cores).
 
-**Appends** (100 B): _pending_ · **`--splice-appends`** (1 MB binary): _pending_ ·
-**cold-tier read** (`--tier local`): _pending_
+**Appends** (100 B): 116k /s @ conn 64, **210k /s** @ conn 256. **`--splice-appends`** (1 MB binary): 375 → 404 /s at ~half the CPU (76 % → 43 %) — a CPU lever, not a throughput one. **Cold-tier read** (`--tier local`, via `Body::Channel`): ~5 GB/s.
 
-_(Numbers filled in from a native run; see the PR description for the full table.)_
+Hot reads stay sub-millisecond (p50 ≤ 0.11 ms) even under a 512 MB-capped cold backfill. cv across repeats is < 1 % for most cells.

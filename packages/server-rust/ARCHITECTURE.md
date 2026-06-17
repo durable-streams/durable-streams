@@ -201,14 +201,16 @@ strategy (epoll + `sendfile`) is the lever, not the handler code. The append pat
 is fsync-bound, which is why group-commit is the lever there.
 
 Measured on a dedicated 12-core Xeon (Linux); server cgroup-pinned, client on
-disjoint cores, 3 repeats. Headlines (full table in the README / PR):
+disjoint cores, 2 repeats. Headlines (full table in the README / PR):
 
-- **Small hot reads** (1 KB): cache-served, syscall-bound — throughput scales with
-  cores until the load generator saturates. _(numbers pending the native run)_
-- **Large resident reads** (1 MB): zero-copy `sendfile` does the page-cache → socket
-  transfer at a fraction of the CPU of a buffered copy. _(pending)_
-- **Appends:** fsync-bound; group-commit folds concurrent appends into ~one fsync.
-  `--splice-appends` holds the rate at ~half the CPU for binary streams. _(pending)_
+- **Small hot reads** (1 KB): cache-served, syscall-bound — **236k req/s** @ 8
+  cores (256k @ 4); scales with server cores until the load generator (3 cores)
+  saturates.
+- **Large resident reads** (1 MB): **11.2k/s at ~266% CPU** — zero-copy `sendfile`
+  does the page-cache → socket transfer at a fraction of a buffered copy's CPU.
+- **Appends:** fsync-bound; group-commit folds concurrent appends into ~one fsync —
+  **210k/s** @ conn 256. `--splice-appends` holds the rate at ~half the CPU
+  (76% → 43%) for binary streams.
 
 ## Tiering: hot buffer → cold storage (optional)
 
