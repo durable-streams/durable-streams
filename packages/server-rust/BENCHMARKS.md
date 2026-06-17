@@ -130,7 +130,76 @@ equally-sized `POST` here — one fsync each, conn 16):
 Once fsync is amortised both servers ingest at hundreds of MB/s; this server is
 **~1.6× faster at roughly a third of the CPU** (58% vs 159%).
 
+> **Coming next: multi-stream.** Everything above drives a _single_ stream. The
+> next experiment is a multi-stream fan-out comparison — many concurrent streams
+> with independent producers and consumers. That is the workload where Ursula's
+> multi-Raft, thread-per-core design is meant to scale, so it is the fair test of
+> both servers under realistic load. Results will be added here.
+
 <!-- RESULTS:END -->
+
+## Engine exploration: hyper, raw, and io_uring
+
+This server now ships a **single** hand-rolled HTTP/1.1 engine (`raw`). It got
+there after an exploration with **three** interchangeable engines behind a
+`--http-engine` flag, sharing one handler/store layer — only the I/O loop
+differed:
+
+- **`hyper`** — portable default, tokio + hyper, buffered reads.
+- **`raw`** — owns the socket, so reads are served zero-copy with `sendfile(2)`
+  and binary appends with `splice(2)`.
+- **`io_uring`** — a thread-per-core runtime backed by `io_uring`: batched
+  submit/complete with no epoll round-trip, async in-kernel file reads, and no
+  blocking-pool handoff for cold reads.
+
+We kept the measurements because **io_uring was genuinely the best option in some
+cases** and that's worth remembering. All numbers below are from the same
+cgroup-pinned methodology (1 KB reads, conn 256 unless noted).
+
+**Small reads on a CPU-constrained server — io_uring wins:**
+
+| server cores | hyper   | raw         | io_uring    |
+| ------------ | ------- | ----------- | ----------- |
+| 2 cores      | 123k /s | 180k /s     | **257k /s** |
+| 4 cores      | 195k /s | 253k /s     | 254k /s     |
+| 8 cores      | 216k /s | **235k /s** | 222k /s     |
+
+The hot small-read path is essentially syscall-bound, so the only lever is _fewer
+mode switches_. io_uring folds `recv` + `send` into roughly one `io_uring_enter`,
+where `raw` issues separate `recvfrom` + `sendto`/`sendfile`. At the syscall level
+(a separate Docker micro-bench) that showed as **419k/s @ p50 103 µs for io_uring
+vs 355k/s @ 148 µs for raw**. The advantage is real only while the server is the
+bottleneck; as cores scale the gap closes and reverses (8c: raw ≥ io_uring).
+
+**Where io_uring lost:**
+
+- **Large reads.** 1 MB: raw **11.3k /s @ 269% CPU** vs io_uring 7.6k /s @ 477%.
+  raw's `sendfile` is zero-copy; io_uring's streamed file reads copy through
+  userspace buffers (no `splice`/`SEND_ZC` wired up), so zero-copy wins decisively.
+- **Appends.** conn 256: raw **208k /s** vs io_uring 91k /s — io_uring was the
+  weakest appender and regressed past 4 cores.
+- **CPU efficiency.** io_uring traded CPU for throughput (~500% vs raw's ~290% on
+  small reads).
+
+**Where io_uring also genuinely helped:** cold-read isolation came for free. Its
+async in-kernel file reads kept a cold backfill off the hot path _without_ the
+`--read-offload` knob `raw` needs — hot 4 KB reads under a concurrent 1 GB cold
+backfill stayed ~78 µs median / ~80 ms max with no worker collapse (`raw inline`
+spiked to ~715 ms; `raw tail` was the tightest at ~10.7 ms but needs the knob).
+
+**Why we dropped it.** `raw` is the best all-rounder — top-or-tied reads at scale,
+2× on large reads at half the CPU, and the best appends. io_uring only wins small
+reads on a CPU-bound host, is the worst appender, and burns more CPU per request.
+Against that, the second engine cost a `tokio-uring` dependency, a thread-per-core
+runtime, a `panic = abort` foot-gun, and `io_uring` syscalls that the default
+container seccomp profile blocks — plus a whole second I/O loop to maintain.
+Collapsing to one engine removed ~1,600 LOC and 4 dependencies.
+
+So the verdict is **not** "io_uring is slower" — it's "one zero-copy engine is the
+better product." The case where io_uring would pay off is specific and worth
+flagging: a **small-read-heavy, CPU-constrained** deployment on an
+`io_uring`-capable host where its syscall-batching and knob-free cold isolation
+outweigh raw's zero-copy large-read and append advantages.
 
 ## Open questions and caveats
 
