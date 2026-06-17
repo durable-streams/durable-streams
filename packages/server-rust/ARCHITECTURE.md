@@ -22,15 +22,17 @@ sidecar for recovery. There is no per-message framing on disk, no reframing on
 read, no database, no broker — just a process and a data directory
 (`store::StreamState`).
 
-Three things fall out of that choice:
+Two things fall out of that choice:
 
-- A **read is a `pread`/byte-range** of the file → it can be served with
-  `sendfile(2)` (raw engine) or io_uring file reads (uring engine), kernel → socket.
+- A **read is a `pread`/byte-range** of the file → it is served with `sendfile(2)`
+  on Linux (kernel page cache → socket, zero-copy), positioned reads elsewhere.
 - An **append is a `write` + an `fsync`** → durability cost is dominated by the
   fsync, which we amortize across concurrent writers.
-- The **HTTP engine is pluggable** (`hyper` / `raw` / `uring`) behind an
-  engine-agnostic `api::{Req, Resp, Body}` boundary; the handlers and storage are
-  shared, only the I/O loop differs.
+
+The HTTP layer is a single hand-rolled HTTP/1.1 loop (`engine_raw`) — no
+framework. (Earlier revisions kept `hyper` and `io_uring` engines behind a
+`--http-engine` flag and an engine-agnostic `api` boundary; benchmarking showed
+the raw loop was the best all-rounder, so it is the only engine.)
 
 ## High-level: write path and read path
 
@@ -61,7 +63,7 @@ flowchart LR
     R6 --> RB
     RB --> R7{"resident in<br/>tail cache?"}
     R7 -->|"yes (≤256 KB)"| R8["Body::Full<br/>(from memory)"]
-    R7 -->|"no / large / cold"| R9["Body::FileRange<br/>(sendfile / io_uring)"]
+    R7 -->|"no / large / cold"| R9["Body::FileRange<br/>(sendfile)"]
     R8 --> R10(["socket"])
     R9 --> R10
   end
@@ -123,13 +125,13 @@ until the data is durable.
   (`json` / `text` / `base64`), and pushes a frame onto an `mpsc` channel; the
   engine streams those frames as chunked transfer-encoding.
 
-The body is then handed to the engine, which serves it with its best primitive:
+The engine then serves the response body with the matching primitive:
 
-| `Body` variant             | hyper                  | raw                           | uring                            |
-| -------------------------- | ---------------------- | ----------------------------- | -------------------------------- |
-| `Full` (cached / small)    | buffered write         | one coalesced write           | one io_uring send                |
-| `FileRange` (large / cold) | buffered read + stream | **`sendfile(2)`** (zero-copy) | streamed **io_uring** file reads |
-| `Channel` (SSE)            | chunked                | chunked                       | chunked                          |
+| body kind                | how it's written                                             |
+| ------------------------ | ----------------------------------------------------------- |
+| `Full` (cached / small)  | one coalesced write (head + body)                           |
+| `FileRange` (large/cold) | **`sendfile(2)`** zero-copy on Linux; positioned reads else |
+| `Channel` (SSE / cold)   | chunked transfer-encoding                                   |
 
 ## Keeping I/O fast from ingestion to fan-out
 
@@ -152,7 +154,7 @@ flowchart TB
     direction TB
     TW -. "wake" .-> SUBS["live subscribers<br/>(SSE / long-poll)"]
     RC ==>|"shared read + encode<br/>(one copy serves all N)"| SUBS
-    PC ==>|"sendfile / io_uring<br/>(zero-copy byte range)"| BIG["catch-up & large reads"]
+    PC ==>|"sendfile<br/>(zero-copy byte range)"| BIG["catch-up & large reads"]
   end
 
   SUBS ==> SOCK(["sockets"])
@@ -163,7 +165,7 @@ The techniques, each with its mechanism and payoff:
 
 1. **Contiguous wire-byte storage.** The file _is_ the response. Reads are byte
    ranges with no reframing and no per-message copy — and this is what makes
-   `sendfile`/io_uring zero-copy possible at all.
+   `sendfile` zero-copy possible at all.
 2. **Group-commit coalesced fsync.** The durability contract ("return after
    fsync") is the expensive part of an append. Concurrent appenders share a
    single in-flight barrier fsync, so throughput scales with the _batch size_ per
@@ -185,31 +187,28 @@ The techniques, each with its mechanism and payoff:
    last chunk in the heap so all N share one read (and SSE encodes once per
    subscriber off that shared buffer). For small hot reads it's also fewer
    syscalls than `sendfile` and skips the read-offload pool hop.
-7. **Zero-copy / async egress.** `raw` serves `FileRange` reads with `sendfile`
-   (page cache → socket, no userspace copy → ~5× less CPU per byte than a
-   buffered copy). `uring` issues the file reads and socket sends as io_uring
-   operations (batched submit/complete, no epoll round-trip). The
+7. **Zero-copy egress.** `FileRange` reads are served with `sendfile` (page cache
+   → socket, no userspace copy → ~5× less CPU per byte than a buffered copy). The
    **`--read-offload`** strategy keeps a cold backfill's disk fault off the async
    workers so one slow read can't stall unrelated requests.
 8. **Bounded memory everywhere.** Large reads stream in fixed chunks (the resident
-   cache is capped at 256 KB; the uring engine streams cold reads in 256 KB
-   windows) so serving a multi-GB backfill costs ~a chunk of RAM, not the read
-   size.
+   cache is capped at 256 KB; cold reads stream in windows) so serving a multi-GB
+   backfill costs ~a chunk of RAM, not the read size.
 
 ## Where the time goes
 
 The hot read path is essentially syscall-bound — at 1 KB it's recv + send (+ a
-file read for cold data) with almost no application CPU — which is why the engine
-choice (epoll + sendfile vs io_uring batching) is the lever, not the handler
-code. The append path is fsync-bound, which is why group-commit is the lever
-there.
+file read for cold data) with almost no application CPU — which is why the I/O
+strategy (epoll + `sendfile`) is the lever, not the handler code. The append path
+is fsync-bound, which is why group-commit is the lever there.
 
-Measured headlines (dedicated 12-core Xeon, Linux; server cgroup-pinned, client on
+Measured headlines that motivated keeping only the raw engine (from the earlier
+multi-engine revision; 12-core Xeon, Linux; server cgroup-pinned, client on
 disjoint cores, 3 repeats):
 
-- **Small hot reads:** the engine choice matters most when the server is CPU-bound
+- **Small hot reads:** engine choice mattered most when the server was CPU-bound
   — at 2 cores `uring` 257k req/s > `raw` 180k > `hyper` 123k (io_uring batches the
-  recv+send); the gap closes by 8 cores as the load generator saturates first.
+  recv+send); the gap closed by 8 cores as the load generator saturated first.
 - **Large resident reads:** `raw`/`sendfile` does ~11.3k 1 MB reads/s at ~269% CPU
   vs `hyper` ~6.7k at ~708% — **~2× the throughput at ~⅓ the CPU per byte**
   (zero-copy vs userspace copy).
@@ -243,7 +242,7 @@ flowchart TB
   RD{{"GET ?offset"}} --> MAN
   MAN -->|"offset ≥ sealed_offset<br/>(local)"| TAIL
   MAN -->|"offset < sealed_offset<br/>(remote)"| COLD
-  TAIL --> OUT(["response<br/>(sendfile / io_uring, zero-copy)"])
+  TAIL --> OUT(["response<br/>(sendfile, zero-copy)"])
   COLD --> OUT2(["response<br/>(range-GET, buffered)"])
 ```
 
@@ -251,7 +250,7 @@ Key properties:
 
 - **The manifest is the authority.** A read resolves each requested offset against
   the per-stream manifest (held in memory, persisted in the `.meta` sidecar): at or
-  above `sealed_offset` → local (zero-copy `sendfile`/io_uring, unchanged); below it
+  above `sealed_offset` → local (zero-copy `sendfile`, unchanged); below it
   → the named object via range-GET, spliced into the response. A range spanning the
   boundary yields a mix.
 - **Durability is never weakened.** An append still acks only after the local
