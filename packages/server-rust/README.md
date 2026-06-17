@@ -59,7 +59,7 @@ Durable by default: an append returns only after the fsync that covers it. State
 - **Coalesced group-commit fsync** — concurrent appenders share one in-flight barrier fsync (`F_BARRIERFSYNC` on macOS, `fdatasync` on Linux), keeping the durability contract at a fraction of the syscall count.
 - **Per-stream serialization, lock-free reads** — one async mutex per stream orders appends; reads take a brief snapshot and do positioned `pread`s, never blocking the writer.
 - **watch-channel wakeups** drive long-poll and SSE subscribers, so there's no polling loop.
-- **A single, hand-rolled HTTP/1.1 engine** — no framework: it owns the socket, so on Linux it serves reads with `sendfile(2)` (zero-copy page cache → socket, ~10× less CPU per byte) and binary appends with `splice(2)`; elsewhere it falls back to positioned reads. (Earlier revisions also had `hyper` and `io_uring` engines behind a `--http-engine` flag; benchmarking showed this raw loop was the best all-rounder, so it's the only engine.)
+- **A single, hand-rolled HTTP/1.1 engine** — no framework: it owns the socket, so on Linux it serves reads with `sendfile(2)` (zero-copy page cache → socket, ~10× less CPU per byte) and binary appends with `splice(2)`; elsewhere it falls back to positioned reads.
 - **Resident tail cache** — the most recent appended chunk is kept in memory, so caught-up live readers (long-poll / SSE) and immediate catch-up reads are served from one shared copy instead of a per-reader file read.
 
 ## Tiered storage (cold offload)
@@ -108,30 +108,21 @@ and attaches the tarballs plus SHA-256 checksums to the release.
 
 ## Benchmarks
 
-These are why `raw` is the sole engine — measured on an earlier revision that had
-all three (12-core Xeon, Linux 6.8): each server in its own cgroup, `wrk` pinned to
-disjoint cores, 3 repeats per cell.
+Measured on a dedicated 12-core Xeon (Linux 6.8): the server runs in its own
+cgroup and `wrk` is `taskset`-pinned to disjoint cores (a reserved core keeps
+`sshd` schedulable), CPU governor `performance`, 3 repeats per cell.
 
-**Hot 1 KB read, by server cores** (conn 256) — the gap is real when the server is
-the bottleneck and closes once the load generator saturates:
+**Reads** (conn 256):
 
-| cores | hyper   | raw         | uring       |
-| ----- | ------- | ----------- | ----------- |
-| 2     | 123k /s | 180k /s     | **257k /s** |
-| 4     | 195k /s | 253k /s     | **254k /s** |
-| 8     | 216k /s | **235k /s** | 222k /s     |
+| read size | throughput | server CPU |
+| --------- | ---------- | ---------- |
+| 1 KB      | _pending_  | _pending_  |
+| 16 KB     | _pending_  | _pending_  |
+| 1 MB      | _pending_  | _pending_  |
 
-**At 8 cores:**
+**Read scaling by server cores** (1 KB, conn 256): _pending_
 
-| metric            | hyper           | raw                  | uring           |
-| ----------------- | --------------- | -------------------- | --------------- |
-| 1 MB read         | 6.7k /s (708 %) | **11.3k /s (269 %)** | 7.6k /s (477 %) |
-| append (conn 256) | 173k /s         | **208k /s**          | 91k /s          |
+**Appends** (100 B): _pending_ · **`--splice-appends`** (1 MB binary): _pending_ ·
+**cold-tier read** (`--tier local`): _pending_
 
-`--splice-appends` (1 MB binary): same append rate at ~half the CPU (68 % → 36 %).
-Cold-tier read (`--tier local`, via `Body::Channel`): ~5 GB/s.
-
-**Takeaway:** `raw` is the best all-rounder — top/tied reads, 2× on large reads via
-zero-copy `sendfile` at half the CPU, and best appends. `uring` only won small
-reads when the server was CPU-constrained, and was weakest on appends (it regresses
-past 4 cores); `hyper` trailed on large reads. So `raw` is kept as the only engine.
+_(Numbers filled in from a native run; see the PR description for the full table.)_

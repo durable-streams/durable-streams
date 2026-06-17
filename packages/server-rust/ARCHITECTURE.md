@@ -30,9 +30,7 @@ Two things fall out of that choice:
   fsync, which we amortize across concurrent writers.
 
 The HTTP layer is a single hand-rolled HTTP/1.1 loop (`engine_raw`) — no
-framework. (Earlier revisions kept `hyper` and `io_uring` engines behind a
-`--http-engine` flag and an engine-agnostic `api` boundary; benchmarking showed
-the raw loop was the best all-rounder, so it is the only engine.)
+framework — so it owns the socket and can serve reads zero-copy.
 
 ## High-level: write path and read path
 
@@ -202,18 +200,15 @@ file read for cold data) with almost no application CPU — which is why the I/O
 strategy (epoll + `sendfile`) is the lever, not the handler code. The append path
 is fsync-bound, which is why group-commit is the lever there.
 
-Measured headlines that motivated keeping only the raw engine (from the earlier
-multi-engine revision; 12-core Xeon, Linux; server cgroup-pinned, client on
-disjoint cores, 3 repeats):
+Measured on a dedicated 12-core Xeon (Linux); server cgroup-pinned, client on
+disjoint cores, 3 repeats. Headlines (full table in the README / PR):
 
-- **Small hot reads:** engine choice mattered most when the server was CPU-bound
-  — at 2 cores `uring` 257k req/s > `raw` 180k > `hyper` 123k (io_uring batches the
-  recv+send); the gap closed by 8 cores as the load generator saturated first.
-- **Large resident reads:** `raw`/`sendfile` does ~11.3k 1 MB reads/s at ~269% CPU
-  vs `hyper` ~6.7k at ~708% — **~2× the throughput at ~⅓ the CPU per byte**
-  (zero-copy vs userspace copy).
-- **Appends:** fsync-bound; `raw` leads (~208k/s @ 8 cores) and `uring` regresses
-  past 4 cores. `--splice-appends` holds the rate at ~half the CPU.
+- **Small hot reads** (1 KB): cache-served, syscall-bound — throughput scales with
+  cores until the load generator saturates. _(numbers pending the native run)_
+- **Large resident reads** (1 MB): zero-copy `sendfile` does the page-cache → socket
+  transfer at a fraction of the CPU of a buffered copy. _(pending)_
+- **Appends:** fsync-bound; group-commit folds concurrent appends into ~one fsync.
+  `--splice-appends` holds the rate at ~half the CPU for binary streams. _(pending)_
 
 ## Tiering: hot buffer → cold storage (optional)
 
