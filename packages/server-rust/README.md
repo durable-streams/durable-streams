@@ -35,15 +35,15 @@ curl -N "$BASE?offset=0&live=sse"        # Server-Sent Events stream
 
 ## Flags
 
-| Flag                     | Default                        | Description                                                                                                                                                                                                                                                                                |
-| ------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `--host`                 | `127.0.0.1`                    | listen address                                                                                                                                                                                                                                                                             |
-| `--port`                 | `4438`                         | listen port                                                                                                                                                                                                                                                                                |
-| `--data-dir`             | `$TMPDIR/durable-streams-rust` | storage directory (persists across restarts)                                                                                                                                                                                                                                               |
-| `--long-poll-timeout-ms` | `30000`                        | how long a long-poll request blocks before a 204                                                                                                                                                                                                                                           |
-| `--read-offload`         | `tail`                         | Linux: where reads run sendfile — `inline` (always on the async worker), `tail` (live tail inline, catch-up on the blocking pool), `always` (always on the blocking pool). `tail` keeps a cold backfill's disk fault off the async workers while serving the live tail inline.             |
-| `--splice-appends`       | off                            | raw engine, Linux: zero-copy `splice(2)` for **binary** appends (socket → file, no userspace copy). Off by default; JSON/chunked/non-Linux fall back. A CPU lever (same append rate at ~½–⅓ the server CPU), not a throughput lever — appends are fsync-bound.                             |
-| `--tier`                 | `off`                          | cold-storage tier: `off`, `local` (sealed segments to a local dir), or `s3` (S3-compatible object storage). See [Tiered storage](#tiered-storage-cold-offload). Off by default — behaviour is byte-identical to a single-file server.                                                      |
+| Flag                     | Default                        | Description                                                                                                                                                                                                                                                                    |
+| ------------------------ | ------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `--host`                 | `127.0.0.1`                    | listen address                                                                                                                                                                                                                                                                 |
+| `--port`                 | `4438`                         | listen port                                                                                                                                                                                                                                                                    |
+| `--data-dir`             | `$TMPDIR/durable-streams-rust` | storage directory (persists across restarts)                                                                                                                                                                                                                                   |
+| `--long-poll-timeout-ms` | `30000`                        | how long a long-poll request blocks before a 204                                                                                                                                                                                                                               |
+| `--read-offload`         | `tail`                         | Linux: where reads run sendfile — `inline` (always on the async worker), `tail` (live tail inline, catch-up on the blocking pool), `always` (always on the blocking pool). `tail` keeps a cold backfill's disk fault off the async workers while serving the live tail inline. |
+| `--splice-appends`       | off                            | raw engine, Linux: zero-copy `splice(2)` for **binary** appends (socket → file, no userspace copy). Off by default; JSON/chunked/non-Linux fall back. A CPU lever (same append rate at ~½–⅓ the server CPU), not a throughput lever — appends are fsync-bound.                 |
+| `--tier`                 | `off`                          | cold-storage tier: `off`, `local` (sealed segments to a local dir), or `s3` (S3-compatible object storage). See [Tiered storage](#tiered-storage-cold-offload). Off by default — behaviour is byte-identical to a single-file server.                                          |
 
 ## What it implements
 
@@ -110,7 +110,9 @@ and attaches the tarballs plus SHA-256 checksums to the release.
 
 Measured on a dedicated 12-core Xeon (Linux 6.8): the server runs in its own
 cgroup and `wrk` is `taskset`-pinned to disjoint cores (a reserved core keeps
-`sshd` schedulable), CPU governor `performance`, 3 repeats per cell.
+`sshd` schedulable), CPU governor `performance`, 3 repeats per cell. See
+[BENCHMARKS.md](./BENCHMARKS.md) for the full methodology, run environment, and
+an engine-level comparison against [Ursula](https://github.com/tonbo-io/ursula).
 
 **Reads** (8 cores, conn 256):
 
