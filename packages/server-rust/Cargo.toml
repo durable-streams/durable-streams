@@ -1,5 +1,5 @@
 [package]
-name = "durable-streams-server"
+name = "durable-streams"
 version = "0.1.0"
 edition = "2021"
 description = "High-performance Durable Streams server (Rust)"
@@ -9,6 +9,10 @@ rust-version = "1.75"
 repository = "https://github.com/durable-streams/durable-streams"
 homepage = "https://electric-sql.com/primitives/durable-streams"
 readme = "README.md"
+keywords = ["durable-streams", "streaming", "event-sourcing", "http", "append-only-log"]
+categories = ["network-programming", "web-programming::http-server"]
+# Conformance tests are TypeScript and irrelevant to the published crate.
+exclude = ["conformance"]
 
 [dependencies]
 tokio = { version = "1", features = ["full"] }

@@ -1,12 +1,21 @@
 [package]
-name = "durable-streams"
+name = "durable-streams-client"
 version = "0.1.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "Apache-2.0"
 description = "Rust client for Durable Streams - persistent, resumable event streams over HTTP"
 repository = "https://github.com/durable-streams/durable-streams"
 keywords = ["streaming", "events", "http", "append-only-log"]
 categories = ["network-programming", "web-programming"]
+# Test-harness helpers, not part of the published library.
+exclude = ["design.md", "run-conformance-adapter.sh"]
+
+[lib]
+# Published as `durable-streams-client`, but kept importable as `durable_streams`
+# (the bare name is taken by the server binary on crates.io). This keeps all
+# existing `use durable_streams::...` call sites, doctests, and README examples
+# valid without source changes.
+name = "durable_streams"
 
 [features]
 default = ["json", "rustls"]
@@ -35,7 +44,7 @@ thiserror = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
-# Base64 encoding (for conformance adapter)
+# Base64 encoding (used by the library's iterator for base64-encoded payloads)
 base64 = "0.22"
 
 # Tracing (optional)

@@ -184,7 +184,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "durable-streams-server"
+name = "durable-streams"
 version = "0.1.0"
 dependencies = [
  "bytes",

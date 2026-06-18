@@ -49,11 +49,20 @@ to any `src/*.rs`** — so the two efforts rebase past each other cleanly.
 5. **Client `target/` is committed to git** (force-added; root `.gitignore` line 186 already
    ignores `target/`). cargo auto-excludes `target/` from the package, so it does not ship,
    but it is repo bloat worth untracking.
-6. **Client `base64` is a normal dependency used only by the `conformance-adapter` bin** —
-   so every library consumer compiles `base64` for nothing.
-7. **No `test:run:rust` script is wired into the conformance runner** (only elixir/python
+6. **Client `base64` is a real library dependency** — used by `src/iterator.rs` (decoding
+   base64-encoded payloads), not just the conformance-adapter binary. (An initial check
+   suggested it was bin-only; that was a false negative from a shell globbing error, caught
+   by the verification build.) So `base64` must stay a required dependency, and the bin is
+   left as a normal (ungated) target.
+7. **Renaming the client package breaks its in-repo import.** The library is referenced as
+   `durable_streams` in 15 places (the `conformance-adapter` bin, `lib.rs`/`types.rs`
+   doctests, and 4 README examples). Renaming the package to `durable-streams-client` would
+   change the default library name and break all of them. Resolved with `[lib] name =
+   "durable_streams"` — the crate publishes as `durable-streams-client` but stays importable
+   as `durable_streams`, with zero source/doc edits.
+8. **No `test:run:rust` script is wired into the conformance runner** (only elixir/python
    are). The rust adapter is run manually via `run-conformance-adapter.sh`, which execs a
-   pre-built `target/release/conformance-adapter`.
+   pre-built `target/release/conformance-adapter` — left unchanged.
 
 ## Decisions
 
@@ -102,50 +111,39 @@ publish order is irrelevant.
 
 - `name = "durable-streams"` → `name = "durable-streams-client"`
 - `license = "MIT OR Apache-2.0"` → `license = "Apache-2.0"`
-- `base64 = "0.22"` → `base64 = { version = "0.22", optional = true }`
-- `[features]`: add `conformance = ["dep:base64"]`
-- `[[bin]] conformance-adapter`: add `required-features = ["conformance"]`
-- Add `exclude = ["design.md", "run-conformance-adapter.sh"]`
+- Add a `[lib]` section with `name = "durable_streams"` so the published crate
+  (`durable-streams-client`) stays importable as `durable_streams` (see finding #7) — keeps
+  all 15 `durable_streams` call sites/doctests/README examples valid with no source edits.
+- Add `exclude = ["design.md", "run-conformance-adapter.sh"]`.
+- `base64` stays a **required** dependency (the library uses it — finding #6).
+- The `conformance-adapter` binary is left as a normal, ungated target. It still ships in the
+  package (a ~1.3k-line test adapter) but is harmless; it is not worth feature-gating given
+  `base64` can't be removed from the library anyway.
 
-Result: the published library pulls **no** `base64` and builds **no** stray binary; the
-adapter binary builds only under `--features conformance`.
+cargo regenerates the client `Cargo.lock` (only the package-name rename plus a lockfile
+format bump `version = 3` → `4`, matching the server's already-v4 lock).
 
-### C. `packages/client-rust/run-conformance-adapter.sh`
-
-Update so the conformance flow still works with the now-gated bin: build with the feature
-before exec'ing.
-
-```bash
-#!/bin/bash
-cd "$(dirname "$0")"
-cargo build --release --features conformance --bin conformance-adapter >&2
-exec ./target/release/conformance-adapter
-```
-
-(This script is excluded from the published package, so it does not affect the crate.)
-
-### D. Untrack the client `target/`
+### C. Untrack the client `target/`
 
 `git rm -r --cached packages/client-rust/target` — the root `.gitignore` already ignores
-`target/`, so no new ignore file is needed.
+`target/`, so no new ignore file is needed. `run-conformance-adapter.sh` is left unchanged
+(the bin is ungated, so the existing pre-built-exec flow still works).
 
 ## Verification
 
-In the worktree, before any publish:
+In the worktree, before any publish (all run and **passing**):
 
-1. `cargo build --release` in `packages/server-rust` — clean build.
-2. `cargo build --release` in `packages/client-rust` (default features) — clean, and
-   confirms `base64`/the bin are **not** built by default.
-3. `cargo build --release --features conformance --bin conformance-adapter` in the client —
-   the gated bin still compiles.
-4. `cargo package --list` in each crate — confirm the exact shipped file set
-   (server excludes `conformance/`; client excludes `design.md`,
-   `run-conformance-adapter.sh`, and `target/`).
-5. `cargo publish --dry-run` in each crate — passes (uploads nothing).
+1. `cargo package --list` in each crate — confirms the exact shipped file set: server
+   excludes `conformance/`; client excludes `design.md`, `run-conformance-adapter.sh`, and
+   `target/` (auto-excluded). The client's `conformance-adapter` source still ships.
+2. `cargo publish --dry-run` in **`packages/client-rust`** — lib + bin compile (only
+   pre-existing `unused_mut` warnings), reaches the upload/abort step. ✓
+3. `cargo publish --dry-run` in **`packages/server-rust`** — `durable-streams v0.1.0`
+   compiles, reaches the upload/abort step. ✓
 
 ## Publish runbook (who does what)
 
-**Me (in the worktree):** all edits A–D above; run the full Verification list; report the
+**Me (in the worktree):** all edits A–C above; run the full Verification list; report the
 `cargo package --list` and `--dry-run` output.
 
 **Maintainer (account & secrets — cannot/should not be automated):**
@@ -161,7 +159,8 @@ for shared ownership.
 
 ## Merge-safety summary
 
-Files touched: `packages/server-rust/Cargo.toml`, `packages/client-rust/Cargo.toml`,
-`packages/client-rust/run-conformance-adapter.sh`, and untracking
+Files touched: `packages/server-rust/{Cargo.toml,Cargo.lock}`,
+`packages/client-rust/{Cargo.toml,Cargo.lock}`, and untracking
 `packages/client-rust/target/`. **No `src/*.rs` is modified**, so the maintainer's parallel
-server refactor and this work are disjoint and rebase cleanly.
+server refactor and this work are disjoint and rebase cleanly. (`run-conformance-adapter.sh`
+was ultimately left unchanged.)
