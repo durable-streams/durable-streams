@@ -885,8 +885,6 @@ export class FileBackedStreamStore {
     // Define key for LMDB operations
     const key = `stream:${streamPath}`
 
-    const t0 = performance.now()
-
     // Initialize metadata
     // Note: We set closed to false initially, then set it true after appending initial data
     // This prevents the closed check from rejecting the initial append
@@ -908,8 +906,6 @@ export class FileBackedStreamStore {
       forkSubOffset: undefined,
       refCount: 0,
     }
-
-    const tAfterMeta = performance.now()
 
     const segmentPath = segmentFile(this.dataDir, streamMeta.directoryName)
     try {
@@ -979,7 +975,6 @@ export class FileBackedStreamStore {
       )
       throw err
     }
-    const tAfterLmdb = performance.now()
     try {
       await this.fileHandlePool.openWriteStream(segmentPath)
     } catch (err) {
@@ -990,7 +985,6 @@ export class FileBackedStreamStore {
       )
       throw err
     }
-    const tAfterOpen = performance.now()
 
     // Append initial data if provided
     if (options.initialData && options.initialData.length > 0) {
@@ -1017,7 +1011,6 @@ export class FileBackedStreamStore {
         throw err
       }
     }
-    const tAfterAppend = performance.now()
 
     // Now set closed flag if requested (after initial append succeeded)
     if (options.closed) {
@@ -1028,22 +1021,6 @@ export class FileBackedStreamStore {
 
     // Re-fetch updated metadata
     const updated = this.db.get(key) as StreamMetadata
-    const totalMs = performance.now() - t0
-    if (totalMs > 50) {
-      serverLog.event(
-        {
-          event: `store.create`,
-          path: streamPath,
-          totalMs: +totalMs.toFixed(2),
-          metaMs: +(tAfterMeta - t0).toFixed(2),
-          lmdbMs: +(tAfterLmdb - tAfterMeta).toFixed(2),
-          openMs: +(tAfterOpen - tAfterLmdb).toFixed(2),
-          appendMs: +(tAfterAppend - tAfterOpen).toFixed(2),
-          initBytes: options.initialData?.length ?? 0,
-        },
-        `store.create slow`
-      )
-    }
     return this.streamMetaToStream(updated)
   }
 
@@ -1267,8 +1244,6 @@ export class FileBackedStreamStore {
 
     const segmentPath = segmentFile(this.dataDir, streamMeta.directoryName)
 
-    const tAppendStart = performance.now()
-
     // Get write stream from pool
     const stream = this.fileHandlePool.getWriteStream(segmentPath)
 
@@ -1289,8 +1264,6 @@ export class FileBackedStreamStore {
       })
     })
 
-    const tAfterWrite = performance.now()
-
     // 2. Create message object for return value
     const message: StreamMessage = {
       data: processedData,
@@ -1300,8 +1273,6 @@ export class FileBackedStreamStore {
 
     // 3. Flush to disk (blocks here until durable)
     await this.fileHandlePool.fsyncFile(segmentPath)
-
-    const tAfterFsync = performance.now()
 
     // 4. Update LMDB metadata atomically (only after flush, so metadata reflects durability)
     //    This includes both the offset update and producer state update
@@ -1332,24 +1303,6 @@ export class FileBackedStreamStore {
     }
     const key = `stream:${streamPath}`
     await this.db.put(key, updatedMeta)
-
-    const tAfterLmdb = performance.now()
-    const appendTotal = tAfterLmdb - tAppendStart
-    if (appendTotal > 50) {
-      serverLog.event(
-        {
-          event: `store.append`,
-          path: streamPath,
-          totalMs: +appendTotal.toFixed(2),
-          writeMs: +(tAfterWrite - tAppendStart).toFixed(2),
-          fsyncMs: +(tAfterFsync - tAfterWrite).toFixed(2),
-          lmdbMs: +(tAfterLmdb - tAfterFsync).toFixed(2),
-          bytes: processedData.length,
-          isInitial: options.isInitialCreate ?? false,
-        },
-        `store.append slow`
-      )
-    }
 
     // 5. Notify long-polls (data is now readable from disk)
     this.notifyLongPolls(streamPath)
