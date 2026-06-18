@@ -7,7 +7,7 @@
 // A catch-up read is then a literal byte range of the file (JSON responses
 // wrap the range as `[` + range-minus-trailing-comma + `]`).
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs::{File, OpenOptions};
 use std::os::fd::AsRawFd;
 use std::path::PathBuf;
@@ -115,7 +115,16 @@ impl SyncCoalescer {
     }
 
     /// Wait until at least `target` bytes are durable, issuing a sync if needed.
-    pub async fn sync_to(&self, file: Arc<File>, stream: &StreamState, target: u64) {
+    ///
+    /// Returns `Err` if the covering fsync failed: the caller MUST then surface
+    /// an error (never a durable ack), since the data may not have reached stable
+    /// storage. Followers re-loop and a new leader retries the fsync.
+    pub async fn sync_to(
+        &self,
+        file: Arc<File>,
+        stream: &StreamState,
+        target: u64,
+    ) -> std::io::Result<()> {
         // Count this caller as a pending appender for the whole call, so the
         // leader's batch-size snapshot reflects everyone waiting on a fsync.
         // Telemetry-only — no atomic on the append path in a default build.
@@ -127,7 +136,7 @@ impl SyncCoalescer {
             let lead = {
                 let mut s = self.inner.lock().unwrap();
                 if s.synced >= target {
-                    return;
+                    return Ok(());
                 }
                 if s.in_flight {
                     false
@@ -149,21 +158,41 @@ impl SyncCoalescer {
                 let covers = stream.shared.read().unwrap().tail - stream.base_offset;
                 let f = file.clone();
                 let t = crate::telemetry::Timer::start();
-                let _ = tokio::task::spawn_blocking(move || barrier_fsync(&f)).await;
+                // Arm a guard: if THIS future is dropped (cancelled) while awaiting
+                // the fsync, release leadership and wake waiters. Otherwise
+                // `in_flight` would stay set forever and every later appender to
+                // this stream would block on a barrier that never fires.
+                let mut guard = LeaderGuard {
+                    coalescer: self,
+                    armed: true,
+                };
+                let res = tokio::task::spawn_blocking(move || barrier_fsync(&f)).await;
+                guard.armed = false; // past the await — finish the commit inline
                 crate::telemetry::record_fsync(t.elapsed_secs(), batch);
+                let fsync_res: std::io::Result<()> = match res {
+                    Ok(inner) => inner,
+                    Err(e) => Err(std::io::Error::other(e)), // blocking task panicked
+                };
                 {
                     let mut s = self.inner.lock().unwrap();
-                    s.synced = s.synced.max(covers);
+                    // Only advance the durable watermark on a successful fsync — a
+                    // failed fsync must never be acked as durable.
+                    if fsync_res.is_ok() {
+                        s.synced = s.synced.max(covers);
+                    }
                     s.in_flight = false;
                     self.tx.send_replace(s.synced);
                 }
+                // Surface a failure to this caller; waiters re-loop and a new
+                // leader retries the fsync.
+                fsync_res?;
             } else {
                 let mut rx = self.tx.subscribe();
                 // Re-check state after subscribing to avoid missed wakeups.
                 {
                     let s = self.inner.lock().unwrap();
                     if s.synced >= target {
-                        return;
+                        return Ok(());
                     }
                 }
                 let _ = rx.changed().await;
@@ -172,19 +201,60 @@ impl SyncCoalescer {
     }
 }
 
+/// Releases group-commit leadership if the leader future is dropped (cancelled)
+/// mid-fsync. Disarmed on the normal path once the await completes and the inline
+/// commit clears `in_flight` itself.
+struct LeaderGuard<'a> {
+    coalescer: &'a SyncCoalescer,
+    armed: bool,
+}
+
+impl Drop for LeaderGuard<'_> {
+    fn drop(&mut self) {
+        if !self.armed {
+            return;
+        }
+        // Cancelled mid-fsync: release leadership and wake waiters so a new leader
+        // is elected. Non-panicking lock (we may be unwinding).
+        if let Ok(mut s) = self.coalescer.inner.lock() {
+            s.in_flight = false;
+            let synced = s.synced;
+            drop(s);
+            self.coalescer.tx.send_replace(synced);
+        }
+    }
+}
+
 /// On macOS Node (libuv) implements fdatasync as fcntl(F_BARRIERFSYNC); match it
 /// so durability cost is comparable. On Linux use fdatasync.
-fn barrier_fsync(file: &File) {
+///
+/// Returns the fsync result: a failure (e.g. EIO writeback error) MUST be
+/// surfaced to the caller so an append is never acked as durable when the data
+/// did not reach stable storage. See `SyncCoalescer::sync_to`.
+fn barrier_fsync(file: &File) -> std::io::Result<()> {
     let fd = file.as_raw_fd();
     #[cfg(target_os = "macos")]
     unsafe {
-        if libc::fcntl(fd, libc::F_BARRIERFSYNC) != 0 && libc::fcntl(fd, libc::F_FULLFSYNC) != 0 {
-            libc::fsync(fd);
+        // Prefer the cheap ordering barrier; fall back to a full flush, then a
+        // plain fsync. Only error if the final fallback also fails.
+        if libc::fcntl(fd, libc::F_BARRIERFSYNC) == 0 {
+            return Ok(());
         }
+        if libc::fcntl(fd, libc::F_FULLFSYNC) == 0 {
+            return Ok(());
+        }
+        if libc::fsync(fd) == 0 {
+            return Ok(());
+        }
+        Err(std::io::Error::last_os_error())
     }
     #[cfg(not(target_os = "macos"))]
     unsafe {
-        libc::fdatasync(fd);
+        if libc::fdatasync(fd) == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
     }
 }
 
@@ -212,7 +282,9 @@ pub struct StreamState {
     /// per-subscriber file read. `(start, bytes)` covers `[start, start+len)`.
     /// Only populated for chunks up to `TAIL_CHUNK_MAX` (large appends fall back
     /// to file reads / sendfile). See set_last_chunk / tail_chunk_slice.
-    pub last_chunk: std::sync::Mutex<Option<(u64, bytes::Bytes)>>,
+    /// `RwLock` (not `Mutex`) so concurrent readers fanning out over the same
+    /// just-appended tail share it without serializing on a lock.
+    pub last_chunk: RwLock<Option<(u64, bytes::Bytes)>>,
     /// Hot/cold tiering state: the per-stream sealing manifest. Always present;
     /// empty and inert unless tiering is enabled (`--tier`). See tier.rs.
     pub tier: crate::tier::TierState,
@@ -232,7 +304,7 @@ impl StreamState {
     /// logical offset where `bytes` begins. Chunks larger than `TAIL_CHUNK_MAX`
     /// are not cached (the entry is cleared so a stale chunk is never served).
     pub fn set_last_chunk(&self, start: u64, bytes: bytes::Bytes) {
-        let mut g = self.last_chunk.lock().unwrap();
+        let mut g = self.last_chunk.write().unwrap();
         *g = if bytes.len() <= TAIL_CHUNK_MAX {
             Some((start, bytes))
         } else {
@@ -247,7 +319,7 @@ impl StreamState {
         if want_end <= want_start {
             return None;
         }
-        let g = self.last_chunk.lock().unwrap();
+        let g = self.last_chunk.read().unwrap();
         let (cstart, cbytes) = g.as_ref()?;
         let cend = cstart + cbytes.len() as u64;
         if *cstart <= want_start && want_end <= cend {
@@ -381,8 +453,12 @@ impl Store {
         }
         let mut max_id = 0u64;
         let paths: Vec<String> = metas.keys().cloned().collect();
+        // `visiting` tracks the active recursion stack to break cyclic
+        // forked_from chains in corrupt sidecars (would otherwise overflow the
+        // stack on boot). It self-empties between top-level calls.
+        let mut visiting = HashSet::new();
         for path in paths {
-            self.recover_one(&path, &metas);
+            self.recover_one(&path, &metas, &mut visiting);
         }
         for (m, _) in metas.values() {
             max_id = max_id.max(m.id);
@@ -397,15 +473,34 @@ impl Store {
         &self,
         path: &str,
         metas: &HashMap<String, (Meta, PathBuf)>,
+        visiting: &mut HashSet<String>,
     ) -> Option<Arc<StreamState>> {
         if let Some(existing) = self.streams.get(path) {
             return Some(existing.clone());
         }
+        // Cycle guard: if `path` is already on the recursion stack, the
+        // forked_from chain is cyclic (corruption) — skip rather than recurse
+        // forever. Removed on the way out so shared parents (diamonds) still
+        // resolve via the streams-map fast path above.
+        if !visiting.insert(path.to_string()) {
+            return None;
+        }
+        let result = self.recover_one_inner(path, metas, visiting);
+        visiting.remove(path);
+        result
+    }
+
+    fn recover_one_inner(
+        &self,
+        path: &str,
+        metas: &HashMap<String, (Meta, PathBuf)>,
+        visiting: &mut HashSet<String>,
+    ) -> Option<Arc<StreamState>> {
         let (meta, data_path) = metas.get(path)?;
         // Fork parents must be linked first (chains are acyclic; a parent always
         // outlives its forks, so a missing parent means corruption — skip).
         let parent = match &meta.forked_from {
-            Some(src) => match self.recover_one(src, metas) {
+            Some(src) => match self.recover_one(src, metas, visiting) {
                 Some(p) => Some(p),
                 // Nothing inherited → the fork stands alone; otherwise the
                 // chain is broken (corruption) and the stream is skipped.
@@ -449,7 +544,7 @@ impl Store {
             tail_tx,
             sync: SyncCoalescer::new(),
             meta_dirty: AtomicBool::new(false),
-            last_chunk: std::sync::Mutex::new(None),
+            last_chunk: RwLock::new(None),
             tier: crate::tier::TierState::from_meta(
                 &meta.segments,
                 meta.sealed_offset,
@@ -610,7 +705,7 @@ impl Store {
             tail_tx,
             sync: SyncCoalescer::new(),
             meta_dirty: AtomicBool::new(false),
-            last_chunk: std::sync::Mutex::new(None),
+            last_chunk: RwLock::new(None),
             tier: crate::tier::TierState::default(),
             blobstore: self.blobstore.clone(),
             config,
