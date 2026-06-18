@@ -87,15 +87,27 @@ fn splice_appends() -> bool {
     SPLICE_APPENDS.load(Ordering::Relaxed)
 }
 
+/// Bound concurrent connections so a flood can't exhaust fds/memory. (A per-
+/// connection idle/slowloris timeout is intentionally NOT a per-request
+/// `tokio::time::timeout` — that cost ~5% hot-path CPU in a keep-alive workload;
+/// it belongs in a background idle-reaper, a follow-up.)
+const MAX_CONNECTIONS: usize = 65_536;
+
 pub async fn serve(store: Arc<Store>, listener: TcpListener) {
+    let conns = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
     loop {
         let (stream, _) = match listener.accept().await {
             Ok(s) => s,
             Err(_) => continue,
         };
         let _ = stream.set_nodelay(true);
+        // At capacity: drop the new connection rather than queue unboundedly.
+        let Ok(permit) = conns.clone().try_acquire_owned() else {
+            continue;
+        };
         let store = store.clone();
         tokio::spawn(async move {
+            let _permit = permit; // released when the connection ends
             let _ = conn_loop(store, stream).await;
         });
     }
@@ -118,6 +130,12 @@ async fn conn_loop(store: Arc<Store>, mut stream: TcpStream) -> std::io::Result<
             http1::HeadResult::Head(h) => h,
         };
 
+        // Reject an over-limit declared body before sending 100-continue or
+        // reading anything (RFC 9110 §10.1.1 permits a 4xx instead of 100).
+        if head.content_length.is_some_and(|n| n > crate::api::MAX_BODY_BYTES) {
+            let _ = stream.write_all(TOO_LARGE).await;
+            return Ok(());
+        }
         if head.expect_continue {
             stream.write_all(b"HTTP/1.1 100 Continue\r\n\r\n").await?;
         }
