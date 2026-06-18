@@ -14,6 +14,14 @@ categories = ["network-programming", "web-programming::http-server"]
 # Conformance tests are TypeScript and irrelevant to the published crate.
 exclude = ["conformance"]
 
+# The crate publishes as `durable-streams`, but the built binary keeps its
+# established name `durable-streams-server` (used by the conformance harness, the
+# release workflow, and matching the Caddy server binary). So `cargo install
+# durable-streams` installs a `durable-streams-server` command.
+[[bin]]
+name = "durable-streams-server"
+path = "src/main.rs"
+
 [dependencies]
 tokio = { version = "1", features = ["full"] }
 bytes = "1"
