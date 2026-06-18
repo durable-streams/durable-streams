@@ -50,7 +50,15 @@ pub struct StreamConfig {
 pub struct Shared {
     /// Logical tail offset (base_offset + bytes written to this stream's own file).
     pub tail: u64,
+    /// Writer-facing close intent: set under the appender lock the instant a
+    /// close is accepted (so subsequent appends are rejected) and persisted to
+    /// the sidecar. NOT what readers observe — see `closed_durable`.
     pub closed: bool,
+    /// Reader-observable EOF: set only AFTER the closure is durable (data fsync +
+    /// meta fsync). `tail()` reports this so a reader never observes EOF for a
+    /// closure a crash could roll back (PROTOCOL.md §4.1 monotonicity). On
+    /// recovery it equals the persisted `closed` (durable by definition).
+    pub closed_durable: bool,
     /// Producer that closed the stream (producer_id, epoch, seq), for idempotent re-close.
     pub closed_by: Option<(String, u64, u64)>,
     pub producers: HashMap<String, ProducerState>,
@@ -158,33 +166,27 @@ impl SyncCoalescer {
                 let covers = stream.shared.read().unwrap().tail - stream.base_offset;
                 let f = file.clone();
                 let t = crate::telemetry::Timer::start();
-                // Arm a guard: if THIS future is dropped (cancelled) while awaiting
-                // the fsync, release leadership and wake waiters. Otherwise
-                // `in_flight` would stay set forever and every later appender to
-                // this stream would block on a barrier that never fires.
+                // Releases leadership if this future is cancelled mid-fsync.
                 let mut guard = LeaderGuard {
                     coalescer: self,
                     armed: true,
                 };
                 let res = tokio::task::spawn_blocking(move || barrier_fsync(&f)).await;
-                guard.armed = false; // past the await — finish the commit inline
+                guard.armed = false;
                 crate::telemetry::record_fsync(t.elapsed_secs(), batch);
                 let fsync_res: std::io::Result<()> = match res {
                     Ok(inner) => inner,
-                    Err(e) => Err(std::io::Error::other(e)), // blocking task panicked
+                    Err(e) => Err(std::io::Error::other(e)),
                 };
                 {
                     let mut s = self.inner.lock().unwrap();
-                    // Only advance the durable watermark on a successful fsync — a
-                    // failed fsync must never be acked as durable.
+                    // Advance the durable watermark only on a successful fsync.
                     if fsync_res.is_ok() {
                         s.synced = s.synced.max(covers);
                     }
                     s.in_flight = false;
                     self.tx.send_replace(s.synced);
                 }
-                // Surface a failure to this caller; waiters re-loop and a new
-                // leader retries the fsync.
                 fsync_res?;
             } else {
                 let mut rx = self.tx.subscribe();
@@ -276,6 +278,12 @@ pub struct StreamState {
     pub sync: SyncCoalescer,
     /// True while a debounced meta flush is pending.
     pub meta_dirty: AtomicBool,
+    /// Serializes sidecar writes for this stream. Concurrent writers (append
+    /// flush, close, tiering offload flip, delete) otherwise race on the shared
+    /// `.meta.tmp` file and can reorder their renames, letting a stale non-durable
+    /// flush clobber a durable manifest flip. Held across capture+write+rename so
+    /// the last writer persists the freshest captured state.
+    pub meta_lock: StdMutex<()>,
     /// Most recently appended wire chunk, kept resident so caught-up live
     /// readers (SSE / long-poll) and immediate catch-up reads are served from
     /// memory — one read+encode shared across all subscribers — instead of a
@@ -334,8 +342,9 @@ impl StreamState {
     pub fn tail(&self) -> Tail {
         let s = self.shared.read().unwrap();
         Tail {
+            // Readers observe EOF only once the closure is durable.
             bytes: s.tail,
-            closed: s.closed,
+            closed: s.closed_durable,
         }
     }
 
@@ -478,10 +487,8 @@ impl Store {
         if let Some(existing) = self.streams.get(path) {
             return Some(existing.clone());
         }
-        // Cycle guard: if `path` is already on the recursion stack, the
-        // forked_from chain is cyclic (corruption) — skip rather than recurse
-        // forever. Removed on the way out so shared parents (diamonds) still
-        // resolve via the streams-map fast path above.
+        // Break a cyclic forked_from chain (corrupt sidecar) instead of recursing
+        // forever. Removed on the way out so shared parents still resolve above.
         if !visiting.insert(path.to_string()) {
             return None;
         }
@@ -534,6 +541,7 @@ impl Store {
             shared: RwLock::new(Shared {
                 tail,
                 closed: meta.closed,
+                closed_durable: meta.closed,
                 closed_by: meta.closed_by.clone(),
                 producers: meta.producers.clone(),
                 last_seq_header: meta.last_seq_header.clone(),
@@ -544,6 +552,7 @@ impl Store {
             tail_tx,
             sync: SyncCoalescer::new(),
             meta_dirty: AtomicBool::new(false),
+            meta_lock: StdMutex::new(()),
             last_chunk: RwLock::new(None),
             tier: crate::tier::TierState::from_meta(
                 &meta.segments,
@@ -695,6 +704,7 @@ impl Store {
             shared: RwLock::new(Shared {
                 tail: base_offset,
                 closed,
+                closed_durable: closed,
                 closed_by: None,
                 producers: HashMap::new(),
                 last_seq_header: None,
@@ -705,6 +715,7 @@ impl Store {
             tail_tx,
             sync: SyncCoalescer::new(),
             meta_dirty: AtomicBool::new(false),
+            meta_lock: StdMutex::new(()),
             last_chunk: RwLock::new(None),
             tier: crate::tier::TierState::default(),
             blobstore: self.blobstore.clone(),
@@ -967,6 +978,9 @@ pub fn meta_path(file_path: &std::path::Path) -> PathBuf {
 
 /// Write the metadata sidecar. `durable` forces an fsync (create/close/delete).
 pub fn write_meta_sync(st: &StreamState, durable: bool) -> std::io::Result<()> {
+    // Serialize per stream so concurrent writers don't race on the temp file or
+    // reorder renames (a stale flush must not clobber a durable manifest flip).
+    let _g = st.meta_lock.lock().unwrap_or_else(|e| e.into_inner());
     let meta = Meta::capture(st);
     let bytes = serde_json::to_vec(&meta).expect("meta serializes");
     let tmp = meta_path(&st.file_path).with_extension("meta.tmp");
@@ -980,7 +994,21 @@ pub fn write_meta_sync(st: &StreamState, durable: bool) -> std::io::Result<()> {
         }
     }
     std::fs::rename(&tmp, &final_path)?;
+    // A rename is crash-durable only once the parent dir entry is fsynced.
+    if durable {
+        fsync_parent_dir(&final_path)?;
+    }
     Ok(())
+}
+
+/// fsync the directory containing `path`, making a prior create/rename in that
+/// directory crash-durable. A POSIX directory fd supports fsync; `sync_all`
+/// issues it.
+pub(crate) fn fsync_parent_dir(path: &std::path::Path) -> std::io::Result<()> {
+    match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => File::open(dir)?.sync_all(),
+        _ => Ok(()),
+    }
 }
 
 impl StreamState {

@@ -391,9 +391,7 @@ async fn handle_create(store: Arc<Store>, req: Req, path: String) -> Resp {
                 // Sub-offset counts messages past the anchor; each message ends with ','.
                 let data = match read_range_bytes(&src, anchor, src_tail).await {
                     Ok(d) => d,
-                    // A cold/short read here must not be miscounted as a message
-                    // boundary (which would mint a corrupt fork point). Surface a
-                    // retryable error instead of a misleading 400.
+                    // A short/cold read must not be miscounted as a value boundary.
                     Err(_) => return text_response(503, "fork source read failed"),
                 };
                 let mut remaining = sub;
@@ -563,7 +561,7 @@ fn write_wire(st: &StreamState, ap: &mut Appender, wire: &Bytes) -> std::io::Res
         let mut s = st.shared.write().unwrap();
         s.tail = tail;
         s.last_access = SystemTime::now();
-        closed = s.closed;
+        closed = s.closed_durable;
     }
     // Publish the resident chunk BEFORE waking subscribers, so a long-poll/SSE
     // reader woken by the tail update reliably hits the cache (one shared copy)
@@ -892,30 +890,28 @@ async fn handle_append_inner(store: Arc<Store>, req: Req, path: String) -> (Resp
     let file = ap.file.clone();
     drop(ap);
 
-    // The covering fsync failed — the data is not durable. Return an error
-    // rather than a false 2xx ack (and, for a close, skip the durable-closure
-    // commit + reader notification below).
+    // Covering fsync failed: not durable. Error out (and skip the close commit
+    // below) rather than ack 2xx.
     if !wire.is_empty() && st.sync.sync_to(file, &st, target).await.is_err() {
         ret!(text_response(500, "fsync failed"), Conflict);
     }
 
-    // Persist metadata: closure durably (monotonic state), producer/access
-    // updates debounced (documented crash window; see store::Meta).
-    //
-    // Closure ordering mirrors the Node reference (data fdatasync → durable
-    // metadata commit → only then notify readers): the data was fsynced above,
-    // the closure is made durable here, and only afterwards is the close signal
-    // broadcast on tail_tx. This guarantees readers never observe EOF for a
-    // closure that is not yet durable, preserving monotonicity across crashes.
+    // Closure ordering: data fdatasync (above) → durable meta commit → expose the
+    // closure to readers (closed_durable) and wake waiters. Readers never observe
+    // EOF for a closure that is not yet durable (PROTOCOL.md §4.1 monotonicity).
+    // Producer/access updates are debounced (documented crash window; see store::Meta).
     if close_req {
         let st2 = st.clone();
-        let _ = tokio::task::spawn_blocking(move || write_meta_sync(&st2, true)).await;
-        // Closure is now durable — safe to wake long-poll / SSE waiters.
-        let t = Tail {
-            bytes: st.shared.read().unwrap().tail,
-            closed: true,
+        let meta_res = tokio::task::spawn_blocking(move || write_meta_sync(&st2, true)).await;
+        if !matches!(meta_res, Ok(Ok(()))) {
+            ret!(text_response(500, "close not durable"), Conflict);
+        }
+        let tail = {
+            let mut s = st.shared.write().unwrap();
+            s.closed_durable = true;
+            s.tail
         };
-        st.tail_tx.send_replace(t);
+        st.tail_tx.send_replace(Tail { bytes: tail, closed: true });
     } else {
         st.schedule_meta_flush();
     }
@@ -1197,15 +1193,13 @@ where
     // caught-up reader falls through to a file read (sendfile) instead of being
     // served wrong bytes.
     st.set_last_chunk(tail, Bytes::new());
-    let closed = st.shared.read().unwrap().closed;
+    let closed = st.shared.read().unwrap().closed_durable;
     st.tail_tx.send_replace(Tail { bytes: tail, closed });
 
     let target = ap.written;
     drop(ap);
     if st.sync.sync_to(file, &st, target).await.is_err() {
-        // Covering fsync failed: the spliced body is not durable. The body was
-        // fully consumed from the socket, so keep-alive framing is intact — a
-        // Done(500) lets the connection survive; the client retries.
+        // Not durable. Body was fully consumed, so keep-alive framing is intact.
         return Done(text_response(500, "fsync failed"));
     }
     st.schedule_meta_flush();
@@ -1434,8 +1428,7 @@ async fn materialize_resolved(
                 })
                 .await
                 .unwrap_or_default();
-                // A short local read (file truncated/removed mid-read) must not
-                // be forwarded as complete — surface it so the caller aborts.
+                // A short local read must not be forwarded as complete.
                 if bytes.len() as u64 != want {
                     return Err(Error::new(ErrorKind::UnexpectedEof, "short local read"));
                 }
@@ -1471,11 +1464,8 @@ async fn handle_read(store: Arc<Store>, req: Req, path: String) -> Resp {
     if st.shared.read().unwrap().soft_deleted {
         return gone();
     }
-    // TTL is a sliding window: only reset it (which takes the per-stream write
-    // lock) when the stream actually has a TTL. For non-TTL streams this keeps
-    // the read path lock-free — concurrent readers never serialize on a write
-    // lock, honouring the "lock-free reads" design. (expires_at is absolute and
-    // is not reset by reads, so it needs no touch.)
+    // Only TTL is reset by a read, and touch() takes the write lock — skip it for
+    // non-TTL streams to keep their read path lock-free.
     if st.config.ttl_seconds.is_some() {
         st.touch();
         st.schedule_meta_flush(); // sliding TTL must survive restarts
@@ -1754,10 +1744,8 @@ async fn handle_sse(st: Arc<StreamState>, offset: ParsedOffset, client_cursor: O
                         cache_hit = false;
                         match read_range_bytes(&st, pos, t.bytes).await {
                             Ok(d) => d,
-                            // Backend/short read: end the SSE stream WITHOUT
-                            // advancing `pos` or emitting a forward control event,
-                            // so the client reconnects from its last offset and
-                            // never silently skips the gap. (BUG-1 parity for SSE.)
+                            // End the stream without advancing `pos`: the client
+                            // reconnects from its last offset, never skipping a gap.
                             Err(_) => return,
                         }
                     }
