@@ -206,11 +206,7 @@ export class StreamResponseImpl<
     })
 
     // Check replay mode entry (one-shot, after first response)
-    if (
-      config.upToDateTracker &&
-      config.streamKey &&
-      !this.#syncState.upToDate
-    ) {
+    if (config.upToDateTracker && config.streamKey) {
       const replayCursor = config.upToDateTracker.shouldEnterReplayMode(
         config.streamKey
       )
@@ -443,6 +439,23 @@ export class StreamResponseImpl<
   /**
    * Update state from response headers.
    */
+  #processResponseBatch(response: Response, isSse: boolean): boolean {
+    this.#updateStateFromResponse(response)
+
+    let suppressBatch = false
+    if (this.#syncState instanceof ActiveState) {
+      const batchResult = this.#syncState.handleMessageBatch({
+        hasMessages: true,
+        hasUpToDateMessage: this.#syncState.upToDate,
+        isSse,
+        currentCursor: this.#syncState.cursor,
+      })
+      this.#syncState = batchResult.state
+      suppressBatch = batchResult.suppressBatch
+    }
+    return suppressBatch
+  }
+
   #updateStateFromResponse(response: Response): void {
     // Immutable state transition via new state machine
     const transition = this.#syncState.handleResponseMetadata({
@@ -819,8 +832,13 @@ export class StreamResponseImpl<
               )
               // Fall through to SSE processing below
             } else {
-              // Regular response - enqueue it
-              controller.enqueue(firstResponse)
+              // Regular response - process it through the same replay bookkeeping
+              // and batch suppression path as subsequent long-poll responses.
+              const suppressBatch = this.#processResponseBatch(
+                firstResponse,
+                false
+              )
+              if (!suppressBatch) controller.enqueue(firstResponse)
 
               // If upToDate and not continuing live, we're done
               if (this.upToDate && !this.#shouldContinueLive()) {
@@ -1049,21 +1067,8 @@ export class StreamResponseImpl<
               this.#overrideParams
             )
 
-            this.#updateStateFromResponse(response)
+            const suppressBatch = this.#processResponseBatch(response, false)
             this.#onErrorRetryAttempt = 0
-
-            // Trigger message batch transition (SyncingState -> LiveState on upToDate)
-            let suppressBatch = false
-            if (this.#syncState instanceof ActiveState) {
-              const batchResult = this.#syncState.handleMessageBatch({
-                hasMessages: true,
-                hasUpToDateMessage: this.#syncState.upToDate,
-                isSse: false,
-                currentCursor: this.#syncState.cursor,
-              })
-              this.#syncState = batchResult.state
-              suppressBatch = batchResult.suppressBatch
-            }
 
             // Reset fast loop detector on offset advance or live request
             if (

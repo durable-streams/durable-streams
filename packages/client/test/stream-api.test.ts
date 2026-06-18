@@ -1603,6 +1603,68 @@ describe(`replay mode suppression integration`, () => {
     mockFetch = vi.fn()
   })
 
+  it(`should suppress first up-to-date response when cursor matches stored replay cursor`, async () => {
+    const { InMemoryUpToDateStorage, UpToDateTracker } = await import(
+      `../src/up-to-date-tracker`
+    )
+    const storage = new InMemoryUpToDateStorage()
+    const tracker = new UpToDateTracker(storage)
+    tracker.recordUpToDate(`https://example.com/stream`, `cached_cursor`)
+
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ id: `cached` }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `1_5`,
+          [STREAM_CURSOR_HEADER]: `cached_cursor`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    )
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: false,
+      upToDateStorage: storage,
+    })
+
+    await expect(res.json()).resolves.toEqual([])
+    expect(mockFetch).toHaveBeenCalledTimes(1)
+  })
+
+  it(`should persist cursor from first up-to-date response before non-live close`, async () => {
+    const { InMemoryUpToDateStorage } = await import(
+      `../src/up-to-date-tracker`
+    )
+    const storage = new InMemoryUpToDateStorage()
+
+    mockFetch.mockResolvedValueOnce(
+      new Response(JSON.stringify([{ id: 1 }]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          [STREAM_OFFSET_HEADER]: `1_5`,
+          [STREAM_CURSOR_HEADER]: `first_cursor`,
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+        },
+      })
+    )
+
+    const res = await stream({
+      url: `https://example.com/stream`,
+      fetch: mockFetch,
+      live: false,
+      upToDateStorage: storage,
+    })
+
+    await expect(res.json()).resolves.toEqual([{ id: 1 }])
+    expect(storage.get(`https://example.com/stream`)?.cursor).toBe(
+      `first_cursor`
+    )
+  })
+
   it(`should suppress duplicate batch on cursor match in replay mode`, async () => {
     const { InMemoryUpToDateStorage, UpToDateTracker } = await import(
       `../src/up-to-date-tracker`

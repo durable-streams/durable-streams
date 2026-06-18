@@ -561,6 +561,10 @@ export class PrefetchQueue {
       this.#headKey = queuedKey
       break
     }
+
+    const consumerSignal = getRequestSignal(...args)
+    const { cleanup } = chainAborter(entry.abort, consumerSignal)
+    entry.promise.finally(cleanup).catch(noop)
     return entry.promise
   }
 

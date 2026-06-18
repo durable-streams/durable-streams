@@ -86,6 +86,27 @@ describe(`UpToDateTracker`, () => {
     expect(tracker2.shouldEnterReplayMode(`stream-new`)).toBe(`cursor-new`)
   })
 
+  it(`evicts oldest entry across tracker instances sharing storage`, () => {
+    const storage = new InMemoryUpToDateStorage()
+    vi.setSystemTime(new Date(1000))
+
+    for (let i = 0; i < 250; i++) {
+      new UpToDateTracker(storage).recordUpToDate(`stream-${i}`, `cursor-${i}`)
+    }
+
+    new UpToDateTracker(storage).recordUpToDate(`stream-new`, `cursor-new`)
+
+    expect(storage.get(`stream-0`)).toBeNull()
+    expect(storage.get(`stream-1`)).toEqual({
+      cursor: `cursor-1`,
+      timestamp: 1000,
+    })
+    expect(storage.get(`stream-new`)).toEqual({
+      cursor: `cursor-new`,
+      timestamp: 1000,
+    })
+  })
+
   it(`stale entry is cleaned up from storage on access`, () => {
     const storage = new InMemoryUpToDateStorage()
     const tracker = new UpToDateTracker(storage)
@@ -319,7 +340,7 @@ describe(`localStorage write throttling`, () => {
     vi.unstubAllGlobals()
   })
 
-  it.fails(`should throttle localStorage writes to once per 60s`, () => {
+  it(`should throttle localStorage writes to once per 60s`, () => {
     const storage: Record<string, string> = {}
     const setItemSpy = vi.fn((key: string, value: string) => {
       storage[key] = value

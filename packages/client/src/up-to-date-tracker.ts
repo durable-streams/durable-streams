@@ -63,32 +63,83 @@ export class LocalStorageUpToDateStorage implements UpToDateStorage {
 
 const TTL_MS = 60_000
 const MAX_ENTRIES = 250
+const PERSIST_THROTTLE_MS = 60_000
+
+interface TrackerSharedState {
+  keys: Array<string>
+  memory: Map<string, { cursor: string; timestamp: number }>
+  lastPersistedAt: Map<string, number>
+  pendingTimers: Map<string, ReturnType<typeof setTimeout>>
+}
+
+const sharedStates = new WeakMap<UpToDateStorage, TrackerSharedState>()
+
+function getSharedState(storage: UpToDateStorage): TrackerSharedState {
+  let state = sharedStates.get(storage)
+  if (!state) {
+    state = {
+      keys: [],
+      memory: new Map(),
+      lastPersistedAt: new Map(),
+      pendingTimers: new Map(),
+    }
+    sharedStates.set(storage, state)
+  }
+  return state
+}
 
 export class UpToDateTracker {
   readonly #storage: UpToDateStorage
-  readonly #keys: Array<string> = [] // for LRU eviction (in-memory only)
+  readonly #shared: TrackerSharedState
 
   constructor(storage?: UpToDateStorage) {
     this.#storage = storage ?? new InMemoryUpToDateStorage()
+    this.#shared = getSharedState(this.#storage)
   }
 
   recordUpToDate(streamKey: string, cursor: string): void {
-    this.#storage.set(streamKey, { cursor, timestamp: Date.now() })
+    const value = { cursor, timestamp: Date.now() }
+    this.#shared.memory.set(streamKey, value)
+
+    const lastPersistedAt =
+      this.#shared.lastPersistedAt.get(streamKey) ?? -Infinity
+    const elapsed = Date.now() - lastPersistedAt
+    if (elapsed >= PERSIST_THROTTLE_MS) {
+      this.#storage.set(streamKey, value)
+      this.#shared.lastPersistedAt.set(streamKey, Date.now())
+    } else if (!this.#shared.pendingTimers.has(streamKey)) {
+      const timer = setTimeout(() => {
+        this.#shared.pendingTimers.delete(streamKey)
+        const latest = this.#shared.memory.get(streamKey)
+        if (latest) {
+          this.#storage.set(streamKey, latest)
+          this.#shared.lastPersistedAt.set(streamKey, Date.now())
+        }
+      }, PERSIST_THROTTLE_MS - elapsed)
+      this.#shared.pendingTimers.set(streamKey, timer)
+    }
+
     // LRU eviction
-    const idx = this.#keys.indexOf(streamKey)
-    if (idx !== -1) this.#keys.splice(idx, 1)
-    this.#keys.push(streamKey)
-    while (this.#keys.length > MAX_ENTRIES) {
-      const evicted = this.#keys.shift()!
+    const idx = this.#shared.keys.indexOf(streamKey)
+    if (idx !== -1) this.#shared.keys.splice(idx, 1)
+    this.#shared.keys.push(streamKey)
+    while (this.#shared.keys.length > MAX_ENTRIES) {
+      const evicted = this.#shared.keys.shift()!
+      this.#shared.memory.delete(evicted)
       this.#storage.delete(evicted)
+      const timer = this.#shared.pendingTimers.get(evicted)
+      if (timer) clearTimeout(timer)
+      this.#shared.pendingTimers.delete(evicted)
+      this.#shared.lastPersistedAt.delete(evicted)
     }
   }
 
   shouldEnterReplayMode(streamKey: string): string | null {
-    const entry = this.#storage.get(streamKey)
+    const entry =
+      this.#shared.memory.get(streamKey) ?? this.#storage.get(streamKey)
     if (!entry) return null
     if (Date.now() - entry.timestamp > TTL_MS) {
-      this.#storage.delete(streamKey)
+      this.delete(streamKey)
       return null
     }
     return entry.cursor
@@ -96,8 +147,13 @@ export class UpToDateTracker {
 
   delete(streamKey: string): void {
     this.#storage.delete(streamKey)
-    const idx = this.#keys.indexOf(streamKey)
-    if (idx !== -1) this.#keys.splice(idx, 1)
+    this.#shared.memory.delete(streamKey)
+    const timer = this.#shared.pendingTimers.get(streamKey)
+    if (timer) clearTimeout(timer)
+    this.#shared.pendingTimers.delete(streamKey)
+    this.#shared.lastPersistedAt.delete(streamKey)
+    const idx = this.#shared.keys.indexOf(streamKey)
+    if (idx !== -1) this.#shared.keys.splice(idx, 1)
   }
 }
 

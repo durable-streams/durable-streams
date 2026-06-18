@@ -681,6 +681,33 @@ describe(`PrefetchQueue`, () => {
     expect(mockFetch).toHaveBeenCalledTimes(2)
   })
 
+  it(`should abort consumed prefetch when consuming request signal aborts`, async () => {
+    let prefetchedSignal: AbortSignal | undefined
+    const mockFetch = vi.fn<typeof fetch>().mockImplementation((_url, init) => {
+      prefetchedSignal = init?.signal
+      return new Promise(() => {})
+    })
+    const queue = new PrefetchQueue(mockFetch)
+    const prefetchParent = new AbortController()
+    const consumingRequest = new AbortController()
+
+    queue.prefetch(
+      `http://example.com?offset=5`,
+      undefined,
+      prefetchParent.signal
+    )
+    const promise = queue.consume(`http://example.com?offset=5`, {
+      signal: consumingRequest.signal,
+    })
+
+    expect(promise).toBeDefined()
+    expect(prefetchedSignal?.aborted).toBe(false)
+
+    consumingRequest.abort(`consumer-aborted`)
+
+    expect(prefetchedSignal?.aborted).toBe(true)
+  })
+
   it(`should not duplicate prefetch for same URL`, () => {
     const mockFetch = vi
       .fn<typeof fetch>()
