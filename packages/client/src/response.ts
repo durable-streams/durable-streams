@@ -505,6 +505,21 @@ export class StreamResponseImpl<
       streamClosed,
     })
     this.#syncState = transition.state
+
+    // Record cursor on up-to-date for replay mode dedup. SSE controls carry
+    // the same logical metadata as response headers, but do not flow through
+    // #updateStateFromResponse().
+    if (
+      this.#upToDateTracker &&
+      this.#streamKey &&
+      this.#syncState.upToDate &&
+      this.#syncState.cursor
+    ) {
+      this.#upToDateTracker.recordUpToDate(
+        this.#streamKey,
+        this.#syncState.cursor
+      )
+    }
   }
 
   #updateEncodingFromSSEResponse(response: Response): void {
@@ -687,7 +702,9 @@ export class StreamResponseImpl<
 
     // If upToDate is signaled, yield an empty response so subscribers receive the signal
     // This is important for empty streams and for subscribers waiting for catch-up completion
-    if (event.upToDate) {
+    const isUpToDate =
+      (event.streamClosed ?? false) || (event.upToDate ?? false)
+    if (isUpToDate) {
       const response = createSSESyntheticResponseFromParts(
         [``],
         event.streamNextOffset,
@@ -767,11 +784,14 @@ export class StreamResponseImpl<
       if (controlEvent.type === `control`) {
         // Update state and create response with correct metadata
         this.#updateStateFromSSEControl(controlEvent)
+        const isUpToDate =
+          (controlEvent.streamClosed ?? false) ||
+          (controlEvent.upToDate ?? false)
         const response = createSSESyntheticResponseFromParts(
           bufferedDataParts,
           controlEvent.streamNextOffset,
           controlEvent.streamCursor,
-          controlEvent.upToDate ?? false,
+          isUpToDate,
           controlEvent.streamClosed ?? false,
           this.contentType,
           this.#encoding,

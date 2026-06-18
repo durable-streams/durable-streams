@@ -525,6 +525,25 @@ function getPrefetchInit(
   }
 }
 
+function wrapResponseBodyWithAbort(
+  response: Response,
+  signal: AbortSignal | undefined,
+  cleanup: () => void
+): Response {
+  if (!response.body || !signal) {
+    cleanup()
+    return response
+  }
+
+  const { readable, writable } = new TransformStream()
+  void response.body.pipeTo(writable, { signal }).then(cleanup, cleanup)
+  return new Response(readable, {
+    status: response.status,
+    statusText: response.statusText,
+    headers: response.headers,
+  })
+}
+
 /**
  * In-order prefetch queue for chunk responses.
  * Maintains a bounded queue of speculative fetches and enforces FIFO consumption.
@@ -564,8 +583,9 @@ export class PrefetchQueue {
 
     const consumerSignal = getRequestSignal(...args)
     const { cleanup } = chainAborter(entry.abort, consumerSignal)
-    entry.promise.finally(cleanup).catch(noop)
-    return entry.promise
+    return entry.promise.then((response) =>
+      wrapResponseBodyWithAbort(response, consumerSignal, cleanup)
+    )
   }
 
   prefetch(url: string, init?: RequestInit, parentSignal?: AbortSignal): void {
