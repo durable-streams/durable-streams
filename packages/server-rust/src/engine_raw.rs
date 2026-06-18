@@ -93,8 +93,23 @@ fn splice_appends() -> bool {
 /// it belongs in a background idle-reaper, a follow-up.)
 const MAX_CONNECTIONS: usize = 65_536;
 
+/// Process-global connection limiter, shared by `serve` (acquire per connection)
+/// and `drain` (acquire all permits to wait for in-flight connections to finish).
+fn conn_limiter() -> &'static Arc<tokio::sync::Semaphore> {
+    static SEMA: std::sync::OnceLock<Arc<tokio::sync::Semaphore>> = std::sync::OnceLock::new();
+    SEMA.get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS)))
+}
+
+/// Wait up to `grace` for in-flight connections to finish (best-effort drain on
+/// shutdown). Acquiring all permits succeeds only once every connection task has
+/// released its permit.
+pub async fn drain(grace: std::time::Duration) {
+    let sema = conn_limiter();
+    let _ = tokio::time::timeout(grace, sema.acquire_many(MAX_CONNECTIONS as u32)).await;
+}
+
 pub async fn serve(store: Arc<Store>, listener: TcpListener) {
-    let conns = Arc::new(tokio::sync::Semaphore::new(MAX_CONNECTIONS));
+    let conns = conn_limiter().clone();
     loop {
         let (stream, _) = match listener.accept().await {
             Ok(s) => s,

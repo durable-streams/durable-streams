@@ -1517,11 +1517,12 @@ async fn handle_catchup(
         }
     };
     let end = t.bytes;
-    let etag = st.etag(start, end, t.closed);
-    if let Some(inm) = header_str(req, "if-none-match") {
-        if inm == etag {
+    // No ETag for offset=now (§10.1) — it's a tail sentinel, not a cacheable range.
+    let etag = (!now_mode).then(|| st.etag(start, end, t.closed));
+    if let Some(etag) = &etag {
+        if header_str(req, "if-none-match") == Some(etag.as_str()) {
             let mut b = ResponseBuilder::new(304)
-                .h("etag", etag)
+                .h("etag", etag.clone())
                 .h(H_NEXT_OFFSET, format_offset(end))
                 .hs(H_UP_TO_DATE, "true");
             if t.closed {
@@ -1536,11 +1537,13 @@ async fn handle_catchup(
         .h("content-type", st.config.content_type.clone())
         .h(H_NEXT_OFFSET, format_offset(end))
         .hs(H_UP_TO_DATE, "true")
-        .h("etag", etag)
         .h(
             "cache-control",
             if now_mode { "no-store".into() } else { CACHEABLE.to_string() },
         );
+    if let Some(etag) = etag {
+        b = b.h("etag", etag);
+    }
     if t.closed {
         b = b.hs(H_CLOSED, "true");
     }

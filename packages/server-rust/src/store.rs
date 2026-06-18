@@ -404,6 +404,12 @@ impl Store {
     ) -> std::io::Result<Self> {
         let streams_dir = data_dir.join("streams");
         std::fs::create_dir_all(&streams_dir)?;
+        // Stream data can be sensitive; keep the data dir owner-only (best-effort).
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&data_dir, std::fs::Permissions::from_mode(0o700));
+        }
         let seed = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
@@ -1077,7 +1083,16 @@ pub fn compute_cursor(client_cursor: Option<u64>) -> u64 {
         .as_secs();
     let interval = now.saturating_sub(CURSOR_EPOCH_UNIX) / CURSOR_INTERVAL_SECS;
     match client_cursor {
-        Some(c) if c >= interval => c + 1,
+        // Client is at/ahead of the current interval: advance by random jitter
+        // (§10.1, 1–3600s i.e. 1–180 intervals) so collapsed waiters don't all
+        // re-request in lockstep. Entropy from the sub-second clock (no rng dep).
+        Some(c) if c >= interval => {
+            let nanos = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.subsec_nanos())
+                .unwrap_or(0);
+            c + 1 + (nanos % 180) as u64
+        }
         _ => interval,
     }
 }
