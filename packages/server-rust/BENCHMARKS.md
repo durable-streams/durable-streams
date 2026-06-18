@@ -69,6 +69,48 @@ cores.
 `--splice-appends` (1 MB binary): 375 → 404 /s at **76% → 43% CPU** (a CPU
 lever, not a throughput one). Cold-tier read (`--tier local`): ~**5 GB/s**.
 
+## Byte vs JSON mode
+
+The server speaks two body modes: **binary** stores the POST body verbatim
+(wire == body), and **JSON** parses and reframes it (single values are wrapped
+into the stream's JSON array; array POSTs are flattened into individual records).
+The append path is where they could diverge — binary is `splice(2)`-eligible,
+JSON is not. Measured at a 100-byte payload, 3 repeats, cv mostly < 1%.
+
+**Appends** (median):
+
+| mode                        | conn | appends/s      | CPU% | note                 |
+| --------------------------- | ---- | -------------- | ---- | -------------------- |
+| binary                      | 64   | 118k /s        | 354  |                      |
+| binary                      | 256  | 220k /s        | 561  |                      |
+| json (single value)         | 64   | 117k /s        | 359  | ≈ binary             |
+| json (single value)         | 256  | 217k /s        | 560  | ≈ binary             |
+| json (10-record array)      | 64   | 103k batches/s | 338  | = **1.0M records/s** |
+| json (10-record array)      | 256  | 212k batches/s | 594  | = **2.1M records/s** |
+| binary + `--splice-appends` | 64   | 95k /s         | 333  | _slower_             |
+| binary + `--splice-appends` | 256  | 108k /s        | 364  | _slower_             |
+
+**Reads** (catch-up GET, conn 256): binary **118k /s** (613% CPU) vs json
+**111k /s** (665% CPU).
+
+Takeaways:
+
+- **JSON single-value append costs essentially nothing** vs binary at this size
+  (117k vs 118k, same CPU). Appends are fsync/group-commit-bound, so the JSON
+  transform is in the noise — the bottleneck is durability, not parsing.
+- **JSON reads are ~6% below binary** at equal preload, at slightly higher CPU.
+  Reads are byte-range serves of the stored wire bytes, so the modes are nearly
+  read-equivalent; the small gap is the stored-size difference plus framing.
+- **`--splice-appends` is a large-body lever, not a small one.** At 100 B it
+  _reduces_ append throughput (95k vs 118k): the per-request splice setup
+  (pipe + fresh fd + offset) outweighs the userspace copy it eliminates. It pays
+  off only for large binary ingest (≈ 1 MB), which is why it is off by default.
+- **Array flattening is efficient** — 10-record array POSTs sustain ~2.1M
+  records/s, so JSON batching is the high-ingest path when records are small.
+
+Caveat: this is a 100-byte payload. The JSON transform cost scales with payload
+size and structure, so a large-value / deeply-nested comparison is a follow-up.
+
 ## Engine-level comparison: this server vs Ursula
 
 Both servers run the _same_ binary-protocol shape — `PUT` a stream, `POST` raw
