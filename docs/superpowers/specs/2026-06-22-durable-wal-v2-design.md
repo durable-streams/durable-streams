@@ -96,11 +96,17 @@ record = {
 
 ## 5. Sharding (per-CPU, fixed allocation)
 
-- **`N` shards**, fixed at data-dir creation and **persisted** (`<data-dir>/wal/shards`),
-  _not_ `available_parallelism` per boot — so a stream's records and recovery always agree
-  on the shard even across machines/restarts. Default `N` = core count at init.
-- **Fixed allocation:** `shard = hash(stream_id) % N`. **All of a stream's appends go to
-  its one shard.** No rebalancing, no cross-shard coordination.
+- **`N` shards**, fixed at data-dir creation and **persisted** (`<data-dir>/wal/shards`).
+  A stream's shard is computed **only** from the persisted `N` and the record's
+  `stream_id` — **never** from per-boot `available_parallelism` — so a stream resolves to
+  the same shard across restarts and different-core machines. `--wal-shards` is honored
+  only at init; on an existing data dir a value ≠ the persisted `N` is **rejected**
+  (exit 2). Default `N` = core count at init.
+- **Fixed allocation:** `shard = hash(stream_id) % N`, applied to **every record kind** —
+  `Append`/`StreamCreate`/`StreamClose`/`StreamDelete` all carry the same `stream_id`, so
+  all of a stream's records land in its **one** shard and a Close/Delete can never land in
+  a different shard than the appends it must order after. No rebalancing, no cross-shard
+  coordination.
 - **Per-stream order is preserved with no global LSN:** a stream lives in exactly one
   shard, so its per-shard lsn sequence totally orders it. Streams are independent — no
   cross-stream total order is needed.
@@ -175,10 +181,20 @@ durable frontier**:
   `.meta` and writes WAL payloads at `file_pos = stream_offset − file_base`.
 - **WAL × compaction frontier invariant:** a WAL record whose `stream_offset < file_base`
   has already been sealed/offloaded — recovery **skips** it (re-applying would be out of
-  range / a double-apply). Conversely, **a WAL segment must not be recycled until its
-  records' per-stream-file bytes are checkpoint-fsynced** (§7), and **compaction must not
-  advance `file_base` past data whose only durable copy is still in the WAL.** These two
-  orderings keep the live file and the WAL tail consistent.
+  range / a double-apply); the skip is safe because those bytes live durably in a sealed
+  chunk file. Conversely, **a WAL segment must not be recycled until its records'
+  per-stream-file bytes are checkpoint-fsynced** (§7), and **compaction must not advance
+  `file_base` past data whose only durable copy is still in the WAL.** The latter is
+  **already provided by the existing seal→compact ordering** — `seal` `fsync`s the sealed
+  bytes into a chunk file _before_ `sealed_offset` (hence `file_base`) advances past them
+  (`tier.rs`), so any byte `file_base` has passed is durable in a chunk independent of the
+  WAL; no new enforcement at the compaction site is required.
+- **WAL replay vs sidecar recovery (division of labor):** per-shard WAL replay **only
+  repairs file-tail bytes** for existing streams — it does **not** allocate `stream_id`s
+  or own stream identity. Stream identity (`stream_id`/`next_id`) and fork linkage are
+  reconstructed by the existing **single, non-sharded sidecar pass** (`recover_one_inner`,
+  parent-first), which seeds `next_id` once from `max(sidecar id)+1`. An implementer must
+  not wire id-allocation into a shard; replay re-applies records carrying existing ids.
 - Discard any torn page-cache tail past `durable_lsn`; rebuild in-memory stream state.
 
 Cost: **O(uncompacted WAL)** — small when checkpointing keeps up. **No torn record is ever
@@ -246,6 +262,9 @@ not keeping up.
 - **Sharding:** records for streams hashing to different shards land in the right shard's
   WAL; per-shard parallel recovery reconstructs all streams; `file_base`-mapped replay
   places payloads correctly; a WAL record below `file_base` is skipped.
+- **N-stability:** boot the same data dir with a different `available_parallelism` → every
+  stream still resolves to its persisted shard (shard from persisted `N` + `stream_id`,
+  not core count); `--wal-shards` ≠ persisted `N` is rejected (exit 2).
 - **Checkpoint non-blocking:** stall a shard's checkpoint → its appends keep acking, reads
   keep working, its WAL `size_bytes` grows, `append_block_ns` ≈ 0.
 - **`strict`/`fast` unchanged:** full existing suite green with the WAL module inert.
