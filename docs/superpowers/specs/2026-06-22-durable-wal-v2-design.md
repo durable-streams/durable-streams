@@ -1,5 +1,10 @@
 # Durable WAL (`--durability wal`) — Design Spec (v2)
 
+> **As-built reference:** this is the pre-implementation design. For what was
+> actually built (segment roll, `sealed_pending`, per-stream durable-tails,
+> `F_FULLFSYNC`, measured numbers, and deviations from this spec), see
+> [`docs/durable-wal.md`](../../durable-wal.md).
+
 **Repo:** `durable-streams` · **Branch:** `vbalegas/wal-v2` (off `vbalegas/relaxed-durability` @ `pre-wal-v2`)
 **Crate:** `packages/server-rust` · **Date:** 2026-06-22
 **Follow-ups (deferred speed-ups):** `docs/superpowers/durability-performance-followups.md`
