@@ -86,9 +86,17 @@ file size (a consistent prefix) and `closed_durable` comes from the durable meta
 there is no EOF-monotonicity violation; readers still never observe EOF before the
 close-meta commit.
 
-The mode is a `Copy` `DurabilityMode` enum field on `Store` (set once at startup,
-alongside `tier_config`), read by value on each hot path — no lock, no atomic, no
-added contention — so `strict` keeps its exact cost.
+The mode is a **module-global flag** in `handlers.rs` — a process-global `AtomicBool`
+(`DURABILITY_RELAXED`) set once at startup from `--durability` via
+`set_durability_relaxed`, read on each hot path with a single `Relaxed` load through
+`durability_relaxed()`. This deliberately mirrors the established `SPLICE_APPENDS` /
+`READ_OFFLOAD` startup-flag pattern (`engine_raw.rs`) rather than threading a `Store`
+field into every call site (notably the create site). A `Relaxed` load is free — no
+lock, no contention — so `strict` keeps its exact cost. (An earlier draft of this spec
+described a `Copy` `DurabilityMode` enum field on `Store`; the implementation realizes
+the same semantics — server-wide, set once at startup, read by value on the hot path —
+via the global-flag convention. The single gating chokepoint is `maybe_sync_on_ack`,
+which all three append/close `sync_to` sites route through.)
 
 ## 5. Off-path operations — unchanged
 
@@ -104,8 +112,21 @@ block it. They run identically on a `relaxed` ack: sealed segments upload to S3
 bytes, so **its size _is_ the tail**. There is no log to replay or scan.
 
 - `relaxed` loses only the un-flushed tail suffix on an OS/power crash. Binary streams
-  recover any prefix (tail = size); JSON streams trim a torn trailing record via a
-  **bounded tail-read** (the file's end, not a full scan).
+  recover any byte prefix (tail = size) — always valid.
+- **JSON torn-tail limitation (relaxed only).** Recovery sets `tail = file_size`
+  unconditionally; it does **not** trim a torn trailing JSON record. A sound _bounded_
+  trim is **not feasible from the data file alone**: the JSON wire is bare
+  concatenated `value,` records with no length framing and no per-record durable
+  offset index, and the boundary finder (`last_json_value_boundary`) is a forward
+  state machine that must start from a known-clean position (depth 0, not in-string).
+  A pure tail-read can start _inside_ a JSON string/array and is therefore unsound
+  (a `,` inside a string would be misread as a boundary); the only clean anchor,
+  `sealed_offset`, is only near the tail when tiering is enabled, so the scan is not
+  bounded in the general (tiering-off) case. Consequently, under `relaxed` an
+  OS/power crash mid-write of a JSON record can leave a torn trailing record that the
+  read path wraps into malformed JSON. **Open product decision** (see the docs page):
+  document the relaxed+JSON limitation, or restrict `relaxed` to binary streams.
+  Binary streams and `strict` (acks post-fsync at record boundaries) are unaffected.
 - The off-path **manifest stays durable** (§7), so recovery needs **no manifest
   reconstruction** — sealed/offloaded segments and `file_base` are read back directly.
 

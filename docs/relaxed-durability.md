@@ -70,7 +70,8 @@ existing, unmodified machinery:
   does not change it. The `tier.rs` source is byte-for-byte unchanged.
 - **Recovery** (`store.rs::recover_one_inner`): the live data file is raw contiguous wire
   bytes, so the tail is derived from `file.metadata().len()` — one `fstat`, no log
-  replay, no scan. This is untouched.
+  replay, no scan. (See the **JSON torn-tail limitation** below: under `relaxed`,
+  recovery does **not** trim a torn trailing JSON record.)
 
 ### The close path keeps its durable meta commit
 
@@ -93,6 +94,22 @@ at-risk window under relaxed is the recent hot tail. Cold data is always durable
 Per-append producer-dedup / last-access metadata is already persisted by a debounced,
 non-durable meta flush in **both** modes (a ≤~100 ms window that exists today under
 strict); relaxed does not widen it — it changes only the data `fdatasync`.
+
+> **Known limitation — relaxed + JSON torn tail (open product decision).** For binary
+> streams the lost tail is a clean byte prefix (any prefix is valid). For **JSON**
+> streams under **relaxed**, an OS/power crash mid-write of a record can leave the data
+> file ending mid-record (e.g. `…,{"a":1`). Recovery sets `tail = file_size`
+> unconditionally and does **not** trim the torn record, so the read path wraps it and
+> serves **malformed JSON**. A sound _bounded_ trim is not feasible from the data file
+> alone: the wire is bare concatenated `value,` records with no length framing and no
+> per-record durable offset index, and the boundary finder
+> (`tier::last_json_value_boundary`) is a forward state machine that must start from a
+> known-clean position — a pure tail-read can start inside a JSON string and is
+> unsound, while the only clean anchor (`sealed_offset`) is only near the tail when
+> tiering is enabled. **Strict is unaffected** (acks are post-fsync at record
+> boundaries); binary streams are unaffected. Resolution is a product decision:
+> document this limitation, or restrict `relaxed` to binary streams. Tracked against
+> the design spec §6.
 
 ## Design rationale
 
@@ -205,14 +222,14 @@ Verified against the code on `vbalegas/relaxed-durability`
 (`git diff c2dd5fa5..HEAD -- packages/server-rust/src`). The entire feature is 121 lines
 across three files; `tier.rs` and `engine_raw.rs` are untouched.
 
-| #   | claim                                                         | verdict   | evidence                                                                                                                                                                                                                                                                                                                                                       |
-| --- | ------------------------------------------------------------- | --------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Relaxed skips the data `fdatasync` at **all three** sites     | **HOLDS** | All three route `maybe_sync_on_ack(durability_relaxed(), …)`: create-with-body (`handlers.rs:521`), mainline append + close (`handlers.rs:937`), splice fast path (`handlers.rs:1247`). The helper returns `Ok(())` early when relaxed, before reaching `sync_to`.                                                                                             |
-| 2   | `strict` is byte-for-byte unchanged                           | **HOLDS** | The non-relaxed branch is `st.sync.sync_to(file, st, target).await` — identical args to the original calls. The only delta is one extra `async fn` frame (`maybe_sync_on_ack`). The flag is a `Relaxed`-load `AtomicBool`; no `Store` field, no lock, no contention added to the strict path.                                                                  |
-| 3   | Recovery stays O(1) / stat-based                              | **HOLDS** | `recover_one_inner` derives the tail from `file.metadata().ok()?.len()` (`store.rs:573`) — unchanged, not in the diff. No new scan introduced.                                                                                                                                                                                                                 |
-| 4   | Zero-copy `sendfile` reads and `splice` appends are preserved | **HOLDS** | `engine_raw.rs` (sendfile read path, `splice_appends`) is untouched (empty `git diff --stat`). The splice site change only wraps the existing `sync_to` in the gate; the splice write itself is unchanged.                                                                                                                                                     |
-| 5   | Segment retention is genuinely reused unchanged               | **HOLDS** | `tier.rs` (seal/offload/compact) is untouched. `maybe_seal_bg` still fires after the ack in both modes. Relaxed keeps the durable off-path commits retention depends on: the close-meta commit (`write_meta_sync(durable=true)`, `handlers.rs:~948`) and the seal/offload manifest stay durable. Retention correctness depends on no fsync that relaxed drops. |
-| 6   | Measured performance matches the proposed thesis              | **HOLDS** | Win at low cardinality (GKE 2.7×/2.8× at N=10/100), ~tie at high (0.9× at N=1,000/10,000 — within inter-cluster variance), better p99 at **every** N (7× at N=100, 2.1× at N=10,000). Matches the `ref-nofsync` prediction (2.4× at N=10, ~1.13× at N=10,000).                                                                                                 |
+| #   | claim                                                         | verdict                   | evidence                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                       |
+| --- | ------------------------------------------------------------- | ------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | Relaxed skips the data `fdatasync` at **all three** sites     | **HOLDS**                 | All three route `maybe_sync_on_ack(durability_relaxed(), …)`: create-with-body (`handlers.rs:521`), mainline append + close (`handlers.rs:937`), splice fast path (`handlers.rs:1247`). The helper returns `Ok(())` early when relaxed, before reaching `sync_to`.                                                                                                                                                                                                                                             |
+| 2   | `strict` is byte-for-byte unchanged                           | **HOLDS**                 | The non-relaxed branch is `st.sync.sync_to(file, st, target).await` — identical args to the original calls. The only delta is one extra `async fn` frame (`maybe_sync_on_ack`). The flag is a `Relaxed`-load `AtomicBool`; no `Store` field, no lock, no contention added to the strict path.                                                                                                                                                                                                                  |
+| 3   | Recovery stays O(1) / stat-based                              | **HOLDS (with a caveat)** | `recover_one_inner` derives the tail from `file.metadata().ok()?.len()` — O(1), no new scan. **Caveat:** recovery does **not** trim a torn trailing JSON record (no `last_json_value_boundary` on the recovery path), so under **relaxed + JSON** an OS/power crash can recover a torn tail that the read path serves as malformed JSON. A sound _bounded_ trim is not feasible from the file alone (see the **Known limitation** above). Binary streams and strict are unaffected. **Open product decision.** |
+| 4   | Zero-copy `sendfile` reads and `splice` appends are preserved | **HOLDS**                 | `engine_raw.rs` (sendfile read path, `splice_appends`) is untouched (empty `git diff --stat`). The splice site change only wraps the existing `sync_to` in the gate; the splice write itself is unchanged.                                                                                                                                                                                                                                                                                                     |
+| 5   | Segment retention is genuinely reused unchanged               | **HOLDS**                 | `tier.rs` (seal/offload/compact) is untouched. `maybe_seal_bg` still fires after the ack in both modes. Relaxed keeps the durable off-path commits retention depends on: the close-meta commit (`write_meta_sync(durable=true)`, `handlers.rs:~948`) and the seal/offload manifest stay durable. Retention correctness depends on no fsync that relaxed drops.                                                                                                                                                 |
+| 6   | Measured performance matches the proposed thesis              | **HOLDS**                 | Win at low cardinality (GKE 2.7×/2.8× at N=10/100), ~tie at high (0.9× at N=1,000/10,000 — within inter-cluster variance), better p99 at **every** N (7× at N=100, 2.1× at N=10,000). Matches the `ref-nofsync` prediction (2.4× at N=10, ~1.13× at N=10,000).                                                                                                                                                                                                                                                 |
 
 ### Noted divergence (benign)
 
@@ -224,8 +241,13 @@ pattern. Same semantics (server-wide, set once at startup, read by value on the 
 deliberately chosen to avoid threading a `Store` field into the create site and to keep
 zero strict-path cost. Not a behavioral divergence.
 
-**Verdict: all six adherence checks HOLD.** The implementation delivers exactly the
-proposed optimization — relaxed skips the data fsync at all three sites, strict is
-unchanged, recovery and retention and zero-copy reads are reused untouched, and the
-measured performance matches the thesis. The only divergence is the spec-vs-plan
-flag-representation refinement above, which is intentional and semantics-equivalent.
+**Verdict: five checks HOLD; check #3 (recovery) HOLDS with a caveat.** The
+implementation delivers the proposed optimization — relaxed skips the data fsync at all
+three sites, strict is unchanged, retention and zero-copy reads are reused untouched, and
+the measured performance matches the thesis. Recovery stays O(1)/stat-based, but it does
+**not** trim a torn trailing JSON record, so **relaxed + JSON** can recover a torn tail
+that serves malformed JSON (the **Known limitation** above) — an open product decision
+(document, or restrict relaxed to binary streams), since a sound bounded trim is not
+feasible from the data file alone. The spec §6 originally claimed such a trim; it has been
+corrected. The flag-representation refinement (global `AtomicBool` vs the spec's `Store`
+enum field) is intentional and semantics-equivalent.
