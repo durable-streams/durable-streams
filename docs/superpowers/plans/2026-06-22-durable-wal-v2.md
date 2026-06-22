@@ -6,7 +6,7 @@
 
 **Architecture:** Per-stream files remain the only read surface (written on the hot path, page cache, no per-append fsync). A sharded WAL (`N` = persisted core count; `shard = hash(stream_id)%N`) holds the durable record; `N` per-CPU committers group-commit + `fdatasync` in parallel; per-shard checkpoint fsyncs the per-stream files then recycles WAL segments; per-shard recovery replays the framed WAL to repair the file tail to the durable frontier. A `DurabilityMode` enum (`Strict|Wal|Fast`) behind the existing `maybe_sync_on_ack` choke-point selects the path.
 
-**Tech Stack:** Rust, tokio, crate `packages/server-rust` (binary `durable-streams-server`). Inline `#[cfg(test)]` `#[tokio::test]` tests. `crc32c`, `libc` (`fallocate`/`fdatasync`) — both already deps (`store.rs` uses `libc`; `tier.rs` uses crc).
+**Tech Stack:** Rust, tokio, crate `packages/server-rust` (binary `durable-streams-server`). Inline `#[cfg(test)]` `#[tokio::test]` tests. `libc` (`fallocate`/`fdatasync`) is already a dep (`store.rs`). **`crc32c` is NOT yet a dep — Task 1 adds `crc32c = "0.6"` to `packages/server-rust/Cargo.toml`** (the only new dependency; note it in the Task 1 commit). For the shard count use `std::thread::available_parallelism()` (already used at `main.rs:156`), NOT `num_cpus` (not a dep).
 
 ## Global Constraints
 
@@ -71,7 +71,7 @@ fn encode_decode_roundtrip_and_torn() {
 ```
 
 - [ ] **Step 2:** `cargo test -p durable-streams-server -- codec::` → FAIL (module absent).
-- [ ] **Step 3:** Implement `codec.rs` per spec §4 (little-endian header; crc32c via the `crc32c` crate as `tier.rs` uses; `decode_at` validates header_crc then checks `seg.len() >= off+HEADER_LEN+len`). Add `mod wal;` to `main.rs` and `pub mod codec;` to `wal/mod.rs`.
+- [ ] **Step 3:** First **add `crc32c = "0.6"` to `packages/server-rust/Cargo.toml`** (new dep — not yet present). Implement `codec.rs` per spec §4 (little-endian header; `crc32c::crc32c(&hdr_fields)`; `decode_at` validates header_crc then checks `seg.len() >= off+HEADER_LEN+len`). Add `mod wal;` to `main.rs` and `pub mod codec;` to `wal/mod.rs`.
 - [ ] **Step 4:** test PASS.
 - [ ] **Step 5:** `git commit -m "feat(wal): B-light record codec + torn-tail detection"`
 
@@ -123,26 +123,30 @@ async fn segment_write_at_and_fdatasync() {
 - `pub async fn Shard::wait_durable(&self, lsn: u64)` — awaits `durable_lsn ≥ lsn`.
 - `pub async fn Shard::run_committer(self: Arc<Self>)` — `notify.notified().await` → `fdatasync` active segment → advance `durable_lsn` to the **highest contiguous fully-written lsn** → `durable_tx.send`. fsync error ⇒ do not advance.
 - `#[cfg(test)] pub fn durable_lsn(&self) -> u64`
+- `#[cfg(test)] pub fn reserve_only(&self) -> u64` — assigns the next lsn + reserves the segment range but writes NO bytes (leaves a gap), so the watermark/gap test can prove the committer won't advance past an unwritten lsn.
 
 - [ ] **Step 1: failing test** — append N then commit advances durable_lsn to the contiguous watermark; out-of-order completion does not over-advance:
 
 ```rust
 #[tokio::test]
-async fn committer_advances_to_contiguous_written() {
+async fn committer_does_not_advance_past_unwritten_gap() {
+    // l1 staged (written), l2 RESERVED-BUT-UNWRITTEN (gap), l3 staged (written).
+    // The committer must NOT advance durable_lsn past the gap, even though l3's bytes
+    // are on disk — durable_lsn may reach l1 but MUST stay < l3 until l2 is written.
     let sh = Shard::open(tmp("shard")).unwrap();
     let l1 = sh.reserve_and_stage(RecordKind::Append, 1, 0, b"a");
-    let l3 = sh.reserve_and_stage(RecordKind::Append, 1, 1, b"c");
-    // simulate lsn=2 reserved but NOT yet written (gap): inject via a test hook
-    // (impl: reserve_and_stage marks written; a #[cfg(test)] reserve_only leaves a gap)
+    let _l2 = sh.reserve_only();                  // #[cfg(test)] hook: assigns lsn, no write
+    let l3 = sh.reserve_and_stage(RecordKind::Append, 1, 2, b"c");
     let h = tokio::spawn({ let s = sh.clone(); async move { s.run_committer().await }});
-    sh.wait_durable(l1).await;            // l1 durable
-    assert!(sh.durable_lsn() >= l1);
-    assert!(sh.durable_lsn() >= l3 || sh.durable_lsn() < l3); // gap rule covered by the dedicated gap test below
+    sh.wait_durable(l1).await;
+    // give the committer a beat to (incorrectly) over-advance if the watermark is broken
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert!(sh.durable_lsn() >= l1, "l1 (and its contiguous prefix) is durable");
+    assert!(sh.durable_lsn() < l3, "MUST NOT advance past the unwritten l2 gap to l3");
     h.abort();
+    // Then write l2 → next commit advances durable_lsn ≥ l3 (the full prefix is now written).
 }
 ```
-
-Plus a focused gap test (`reserve_only` leaves lsn k unwritten → committer must not advance past k-1).
 
 - [ ] **Step 2:** FAIL.
 - [ ] **Step 3:** Implement per §6: `ShardInner { active: FileSegment, seg_start_lsn, write_pos, next_lsn, written_set or a contiguous-written cursor }`. The contiguous-written watermark = highest lsn s.t. all ≤ it are written (track a min-heap / a `wrote[]` bitmap or a `BTreeSet` of completed-out-of-order lsns collapsed into a cursor). Committer: snapshot the watermark, fdatasync, set `durable_lsn = watermark`, send. Notify on every stage.
@@ -158,7 +162,7 @@ Plus a focused gap test (`reserve_only` leaves lsn k unwritten → committer mus
 **Interfaces — Produces:**
 
 - `pub struct WalSet { shards: Vec<Arc<Shard>>, n: usize }`
-- `pub fn WalSet::open(data_dir: &Path, requested_n: Option<usize>) -> io::Result<Arc<WalSet>>` — read/create `<data_dir>/wal/shards` (persisted N). If file exists and `requested_n` differs → `Err` (caller exits 2). Else persist `requested_n.unwrap_or(num_cpus)`; open `N` shards under `wal/<i>/`.
+- `pub fn WalSet::open(data_dir: &Path, requested_n: Option<usize>, default_n: usize) -> io::Result<Arc<WalSet>>` — read/create `<data_dir>/wal/shards` (persisted N). If the file exists and `requested_n` is `Some(x)` with `x ≠ persisted` → `Err` (caller exits 2). Else persist `requested_n.unwrap_or(default_n)` and open `N` shards under `wal/<i>/`. `default_n` is `available_parallelism()` passed by the caller (Task 8) — NOT `num_cpus` (not a dep).
 - `pub fn WalSet::shard_for(&self, stream_id: u64) -> &Arc<Shard>` — `&self.shards[(fnv1a(stream_id) % self.n as u64) as usize]`.
 - `pub fn WalSet::spawn_committers(self: &Arc<Self>)` — spawn `run_committer` per shard.
 
@@ -168,15 +172,16 @@ Plus a focused gap test (`reserve_only` leaves lsn k unwritten → committer mus
 #[tokio::test]
 async fn wal_shards_persisted_and_stable() {
     let d = tmp("wset");
-    let w = WalSet::open(&d, Some(4)).unwrap();
+    let w = WalSet::open(&d, Some(4), 16).unwrap();   // requested 4 → persisted 4 (default_n ignored)
     let s_id = 12345u64;
     let idx = w.shards.iter().position(|s| std::ptr::eq(&**s, &**w.shard_for(s_id))).unwrap();
     drop(w);
-    let w2 = WalSet::open(&d, None).unwrap();   // None → use persisted N (4), NOT num_cpus
+    // None + a DIFFERENT default_n (8) → still uses the persisted N (4), NOT default_n:
+    let w2 = WalSet::open(&d, None, 8).unwrap();
     assert_eq!(w2.n, 4);
     let idx2 = w2.shards.iter().position(|s| std::ptr::eq(&**s, &**w2.shard_for(s_id))).unwrap();
     assert_eq!(idx, idx2, "stream resolves to the same shard across reopen");
-    assert!(WalSet::open(&d, Some(8)).is_err(), "mismatched --wal-shards rejected");
+    assert!(WalSet::open(&d, Some(8), 8).is_err(), "mismatched --wal-shards rejected");
 }
 ```
 
@@ -204,7 +209,7 @@ async fn wal_mode_acks_after_durable() {
 }
 ```
 
-- [ ] **Step 2:** FAIL. **Step 3:** Generalize the choke-point: `match durability() { Strict => sync_to, Fast => Ok, Wal => wal_append_and_wait }`. Add `Store.wal: Option<Arc<WalSet>>`. Keep the 3 sites calling one helper (DRY). **Step 4:** PASS + full suite green (strict/fast unchanged). **Step 5:** `git commit -m "feat(wal): DurabilityMode (strict|wal|fast) + wal-mode buffered double-write append"`
+- [ ] **Step 2:** FAIL. **Step 3:** Generalize the choke-point. The current helper is `maybe_sync_on_ack(relaxed: bool, st, file, target)` at `handlers.rs:586` called from 3 sites (`:516`, `:950`, `:1260`). **Change its signature to `maybe_sync_on_ack(mode: DurabilityMode, store: &Arc<Store>, st: &StreamState, wire: &Bytes, file: Arc<File>, target: u64)`** (`store` and `wire` are in scope at all 3 sites). Body: `match mode { Strict => st.sync.sync_to(file, st, target).await, Fast => Ok(()), Wal => { let lsn = store.wal.as_ref().unwrap().shard_for(st.id).reserve_and_stage(RecordKind::Append, st.id, target - wire.len() as u64, wire); store.wal...shard_for(st.id).wait_durable(lsn).await; Ok(()) } }`. The `stream_offset` is the pre-append logical offset = `target − wire.len()`. Add `Store.wal: Option<Arc<WalSet>>` (default `None`). Keep all 3 sites calling this one helper (DRY). **Step 4:** PASS + full suite green (strict/fast byte-for-byte unchanged). **Step 5:** `git commit -m "feat(wal): DurabilityMode (strict|wal|fast) + wal-mode buffered double-write append"`
 
 ---
 
@@ -229,8 +234,14 @@ async fn wal_mode_acks_after_durable() {
 ```rust
 #[tokio::test]
 async fn wal_recovery_repairs_tail_no_torn_no_loss() {
-    // wal-mode: append 3 records (durable), append a 4th but corrupt its WAL payload (torn),
-    // also leave a torn page-cache tail in the per-stream file; drop store; reopen + recover;
+    // wal-mode: append 3 records (durable) to a binary stream, append a 4th but corrupt its
+    // WAL payload (torn), also leave a torn page-cache tail in the per-stream file; drop store;
+    // reopen + recover. CONCRETE assertions:
+    //   - std::fs::metadata(stream_file).len() == file_base + (len(r1)+len(r2)+len(r3))  (4th discarded)
+    //   - std::fs::read(stream_file) bytes == r1‖r2‖r3 exactly (byte-identical, whole records only)
+    //   - a stream pre-seeded with file_base=K: any replayed WAL record with stream_offset < K is SKIPPED
+    //     (assert its bytes are NOT re-written into the live file / no out-of-range write)
+    // (legacy comment retained below)
     // assert: file ends at the 3rd whole record (4th discarded), bytes byte-identical,
     // a record with stream_offset < file_base is skipped (seed a compacted stream).
 }
@@ -242,11 +253,11 @@ async fn wal_recovery_repairs_tail_no_torn_no_loss() {
 
 ### Task 8: `--durability wal` + `--wal-shards` flags, `relaxed`→`fast` rename, wiring (`main.rs`)
 
-**Files:** Modify `src/main.rs`. Test: the existing flag test + a wiring smoke.
+**Files:** Modify `src/main.rs` (flag parse + wiring) **and `src/handlers.rs`** (the `durability_flag_defaults_strict_and_flips` test lives in `mod durability_tests`, ~`handlers.rs:2154`, not main.rs). Test: that flag test (now `DurabilityMode`) + a wiring smoke.
 
-**Interfaces — Consumes:** WalSet, recovery, DurabilityMode. **Produces:** CLI: `--durability strict|wal|fast` (rename the `relaxed` arm → `fast`; map to `DurabilityMode`), `--wal-shards N`. On `wal`: `WalSet::open(data_dir, n)` (exit 2 on mismatch), wire `store.wal`, run `recover`, `spawn_committers`, spawn per-shard checkpoint ticker.
+**Interfaces — Consumes:** WalSet, recovery, DurabilityMode. **Produces:** CLI: `--durability strict|wal|fast` (rename the existing `relaxed` arm at `main.rs:130` → `fast`; map to `DurabilityMode`), `--wal-shards N`. On `wal`: `WalSet::open(data_dir, n, available_parallelism())` — pass the `available_parallelism()` value already computed at `main.rs:156` as `default_n` (exit 2 on a `--wal-shards` mismatch), wire `store.wal`, run `recover`, `spawn_committers`, spawn per-shard checkpoint ticker — all inside `rt.block_on` before `serve`.
 
-- [ ] **Step 1:** update the existing `durability_flag_defaults_strict_and_flips` test → `DurabilityMode` (strict default; parse wal/fast; bad value exit 2). **Step 2:** FAIL. **Step 3:** Implement the arm + wiring in `rt.block_on` before `serve`. **Step 4:** PASS + `cargo build`. **Step 5:** `git commit -m "feat(wal): --durability wal + --wal-shards flags; relaxed→fast; build+spawn committers/checkpoint/recovery"`
+- [ ] **Step 1:** update the `durability_flag_defaults_strict_and_flips` test in `handlers.rs::durability_tests` → `DurabilityMode` (strict default; parse wal/fast; bad value exit 2). **Step 2:** FAIL. **Step 3:** Implement the arm + wiring (pass `available_parallelism()` as `default_n`). **Step 4:** PASS + `cargo build`. **Step 5:** `git commit -m "feat(wal): --durability wal + --wal-shards flags; relaxed→fast; build+spawn committers/checkpoint/recovery"`
 
 ---
 
