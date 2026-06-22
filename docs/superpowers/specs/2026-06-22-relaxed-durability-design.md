@@ -82,9 +82,13 @@ Close path (within `handle_append_inner`): `handlers.rs:908` data `fdatasync` �
 `:918` durable close-meta commit → `:924` `closed_durable` exposure. `relaxed` **skips
 the data fdatasync** (the `:908` gate above) but **keeps the durable close-meta
 commit** (off-path integrity), then exposes the closure. The recovered tail = on-disk
-file size (a consistent prefix) and `closed_durable` comes from the durable meta, so
-there is no EOF-monotonicity violation; readers still never observe EOF before the
-close-meta commit.
+file size and `closed_durable` comes from the durable meta, so readers still never
+observe EOF before the close-meta commit. Caveat (relaxed): the _closedness_ never
+rolls back, but the closed _position_ can — the skipped data fdatasync means an
+OS/power crash can recover a shorter closed tail. The full position-monotonicity
+guarantee (the closed tail never shrinks) is **strict-only**; under relaxed a shorter
+recovered tail is within the stated contract (a closed stream is hot tail ending in a
+close).
 
 The mode is a **module-global flag** in `handlers.rs` — a process-global `AtomicBool`
 (`DURABILITY_RELAXED`) set once at startup from `--durability` via

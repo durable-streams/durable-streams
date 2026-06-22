@@ -77,10 +77,16 @@ existing, unmodified machinery:
 
 In the close path, relaxed skips the **data** `fdatasync` (the mainline gate) but
 **keeps the durable close-meta commit** (`write_meta_sync(durable=true)`) before exposing
-`closed_durable` to readers. The recovered tail is the on-disk file size (a consistent
-prefix) and `closed_durable` comes from the durable meta, so there is no EOF-monotonicity
-violation: readers still never observe EOF before the close-meta commit (PROTOCOL.md
-§4.1).
+`closed_durable` to readers. The recovered tail is the on-disk file size and
+`closed_durable` comes from the durable meta, so readers still never observe EOF before
+the close-meta commit (PROTOCOL.md §4.1).
+
+Caveat (relaxed): this guarantees the _closedness_ never rolls back, but the closed
+_position_ can. Because the data `fdatasync` is skipped, an OS/power crash can lose the
+un-synced tail and recover a shorter closed stream (recovered `tail` = on-disk size <
+the acked tail). The full strict-only position-monotonicity guarantee — a reader never
+sees the closed tail shrink — holds only under `strict`. Under relaxed this is within
+the stated contract (the closed stream is just hot tail ending in a close).
 
 ### Crash-loss model
 
