@@ -104,6 +104,7 @@ export default defineConfig({
           { text: "Deployment", link: "/deployment" },
           { text: "Building a client", link: "/building-a-client" },
           { text: "Building a server", link: "/building-a-server" },
+          { text: "Relaxed durability", link: "/relaxed-durability" },
           { text: "Benchmarking", link: "/benchmarking" },
           {
             text: "Protocol",
