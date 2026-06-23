@@ -139,7 +139,12 @@ jobs:
           node-version: 22
           registry-url: "https://registry.npmjs.org"
       - name: Update npm for OIDC trusted publishing (>= 11.5.1)
-        run: npm install -g npm@latest
+        # Two-step upgrade (mirrors release.yml): Node 22 ships npm 10.9.7 which
+        # crashes during self-upgrade to 11.x (npm/cli#9151); 10.9.8 fixes it
+        # (npm/cli#9152), so install that first, then latest.
+        run: |
+          npm install -g npm@10.9.8
+          npm install -g npm@latest
       - name: Download built binaries
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
         with:
