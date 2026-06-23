@@ -117,7 +117,10 @@ jobs:
           if-no-files-found: error
 
   cargo-publish:
-    needs: assert-version
+    # Depend on build (not just assert-version): the build job's /health smoke
+    # test must gate the crate too. crates.io publishes are immutable, so a
+    # miscompile that the smoke test would catch must never reach it.
+    needs: [assert-version, build]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4

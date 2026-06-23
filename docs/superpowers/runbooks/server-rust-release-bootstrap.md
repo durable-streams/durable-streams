@@ -5,6 +5,13 @@ trusted publisher can be attached. So the FIRST release is done manually with
 temporary tokens; every release after is driven by pushing a `server-rust-v*` tag
 with no stored secrets.
 
+**Version note:** both registries refuse to overwrite an already-published version.
+The manual bootstrap below publishes whatever version `packages/server-rust/Cargo.toml`
+currently declares — so bump `Cargo.toml` to the version you intend to bootstrap
+before starting, and use that same version for the npm packages. The next
+tag-driven release must then bump `Cargo.toml` again (the `assert-version` job
+enforces tag == `Cargo.toml`).
+
 ## crates.io (crate `durable-streams`)
 
 1. Sign in to crates.io with GitHub and verify your email.
