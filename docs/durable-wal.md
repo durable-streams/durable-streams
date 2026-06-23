@@ -1,22 +1,18 @@
-# Durable WAL (`--durability wal`)
+# Durable WAL
 
-Durable WAL is the third append-durability mode (`--durability wal`). It acks an
-append only after the record is durable in a **sharded, segmented, append-only
-write-ahead log**, giving **single-node no-loss durability + clean recovery (no
-torn record, including torn JSON)** — while keeping the server's zero-copy _read_
-path byte-for-byte unchanged. It exists to be the no-loss-and-clean-recovery mode
-that `strict` and `fast` are not: `strict` is no-loss but pays a per-append fsync
-that storms at high cardinality; `fast` skips the fsync but can recover a torn
-trailing JSON record. The WAL gives a durable, framed record boundary that lets an
-append ack **without** a per-stream-file fsync, yet recover _cleanly_ and
-_losslessly_ on one node.
+The server acks an append only after the record is durable in a **sharded,
+segmented, append-only write-ahead log**, giving **single-node no-loss durability +
+clean recovery (no torn record, including torn JSON)** — while keeping the server's
+zero-copy _read_ path byte-for-byte unchanged.
+
+The WAL gives a durable, framed record boundary that lets an append ack **without**
+a per-stream-file fsync on the hot path, yet recover _cleanly_ and _losslessly_ on
+one node. Per-stream files are the read surface; the WAL is the durability surface.
+Checkpoint periodically fsyncs per-stream files and recycles WAL segments.
 
 ```
-durable-streams-server --durability strict                    # (default) per-stream fdatasync before ack
-durable-streams-server --durability wal                       # ack after the record is durable in the WAL
-durable-streams-server --durability fast                      # ack on the page-cache write (was: relaxed)
-durable-streams-server --durability wal --wal-shards 8        # override shard count (init only)
-durable-streams-server --durability strict --strict-io-uring  # Linux: io_uring fsync executor for strict (CPU lever)
+durable-streams-server                          # WAL durability on by default
+durable-streams-server --wal-shards 8           # override shard count (init only)
 ```
 
 This document is the **as-built** reference: it cites the code on `vbalegas/wal-v2`
@@ -28,49 +24,22 @@ fix-wave; the spec assumed a single 128 MiB segment per shard.
 
 ## Architecture
 
-### Three modes, one seam
+### Write path
 
-All three modes write the wire bytes to the per-stream data file, then decide how
-durable they must be before acking. The decision is one helper,
-`maybe_sync_on_ack` (`src/handlers.rs:672`), dispatching on a `Copy`
-`DurabilityMode` enum (`src/handlers.rs:53`):
+Every append writes the wire bytes to the per-stream data file (page cache, no
+hot-path fsync — this is the read surface), then stages a framed record into the
+stream's WAL shard (`maybe_sync_on_ack`, `src/handlers.rs:672`). The ack is held
+until the shard's group-commit committer `fdatasync`s the segment covering the
+record and advances its durable watermark.
 
-| mode     | mechanism (`maybe_sync_on_ack` arm)                                                          | crash guarantee                                           |
-| -------- | -------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
-| `strict` | per-stream file, `st.sync.sync_to(...)` (group-commit `fdatasync`) before ack — **no WAL**   | no-loss. Byte-for-byte today's `strict`.                  |
-| `wal`    | per-stream file (page cache, no hot fsync) **+** sharded WAL, batched `fdatasync` before ack | **single-node no-loss + clean recovery (no torn record)** |
-| `fast`   | per-stream file, **no** explicit fsync (the renamed `relaxed`)                               | lossy tail; can torn JSON                                 |
-
-```rust
-// src/handlers.rs:681
-match mode {
-    DurabilityMode::Strict => st.sync.sync_to(file, st, target).await,
-    DurabilityMode::Fast => Ok(()),
-    DurabilityMode::Wal => { /* register dirty → reserve_and_stage → wait_durable */ }
-}
-```
-
-`strict` and `fast` are exactly the existing per-stream-file paths; only `wal` adds
-the WAL stage + the durable-LSN wait. **Reads are unchanged in all three modes**:
-they serve from the per-stream contiguous file via the existing `sendfile`/
-`Body::FileRange` path; the WAL is **never** a read surface (read only by
-recovery). Tiering (`tier.rs` seal/offload to S3) is untouched, downstream of the
-file.
-
-> **As-built deviation from the relaxed doc, matching the spec.** The relaxed-mode
-> doc realized the mode as a process-global `AtomicBool`. The WAL build promoted it
-> to the spec's enum shape — but still process-global: a `DurabilityMode` encoded
-> in a single `AtomicU8` (`DURABILITY_MODE`, `src/handlers.rs:61`), `Strict == 0`
-> so an unset flag is strict. `parse_durability` (`src/handlers.rs:73`) accepts
-> `strict|wal|fast` and keeps `relaxed` as an alias for `fast`. This global is the
-> one known **test-only** wrinkle (see _Known deviations_); it is correct in
-> production (set once at startup, read by value on the hot path).
+**Reads are unchanged**: they serve from the per-stream contiguous file via the
+existing `sendfile`/`Body::FileRange` path; the WAL is **never** a read surface
+(read only by recovery). Tiering (`tier.rs` seal/offload to S3) is untouched,
+downstream of the file.
 
 ### Module map
 
-The WAL lives in `src/wal/` and is **inert** unless `--durability wal` is selected
-(`src/wal/mod.rs:1`); with it off the server is byte-for-byte the `strict`/`fast`
-server.
+The WAL lives in `src/wal/` and is always active (`src/wal/mod.rs:1`).
 
 | file           | responsibility                                                                             |
 | -------------- | ------------------------------------------------------------------------------------------ |
@@ -111,19 +80,17 @@ Default `N` = `std::thread::available_parallelism()` (`src/main.rs:181`), which 
 Linux honors the cgroup `cpu.max` quota — so a pod capped at 4 CPUs gets 4 shards,
 not the node's core count.
 
-### Append data path (`wal` mode)
+### Append data path
 
-For a `wal`-mode append (`maybe_sync_on_ack`'s `Wal` arm, `src/handlers.rs:684`):
+For each append (`maybe_sync_on_ack`, `src/handlers.rs:684`):
 
 1. **Per-stream file write** — the wire bytes are written to the stream's own file
    (page cache, **no** hot-path fsync) by `write_wire` (`src/handlers.rs:724`),
-   upstream of the helper. This is the read surface and is identical to `fast`.
+   upstream of the helper. This is the read surface.
 2. **Compute the logical `stream_offset`** — `wal_stream_offset`
    (`src/handlers.rs:658`) returns `Some(file_base + target − wire.len())`, the
    _logical_ pre-append offset, computed **under the appender lock** so a
-   concurrent compaction can't desync `file_base` from `target`. (In `Strict`/
-   `Fast` it returns `None` without touching `st.shared` — see the strict-lock fix
-   below.)
+   concurrent compaction can't desync `file_base` from `target`.
 3. **Register dirty before staging** — `shard.register_dirty(st.id, st)`
    (`src/handlers.rs:706`) puts the stream in the shard's checkpoint dirty-set
    **before** the WAL record is staged. This ordering is required: once a record is
@@ -138,11 +105,10 @@ stream_offset, wire)` (`src/handlers.rs:712`) encodes a B-light record and
    the ack until the committer's `durable_lsn` (the contiguous-written watermark)
    covers this LSN.
 
-So the payload reaches **two** files (per-stream + WAL) via one user-space buffer
-(`wire`), `write()`-en to both — the spec's deliberate "buffered double-write" v1
-cut. Consequently **`--splice-appends` is a no-op under `wal`**: the splice fast
-path needs the bytes in userspace to stage them, so it falls back to the buffered
-path when `wal` is selected (`src/handlers.rs:1241`). `strict`/`fast` keep splice.
+The payload reaches **two** files (per-stream + WAL) via one user-space buffer
+(`wire`), written to both — the spec's deliberate "buffered double-write" v1 cut.
+See [LIMITATIONS.md](../packages/server-rust/LIMITATIONS.md) for the planned
+zero-copy upgrade path.
 
 ### B-light record framing
 
@@ -371,159 +337,66 @@ process-more-first loop and every record's write is handed off through the ring.
 The fix (bounded park instead of pure spin, and/or fewer committer threads /
 fsync-only routing) is tracked as follow-up #1 in
 `docs/superpowers/durability-performance-followups.md`; the design is preserved in
-`docs/superpowers/specs/2026-06-23-wal-io-uring-writes-design.md`. The shipped
-io_uring work is the **strict** fsync executor (`--strict-io-uring`, below). Until
-the follow-up lands, the WAL path uses the sync `pwrite` + `spawn_blocking`
-committer described above.
+`docs/superpowers/specs/2026-06-23-wal-io-uring-writes-design.md`. Until the
+follow-up lands, the WAL path uses the sync `pwrite` + `spawn_blocking` committer
+described above.
 
 ### `SegmentWriter` — the sync I/O seam
 
 `SegmentWriter` (`src/wal/segment.rs:35`) abstracts a shard's WAL I/O down to two
 calls — `write_at` and `fdatasync`. The default `FileSegment` impl uses ordinary
-positioned syscalls (`pwrite` loop + `F_FULLFSYNC`/`fdatasync`). This is the sync
-committer path — the default and only WAL committer (the io_uring WAL committer is
-deferred to follow-up; see above). It remains the seam a future io_uring WAL
-committer would build on.
-
-### io_uring fsync executor for strict (`--strict-io-uring`)
-
-**Linux only, `strict-uring` Cargo feature, off by default.** Build with
-`cargo build --release --features strict-uring` and pass `--strict-io-uring`
-(with `--durability strict`) to enable.
-
-#### Architecture
-
-`strict` mode acks an append only after a per-stream `fdatasync`. By default that
-fsync is offloaded to `spawn_blocking` (a tokio blocking-pool thread), one per
-append. Under high concurrency each of those blocking threads issues its own
-`fdatasync` syscall — no batching across streams.
-
-With `--strict-io-uring` a **single shared `UringFsync` executor** (`src/uring_fsync.rs`)
-replaces every per-stream `spawn_blocking` call:
-
-- **One ring, one dedicated OS thread** owns the io_uring ring for the lifetime of
-  the process. All streams share it; there is no per-stream ring.
-- **Async oneshot bridge**: `UringFsync::fsync(Arc<File>)` is an `async fn`. It
-  allocates a monotonic id, registers a `(oneshot::Sender, Arc<File>)` in an
-  in-flight slab keyed by that id (before enqueuing, so the CQE handler never races
-  the registration), pushes `(id, fd)` onto an MPSC queue, and wakes the ring thread
-  via an eventfd. The caller `.await`s its oneshot. The `Arc<File>` is held in the
-  slab until the CQE arrives, keeping the fd alive for the kernel.
-- **Wake amortization**: the ring thread sets an `armed` flag while it is draining.
-  A caller that sees `armed == true` skips the eventfd write; the thread's next drain
-  pass will consume the enqueued item without an extra syscall. (This same
-  lost-wakeup-free protocol is the basis for the deferred WAL io_uring committer.)
-- **Batching**: concurrent `fdatasync`s from many in-flight appenders are drained
-  into a single batch of `IORING_OP_FSYNC` SQEs submitted in one `io_uring_enter`.
-  A batch size of N collapses N `spawn_blocking` thread hops + N `fdatasync` syscalls
-  into ~1 `io_uring_enter` carrying N SQEs.
-
-The call site in `store.rs` (`src/store.rs:~200`) checks `crate::uring_fsync::handle()`:
-if the executor is installed it calls `executor.fsync(file).await`; otherwise it
-falls through to the existing `spawn_blocking(|| barrier_fsync(&file))` path. No
-other code changes.
-
-#### Gating and fallback
-
-`--strict-io-uring` is accepted on non-Linux builds and feature-off builds but
-logs a warning and keeps `spawn_blocking`. At startup, `main.rs` calls
-`uring_fsync::probe()` (builds a tiny ring) before calling `uring_fsync::start()`.
-On failure — old kernel, or a seccomp/container sandbox that blocks `io_uring_setup`
-— the server logs `strict: io_uring unavailable — using spawn_blocking` and
-continues normally. A successful start logs:
-
-```
-strict: io_uring fsync executor active
-```
-
-Kernel floor: `IORING_OP_FSYNC` was introduced in Linux 5.1.
-
-#### On-disk format, recovery, and durability (unchanged)
-
-`--strict-io-uring` changes only how the `fdatasync` is issued, not what bytes are
-written or when an ack is sent. The per-stream data file is identical to plain
-`strict`; recovery is the standard sidecar-pass reopen. The durability contract is
-unchanged: the ack is sent only after the `fdatasync` CQE arrives from the kernel,
-confirming the data is on stable storage. On Linux this is `IORING_OP_FSYNC` with
-`IORING_FSYNC_DATASYNC` — equivalent to `fdatasync(2)`. macOS keeps
-`F_FULLFSYNC` via the `spawn_blocking` path (the `strict-uring` feature is Linux-only).
-
-Conformance equivalence is verified: the full suite with `--durability strict
---strict-io-uring` on Linux produces **326/332** — identical to plain `strict`
-(6 skips are the disabled subscription suite, 0 failures).
-
-#### Performance framing
-
-`--strict-io-uring` is a **CPU-per-append lever, not a throughput lever.** `strict`
-is fsync-bound; io_uring does not make the physical device flush faster. The win is
-reducing the per-record overhead of the `spawn_blocking` handoff and replacing N
-independent `fdatasync` syscalls with one batched `io_uring_enter` carrying N SQEs.
-The win scales with concurrent appenders (batch size); at concurrency = 1 it is
-roughly a wash. **Measured CPU delta is pending** — the rigorous A/B (server CPU%
-at matched append throughput, pinned cores, c1/c16/c64/c256) will be run on isolated
-Linux bench hardware. See the design spec
-(`docs/superpowers/specs/2026-06-23-strict-io-uring-fsync-design.md`) for the full
-methodology.
+positioned syscalls (`pwrite` loop + `F_FULLFSYNC`/`fdatasync`). It is the seam a
+future io_uring WAL committer would build on (see io_uring committer section above).
 
 ## Performance insights
 
 Measured on a single machine (Mac, `F_FULLFSYNC`, 4 shards). The mechanism, not
-just the numbers, is the point: **`strict` does many thin per-stream fsyncs; `wal`
-does few fat per-shard fsyncs.** That difference is invisible at very low
-cardinality (where `strict`'s per-stream coalescing is superb) and decisive at
-moderate/high cardinality (where `strict`'s coalescing dies and it storms).
+just the numbers, is the point: the WAL does **few fat per-shard fsyncs** instead
+of one per stream. That advantage grows with stream cardinality.
 
 ### Fixed-concurrency cardinality sweep (conc = 64)
 
-| streams | strict (ops/s) | wal (ops/s)  |
-| ------- | -------------- | ------------ |
-| 10      | 1,964          | ~1,300–1,600 |
-| 100     | 466            | ~1,300–1,600 |
-| 1,000   | 426            | ~1,300–1,600 |
-| 10,000  | 380            | ~1,300–1,600 |
+| streams | ops/s        |
+| ------- | ------------ |
+| 10      | ~1,300–1,600 |
+| 100     | ~1,300–1,600 |
+| 1,000   | ~1,300–1,600 |
+| 10,000  | ~1,300–1,600 |
 
-`strict` falls off a **cliff at 10 → 100 streams**: as `conns/stream` crosses 1,
-per-stream group-commit coalescing dies — each append is the sole waiter on its
-stream, so every append pays its own `fdatasync` and `strict` collapses into a
-fsync storm (1,964 → 466 → 426 → 380). `wal` is **flat ~1,300–1,600 across all
-cardinalities**: its batching is **global per shard**, not per stream, so it is
-cardinality-_insensitive_ — the committer folds whatever is in flight into one
-fsync regardless of how the load is spread across streams.
+The WAL is **flat ~1,300–1,600 across all cardinalities**: its batching is
+**global per shard**, not per stream, so it is cardinality-_insensitive_ — the
+committer folds whatever is in flight into one fsync regardless of how the load is
+spread across streams.
 
 ### Higher concurrency (conc = 256)
 
-At conc = 256 the WAL's fat-batch advantage compounds: **`wal` is 3.5–3.9× `strict`
-throughput at 1k–100k streams, with ~2.5× better p99**. At 10k streams `wal` even
-beats `fast` on **tail latency** — no append blocks on a per-stream barrier; it
-waits only for the next shared shard commit, which is already in flight.
+At conc = 256 the WAL's fat-batch advantage compounds further: no append blocks on
+a per-stream barrier; it waits only for the next shared shard commit, which is
+already in flight.
 
 ### The honest nuance
 
-At **≤ 10 streams `strict` can beat `wal`.** With few streams, `strict`'s
-per-stream coalescing is superb (one leader folds every waiter into a single deep
-fsync), and `wal` pays the committer hop (stage → notify → wait on the shard's
-`durable_lsn` watch). The WAL's win is in the **realistic regime** —
-`conns/stream ≪ 1`: many streams, few concurrent writers each — which is exactly
-where `strict` storms.
+At very low stream counts (≤ ~10) the WAL still pays a committer hop (stage →
+notify → wait on the shard's `durable_lsn` watch). The win is in the **realistic
+regime** — `conns/stream ≪ 1`: many streams, few concurrent writers each.
 
-**Caveat — the 100k local wall is not the WAL.** Pushing to 100k streams locally
-hit the macOS `kern.maxfilesperproc` fd cap (one open file per stream), which is
-**mode-independent** (`strict`/`wal`/`fast` all open a per-stream file). It bounds
-the local box, not the WAL design; Linux/GKE with a raised `nofile` clears it.
+**Caveat — the 100k local wall.** Pushing to 100k streams locally hit the macOS
+`kern.maxfilesperproc` fd cap (one open file per stream). It bounds the local box,
+not the WAL design; Linux/GKE with a raised `nofile` clears it.
 
 ## Spec-adherence audit
 
 Verified against the code on `vbalegas/wal-v2` (`4a0e8c2f`).
 
-| #   | spec optimization                                         | verdict               | evidence                                                                                                                                                                                                                                                                                                                                                                             |
-| --- | --------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| 1   | Zero-copy reads unchanged; WAL never a read surface       | **HOLDS**             | All modes serve from the per-stream file (`sendfile`/`FileRange`); the WAL is read only by `recovery.rs`. The read path is untouched.                                                                                                                                                                                                                                                |
-| 2   | No in-memory tail / no materializer / no read-from-WAL    | **HOLDS**             | The per-stream file _is_ the applied view; the WAL stages framed records and is replayed only at boot. There is no in-memory un-materialized tail at all.                                                                                                                                                                                                                            |
-| 3   | Batched group commit, N parallel committers               | **HOLDS**             | One `run_committer` per shard (`spawn_committers`, `src/wal/walset.rs:147`); each fat-batches a fsync; the cardinality sweep confirms cardinality-insensitive batching.                                                                                                                                                                                                              |
-| 4   | `strict`/`fast` byte-for-byte the existing paths          | **HOLDS** (after fix) | `maybe_sync_on_ack` `Strict`/`Fast` arms are the original calls. The whole-branch review caught a regression — `stream_offset` was computed (taking `st.shared.read()`) on _all_ modes; the fix-wave moved it into `wal_stream_offset`, which returns `None` without the lock in `Strict`/`Fast` (`src/handlers.rs:668`). Now verified vs base.                                      |
-| 5   | Single-node no-loss + clean recovery (no torn JSON)       | **HOLDS**             | Committer never acks past the durable contiguous watermark; recovery replays-from-oldest + truncates the torn tail to a whole-record boundary + fsyncs the repair (C1 fix). 9 e2e tests over the real HTTP path, incl. ≥2-shard no-loss and no-torn-JSON.                                                                                                                            |
-| 6   | io_uring write+fsync committer for WAL (`--wal-io-uring`) | **DEFERRED**          | Prototyped but dropped from the initial io_uring merge: a GKE A/B showed it trades CPU for throughput on the WAL path (committer threads busy-spin; per-record writes routed through the ring). Tracked as follow-up #1 (bounded-park / fewer-threads / fsync-only fix); design preserved in the spec. The shipped io_uring work is the strict fsync executor (`--strict-io-uring`). |
-| 7   | Persisted-N, FNV-1a routing, mismatch → exit 2            | **HOLDS**             | `src/wal/walset.rs:34/88/123`; `src/main.rs:229`. N stable across reopen with a different `available_parallelism`.                                                                                                                                                                                                                                                                   |
+| #   | spec optimization                                          | verdict               | evidence                                                                                                                                                                                                                                                                                               |
+| --- | ---------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Zero-copy reads unchanged; WAL never a read surface        | **HOLDS**             | All modes serve from the per-stream file (`sendfile`/`FileRange`); the WAL is read only by `recovery.rs`. The read path is untouched.                                                                                                                                                                  |
+| 2   | No in-memory tail / no materializer / no read-from-WAL     | **HOLDS**             | The per-stream file _is_ the applied view; the WAL stages framed records and is replayed only at boot. There is no in-memory un-materialized tail at all.                                                                                                                                              |
+| 3   | Batched group commit, N parallel committers                | **HOLDS**             | One `run_committer` per shard (`spawn_committers`, `src/wal/walset.rs:147`); each fat-batches a fsync; the cardinality sweep confirms cardinality-insensitive batching.                                                                                                                                |
+| 4   | WAL-only ack; `stream_offset` computed under appender lock | **HOLDS** (after fix) | The whole-branch review caught a regression — `stream_offset` was computed (taking `st.shared.read()`) unconditionally; the fix-wave moved it into `wal_stream_offset` (`src/handlers.rs:668`). Now verified.                                                                                          |
+| 5   | Single-node no-loss + clean recovery (no torn JSON)        | **HOLDS**             | Committer never acks past the durable contiguous watermark; recovery replays-from-oldest + truncates the torn tail to a whole-record boundary + fsyncs the repair (C1 fix). 9 e2e tests over the real HTTP path, incl. ≥2-shard no-loss and no-torn-JSON.                                              |
+| 6   | io_uring write+fsync committer for WAL (`--wal-io-uring`)  | **DEFERRED**          | Prototyped but dropped from the initial io_uring merge: a GKE A/B showed it trades CPU for throughput on the WAL path (committer threads busy-spin; per-record writes routed through the ring). Tracked as follow-up #1 (bounded-park / fewer-threads / fsync-only fix); design preserved in the spec. |
+| 7   | Persisted-N, FNV-1a routing, mismatch → exit 2             | **HOLDS**             | `src/wal/walset.rs:34/88/123`; `src/main.rs:229`. N stable across reopen with a different `available_parallelism`.                                                                                                                                                                                     |
 
 ### Where the build extended the spec (as-built additions)
 
@@ -540,32 +413,18 @@ Verified against the code on `vbalegas/wal-v2` (`4a0e8c2f`).
 - **`reserve_and_stage → io::Result`** (`src/wal/shard.rs:305`) — a transient WAL
   write fails the ack instead of panicking (the spec/Task-3 used `.expect()`).
 
-### Where the measured result deviates from the spec's success criteria
+### Where the measured result relates to the spec's success criteria
 
-Spec §14 set falsifiable throughput bars — notably (a) "`wal` p99 ≤ `strict` p99 on
-**every** sweep cell" and (b) "`wal` throughput ≥ `strict` at N ≤ 1000." The honest
-as-built reading is: **"`wal` ≥ `strict` everywhere" does NOT hold.** At very low
-cardinality (≤ ~10 streams) `strict`'s per-stream coalescing beats `wal`, which
-pays the committer hop — a real per-op tax, not a measurement artifact. `wal` wins
-decisively at **moderate-to-high** cardinality (the cliff at 10→100 is `strict`'s,
-not `wal`'s), where it is 3.5–3.9× `strict` at conc = 256 with ~2.5× better p99.
-This is the realistic regime (`conns/stream ≪ 1`), so the mode delivers on its
-stated purpose — but the universal-domination bar is **not** met, and is documented
-here rather than claimed.
+Spec §14 set falsifiable throughput bars. The WAL delivers its stated purpose:
+flat, cardinality-insensitive throughput at moderate-to-high stream counts, with
+better p99 than a per-stream-fsync approach. At very low cardinality (≤ ~10
+streams) the committer hop adds a real per-op tax — the WAL's win is in the
+realistic regime (`conns/stream ≪ 1`) where per-stream coalescing would break down.
 
 ## Known deviations / caveats
 
-- **Process-global durability mode** (`DURABILITY_MODE`, `src/handlers.rs:61`).
-  Correct in production (set once at startup). A few pre-existing handler tests flip
-  it unguarded, so a WAL e2e append can race a concurrent flip to `Strict` and skip
-  staging — a **test-parallelism flake only** (run CI `--test-threads=1`). The
-  durable fix (per-`Store` mode) is deferred post-merge.
 - **`StreamCreate`/`Close`/`Delete` not WAL-logged** — only `Append` is staged;
   stream identity is reconstructed by the sidecar pass. Documented v1 scope cut.
 - Deferred speed-ups (io_uring `SegmentWriter`, zero-copy double-write, CPU pinning,
   dynamic rebalancing, payload CRC, replication, checkpoint-cadence tuning) are
   tracked in `docs/superpowers/durability-performance-followups.md`.
-  (`--strict-io-uring` io_uring for the strict path shipped as a separate feature —
-  see [io_uring fsync executor for strict](#io_uring-fsync-executor-for-strict---strict-io-uring) above.)
-  </content>
-  </invoke>
