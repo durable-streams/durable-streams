@@ -43,11 +43,15 @@ path = "src/main.rs"
   command. Pairs with the future client crate `durable-streams-client`.
 - Regenerate `Cargo.lock` after the rename.
 
-Workflow: a `cargo-publish` job on a linux runner runs `cargo publish --locked`,
-gated behind a `CARGO_REGISTRY_TOKEN` secret. `cargo publish` runs its own
-verify-build, so the step is self-checking. It depends on `assert-version`; it does
-**not** need the cross-built binaries (cargo builds for the host), so it can run in
-parallel with the binary matrix.
+Workflow: a `cargo-publish` job on a linux runner authenticates via **crates.io
+Trusted Publishing (OIDC)** — `rust-lang/crates-io-auth-action` exchanges the
+workflow's OIDC token for a short-lived (~30-min) crates.io token, then
+`cargo publish --locked`. No long-lived `CARGO_REGISTRY_TOKEN` secret. `cargo publish`
+runs its own verify-build, so the step is self-checking. The job needs
+`permissions: id-token: write`. It depends on `assert-version`; it does **not** need
+the cross-built binaries (cargo builds for the host), so it can run in parallel with
+the binary matrix. (See **Bootstrap** below — the crate must exist and have a trusted
+publisher configured before OIDC works.)
 
 ## Channel 2 — npm — NEW
 
@@ -100,9 +104,12 @@ The `npm-publish` job (depends on the binary matrix, so the 4 binaries exist):
 3. `npm publish` the **4 platform packages first**, then the **main package last**
    (the main package's optionalDeps must already resolve on the registry).
 
-Auth: an `NPM_TOKEN` secret to start. Note: the existing `release.yml` uses npm OIDC
-trusted publishing; we can migrate these packages to OIDC once each exists on the
-registry (trusted publishing must be configured per package).
+Auth: **npm Trusted Publishing (OIDC)** — no `NODE_AUTH_TOKEN` / `NPM_TOKEN`. The
+job needs `permissions: id-token: write` and npm CLI **≥ 11.5.1** (the runner's
+bundled npm is older, so `npm install -g npm@latest` first). Provenance attestations
+come for free with OIDC. (See **Bootstrap** below — npm requires each package to
+already exist before a trusted publisher can be configured, so the 5 packages need a
+one-time token-based first publish.)
 
 ## Channel 3 — prebuilt binary tarballs — EXISTS (light polish)
 
@@ -118,21 +125,38 @@ first release.
 
 Triggered by `server-rust-v*`:
 
+The whole workflow declares `permissions: { contents: write, id-token: write }`
+(id-token for OIDC; contents for the Release upload).
+
 1. **`assert-version`** — tag version `== Cargo.toml` version, else fail.
 2. **`create-release`** — GitHub Release (idempotent), as today.
 3. **`build`** (matrix, 4 targets) — build `--locked` + smoke test + upload
    tarball/checksum to the Release. As today; `needs: [assert-version, create-release]`.
-4. **`cargo-publish`** — `cargo publish --locked` (linux). `needs: assert-version`;
-   parallel with `build`. Needs `CARGO_REGISTRY_TOKEN`.
-5. **`npm-publish`** — assemble 5 packages from the built binaries; publish platform
-   packages then main. `needs: build`. Needs `NPM_TOKEN`.
+4. **`cargo-publish`** — `rust-lang/crates-io-auth-action` (OIDC) → `cargo publish
+   --locked` (linux). `needs: assert-version`; parallel with `build`. No token secret.
+5. **`npm-publish`** — `npm install -g npm@latest`, assemble 5 packages from the
+   built binaries, publish platform packages then main via OIDC. `needs: build`. No
+   token secret.
 
-## Maintainer-only manual prerequisites (cannot be automated)
+## Bootstrap (one-time, maintainer-only)
 
-- **crates.io:** sign in, **verify email**, create a scoped API token → set the
-  `CARGO_REGISTRY_TOKEN` repo secret.
-- **npm:** ensure publish access to the `@durable-streams` scope → set the
-  `NPM_TOKEN` repo secret (or configure OIDC trusted publishing per package).
+Trusted publishing on both registries requires the package/crate to **already exist**
+before a trusted publisher can be attached (npm/cli#8544 is still open; crates.io
+requires crate ownership). So the very first release is bootstrapped manually, after
+which the committed workflow is **token-free**:
+
+1. **crates.io:** sign in, **verify email**, create a scoped API token, `cargo login`,
+   `cargo publish` the `durable-streams` crate once. Then in the crate's crates.io
+   settings add a Trusted Publisher (repo `durable-streams/durable-streams`, this
+   workflow, optionally an environment); optionally enforce trusted-publishing-only.
+   Revoke the bootstrap token.
+2. **npm:** with a granular automation token, publish all **5** packages once
+   (`@durable-streams/server-rust` + the 4 platform packages). Then on npmjs.com
+   configure a Trusted Publisher for **each** of the 5 (GitHub repo + workflow file).
+   Revoke the token.
+
+From the second release onward, pushing a `server-rust-v*` tag publishes all three
+channels with **no stored secrets**.
 
 ## Testing / verification
 
