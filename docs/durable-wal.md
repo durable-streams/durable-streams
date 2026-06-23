@@ -12,10 +12,11 @@ append ack **without** a per-stream-file fsync, yet recover _cleanly_ and
 _losslessly_ on one node.
 
 ```
-durable-streams-server --durability strict   # (default) per-stream fdatasync before ack
-durable-streams-server --durability wal       # ack after the record is durable in the WAL
-durable-streams-server --durability fast       # ack on the page-cache write (was: relaxed)
-durable-streams-server --durability wal --wal-shards 8   # override shard count (init only)
+durable-streams-server --durability strict                    # (default) per-stream fdatasync before ack
+durable-streams-server --durability wal                       # ack after the record is durable in the WAL
+durable-streams-server --durability fast                      # ack on the page-cache write (was: relaxed)
+durable-streams-server --durability wal --wal-shards 8        # override shard count (init only)
+durable-streams-server --durability strict --strict-io-uring  # Linux: io_uring fsync executor for strict (CPU lever)
 ```
 
 This document is the **as-built** reference: it cites the code on `vbalegas/wal-v2`
@@ -359,13 +360,110 @@ per shard plus an aggregate line; `size_bytes`/`segments` come from a `read_dir`
 **`feature = telemetry`-gated** — with the feature off it is a no-op
 (`src/wal/telemetry.rs:319`), so a default build pays only the per-commit atomics.
 
-### `SegmentWriter` — the io_uring drop-in seam
+### io_uring committer for WAL — deferred to follow-up
+
+An io_uring WAL committer (per-shard ring + dedicated thread, batching writes and
+`fdatasync`) was prototyped but **deferred from the initial io_uring merge.** A GKE
+A/B showed it trades CPU for throughput on the WAL path (~+83 CPU points,
+CPU-per-append +5.6%, alongside +37% throughput and −17 ms p99) versus the sync
+committer — because each shard's committer thread busy-spins in its
+process-more-first loop and every record's write is handed off through the ring.
+The fix (bounded park instead of pure spin, and/or fewer committer threads /
+fsync-only routing) is tracked as follow-up #1 in
+`docs/superpowers/durability-performance-followups.md`; the design is preserved in
+`docs/superpowers/specs/2026-06-23-wal-io-uring-writes-design.md`. The shipped
+io_uring work is the **strict** fsync executor (`--strict-io-uring`, below). Until
+the follow-up lands, the WAL path uses the sync `pwrite` + `spawn_blocking`
+committer described above.
+
+### `SegmentWriter` — the sync I/O seam
 
 `SegmentWriter` (`src/wal/segment.rs:35`) abstracts a shard's WAL I/O down to two
 calls — `write_at` and `fdatasync`. The default `FileSegment` impl uses ordinary
-positioned syscalls (`pwrite` loop + `F_FULLFSYNC`/`fdatasync`). Because the
-committer's fsync _also_ goes through this trait, an io_uring-backed implementation
-is a total drop-in (follow-up #1) with no architectural change.
+positioned syscalls (`pwrite` loop + `F_FULLFSYNC`/`fdatasync`). This is the sync
+committer path — the default and only WAL committer (the io_uring WAL committer is
+deferred to follow-up; see above). It remains the seam a future io_uring WAL
+committer would build on.
+
+### io_uring fsync executor for strict (`--strict-io-uring`)
+
+**Linux only, `strict-uring` Cargo feature, off by default.** Build with
+`cargo build --release --features strict-uring` and pass `--strict-io-uring`
+(with `--durability strict`) to enable.
+
+#### Architecture
+
+`strict` mode acks an append only after a per-stream `fdatasync`. By default that
+fsync is offloaded to `spawn_blocking` (a tokio blocking-pool thread), one per
+append. Under high concurrency each of those blocking threads issues its own
+`fdatasync` syscall — no batching across streams.
+
+With `--strict-io-uring` a **single shared `UringFsync` executor** (`src/uring_fsync.rs`)
+replaces every per-stream `spawn_blocking` call:
+
+- **One ring, one dedicated OS thread** owns the io_uring ring for the lifetime of
+  the process. All streams share it; there is no per-stream ring.
+- **Async oneshot bridge**: `UringFsync::fsync(Arc<File>)` is an `async fn`. It
+  allocates a monotonic id, registers a `(oneshot::Sender, Arc<File>)` in an
+  in-flight slab keyed by that id (before enqueuing, so the CQE handler never races
+  the registration), pushes `(id, fd)` onto an MPSC queue, and wakes the ring thread
+  via an eventfd. The caller `.await`s its oneshot. The `Arc<File>` is held in the
+  slab until the CQE arrives, keeping the fd alive for the kernel.
+- **Wake amortization**: the ring thread sets an `armed` flag while it is draining.
+  A caller that sees `armed == true` skips the eventfd write; the thread's next drain
+  pass will consume the enqueued item without an extra syscall. (This same
+  lost-wakeup-free protocol is the basis for the deferred WAL io_uring committer.)
+- **Batching**: concurrent `fdatasync`s from many in-flight appenders are drained
+  into a single batch of `IORING_OP_FSYNC` SQEs submitted in one `io_uring_enter`.
+  A batch size of N collapses N `spawn_blocking` thread hops + N `fdatasync` syscalls
+  into ~1 `io_uring_enter` carrying N SQEs.
+
+The call site in `store.rs` (`src/store.rs:~200`) checks `crate::uring_fsync::handle()`:
+if the executor is installed it calls `executor.fsync(file).await`; otherwise it
+falls through to the existing `spawn_blocking(|| barrier_fsync(&file))` path. No
+other code changes.
+
+#### Gating and fallback
+
+`--strict-io-uring` is accepted on non-Linux builds and feature-off builds but
+logs a warning and keeps `spawn_blocking`. At startup, `main.rs` calls
+`uring_fsync::probe()` (builds a tiny ring) before calling `uring_fsync::start()`.
+On failure — old kernel, or a seccomp/container sandbox that blocks `io_uring_setup`
+— the server logs `strict: io_uring unavailable — using spawn_blocking` and
+continues normally. A successful start logs:
+
+```
+strict: io_uring fsync executor active
+```
+
+Kernel floor: `IORING_OP_FSYNC` was introduced in Linux 5.1.
+
+#### On-disk format, recovery, and durability (unchanged)
+
+`--strict-io-uring` changes only how the `fdatasync` is issued, not what bytes are
+written or when an ack is sent. The per-stream data file is identical to plain
+`strict`; recovery is the standard sidecar-pass reopen. The durability contract is
+unchanged: the ack is sent only after the `fdatasync` CQE arrives from the kernel,
+confirming the data is on stable storage. On Linux this is `IORING_OP_FSYNC` with
+`IORING_FSYNC_DATASYNC` — equivalent to `fdatasync(2)`. macOS keeps
+`F_FULLFSYNC` via the `spawn_blocking` path (the `strict-uring` feature is Linux-only).
+
+Conformance equivalence is verified: the full suite with `--durability strict
+--strict-io-uring` on Linux produces **326/332** — identical to plain `strict`
+(6 skips are the disabled subscription suite, 0 failures).
+
+#### Performance framing
+
+`--strict-io-uring` is a **CPU-per-append lever, not a throughput lever.** `strict`
+is fsync-bound; io_uring does not make the physical device flush faster. The win is
+reducing the per-record overhead of the `spawn_blocking` handoff and replacing N
+independent `fdatasync` syscalls with one batched `io_uring_enter` carrying N SQEs.
+The win scales with concurrent appenders (batch size); at concurrency = 1 it is
+roughly a wash. **Measured CPU delta is pending** — the rigorous A/B (server CPU%
+at matched append throughput, pinned cores, c1/c16/c64/c256) will be run on isolated
+Linux bench hardware. See the design spec
+(`docs/superpowers/specs/2026-06-23-strict-io-uring-fsync-design.md`) for the full
+methodology.
 
 ## Performance insights
 
@@ -417,15 +515,15 @@ the local box, not the WAL design; Linux/GKE with a raised `nofile` clears it.
 
 Verified against the code on `vbalegas/wal-v2` (`4a0e8c2f`).
 
-| #   | spec optimization                                      | verdict               | evidence                                                                                                                                                                                                                                                                                                                                        |
-| --- | ------------------------------------------------------ | --------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | Zero-copy reads unchanged; WAL never a read surface    | **HOLDS**             | All modes serve from the per-stream file (`sendfile`/`FileRange`); the WAL is read only by `recovery.rs`. The read path is untouched.                                                                                                                                                                                                           |
-| 2   | No in-memory tail / no materializer / no read-from-WAL | **HOLDS**             | The per-stream file _is_ the applied view; the WAL stages framed records and is replayed only at boot. There is no in-memory un-materialized tail at all.                                                                                                                                                                                       |
-| 3   | Batched group commit, N parallel committers            | **HOLDS**             | One `run_committer` per shard (`spawn_committers`, `src/wal/walset.rs:147`); each fat-batches a fsync; the cardinality sweep confirms cardinality-insensitive batching.                                                                                                                                                                         |
-| 4   | `strict`/`fast` byte-for-byte the existing paths       | **HOLDS** (after fix) | `maybe_sync_on_ack` `Strict`/`Fast` arms are the original calls. The whole-branch review caught a regression — `stream_offset` was computed (taking `st.shared.read()`) on _all_ modes; the fix-wave moved it into `wal_stream_offset`, which returns `None` without the lock in `Strict`/`Fast` (`src/handlers.rs:668`). Now verified vs base. |
-| 5   | Single-node no-loss + clean recovery (no torn JSON)    | **HOLDS**             | Committer never acks past the durable contiguous watermark; recovery replays-from-oldest + truncates the torn tail to a whole-record boundary + fsyncs the repair (C1 fix). 9 e2e tests over the real HTTP path, incl. ≥2-shard no-loss and no-torn-JSON.                                                                                       |
-| 6   | io_uring is a drop-in (`SegmentWriter`)                | **HOLDS**             | `SegmentWriter` abstracts write+fsync; the committer goes through it. No architectural change needed to swap.                                                                                                                                                                                                                                   |
-| 7   | Persisted-N, FNV-1a routing, mismatch → exit 2         | **HOLDS**             | `src/wal/walset.rs:34/88/123`; `src/main.rs:229`. N stable across reopen with a different `available_parallelism`.                                                                                                                                                                                                                              |
+| #   | spec optimization                                         | verdict               | evidence                                                                                                                                                                                                                                                                                                                                                                             |
+| --- | --------------------------------------------------------- | --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| 1   | Zero-copy reads unchanged; WAL never a read surface       | **HOLDS**             | All modes serve from the per-stream file (`sendfile`/`FileRange`); the WAL is read only by `recovery.rs`. The read path is untouched.                                                                                                                                                                                                                                                |
+| 2   | No in-memory tail / no materializer / no read-from-WAL    | **HOLDS**             | The per-stream file _is_ the applied view; the WAL stages framed records and is replayed only at boot. There is no in-memory un-materialized tail at all.                                                                                                                                                                                                                            |
+| 3   | Batched group commit, N parallel committers               | **HOLDS**             | One `run_committer` per shard (`spawn_committers`, `src/wal/walset.rs:147`); each fat-batches a fsync; the cardinality sweep confirms cardinality-insensitive batching.                                                                                                                                                                                                              |
+| 4   | `strict`/`fast` byte-for-byte the existing paths          | **HOLDS** (after fix) | `maybe_sync_on_ack` `Strict`/`Fast` arms are the original calls. The whole-branch review caught a regression — `stream_offset` was computed (taking `st.shared.read()`) on _all_ modes; the fix-wave moved it into `wal_stream_offset`, which returns `None` without the lock in `Strict`/`Fast` (`src/handlers.rs:668`). Now verified vs base.                                      |
+| 5   | Single-node no-loss + clean recovery (no torn JSON)       | **HOLDS**             | Committer never acks past the durable contiguous watermark; recovery replays-from-oldest + truncates the torn tail to a whole-record boundary + fsyncs the repair (C1 fix). 9 e2e tests over the real HTTP path, incl. ≥2-shard no-loss and no-torn-JSON.                                                                                                                            |
+| 6   | io_uring write+fsync committer for WAL (`--wal-io-uring`) | **DEFERRED**          | Prototyped but dropped from the initial io_uring merge: a GKE A/B showed it trades CPU for throughput on the WAL path (committer threads busy-spin; per-record writes routed through the ring). Tracked as follow-up #1 (bounded-park / fewer-threads / fsync-only fix); design preserved in the spec. The shipped io_uring work is the strict fsync executor (`--strict-io-uring`). |
+| 7   | Persisted-N, FNV-1a routing, mismatch → exit 2            | **HOLDS**             | `src/wal/walset.rs:34/88/123`; `src/main.rs:229`. N stable across reopen with a different `available_parallelism`.                                                                                                                                                                                                                                                                   |
 
 ### Where the build extended the spec (as-built additions)
 
@@ -464,9 +562,10 @@ here rather than claimed.
   durable fix (per-`Store` mode) is deferred post-merge.
 - **`StreamCreate`/`Close`/`Delete` not WAL-logged** — only `Append` is staged;
   stream identity is reconstructed by the sidecar pass. Documented v1 scope cut.
-- Deferred speed-ups (io_uring `SegmentWriter`, io_uring-for-`strict`, zero-copy
-  double-write, CPU pinning, dynamic rebalancing, payload CRC, replication,
-  checkpoint-cadence tuning) are tracked in
-  `docs/superpowers/durability-performance-followups.md`.
+- Deferred speed-ups (io_uring `SegmentWriter`, zero-copy double-write, CPU pinning,
+  dynamic rebalancing, payload CRC, replication, checkpoint-cadence tuning) are
+  tracked in `docs/superpowers/durability-performance-followups.md`.
+  (`--strict-io-uring` io_uring for the strict path shipped as a separate feature —
+  see [io_uring fsync executor for strict](#io_uring-fsync-executor-for-strict---strict-io-uring) above.)
   </content>
   </invoke>
