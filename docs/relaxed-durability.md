@@ -1,13 +1,18 @@
-# Relaxed durability
+# Relaxed durability (the `fast` mode)
 
-Relaxed durability is an opt-in append mode (`--durability relaxed`) that **acks an
-append or close as soon as the bytes are in the OS page cache**, skipping the hot-path
-data `fdatasync`. The default, `strict`, is unchanged: it acks only after the covering
-per-stream group-commit fsync.
+`fast` is one of the server's **three** durability modes —
+`--durability strict|wal|fast`; see
+[ARCHITECTURE.md › Durability modes](../packages/server-rust/ARCHITECTURE.md#durability-modes)
+for how all three fit one shared architecture. `fast` **acks an append or close as
+soon as the bytes are in the OS page cache**, skipping the hot-path data `fdatasync`.
+For contrast: the default `strict` acks only after the covering per-stream
+group-commit fsync, and `wal` acks after a shared sharded write-ahead-log commit
+(fewer, fatter fsyncs — see [durable-wal.md](durable-wal.md)).
 
 ```
-durable-streams-server --durability relaxed   # ack on page-cache write
-durable-streams-server --durability strict     # (default) ack after fdatasync
+durable-streams-server --durability fast       # ack on page-cache write
+durable-streams-server --durability wal         # ack on shared write-ahead-log commit
+durable-streams-server --durability strict      # (default) ack after per-stream fdatasync
 durable-streams-server                          # default = strict
 ```
 
@@ -19,10 +24,12 @@ separate, later cut). Relaxed is the first half of that move.
 
 ## Architecture
 
-### Two durability modes, one chokepoint
+### `strict` vs `fast`: one chokepoint
 
-Both modes write the wire bytes to the live data file and then decide whether to wait
-for them to be on stable storage before acking:
+This section covers the `strict`↔`fast` decision (`wal` routes durability through a
+separate write-ahead log — see [durable-wal.md](durable-wal.md)). Both `strict` and
+`fast` write the wire bytes to the live data file and then decide whether to wait for
+them to be on stable storage before acking:
 
 ```
 write_wire(&st, &mut ap, &wire)          // bytes → live data file (page cache)
