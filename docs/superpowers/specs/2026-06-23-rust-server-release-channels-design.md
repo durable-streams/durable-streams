@@ -151,9 +151,9 @@ which the committed workflow is **token-free**:
      lives under the separate `durable-streams` GitHub org, but crate ownership and
      the trusted-publisher repo are independent, so this asymmetry is fine).
      Prerequisite: grant crates.io the `read:org` scope for electric-sql
-     (GitHub → Settings → Applications → crates.io → Organization access → Grant), and
-     create/choose an electric-sql team (e.g. `publishers`). Then
-     `cargo owner --add github:electric-sql:<team>`. **Keep a named individual owner**
+     (GitHub → Settings → Applications → crates.io → Organization access → Grant —
+     **done**). Owning team is **`electric-sql:core`**. Then
+     `cargo owner --add github:electric-sql:core`. **Keep a named individual owner**
      (you) — team owners cannot manage owners or the trusted publisher.
    - **Trusted Publisher** — in the crate's crates.io settings add the repo
      `durable-streams/durable-streams` + workflow `release-server-rust.yml`
