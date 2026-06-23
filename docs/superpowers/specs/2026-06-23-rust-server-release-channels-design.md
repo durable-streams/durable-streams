@@ -146,10 +146,19 @@ requires crate ownership). So the very first release is bootstrapped manually, a
 which the committed workflow is **token-free**:
 
 1. **crates.io:** sign in, **verify email**, create a scoped API token, `cargo login`,
-   `cargo publish` the `durable-streams` crate once. Then in the crate's crates.io
-   settings add a Trusted Publisher (repo `durable-streams/durable-streams`, this
-   workflow, optionally an environment); optionally enforce trusted-publishing-only.
-   Revoke the bootstrap token.
+   `cargo publish` the `durable-streams` crate once. Then:
+   - **Org ownership** — the crate is owned by the **electric-sql** org (the repo
+     lives under the separate `durable-streams` GitHub org, but crate ownership and
+     the trusted-publisher repo are independent, so this asymmetry is fine).
+     Prerequisite: grant crates.io the `read:org` scope for electric-sql
+     (GitHub → Settings → Applications → crates.io → Organization access → Grant), and
+     create/choose an electric-sql team (e.g. `publishers`). Then
+     `cargo owner --add github:electric-sql:<team>`. **Keep a named individual owner**
+     (you) — team owners cannot manage owners or the trusted publisher.
+   - **Trusted Publisher** — in the crate's crates.io settings add the repo
+     `durable-streams/durable-streams` + workflow `release-server-rust.yml`
+     (environment optional — skip to avoid needing repo-admin); optionally enforce
+     trusted-publishing-only. Revoke the bootstrap token.
 2. **npm:** with a granular automation token, publish all **5** packages once
    (`@durable-streams/server-rust` + the 4 platform packages). Then on npmjs.com
    configure a Trusted Publisher for **each** of the 5 (GitHub repo + workflow file).
