@@ -32,7 +32,7 @@ Spec: `docs/superpowers/specs/2026-06-23-rust-server-release-channels-design.md`
 - `packages/server-rust/Cargo.toml` — crate rename + `[[bin]]` (Task 1).
 - `packages/server-rust/Cargo.lock` — regenerated (Task 1).
 - `packages/server-rust/npm/targets.json` — single source of truth for the 4 targets, consumed by launcher + assembler (Task 2).
-- `packages/server-rust/npm/bin/launcher.js` — runtime shim the main package's `bin` points at (Task 2).
+- `packages/server-rust/npm/bin/launcher.cjs` — runtime shim the main package's `bin` points at (Task 2).
 - `packages/server-rust/npm/templates/main.package.json` — main-package manifest template (Task 3).
 - `packages/server-rust/npm/templates/platform.package.json` — platform-package manifest template (Task 3).
 - `packages/server-rust/npm/assemble.mjs` — builds the 5 publish-ready package dirs from built binaries + version (Task 3).
@@ -114,12 +114,12 @@ git commit -m "build(server-rust): rename crate to durable-streams, keep binary 
 
 **Files:**
 - Create: `packages/server-rust/npm/targets.json`
-- Create: `packages/server-rust/npm/bin/launcher.js`
+- Create: `packages/server-rust/npm/bin/launcher.cjs`
 - Test: `packages/server-rust/npm/test/launcher.test.mjs`
 
 **Interfaces:**
-- Produces: `targets.json` — a JSON array of `{ node, pkg, rustTarget, os, cpu, libc? }` objects, the single source of truth for the 4 platforms. Consumed by `launcher.js` (Task 2) and `assemble.mjs` (Task 3).
-- Produces: `bin/launcher.js` — a CommonJS executable that resolves the platform package for the host and execs `bin/durable-streams-server` inside it, forwarding argv/stdio and propagating the exit code. The main package's `bin` field (Task 3) points at it.
+- Produces: `targets.json` — a JSON array of `{ node, pkg, rustTarget, os, cpu, libc? }` objects, the single source of truth for the 4 platforms. Consumed by `launcher.cjs` (Task 2) and `assemble.mjs` (Task 3).
+- Produces: `bin/launcher.cjs` — a CommonJS executable that resolves the platform package for the host and execs `bin/durable-streams-server` inside it, forwarding argv/stdio and propagating the exit code. The main package's `bin` field (Task 3) points at it.
 
 - [ ] **Step 1: Create the target map**
 
@@ -148,7 +148,7 @@ import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const here = dirname(fileURLToPath(import.meta.url));
-const launcher = join(here, "..", "bin", "launcher.js");
+const launcher = join(here, "..", "bin", "launcher.cjs");
 const targets = JSON.parse(readFileSync(join(here, "..", "targets.json"), "utf8"));
 
 function fakePlatformPackageRoot() {
@@ -203,11 +203,11 @@ test("launcher errors clearly when no platform package is installed", () => {
 - [ ] **Step 3: Run the test to verify it fails**
 
 Run: `node --test packages/server-rust/npm/test/launcher.test.mjs`
-Expected: FAIL — `launcher.js` does not exist (module/file not found).
+Expected: FAIL — `launcher.cjs` does not exist (module/file not found).
 
 - [ ] **Step 4: Implement the launcher**
 
-Create `packages/server-rust/npm/bin/launcher.js`:
+Create `packages/server-rust/npm/bin/launcher.cjs`:
 
 ```js
 #!/usr/bin/env node
@@ -257,7 +257,7 @@ Expected: PASS (2 tests).
 - [ ] **Step 6: Commit**
 
 ```bash
-git add packages/server-rust/npm/targets.json packages/server-rust/npm/bin/launcher.js packages/server-rust/npm/test/launcher.test.mjs
+git add packages/server-rust/npm/targets.json packages/server-rust/npm/bin/launcher.cjs packages/server-rust/npm/test/launcher.test.mjs
 git commit -m "feat(server-rust/npm): platform launcher + target map"
 ```
 
@@ -273,7 +273,7 @@ git commit -m "feat(server-rust/npm): platform launcher + target map"
 - Test: `packages/server-rust/npm/test/assemble.test.mjs`
 
 **Interfaces:**
-- Consumes: `targets.json` and `bin/launcher.js` from Task 2; built binaries named `durable-streams-server` located under `<binsDir>/<rustTarget>/durable-streams-server`.
+- Consumes: `targets.json` and `bin/launcher.cjs` from Task 2; built binaries named `durable-streams-server` located under `<binsDir>/<rustTarget>/durable-streams-server`.
 - Produces: `assemble.mjs` — a CLI: `node assemble.mjs --version <X.Y.Z> --bins <dir> --out <dir>`. It writes `<out>/main/` (the main package) and `<out>/<rustTarget>/` (one per platform package), each a publish-ready directory. Exposes `assemble({ version, binsDir, outDir })` as a named export for tests. The workflow (Task 4) calls the CLI and then `npm publish` in each produced dir (platform dirs first, `main` last).
 
 - [ ] **Step 1: Create the manifest templates**
@@ -288,8 +288,8 @@ Create `packages/server-rust/npm/templates/main.package.json` (placeholders `0.0
   "license": "Apache-2.0",
   "homepage": "https://electric-sql.com/primitives/durable-streams",
   "repository": { "type": "git", "url": "https://github.com/durable-streams/durable-streams.git", "directory": "packages/server-rust" },
-  "bin": { "durable-streams-server": "bin/launcher.js" },
-  "files": ["bin/launcher.js", "targets.json", "README.md"],
+  "bin": { "durable-streams-server": "bin/launcher.cjs" },
+  "files": ["bin/launcher.cjs", "targets.json", "README.md"],
   "optionalDependencies": {}
 }
 ```
@@ -365,7 +365,7 @@ test("assemble produces main + 4 platform packages with stamped versions", () =>
   assert.equal(main.version, "1.2.3");
   assert.equal(Object.keys(main.optionalDependencies).length, targets.length);
   for (const t of targets) assert.equal(main.optionalDependencies[t.pkg], "1.2.3");
-  assert.ok(existsSync(join(outDir, "main", "bin", "launcher.js")));
+  assert.ok(existsSync(join(outDir, "main", "bin", "launcher.cjs")));
   assert.ok(existsSync(join(outDir, "main", "targets.json")));
   assert.ok(existsSync(join(outDir, "main", "README.md")));
 
@@ -440,7 +440,7 @@ export function assemble({ version, binsDir, outDir }) {
   const mainDir = join(outDir, "main");
   rmSync(mainDir, { recursive: true, force: true });
   mkdirSync(join(mainDir, "bin"), { recursive: true });
-  copyFileSync(join(here, "bin", "launcher.js"), join(mainDir, "bin", "launcher.js"));
+  copyFileSync(join(here, "bin", "launcher.cjs"), join(mainDir, "bin", "launcher.cjs"));
   copyFileSync(join(here, "targets.json"), join(mainDir, "targets.json"));
   copyFileSync(join(here, "README.md"), join(mainDir, "README.md"));
   const mainPj = { ...mainTpl, version, optionalDependencies };
