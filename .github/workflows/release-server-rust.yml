@@ -2,14 +2,12 @@ name: Release server-rust binaries
 
 # Tag the commit to release, e.g.:
 #   git tag server-rust-v0.1.0 && git push origin server-rust-v0.1.0
-# Builds the durable-streams-server binary for linux + macOS (x86_64 + arm64)
-# and attaches the tarballs (+ SHA-256 checksums) to a GitHub Release.
-#
-# Uses only first-party tooling — rustup, cargo and the gh CLI are all
-# preinstalled on the runners — so no third-party action touches the release
-# token or artifacts. Each target builds natively on a matching runner, so no
-# cross-compilation toolchain is needed. The only action is GitHub's own
-# actions/checkout (pinned to a commit SHA).
+# Publishes three channels from one tag:
+#   1. Prebuilt binary tarballs (+ SHA-256) attached to a GitHub Release.
+#   2. The `durable-streams` crate to crates.io via Trusted Publishing (OIDC).
+#   3. The @durable-streams/server-rust npm packages via Trusted Publishing (OIDC).
+# No long-lived registry tokens are stored — both registries authenticate via the
+# workflow's OIDC identity (see the bootstrap runbook for one-time setup).
 on:
   push:
     tags:
@@ -17,9 +15,25 @@ on:
 
 permissions:
   contents: write
+  id-token: write
 
 jobs:
+  assert-version:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Tag version matches Cargo.toml
+        run: |
+          tag="${GITHUB_REF_NAME#server-rust-v}"
+          crate="$(sed -n 's/^version = "\(.*\)"/\1/p' packages/server-rust/Cargo.toml | head -1)"
+          echo "tag=$tag cargo=$crate"
+          if [ "$tag" != "$crate" ]; then
+            echo "::error::tag version ($tag) != Cargo.toml version ($crate)"
+            exit 1
+          fi
+
   create-release:
+    needs: assert-version
     runs-on: ubuntu-latest
     steps:
       - name: Create the GitHub Release (idempotent)
@@ -34,7 +48,7 @@ jobs:
               --verify-tag
 
   build:
-    needs: create-release
+    needs: [assert-version, create-release]
     name: ${{ matrix.target }}
     runs-on: ${{ matrix.os }}
     strategy:
@@ -62,9 +76,6 @@ jobs:
             --manifest-path packages/server-rust/Cargo.toml \
             --target ${{ matrix.target }}
 
-      # Each target builds on a native runner, so the freshly-built binary runs
-      # here — boot it and hit /health so a miscompiled or wrong-arch artifact
-      # can't ship silently.
       - name: Smoke test
         shell: bash
         run: |
@@ -96,3 +107,66 @@ jobs:
           gh release upload "$GITHUB_REF_NAME" \
             "$RUNNER_TEMP"/*.tar.gz "$RUNNER_TEMP"/*.tar.gz.sha256 \
             --clobber
+
+      # Hand the raw binary to the npm-publish job (keyed by rust target).
+      - name: Upload binary artifact for npm
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: bin-${{ matrix.target }}
+          path: packages/server-rust/target/${{ matrix.target }}/release/durable-streams-server
+          if-no-files-found: error
+
+  cargo-publish:
+    needs: assert-version
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - name: Authenticate to crates.io (Trusted Publishing, OIDC)
+        uses: rust-lang/crates-io-auth-action@c6f97d42243bad5fab37ca0427f495c86d5b1a18 # v1
+        id: auth
+      - name: cargo publish
+        env:
+          CARGO_REGISTRY_TOKEN: ${{ steps.auth.outputs.token }}
+        run: cargo publish --locked --manifest-path packages/server-rust/Cargo.toml
+
+  npm-publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+          registry-url: "https://registry.npmjs.org"
+      - name: Update npm for OIDC trusted publishing (>= 11.5.1)
+        run: npm install -g npm@latest
+      - name: Download built binaries
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          path: ${{ runner.temp }}/bins
+      - name: Arrange binaries by rust target
+        run: |
+          # download-artifact unpacks each as <path>/bin-<target>/durable-streams-server
+          mkdir -p "$RUNNER_TEMP/arranged"
+          for d in "$RUNNER_TEMP"/bins/bin-*; do
+            target="$(basename "$d" | sed 's/^bin-//')"
+            mkdir -p "$RUNNER_TEMP/arranged/$target"
+            cp "$d/durable-streams-server" "$RUNNER_TEMP/arranged/$target/"
+          done
+      - name: Assemble npm packages
+        run: |
+          version="${GITHUB_REF_NAME#server-rust-v}"
+          node packages/server-rust/npm/assemble.mjs \
+            --version "$version" \
+            --bins "$RUNNER_TEMP/arranged" \
+            --out "$RUNNER_TEMP/npm-dist"
+      - name: Publish platform packages, then main (OIDC)
+        run: |
+          set -e
+          for d in "$RUNNER_TEMP"/npm-dist/*/; do
+            [ "$(basename "$d")" = "main" ] && continue
+            echo "publishing $d"
+            npm publish "$d" --access public --provenance
+          done
+          echo "publishing main"
+          npm publish "$RUNNER_TEMP/npm-dist/main" --access public --provenance
