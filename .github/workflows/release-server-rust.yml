@@ -55,14 +55,23 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # Linux binaries are built with the `strict-uring` feature so the
+          # io_uring fsync executor (--durability strict --strict-io-uring) is
+          # available at runtime. The feature is off by default in the binary —
+          # it only adds the option. The `io-uring` dep is Linux-target-gated, so
+          # the feature must NOT be passed on macOS (the dep doesn't exist there).
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
+            features: strict-uring
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-24.04-arm
+            features: strict-uring
           - target: x86_64-apple-darwin
             os: macos-13
+            features: ""
           - target: aarch64-apple-darwin
             os: macos-latest
+            features: ""
     steps:
       - name: Checkout
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
@@ -72,9 +81,11 @@ jobs:
 
       - name: Build
         run: |
+          features="${{ matrix.features }}"
           cargo build --release --locked \
             --manifest-path packages/server-rust/Cargo.toml \
-            --target ${{ matrix.target }}
+            --target ${{ matrix.target }} \
+            ${features:+--features "$features"}
 
       - name: Smoke test
         shell: bash
