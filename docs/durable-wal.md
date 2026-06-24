@@ -1,5 +1,13 @@
 # Durable WAL
 
+> **This document describes the `wal` durability mode** (`--durability wal`,
+> the default). The `memory` mode bypasses the WAL entirely — there is no WAL
+> file, no group-commit fsync, and no WAL replay on restart. Recovery in
+> `memory` mode is the sidecar pass only (per-stream files + `.meta`). See
+> [ARCHITECTURE.md › Durability modes](../packages/server-rust/ARCHITECTURE.md#durability-modes)
+> and [LIMITATIONS.md](../packages/server-rust/LIMITATIONS.md#--durability-memory-is-not-locally-crash-durable)
+> for the `memory`-mode contract.
+
 The server acks an append only after the record is durable in a **sharded,
 segmented, append-only write-ahead log**, giving **single-node no-loss durability +
 clean recovery (no torn record, including torn JSON)** — while keeping the server's
