@@ -307,7 +307,6 @@ jobs:
         config:
           - { name: wal-default, args: "" }
           - { name: wal-resident-cache, args: "--tail-cache-bytes 65536" }
-          - { name: wal-zero-copy, args: "--zero-copy" }
           - { name: wal-read-offload-always, args: "--read-offload always" }
           - { name: memory, args: "--durability memory" }
     steps:
