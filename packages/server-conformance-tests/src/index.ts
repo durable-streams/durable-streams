@@ -2129,8 +2129,11 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
         body: `test`,
       })
 
+      // Use VALID offset tokens so the 400 genuinely exercises duplicate
+      // detection rather than offset-format validation (each `now` parses fine
+      // on its own; only the duplication is the error).
       const response = await fetch(
-        `${getBaseUrl()}${streamPath}?offset=a&offset=b`,
+        `${getBaseUrl()}${streamPath}?offset=now&offset=now`,
         {
           method: `GET`,
         }
