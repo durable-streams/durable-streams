@@ -290,10 +290,26 @@ jobs:
   # Server conformance tests against the Rust server (packages/server-rust).
   # Mirrors the Caddy job: build the server binary, then run the full suite
   # (the test harness spawns the binary itself). Same suite, different server.
+  #
+  # The matrix runs the WHOLE conformance suite once per run-configuration —
+  # WAL vs no-WAL (memory), resident cache on/off, zero-copy, read-offload — so
+  # every supported way of running the server stays protocol-equivalent. The
+  # harness passes `RUST_SERVER_ARGS` straight through to the spawned binary.
+  # See README "Run-configuration matrix". Linux-only configs (zero-copy,
+  # memory) are fine here — the runner is ubuntu-latest.
   rust-conformance:
     runs-on: ubuntu-latest
     needs: build
     name: conformance (rust)
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - { name: wal-default, args: "" }
+          - { name: wal-resident-cache, args: "--tail-cache-bytes 65536" }
+          - { name: wal-zero-copy, args: "--zero-copy" }
+          - { name: wal-read-offload-always, args: "--read-offload always" }
+          - { name: memory, args: "--durability memory" }
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -327,5 +343,7 @@ jobs:
         working-directory: packages/server-rust
         run: cargo build --release
 
-      - name: Run conformance tests
+      - name: Run conformance tests (${{ matrix.config.name }})
+        env:
+          RUST_SERVER_ARGS: ${{ matrix.config.args }}
         run: pnpm vitest run --project server-rust
