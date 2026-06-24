@@ -342,6 +342,10 @@ jobs:
         working-directory: packages/server-rust
         run: cargo build --release
 
+      - name: Run Rust tests
+        working-directory: packages/server-rust
+        run: cargo test --release
+
       - name: Run conformance tests (${{ matrix.config.name }})
         env:
           RUST_SERVER_ARGS: ${{ matrix.config.args }}
