@@ -292,11 +292,11 @@ jobs:
   # (the test harness spawns the binary itself). Same suite, different server.
   #
   # The matrix runs the WHOLE conformance suite once per run-configuration —
-  # WAL vs no-WAL (memory), resident cache on/off, zero-copy, read-offload — so
-  # every supported way of running the server stays protocol-equivalent. The
-  # harness passes `RUST_SERVER_ARGS` straight through to the spawned binary.
-  # See README "Run-configuration matrix". Linux-only configs (zero-copy,
-  # memory) are fine here — the runner is ubuntu-latest.
+  # WAL vs no-WAL (memory), resident cache on/off, read-offload — so every
+  # supported way of running the server stays protocol-equivalent. The harness
+  # passes `RUST_SERVER_ARGS` straight through to the spawned binary. See README
+  # "Run-configuration matrix". The Linux-only config (memory) is fine here —
+  # the runner is ubuntu-latest.
   rust-conformance:
     runs-on: ubuntu-latest
     needs: build
