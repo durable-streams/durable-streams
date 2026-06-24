@@ -43,7 +43,7 @@ The WAL lives in `src/wal/` and is always active (`src/wal/mod.rs:1`).
 
 | file           | responsibility                                                                             |
 | -------------- | ------------------------------------------------------------------------------------------ |
-| `codec.rs`     | B-light record framing (header-CRC, no payload CRC); torn-tail detection                   |
+| `codec.rs`     | B-light record framing (header CRC + optional payload CRC); torn-tail detection            |
 | `segment.rs`   | `fallocate`'d segment files; `SegmentWriter` trait (io_uring drop-in seam); seal/roll      |
 | `shard.rs`     | one shard: reserve/stage, group-commit committer, contiguous-written watermark, checkpoint |
 | `walset.rs`    | the `N` shards; persisted-`N` FNV-1a routing; mismatch guard; committer spawn              |
@@ -112,28 +112,44 @@ zero-copy upgrade path.
 
 ### B-light record framing
 
-A record is a 33-byte fixed header + payload (`src/wal/codec.rs:25`, little-endian):
+A record is a 38-byte fixed header + payload (`src/wal/codec.rs`, `HEADER_LEN = 38`, little-endian):
 
 ```
 u32  len            // payload length
-u32  header_crc32c   // crc32c over [lsn, kind, stream_id, stream_offset, len]
+u32  header_crc32c   // crc32c over [lsn, kind, stream_id, stream_offset, len, flags, payload_crc]
 u64  lsn            // monotonic WITHIN the shard (no global LSN)
 u8   kind           // 1=Append 2=StreamCreate 3=StreamClose 4=StreamDelete
 u64  stream_id
 u64  stream_offset  // logical Stream-Next-Offset before this append
+u8   flags          // bit 0 = PAYLOAD_CHECKSUMMED; other bits reserved (0)
+u32  payload_crc32c  // crc32c over the payload, valid iff PAYLOAD_CHECKSUMMED set
 [len bytes payload]
 ```
 
-`header_crc` (`src/wal/codec.rs:91`) covers the logical field tuple and is computed
-identically by `encode_into` and `decode_at`, so they cannot diverge. There is
-**no payload CRC** — same integrity as today's per-stream files (payload CRC is
-follow-up #7). `decode_at` (`src/wal/codec.rs:119`) returns:
+`header_crc` covers `[lsn, kind, stream_id, stream_offset, len, flags, payload_crc]` and is
+computed identically by `encode_into` and `decode_at`, so they cannot diverge. The `flags`
+and `payload_crc` fields are themselves integrity-protected by the header CRC. `decode_at` returns:
 
-- `Record` — header CRC valid, kind known, and all `len` payload bytes present.
-- `Incomplete` — fewer than 33 bytes, or an **all-zero** header (a `fallocate`'d,
+- `Record` — header CRC valid, kind known, all `len` payload bytes present, **and** — when
+  `PAYLOAD_CHECKSUMMED` is set — `crc32c(payload) == payload_crc`.
+- `Incomplete` — fewer than 38 bytes, or an **all-zero** header (a `fallocate`'d,
   never-written tail = the clean end of the durable log, not corruption).
-- `Torn` — a present header that fails CRC, carries an unknown kind, or whose
-  payload is short. The first such record ends the durable log.
+- `Torn` — a present header that fails CRC, carries an unknown kind, whose payload is short,
+  or whose payload CRC does not match (when the flag is set). The first such record ends the
+  durable log.
+
+**Buffered (default) path** (`encode_into`): always computes the payload `crc32c` and sets
+`PAYLOAD_CHECKSUMMED`. This closes Bug #1 (torn-payload-zeros): WAL segments are
+`fallocate`'d to full size, so "payload bytes are physically present" was trivially true even
+after a crash left a valid header over a zeroed, never-fully-written payload. With the payload
+CRC such a record now fails decode and is correctly treated as `Torn`.
+
+**Zero-copy splice path** (`commit_splice_header`): writes `flags = 0` / `payload_crc = 0`
+— the payload is never read into userspace, so it cannot be checksummed. These records keep
+the old "bytes present = complete" behavior, retaining the Bug #1 torn-payload residual for
+the `--zero-copy` path. Closing it for zero-copy would require a durable per-segment written
+high-water mark (recovery refuses to scan past it; costs +1 `fdatasync` per group-commit) —
+a noted future option, not done here.
 
 As-built note: only `Append` records are actually staged today
 (`src/handlers.rs:713`); `StreamCreate`/`Close`/`Delete` discriminants exist in the
@@ -426,5 +442,9 @@ realistic regime (`conns/stream ≪ 1`) where per-stream coalescing would break 
 - **`StreamCreate`/`Close`/`Delete` not WAL-logged** — only `Append` is staged;
   stream identity is reconstructed by the sidecar pass. Documented v1 scope cut.
 - Deferred speed-ups (io_uring `SegmentWriter`, zero-copy double-write, CPU pinning,
-  dynamic rebalancing, payload CRC, replication, checkpoint-cadence tuning) are
-  tracked in `docs/superpowers/durability-performance-followups.md`.
+  dynamic rebalancing, replication, checkpoint-cadence tuning) are tracked in
+  `docs/superpowers/durability-performance-followups.md`. Payload CRC is now
+  implemented for the buffered (default) path (optional, flag-gated per record;
+  closes Bug #1 for that path). The zero-copy splice path still relies on
+  header-only completeness — a durable written high-water mark (+1 `fdatasync` per
+  group-commit) would be the mechanism to cover it there.
