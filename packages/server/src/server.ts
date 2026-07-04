@@ -18,6 +18,7 @@ import {
   SSE_OFFSET_FIELD,
   STREAM_CLOSED_HEADER,
   STREAM_CURSOR_HEADER,
+  STREAM_EXPECTED_OFFSET_HEADER,
   STREAM_EXPIRES_AT_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_SEQ_HEADER,
@@ -450,7 +451,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`
+      `content-type, authorization, Stream-Seq, Stream-Expected-Offset, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`
     )
     res.setHeader(
       `access-control-expose-headers`,
@@ -561,8 +562,11 @@ export class DurableStreamTestServer {
           res.writeHead(409, { "content-type": `text/plain` })
           res.end(`Stream already exists with different configuration`)
         } else if (err.message.includes(`Sequence conflict`)) {
-          res.writeHead(409, { "content-type": `text/plain` })
+          res.writeHead(409, this.conflictHeaders(err))
           res.end(`Sequence conflict`)
+        } else if (err.message.includes(`Expected-offset conflict`)) {
+          res.writeHead(409, this.conflictHeaders(err))
+          res.end(`Expected offset conflict`)
         } else if (err.message.includes(`Content-type mismatch`)) {
           res.writeHead(409, { "content-type": `text/plain` })
           res.end(`Content-type mismatch`)
@@ -579,6 +583,22 @@ export class DurableStreamTestServer {
         throw err
       }
     }
+  }
+
+  /**
+   * Build 409 response headers for write-coordination conflicts (Stream-Seq
+   * and Stream-Expected-Offset). Includes Stream-Next-Offset with the
+   * stream's current tail (captured inside the append critical section) so
+   * conflict losers can retry from the fresh tail without a HEAD round-trip.
+   */
+  private conflictHeaders(err: Error): Record<string, string> {
+    const headers: Record<string, string> = { "content-type": `text/plain` }
+    const currentOffset = (err as Error & { currentOffset?: string })
+      .currentOffset
+    if (currentOffset !== undefined) {
+      headers[STREAM_OFFSET_HEADER] = currentOffset
+    }
+    return headers
   }
 
   /**
@@ -1316,6 +1336,9 @@ export class DurableStreamTestServer {
     const seq = req.headers[STREAM_SEQ_HEADER.toLowerCase()] as
       | string
       | undefined
+    const expectedOffset = req.headers[
+      STREAM_EXPECTED_OFFSET_HEADER.toLowerCase()
+    ] as string | undefined
 
     // Parse Stream-Closed header
     const closedHeader = req.headers[STREAM_CLOSED_HEADER.toLowerCase()]
@@ -1503,6 +1526,7 @@ export class DurableStreamTestServer {
     // Build append options (include close flag for append-and-close)
     const appendOptions = {
       seq,
+      expectedOffset,
       contentType,
       producerId,
       producerEpoch,

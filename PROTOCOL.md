@@ -314,6 +314,16 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
   - A monotonic, lexicographic writer sequence number for coordination.
   - `Stream-Seq` values are opaque strings that **MUST** compare using simple byte-wise lexicographic ordering. Sequence numbers are scoped per authenticated writer identity (or per stream, depending on implementation). Servers **MUST** document the scope they enforce.
   - If provided and less than or equal to the last appended sequence (as determined by lexicographic comparison), the server **MUST** return `409 Conflict`. Sequence numbers **MUST** be strictly increasing.
+  - The reference TypeScript server (`@durable-streams/server`) enforces **per-stream** scope: a single `lastSeq` value is tracked per stream and compared against every `Stream-Seq`-bearing append, regardless of writer identity.
+
+- `Stream-Expected-Offset: <offset>` (optional)
+  - Strict compare-and-append: the append succeeds **only if** the stream's current tail offset is exactly the supplied value (an opaque offset token previously returned in `Stream-Next-Offset`). Servers implementing this extension **MUST** evaluate the comparison atomically with the append itself (inside the same per-stream critical section), so a matching append cannot interleave with a competing write.
+  - On mismatch, the server **MUST** return `409 Conflict` and **MUST** include `Stream-Next-Offset: <offset>` with the stream's current tail so losing writers can rebase without an extra `HEAD` round-trip.
+  - Composition with idempotent producers (Section 5.2.1): producer deduplication is evaluated **first**. A retry of an already-landed append **MUST** deduplicate to success (`204 No Content`) even if its `Stream-Expected-Offset` is now stale — the original append itself moved the tail. This mirrors the `Stream-Seq` precedence rules.
+  - Composition with `Stream-Seq`: when both headers are present, **both** checks apply (after producer deduplication); either failing yields `409 Conflict`.
+  - Closed streams take precedence: appending to a closed stream returns the closed-stream `409` shape (with `Stream-Closed: true`) even when the expected offset matches.
+  - Forks (Section 4.2) carry no expected-offset state: the check always compares against the fork's own current tail, never the source's.
+  - This header is an **OPTIONAL** extension; servers that do not implement it ignore it.
 
 - `Stream-Closed: true` (optional)
   - When present with value `true`, the stream is **closed** after the append completes. This is an atomic operation: the body (if any) is appended as the final data, and the stream transitions to the closed state in the same step.
@@ -332,7 +342,7 @@ Servers that do not support appends for a given stream **SHOULD** return `405 Me
 - `400 Bad Request`: Malformed request (invalid header syntax, missing Content-Type, empty body without `Stream-Closed: true`)
 - `404 Not Found`: Stream does not exist
 - `405 Method Not Allowed` or `501 Not Implemented`: Append not supported for this stream
-- `409 Conflict`: Content type mismatch with stream's configured type, sequence regression (if `Stream-Seq` provided), or **stream is closed** (when attempting to append without `Stream-Closed: true`)
+- `409 Conflict`: Content type mismatch with stream's configured type, sequence regression (if `Stream-Seq` provided), expected-offset mismatch (if `Stream-Expected-Offset` provided), or **stream is closed** (when attempting to append without `Stream-Closed: true`)
 - `410 Gone`: Stream is soft-deleted
 - `413 Payload Too Large`: Request body exceeds server limits
 - `429 Too Many Requests`: Rate limit exceeded
@@ -351,6 +361,14 @@ When a client attempts to append to a closed stream (without `Stream-Closed: tru
 - `Stream-Next-Offset: <offset>`: The final offset of the closed stream (useful for clients to know the stream's final position)
 
 This allows clients to detect and handle the "stream already closed" condition programmatically without parsing the response body. Servers **SHOULD** keep the response body empty or use a standardized error format; clients **SHOULD NOT** rely on parsing the body to determine the reason for rejection.
+
+#### Response Headers (on 409 Conflict due to sequence regression or expected-offset mismatch)
+
+When rejecting an append because of a `Stream-Seq` regression or a `Stream-Expected-Offset` mismatch, servers **SHOULD** include:
+
+- `Stream-Next-Offset: <offset>`: The stream's current tail offset
+
+This lets losing writers observe the fresh tail directly from the conflict response and retry (or rebase) without issuing an additional `HEAD` request. Servers implementing the `Stream-Expected-Offset` extension **MUST** include it on expected-offset conflicts (see the header definition above). The reference TypeScript server includes it on both conflict kinds and distinguishes them by body text (`Sequence conflict` vs `Expected offset conflict`), though clients **SHOULD NOT** rely on body text.
 
 **Error Precedence:** When an append request would trigger multiple conflict conditions (e.g., stream is closed AND content type mismatches), servers **SHOULD** check the stream's closed status first. This ensures clients receive the `Stream-Closed: true` header, enabling correct error handling. The recommended precedence is:
 
