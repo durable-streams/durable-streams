@@ -1233,6 +1233,21 @@ export class FileBackedStreamStore {
       }
     }
 
+    // Strict compare-and-append (Stream-Expected-Offset): append only if the
+    // tail is exactly the offset the writer observed. Checked AFTER producer
+    // validation so retries of already-landed appends deduplicate to 204.
+    if (
+      options.expectedOffset !== undefined &&
+      options.expectedOffset !== streamMeta.currentOffset
+    ) {
+      throw Object.assign(
+        new Error(
+          `Expected-offset conflict: expected ${options.expectedOffset}, tail is ${streamMeta.currentOffset}`
+        ),
+        { currentOffset: streamMeta.currentOffset }
+      )
+    }
+
     // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
     // This happens AFTER producer validation so retries can be deduplicated
     if (options.seq !== undefined) {
@@ -1240,8 +1255,11 @@ export class FileBackedStreamStore {
         streamMeta.lastSeq !== undefined &&
         options.seq <= streamMeta.lastSeq
       ) {
-        throw new Error(
-          `Sequence conflict: ${options.seq} <= ${streamMeta.lastSeq}`
+        throw Object.assign(
+          new Error(
+            `Sequence conflict: ${options.seq} <= ${streamMeta.lastSeq}`
+          ),
+          { currentOffset: streamMeta.currentOffset }
         )
       }
     }

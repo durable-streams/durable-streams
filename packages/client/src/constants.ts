@@ -43,6 +43,15 @@ export const STREAM_CLOSED_HEADER = `Stream-Closed`
 export const STREAM_SEQ_HEADER = `Stream-Seq`
 
 /**
+ * Request header for strict compare-and-append: the append succeeds only if
+ * the stream tail is exactly this offset (a previously observed
+ * Stream-Next-Offset value). Mismatch -> 409 Conflict with the current tail
+ * echoed in Stream-Next-Offset. Checked after idempotent-producer
+ * validation, so retries of already-landed appends still deduplicate to 204.
+ */
+export const STREAM_EXPECTED_OFFSET_HEADER = `Stream-Expected-Offset`
+
+/**
  * Request header for stream TTL in seconds (on create).
  */
 export const STREAM_TTL_HEADER = `Stream-TTL`

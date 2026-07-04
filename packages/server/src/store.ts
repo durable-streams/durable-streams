@@ -147,6 +147,11 @@ export function formatJsonMessages(messages: Array<StreamMessage>): Uint8Array {
  */
 export interface AppendOptions {
   seq?: string
+  /**
+   * Strict compare-and-append: reject with a conflict unless the stream's
+   * current tail offset equals this value exactly.
+   */
+  expectedOffset?: string
   contentType?: string
   producerId?: string
   producerEpoch?: number
@@ -789,12 +794,28 @@ export class StreamStore {
       }
     }
 
+    // Strict compare-and-append (Stream-Expected-Offset): append only if the
+    // tail is exactly the offset the writer observed. Checked AFTER producer
+    // validation so retries of already-landed appends deduplicate to 204.
+    if (
+      options.expectedOffset !== undefined &&
+      options.expectedOffset !== stream.currentOffset
+    ) {
+      throw Object.assign(
+        new Error(
+          `Expected-offset conflict: expected ${options.expectedOffset}, tail is ${stream.currentOffset}`
+        ),
+        { currentOffset: stream.currentOffset }
+      )
+    }
+
     // Check sequence for writer coordination (Stream-Seq, separate from Producer-Seq)
     // This happens AFTER producer validation so retries can be deduplicated
     if (options.seq !== undefined) {
       if (stream.lastSeq !== undefined && options.seq <= stream.lastSeq) {
-        throw new Error(
-          `Sequence conflict: ${options.seq} <= ${stream.lastSeq}`
+        throw Object.assign(
+          new Error(`Sequence conflict: ${options.seq} <= ${stream.lastSeq}`),
+          { currentOffset: stream.currentOffset }
         )
       }
     }
