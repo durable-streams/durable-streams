@@ -17,7 +17,7 @@ describe(`In-Memory Server Implementation`, () => {
   let server: DurableStreamTestServer
 
   // Use object with mutable property so conformance tests can access it
-  const config = { baseUrl: ``, subscriptions: true }
+  const config = { baseUrl: ``, subscriptions: true, strictAppend: true }
 
   beforeAll(async () => {
     server = new DurableStreamTestServer({
@@ -46,7 +46,7 @@ describe(`File-Backed Server Implementation`, () => {
   let dataDir: string
 
   // Use object with mutable property so conformance tests can access it
-  const config = { baseUrl: ``, subscriptions: true }
+  const config = { baseUrl: ``, subscriptions: true, strictAppend: true }
 
   beforeAll(async () => {
     dataDir = fs.mkdtempSync(path.join(tmpdir(), `conformance-test-`))

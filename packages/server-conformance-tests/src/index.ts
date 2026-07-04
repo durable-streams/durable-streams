@@ -24,6 +24,12 @@ export interface ConformanceTestOptions {
   longPollTimeoutMs?: number
   /** Enable stream metadata subscription conformance tests. */
   subscriptions?: boolean
+  /**
+   * Enable strict `Stream-Expected-Offset` compare-and-append conformance
+   * tests (optional protocol extension, including `Stream-Next-Offset` on
+   * write-coordination 409 responses).
+   */
+  strictAppend?: boolean
 }
 
 /**
@@ -11082,6 +11088,309 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(fork2.status).toBe(200)
     })
   })
+
+  // ============================================================================
+  // Strict compare-and-append (Stream-Expected-Offset)
+  // ============================================================================
+
+  describe.runIf(options.strictAppend)(
+    `Strict Compare-and-Append (Stream-Expected-Offset)`,
+    () => {
+      const STREAM_EXPECTED_OFFSET_HEADER = `Stream-Expected-Offset`
+      const STREAM_CLOSED_HEADER = `Stream-Closed`
+      const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+      const PRODUCER_ID_HEADER = `Producer-Id`
+      const PRODUCER_EPOCH_HEADER = `Producer-Epoch`
+      const PRODUCER_SEQ_HEADER = `Producer-Seq`
+
+      const uniqueId = () =>
+        `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`
+
+      /** Create a stream and return its initial tail offset. */
+      const createStream = async (streamPath: string): Promise<string> => {
+        const res = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+        })
+        expect([200, 201]).toContain(res.status)
+        const offset = res.headers.get(STREAM_OFFSET_HEADER)
+        expect(offset).toBeTruthy()
+        return offset!
+      }
+
+      test(`append with matching expected offset succeeds`, async () => {
+        const streamPath = `/v1/stream/strict-append-happy-${uniqueId()}`
+        const tail0 = await createStream(streamPath)
+
+        // First append CAS'd against the create-time tail
+        const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_EXPECTED_OFFSET_HEADER]: tail0,
+          },
+          body: `first`,
+        })
+        expect(r1.status).toBe(204)
+        const tail1 = r1.headers.get(STREAM_OFFSET_HEADER)
+        expect(tail1).toBeTruthy()
+        expect(tail1).not.toBe(tail0)
+
+        // Chain a second CAS append from the returned tail
+        const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_EXPECTED_OFFSET_HEADER]: tail1!,
+          },
+          body: `second`,
+        })
+        expect(r2.status).toBe(204)
+
+        const readRes = await fetch(`${getBaseUrl()}${streamPath}?offset=-1`)
+        expect(await readRes.text()).toBe(`firstsecond`)
+      })
+
+      test(`append with stale expected offset returns 409 with Stream-Next-Offset`, async () => {
+        const streamPath = `/v1/stream/strict-append-conflict-${uniqueId()}`
+        const tail0 = await createStream(streamPath)
+
+        // Advance the tail past tail0
+        const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `winner`,
+        })
+        expect(r1.status).toBe(204)
+        const tail1 = r1.headers.get(STREAM_OFFSET_HEADER)!
+
+        // Losing writer still holds tail0
+        const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_EXPECTED_OFFSET_HEADER]: tail0,
+          },
+          body: `loser`,
+        })
+        expect(r2.status).toBe(409)
+        // Current tail echoed so the loser can retry without a HEAD
+        expect(r2.headers.get(STREAM_OFFSET_HEADER)).toBe(tail1)
+        expect(await r2.text()).toBe(`Expected offset conflict`)
+
+        // The losing append must not have landed
+        const readRes = await fetch(`${getBaseUrl()}${streamPath}?offset=-1`)
+        expect(await readRes.text()).toBe(`winner`)
+      })
+
+      test(`producer dedupe wins over stale expected offset`, async () => {
+        // A retry of an already-landed producer append must deduplicate to
+        // 204 even though its expected offset is now stale (the original
+        // append itself moved the tail).
+        const streamPath = `/v1/stream/strict-append-dedupe-${uniqueId()}`
+        const tail0 = await createStream(streamPath)
+
+        const headers = {
+          "Content-Type": `text/plain`,
+          [PRODUCER_ID_HEADER]: `strict-producer`,
+          [PRODUCER_EPOCH_HEADER]: `0`,
+          [PRODUCER_SEQ_HEADER]: `0`,
+          [STREAM_EXPECTED_OFFSET_HEADER]: tail0,
+        }
+
+        const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers,
+          body: `msg`,
+        })
+        expect(r1.status).toBe(200)
+
+        // Byte-identical retry: expected offset is stale, but dedupe runs first
+        const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers,
+          body: `msg`,
+        })
+        expect(r2.status).toBe(204)
+
+        const readRes = await fetch(`${getBaseUrl()}${streamPath}?offset=-1`)
+        expect(await readRes.text()).toBe(`msg`)
+      })
+
+      test(`Stream-Seq and Stream-Expected-Offset compose - either can conflict`, async () => {
+        const streamPath = `/v1/stream/strict-append-compose-${uniqueId()}`
+        const tail0 = await createStream(streamPath)
+
+        // Both headers valid -> success
+        const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_SEQ_HEADER]: `seq-001`,
+            [STREAM_EXPECTED_OFFSET_HEADER]: tail0,
+          },
+          body: `first`,
+        })
+        expect(r1.status).toBe(204)
+        const tail1 = r1.headers.get(STREAM_OFFSET_HEADER)!
+
+        // Valid seq, stale expected offset -> 409 (expected-offset conflict)
+        const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_SEQ_HEADER]: `seq-002`,
+            [STREAM_EXPECTED_OFFSET_HEADER]: tail0,
+          },
+          body: `stale-offset`,
+        })
+        expect(r2.status).toBe(409)
+        expect(r2.headers.get(STREAM_OFFSET_HEADER)).toBe(tail1)
+        expect(await r2.text()).toBe(`Expected offset conflict`)
+
+        // Matching expected offset, regressed seq -> 409 (sequence conflict)
+        const r3 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_SEQ_HEADER]: `seq-001`,
+            [STREAM_EXPECTED_OFFSET_HEADER]: tail1,
+          },
+          body: `stale-seq`,
+        })
+        expect(r3.status).toBe(409)
+        expect(r3.headers.get(STREAM_OFFSET_HEADER)).toBe(tail1)
+        expect(await r3.text()).toBe(`Sequence conflict`)
+
+        // The failed appends must not have landed
+        const readRes = await fetch(`${getBaseUrl()}${streamPath}?offset=-1`)
+        expect(await readRes.text()).toBe(`first`)
+      })
+
+      test(`Stream-Seq 409 includes Stream-Next-Offset`, async () => {
+        const streamPath = `/v1/stream/strict-append-seq-409-${uniqueId()}`
+        await createStream(streamPath)
+
+        const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_SEQ_HEADER]: `seq-002`,
+          },
+          body: `first`,
+        })
+        expect(r1.status).toBe(204)
+        const tail1 = r1.headers.get(STREAM_OFFSET_HEADER)!
+
+        // Regressed seq (no expected offset at all) -> enriched 409
+        const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_SEQ_HEADER]: `seq-001`,
+          },
+          body: `regressed`,
+        })
+        expect(r2.status).toBe(409)
+        expect(r2.headers.get(STREAM_OFFSET_HEADER)).toBe(tail1)
+        expect(await r2.text()).toBe(`Sequence conflict`)
+      })
+
+      test(`closed stream wins over expected offset check`, async () => {
+        const streamPath = `/v1/stream/strict-append-closed-${uniqueId()}`
+        await createStream(streamPath)
+
+        const r1 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: `final`,
+        })
+        const tail1 = r1.headers.get(STREAM_OFFSET_HEADER)!
+
+        // Close the stream
+        const closeRes = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { [STREAM_CLOSED_HEADER]: `true` },
+        })
+        expect([200, 204]).toContain(closeRes.status)
+
+        // Even a CORRECT expected offset is rejected with the closed-stream
+        // 409 shape (Stream-Closed: true), per the error precedence rules.
+        const r2 = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_EXPECTED_OFFSET_HEADER]: tail1,
+          },
+          body: `too-late`,
+        })
+        expect(r2.status).toBe(409)
+        expect(r2.headers.get(STREAM_CLOSED_HEADER)).toBe(`true`)
+        expect(r2.headers.get(STREAM_OFFSET_HEADER)).toBe(tail1)
+      })
+
+      test(`fork inherits no expected-offset state`, async () => {
+        const id = uniqueId()
+        const sourcePath = `/v1/stream/strict-append-fork-src-${id}`
+        const forkPath = `/v1/stream/strict-append-fork-${id}`
+
+        // Create source with data
+        await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `source`,
+        })
+
+        // Fork at the source tail
+        const forkRes = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_FORKED_FROM_HEADER]: sourcePath,
+          },
+        })
+        expect([200, 201]).toContain(forkRes.status)
+        const forkTail = forkRes.headers.get(STREAM_OFFSET_HEADER)!
+
+        // Advance the SOURCE past the fork point
+        const srcAppend = await fetch(`${getBaseUrl()}${sourcePath}`, {
+          method: `POST`,
+          headers: { "Content-Type": `text/plain` },
+          body: ` more`,
+        })
+        const srcTail = srcAppend.headers.get(STREAM_OFFSET_HEADER)!
+
+        // CAS against the fork's own tail succeeds - the fork's expected
+        // offset state is its own tail, independent of the source
+        const r1 = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_EXPECTED_OFFSET_HEADER]: forkTail,
+          },
+          body: ` forked`,
+        })
+        expect(r1.status).toBe(204)
+        const forkTail2 = r1.headers.get(STREAM_OFFSET_HEADER)!
+
+        // CAS against the source's (diverged) tail conflicts on the fork,
+        // and the echoed tail is the FORK's tail, not the source's
+        const r2 = await fetch(`${getBaseUrl()}${forkPath}`, {
+          method: `POST`,
+          headers: {
+            "Content-Type": `text/plain`,
+            [STREAM_EXPECTED_OFFSET_HEADER]: srcTail,
+          },
+          body: ` bad`,
+        })
+        expect(r2.status).toBe(409)
+        expect(r2.headers.get(STREAM_OFFSET_HEADER)).toBe(forkTail2)
+
+        const readRes = await fetch(`${getBaseUrl()}${forkPath}?offset=-1`)
+        expect(await readRes.text()).toBe(`source forked`)
+      })
+    }
+  )
 
   // ============================================================================
   // Reserved subscription APIs
