@@ -61,6 +61,8 @@ export type {
   // Legacy types (still used internally)
   CreateOptions,
   AppendOptions,
+  AppendResult,
+  AppendWithResultOptions,
   ReadOptions,
   HeadResult,
   LegacyLiveMode,
@@ -120,6 +122,10 @@ export {
   STREAM_EXPECTED_OFFSET_HEADER,
   STREAM_TTL_HEADER,
   STREAM_EXPIRES_AT_HEADER,
+  // Fork headers
+  STREAM_FORKED_FROM_HEADER,
+  STREAM_FORK_OFFSET_HEADER,
+  STREAM_FORK_SUB_OFFSET_HEADER,
   OFFSET_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   CURSOR_QUERY_PARAM,

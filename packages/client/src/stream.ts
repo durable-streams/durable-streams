@@ -7,13 +7,20 @@
 import fastq from "fastq"
 
 import {
+  FetchError,
   InvalidSignalError,
   MissingStreamUrlError,
   StreamClosedError,
 } from "./error"
 import { IdempotentProducer } from "./idempotent-producer"
 import {
+  PRODUCER_EPOCH_HEADER,
+  PRODUCER_EXPECTED_SEQ_HEADER,
+  PRODUCER_ID_HEADER,
+  PRODUCER_RECEIVED_SEQ_HEADER,
+  PRODUCER_SEQ_HEADER,
   STREAM_CLOSED_HEADER,
+  STREAM_EXPECTED_OFFSET_HEADER,
   STREAM_EXPIRES_AT_HEADER,
   STREAM_OFFSET_HEADER,
   STREAM_SEQ_HEADER,
@@ -35,6 +42,8 @@ import type { BackoffOptions } from "./fetch"
 import type { queueAsPromised } from "fastq"
 import type {
   AppendOptions,
+  AppendResult,
+  AppendWithResultOptions,
   CloseOptions,
   CloseResult,
   CreateOptions,
@@ -542,6 +551,132 @@ export class DurableStream {
   }
 
   /**
+   * Append a single payload and return a typed {@link AppendResult} instead
+   * of throwing on protocol-level write conflicts.
+   *
+   * Sends one POST carrying any combination of:
+   * - `seq` → `Stream-Seq` (writer coordination)
+   * - `expectedOffset` → `Stream-Expected-Offset` (strict compare-and-append)
+   * - `producerId`/`producerEpoch`/`producerSeq` → idempotent producer headers
+   * - `close` → `Stream-Closed: true` (atomic append-and-close)
+   *
+   * Protocol outcomes (`seq-conflict`, `closed`, `stale-epoch`,
+   * `producer-gap`) are returned as result variants; transport errors and
+   * other HTTP failures still throw. Never batched — each call is its own
+   * request, since the result is per-append.
+   *
+   * @example
+   * ```typescript
+   * const result = await stream.appendWithResult(payload, {
+   *   expectedOffset: tail,
+   * });
+   * if (result.kind === `ok`) {
+   *   tail = result.nextOffset;
+   * } else if (result.kind === `seq-conflict`) {
+   *   tail = result.nextOffset ?? tail; // rebase and retry
+   * }
+   * ```
+   */
+  async appendWithResult(
+    body: Uint8Array | string | Promise<Uint8Array | string>,
+    opts?: AppendWithResultOptions
+  ): Promise<AppendResult> {
+    const resolvedBody = isPromiseLike(body) ? await body : body
+    const { requestHeaders, fetchUrl } = await this.#buildRequest()
+
+    const contentType =
+      opts?.contentType ?? this.#options.contentType ?? this.contentType
+    if (contentType) {
+      requestHeaders[`content-type`] = contentType
+    }
+
+    if (opts?.seq) {
+      requestHeaders[STREAM_SEQ_HEADER] = opts.seq
+    }
+    if (opts?.expectedOffset !== undefined) {
+      requestHeaders[STREAM_EXPECTED_OFFSET_HEADER] = opts.expectedOffset
+    }
+    const hasProducer = opts?.producerId !== undefined
+    if (opts?.producerId !== undefined) {
+      requestHeaders[PRODUCER_ID_HEADER] = opts.producerId
+      requestHeaders[PRODUCER_EPOCH_HEADER] = String(opts.producerEpoch)
+      requestHeaders[PRODUCER_SEQ_HEADER] = String(opts.producerSeq)
+    }
+    if (opts?.close) {
+      requestHeaders[STREAM_CLOSED_HEADER] = `true`
+    }
+
+    // Same body encoding as append(): JSON mode wraps in an array (server
+    // flattens one level); byte mode preserves raw bytes.
+    const isJson = normalizeContentType(contentType) === `application/json`
+    let encodedBody: BodyInit
+    if (isJson) {
+      const bodyStr =
+        typeof resolvedBody === `string`
+          ? resolvedBody
+          : new TextDecoder().decode(resolvedBody)
+      encodedBody = `[${bodyStr}]`
+    } else if (typeof resolvedBody === `string`) {
+      encodedBody = resolvedBody
+    } else {
+      encodedBody = resolvedBody.buffer.slice(
+        resolvedBody.byteOffset,
+        resolvedBody.byteOffset + resolvedBody.byteLength
+      ) as ArrayBuffer
+    }
+
+    let response: Response
+    try {
+      response = await this.#fetchClient(fetchUrl.toString(), {
+        method: `POST`,
+        headers: requestHeaders,
+        body: encodedBody,
+        signal: opts?.signal ?? this.#options.signal,
+      })
+    } catch (err) {
+      // The backoff-wrapped fetch surfaces non-retryable failures as
+      // FetchError before we can inspect the Response.
+      if (err instanceof FetchError) {
+        const mapped = mapAppendConflict(
+          err.status,
+          (name) => err.headers[name.toLowerCase()],
+          err.text
+        )
+        if (mapped) return mapped
+      }
+      throw err
+    }
+
+    if (!response.ok) {
+      // Defensive: a custom fetch implementation may return non-ok responses
+      // instead of throwing FetchError.
+      const text = await response.clone().text()
+      const mapped = mapAppendConflict(
+        response.status,
+        (name) => response.headers.get(name) ?? undefined,
+        text
+      )
+      if (mapped) return mapped
+      await handleErrorResponse(response, this.url)
+    }
+
+    const closed =
+      response.headers.get(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`
+    // A producer 204 is an idempotent-producer dedup (fresh producer appends
+    // return 200); non-producer appends always return 204 on success.
+    const deduped = hasProducer && response.status === 204
+    let nextOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
+    if (deduped && nextOffset === ``) {
+      // Producer-dedup 204s carry no Stream-Next-Offset; recover the tail.
+      const head = await this.head({ signal: opts.signal })
+      if (head.exists && head.offset) {
+        nextOffset = head.offset
+      }
+    }
+    return { kind: `ok`, nextOffset, deduped, closed }
+  }
+
+  /**
    * Append with batching - buffers messages and sends them in batches.
    */
   async #appendWithBatching(
@@ -1035,6 +1170,53 @@ function toReadableStream(
       iterator.return?.()
     },
   })
+}
+
+/**
+ * Map a protocol-level append rejection (409/403) to a typed AppendResult
+ * variant, or undefined when the failure is not one of the recognized
+ * write-coordination outcomes (in which case the caller should throw).
+ */
+function mapAppendConflict(
+  status: number,
+  header: (name: string) => string | undefined,
+  bodyText: string | undefined
+): AppendResult | undefined {
+  if (status === 409) {
+    if (header(STREAM_CLOSED_HEADER)?.toLowerCase() === `true`) {
+      return {
+        kind: `closed`,
+        nextOffset: header(STREAM_OFFSET_HEADER) ?? ``,
+      }
+    }
+    const expectedSeq = header(PRODUCER_EXPECTED_SEQ_HEADER)
+    if (expectedSeq !== undefined) {
+      return {
+        kind: `producer-gap`,
+        expectedSeq: Number(expectedSeq),
+        receivedSeq: Number(header(PRODUCER_RECEIVED_SEQ_HEADER) ?? `0`),
+      }
+    }
+    // Writer-coordination conflict (Stream-Seq or Stream-Expected-Offset).
+    // Servers implementing the strict-append extension echo the current
+    // tail in Stream-Next-Offset; body text distinguishes the two checks.
+    return {
+      kind: `seq-conflict`,
+      nextOffset: header(STREAM_OFFSET_HEADER) ?? undefined,
+      conflict: bodyText?.includes(`Expected offset conflict`)
+        ? `expected-offset`
+        : `seq`,
+    }
+  }
+
+  if (status === 403) {
+    const currentEpoch = header(PRODUCER_EPOCH_HEADER)
+    if (currentEpoch !== undefined) {
+      return { kind: `stale-epoch`, currentEpoch: Number(currentEpoch) }
+    }
+  }
+
+  return undefined
 }
 
 /**

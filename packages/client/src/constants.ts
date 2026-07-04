@@ -52,6 +52,24 @@ export const STREAM_SEQ_HEADER = `Stream-Seq`
 export const STREAM_EXPECTED_OFFSET_HEADER = `Stream-Expected-Offset`
 
 /**
+ * Request header on stream create (PUT): fork the new stream from this
+ * existing source stream path.
+ */
+export const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+
+/**
+ * Request header on fork create: the source-stream boundary offset at which
+ * to fork. Defaults to the source tail when omitted.
+ */
+export const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
+
+/**
+ * Request header on fork create: byte position within the message at
+ * `Stream-Fork-Offset` for sub-message forks.
+ */
+export const STREAM_FORK_SUB_OFFSET_HEADER = `Stream-Fork-Sub-Offset`
+
+/**
  * Request header for stream TTL in seconds (on create).
  */
 export const STREAM_TTL_HEADER = `Stream-TTL`

@@ -422,6 +422,58 @@ export interface AppendOptions {
 }
 
 /**
+ * Options for `appendWithResult()` - a single POST carrying writer
+ * coordination (`Stream-Seq`), strict compare-and-append
+ * (`Stream-Expected-Offset`) and/or idempotent producer headers, returning a
+ * typed {@link AppendResult} instead of throwing on protocol conflicts.
+ */
+export interface AppendWithResultOptions extends AppendOptions {
+  /**
+   * Strict compare-and-append (Stream-Expected-Offset header).
+   * The append succeeds only if the stream's tail is exactly this offset (a
+   * previously observed nextOffset). On mismatch the server responds
+   * 409 Conflict with the current tail, surfaced as a `seq-conflict` result
+   * with `conflict: "expected-offset"`.
+   */
+  expectedOffset?: string
+
+  /**
+   * Atomically close the stream after this append (Stream-Closed header).
+   */
+  close?: boolean
+}
+
+/**
+ * Typed result of `appendWithResult()`. Protocol-level outcomes (conflicts,
+ * closed stream, producer fencing) are returned as variants instead of
+ * thrown, so optimistic-concurrency writers can branch without try/catch.
+ */
+export type AppendResult =
+  /**
+   * The append landed (or deduplicated). `deduped` is true when the server
+   * recognized an idempotent-producer retry of an already-landed append.
+   * `closed` is true when the stream is now closed (e.g. append-and-close).
+   */
+  | { kind: `ok`; nextOffset: Offset; deduped: boolean; closed?: boolean }
+  /**
+   * Rejected by writer coordination: a `Stream-Seq` regression
+   * (`conflict: "seq"`) or a `Stream-Expected-Offset` mismatch
+   * (`conflict: "expected-offset"`). `nextOffset` is the stream's current
+   * tail when the server includes `Stream-Next-Offset` on the 409.
+   */
+  | {
+      kind: `seq-conflict`
+      nextOffset?: Offset
+      conflict: `seq` | `expected-offset`
+    }
+  /** Rejected: the stream was already closed. `nextOffset` is its final offset. */
+  | { kind: `closed`; nextOffset: Offset }
+  /** Rejected: producer epoch is stale (zombie fencing). */
+  | { kind: `stale-epoch`; currentEpoch: number }
+  /** Rejected: producer sequence gap. */
+  | { kind: `producer-gap`; expectedSeq: number; receivedSeq: number }
+
+/**
  * Result of a close operation.
  */
 export interface CloseResult {
