@@ -15,13 +15,13 @@ jobs:
     env:
       LIVE_URL: https://durable-object-streams.openstory.workers.dev
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4 # version comes from packageManager in package.json
+      - uses: pnpm/action-setup@v6 # version comes from packageManager in package.json
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
-          node-version: 22
+          node-version: 24
           cache: pnpm
 
       - name: Install dependencies
@@ -44,7 +44,7 @@ jobs:
 
       - name: Upload conformance summary
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: live-conformance-summary
           path: live-conformance-summary.txt
