@@ -1,0 +1,40 @@
+name: live-conformance
+
+# Runs the conformance suite against the deployed workers.dev instance.
+# Runs from a GitHub runner (low RTT to Cloudflare's edge) because the
+# suite's 5s per-test budget assumes a nearby server.
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  live:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      LIVE_URL: https://durable-object-streams.openstory.workers.dev
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run conformance suite against deployed instance
+        run: |
+          CONFORMANCE_TEST_URL="$LIVE_URL" npx vitest run --no-coverage conformance/conformance.test.mjs 2>&1 | tee live-conformance-summary.txt
+
+      - name: Run client smoke test against deployed instance
+        run: node scripts/smoke-test.mjs "$LIVE_URL"
+
+      - name: Upload conformance summary
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: live-conformance-summary
+          path: live-conformance-summary.txt
