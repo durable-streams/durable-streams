@@ -1,0 +1,56 @@
+name: conformance
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  conformance:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Typecheck
+        run: npx tsc --noEmit
+
+      - name: Boot wrangler dev
+        run: |
+          npx wrangler dev --port 8787 > wrangler-dev.log 2>&1 &
+          echo $! > wrangler.pid
+          for i in $(seq 1 60); do
+            if curl -sf http://localhost:8787/ > /dev/null; then
+              echo "wrangler dev is up"
+              exit 0
+            fi
+            sleep 1
+          done
+          echo "wrangler dev failed to start" >&2
+          cat wrangler-dev.log >&2
+          exit 1
+
+      - name: Run conformance suite
+        run: CONFORMANCE_TEST_URL=http://localhost:8787 npx vitest run --no-coverage conformance/conformance.test.mjs
+
+      - name: Run client smoke test
+        run: node scripts/smoke-test.mjs http://localhost:8787
+
+      - name: Stop wrangler dev
+        if: always()
+        run: kill "$(cat wrangler.pid)" 2>/dev/null || true
+
+      - name: Upload wrangler log on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: wrangler-dev-log
+          path: wrangler-dev.log
