@@ -1,12 +1,16 @@
 {
-  "name": "durable-object-streams",
+  "name": "@durable-streams/server-cloudflare",
   "version": "0.2.0",
   "description": "Durable Streams protocol server on Cloudflare Workers + Durable Objects — export the StreamObject class and mount the handler in your own Worker",
   "license": "Apache-2.0",
   "author": "Tom Beckenham",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/tombeckenham/durable-object-streams.git"
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/server-cloudflare"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
   },
   "keywords": [
     "durable-streams",
@@ -53,8 +57,8 @@
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",
-    "@durable-streams/client": "^0.2.6",
-    "@durable-streams/server-conformance-tests": "0.3.5",
+    "@durable-streams/client": "workspace:*",
+    "@durable-streams/server-conformance-tests": "workspace:*",
     "@eslint/js": "^10.0.1",
     "eslint": "^10.6.0",
     "eslint-config-prettier": "^10.1.8",
@@ -63,6 +67,5 @@
     "typescript-eslint": "^8.63.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.107.1"
-  },
-  "packageManager": "pnpm@11.10.0+sha512.0b7f8b98060031904c017e3a41eb187a16d40eeb829b95c4f8cb03681761fc4ab53dd219115b9b447f4dce1a05a214764461e7d3703392a9f32f9511ce8c86c8"
+  }
 }
