@@ -1,0 +1,302 @@
+/**
+ * SQLite-backed stream storage for a single stream (one Durable Object
+ * instance per stream).
+ *
+ * Storage semantics are ported from the Durable Streams reference server
+ * (packages/server/src/store.ts, Apache-2.0, Durable Stream contributors),
+ * re-implemented on Durable Object SQLite. The DO's single-threaded
+ * execution replaces the reference server's promise-chain locks: every
+ * read-modify-write here is synchronous (no awaits), so it is atomic
+ * with respect to other requests.
+ */
+
+import { FRAME_OVERHEAD, ZERO_OFFSET } from "./constants";
+import type { ProducerState } from "./producer";
+
+/** TTL for producer state cleanup (7 days), matching the reference server. */
+const PRODUCER_STATE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
+
+export interface ClosedBy {
+  producerId: string;
+  epoch: number;
+  seq: number;
+}
+
+export interface StreamMeta {
+  contentType: string | undefined;
+  ttlSeconds: number | undefined;
+  expiresAt: string | undefined;
+  closed: boolean;
+  closedBy: ClosedBy | undefined;
+  currentOffset: string;
+  lastSeq: string | undefined;
+  createdAt: number;
+  lastAccessedAt: number;
+}
+
+export interface StoredMessage {
+  data: Uint8Array;
+  /** The offset AFTER this message (matches the reference data model). */
+  offset: string;
+}
+
+interface MetaRow extends Record<string, SqlStorageValue> {
+  content_type: string | null;
+  ttl_seconds: number | null;
+  expires_at: string | null;
+  closed: number;
+  closed_by: string | null;
+  current_offset: string;
+  last_seq: string | null;
+  created_at: number;
+  last_accessed_at: number;
+}
+
+interface MessageRow extends Record<string, SqlStorageValue> {
+  msg_offset: string;
+  data: ArrayBuffer;
+}
+
+interface ProducerRow extends Record<string, SqlStorageValue> {
+  epoch: number;
+  last_seq: number;
+  last_updated: number;
+}
+
+function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const copy = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(copy).set(bytes);
+  return copy;
+}
+
+function parseClosedBy(json: string | null): ClosedBy | undefined {
+  if (json === null) return undefined;
+  const parsed: unknown = JSON.parse(json);
+  if (parsed === null || typeof parsed !== "object") return undefined;
+  const record: Partial<Record<keyof ClosedBy, unknown>> = parsed;
+  const { producerId, epoch, seq } = record;
+  if (
+    typeof producerId === "string" &&
+    typeof epoch === "number" &&
+    typeof seq === "number"
+  ) {
+    return { producerId, epoch, seq };
+  }
+  return undefined;
+}
+
+/** Compute the offset after appending `payloadLength` bytes at `currentOffset`. */
+export function advanceOffset(
+  currentOffset: string,
+  payloadLength: number,
+): string {
+  const parts = currentOffset.split("_");
+  const readSeq = Number(parts[0]);
+  const byteOffset = Number(parts[1]);
+  const newByteOffset = byteOffset + FRAME_OVERHEAD + payloadLength;
+  return `${String(readSeq).padStart(16, "0")}_${String(newByteOffset).padStart(16, "0")}`;
+}
+
+export class SqliteStore {
+  constructor(private readonly sql: SqlStorage) {}
+
+  ensureSchema(): void {
+    this.sql.exec(`
+      CREATE TABLE IF NOT EXISTS meta (
+        id INTEGER PRIMARY KEY CHECK (id = 1),
+        content_type TEXT,
+        ttl_seconds INTEGER,
+        expires_at TEXT,
+        closed INTEGER NOT NULL DEFAULT 0,
+        closed_by TEXT,
+        current_offset TEXT NOT NULL,
+        last_seq TEXT,
+        created_at INTEGER NOT NULL,
+        last_accessed_at INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS messages (
+        msg_offset TEXT PRIMARY KEY,
+        data BLOB NOT NULL,
+        ts INTEGER NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS producers (
+        producer_id TEXT PRIMARY KEY,
+        epoch INTEGER NOT NULL,
+        last_seq INTEGER NOT NULL,
+        last_updated INTEGER NOT NULL
+      );
+    `);
+  }
+
+  /** Raw meta read with no expiry handling. */
+  getMetaRaw(): StreamMeta | undefined {
+    const rows = this.sql
+      .exec<MetaRow>(`SELECT * FROM meta WHERE id = 1`)
+      .toArray();
+    const row = rows[0];
+    if (!row) return undefined;
+    return {
+      contentType: row.content_type ?? undefined,
+      ttlSeconds: row.ttl_seconds ?? undefined,
+      expiresAt: row.expires_at ?? undefined,
+      closed: row.closed !== 0,
+      closedBy: parseClosedBy(row.closed_by),
+      currentOffset: row.current_offset,
+      lastSeq: row.last_seq ?? undefined,
+      createdAt: row.created_at,
+      lastAccessedAt: row.last_accessed_at,
+    };
+  }
+
+  /**
+   * Check expiry (sliding TTL from last access, or absolute expires-at).
+   * Invalid expires-at dates are treated as expired (fail closed).
+   */
+  isExpired(meta: StreamMeta, now: number): boolean {
+    if (meta.expiresAt !== undefined) {
+      const expiryTime = new Date(meta.expiresAt).getTime();
+      if (!Number.isFinite(expiryTime) || now >= expiryTime) {
+        return true;
+      }
+    }
+    if (meta.ttlSeconds !== undefined) {
+      if (now >= meta.lastAccessedAt + meta.ttlSeconds * 1000) {
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /** The wall-clock time at which the stream will expire, if any. */
+  expiryTime(meta: StreamMeta): number | undefined {
+    let expiry: number | undefined;
+    if (meta.expiresAt !== undefined) {
+      const t = new Date(meta.expiresAt).getTime();
+      if (Number.isFinite(t)) expiry = t;
+    }
+    if (meta.ttlSeconds !== undefined) {
+      const t = meta.lastAccessedAt + meta.ttlSeconds * 1000;
+      if (expiry === undefined || t < expiry) expiry = t;
+    }
+    return expiry;
+  }
+
+  createMeta(options: {
+    contentType: string | undefined;
+    ttlSeconds: number | undefined;
+    expiresAt: string | undefined;
+    closed: boolean;
+    now: number;
+  }): void {
+    this.sql.exec(
+      `INSERT INTO meta (id, content_type, ttl_seconds, expires_at, closed, closed_by,
+         current_offset, last_seq, created_at, last_accessed_at)
+       VALUES (1, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)`,
+      options.contentType ?? null,
+      options.ttlSeconds ?? null,
+      options.expiresAt ?? null,
+      options.closed ? 1 : 0,
+      ZERO_OFFSET,
+      options.now,
+      options.now,
+    );
+  }
+
+  /** Delete all stream state. The stream then reads as never-existing. */
+  purge(): void {
+    this.sql.exec(`DELETE FROM meta`);
+    this.sql.exec(`DELETE FROM messages`);
+    this.sql.exec(`DELETE FROM producers`);
+  }
+
+  touchAccess(now: number): void {
+    this.sql.exec(`UPDATE meta SET last_accessed_at = ? WHERE id = 1`, now);
+  }
+
+  /** Read messages strictly after `afterOffset` (all messages when undefined/"-1"). */
+  readMessages(afterOffset: string | undefined): Array<StoredMessage> {
+    const rows =
+      afterOffset === undefined || afterOffset === "-1"
+        ? this.sql
+            .exec<MessageRow>(
+              `SELECT msg_offset, data FROM messages ORDER BY msg_offset ASC`,
+            )
+            .toArray()
+        : this.sql
+            .exec<MessageRow>(
+              `SELECT msg_offset, data FROM messages WHERE msg_offset > ? ORDER BY msg_offset ASC`,
+              afterOffset,
+            )
+            .toArray();
+    return rows.map((row) => ({
+      offset: row.msg_offset,
+      data: new Uint8Array(row.data),
+    }));
+  }
+
+  /**
+   * Append processed payload bytes as one message, advancing the current
+   * offset. Returns the new offset.
+   */
+  appendMessage(
+    currentOffset: string,
+    payload: Uint8Array,
+    now: number,
+  ): string {
+    const newOffset = advanceOffset(currentOffset, payload.length);
+    this.sql.exec(
+      `INSERT INTO messages (msg_offset, data, ts) VALUES (?, ?, ?)`,
+      newOffset,
+      toArrayBuffer(payload),
+      now,
+    );
+    this.sql.exec(
+      `UPDATE meta SET current_offset = ? WHERE id = 1`,
+      newOffset,
+    );
+    return newOffset;
+  }
+
+  setLastSeq(seq: string): void {
+    this.sql.exec(`UPDATE meta SET last_seq = ? WHERE id = 1`, seq);
+  }
+
+  setClosed(closedBy: ClosedBy | undefined): void {
+    this.sql.exec(
+      `UPDATE meta SET closed = 1, closed_by = COALESCE(?, closed_by) WHERE id = 1`,
+      closedBy === undefined ? null : JSON.stringify(closedBy),
+    );
+  }
+
+  getProducerState(producerId: string, now: number): ProducerState | undefined {
+    // Clean up expired producer states on access (reference behavior).
+    this.sql.exec(
+      `DELETE FROM producers WHERE last_updated < ?`,
+      now - PRODUCER_STATE_TTL_MS,
+    );
+    const rows = this.sql
+      .exec<ProducerRow>(
+        `SELECT epoch, last_seq, last_updated FROM producers WHERE producer_id = ?`,
+        producerId,
+      )
+      .toArray();
+    const row = rows[0];
+    if (!row) return undefined;
+    return { epoch: row.epoch, lastSeq: row.last_seq, lastUpdated: row.last_updated };
+  }
+
+  commitProducerState(producerId: string, state: ProducerState): void {
+    this.sql.exec(
+      `INSERT INTO producers (producer_id, epoch, last_seq, last_updated)
+       VALUES (?, ?, ?, ?)
+       ON CONFLICT (producer_id) DO UPDATE SET
+         epoch = excluded.epoch,
+         last_seq = excluded.last_seq,
+         last_updated = excluded.last_updated`,
+      producerId,
+      state.epoch,
+      state.lastSeq,
+      state.lastUpdated,
+    );
+  }
+}

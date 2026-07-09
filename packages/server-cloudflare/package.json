@@ -9,11 +9,14 @@
     "dev": "wrangler dev --port 8787",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit",
-    "conformance": "npx @durable-streams/server-conformance-tests --run http://localhost:8787"
+    "conformance": "vitest run --no-coverage conformance/conformance.test.mjs"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",
+    "@durable-streams/client": "^0.2.6",
+    "@durable-streams/server-conformance-tests": "^0.3.5",
     "typescript": "^5.8.3",
+    "vitest": "^4.1.10",
     "wrangler": "^4.107.1"
   }
 }
