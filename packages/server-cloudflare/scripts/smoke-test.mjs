@@ -10,7 +10,8 @@
  */
 import { DurableStream, IdempotentProducer } from "@durable-streams/client";
 
-const BASE = process.argv[2] ?? process.env.SMOKE_URL ?? "http://localhost:8787";
+const BASE =
+  process.argv[2] ?? process.env.SMOKE_URL ?? "http://localhost:8787";
 const url = `${BASE}/v1/stream/smoke-${Date.now()}`;
 
 let failures = 0;
@@ -49,23 +50,40 @@ for (let i = 0; i < TOTAL_EVENTS; i++) {
   }
 }
 await producer.flush();
-check(producerErrors.length === 0, `producer reported no batch errors (got ${producerErrors.length})`);
-console.log(`appended ${TOTAL_EVENTS} events in batches via IdempotentProducer`);
+check(
+  producerErrors.length === 0,
+  `producer reported no batch errors (got ${producerErrors.length})`,
+);
+console.log(
+  `appended ${TOTAL_EVENTS} events in batches via IdempotentProducer`,
+);
 
 // 3. Catch-up read from the mid-stream offset
 {
   const res = await handle.stream({ offset: midOffset, live: false });
   const items = await res.json();
-  check(items.length === 500, `catch-up from mid offset returns 500 events (got ${items.length})`);
-  check(items[0]?.seq === 500, `first event after mid offset has seq 500 (got ${items[0]?.seq})`);
-  check(items[items.length - 1]?.seq === 999, `last event has seq 999 (got ${items[items.length - 1]?.seq})`);
+  check(
+    items.length === 500,
+    `catch-up from mid offset returns 500 events (got ${items.length})`,
+  );
+  check(
+    items[0]?.seq === 500,
+    `first event after mid offset has seq 500 (got ${items[0]?.seq})`,
+  );
+  check(
+    items[items.length - 1]?.seq === 999,
+    `last event has seq 999 (got ${items[items.length - 1]?.seq})`,
+  );
 }
 
 // Full catch-up read from the beginning
 {
   const res = await handle.stream({ live: false });
   const items = await res.json();
-  check(items.length === 1000, `full catch-up returns 1000 events (got ${items.length})`);
+  check(
+    items.length === 1000,
+    `full catch-up returns 1000 events (got ${items.length})`,
+  );
 }
 
 // 4. SSE live tail while appending
@@ -88,14 +106,20 @@ for (let i = 0; i < LIVE_EVENTS; i++) {
 await Promise.race([
   liveDone,
   new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("SSE live tail timed out after 15s")), 15000),
+    setTimeout(
+      () => reject(new Error("SSE live tail timed out after 15s")),
+      15000,
+    ),
   ),
 ]);
 check(
   liveReceived.length === LIVE_EVENTS,
   `SSE live tail received ${LIVE_EVENTS} events while appending (got ${liveReceived.length})`,
 );
-check(liveReceived[0]?.seq === 1000, `first live event has seq 1000 (got ${liveReceived[0]?.seq})`);
+check(
+  liveReceived[0]?.seq === 1000,
+  `first live event has seq 1000 (got ${liveReceived[0]?.seq})`,
+);
 
 // 5. Close, then verify EOF in all three read modes
 await handle.close();
@@ -105,7 +129,10 @@ console.log("closed stream");
 await Promise.race([
   tail.closed,
   new Promise((_, reject) =>
-    setTimeout(() => reject(new Error("SSE did not observe close after 15s")), 15000),
+    setTimeout(
+      () => reject(new Error("SSE did not observe close after 15s")),
+      15000,
+    ),
   ),
 ]);
 check(tail.streamClosed === true, "SSE live tail observed streamClosed (EOF)");
@@ -114,15 +141,23 @@ check(tail.streamClosed === true, "SSE live tail observed streamClosed (EOF)");
 {
   const res = await handle.stream({ live: false });
   const items = await res.json();
-  check(items.length === 1025, `catch-up after close returns all 1025 events (got ${items.length})`);
+  check(
+    items.length === 1025,
+    `catch-up after close returns all 1025 events (got ${items.length})`,
+  );
   check(res.streamClosed === true, "catch-up read observed streamClosed (EOF)");
 }
 
 // 5c. EOF via long-poll at the final offset (raw fetch to assert protocol shape)
 {
   const finalOffset = (await handle.head()).offset;
-  const resp = await fetch(`${url}?offset=${encodeURIComponent(finalOffset)}&live=long-poll`);
-  check(resp.status === 204, `long-poll at final offset returns 204 (got ${resp.status})`);
+  const resp = await fetch(
+    `${url}?offset=${encodeURIComponent(finalOffset)}&live=long-poll`,
+  );
+  check(
+    resp.status === 204,
+    `long-poll at final offset returns 204 (got ${resp.status})`,
+  );
   check(
     resp.headers.get("stream-closed") === "true",
     "long-poll response carries Stream-Closed: true (EOF)",

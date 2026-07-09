@@ -69,7 +69,7 @@ function decodeStoredJsonFragment(data: Uint8Array): string {
 /**
  * Format stored JSON fragments as a single JSON array body.
  */
-export function formatJsonMessages(fragments: Array<Uint8Array>): Uint8Array {
+export function formatJsonMessages(fragments: Uint8Array[]): Uint8Array {
   if (fragments.length === 0) {
     return new TextEncoder().encode("[]");
   }
@@ -79,7 +79,7 @@ export function formatJsonMessages(fragments: Array<Uint8Array>): Uint8Array {
 }
 
 /** Concatenate raw message bodies (non-JSON streams). */
-export function concatBytes(fragments: Array<Uint8Array>): Uint8Array {
+export function concatBytes(fragments: Uint8Array[]): Uint8Array {
   const totalSize = fragments.reduce((sum, f) => sum + f.length, 0);
   const out = new Uint8Array(totalSize);
   let pos = 0;

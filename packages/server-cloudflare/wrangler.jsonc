@@ -1,11 +1,11 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "durable-object-streams",
-  "main": "src/index.ts",
+  "main": "template/index.ts",
   "compatibility_date": "2025-06-01",
   "durable_objects": {
-    "bindings": [{ "name": "STREAMS", "class_name": "StreamObject" }]
+    "bindings": [{ "name": "STREAMS", "class_name": "StreamObject" }],
   },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["StreamObject"] }],
-  "observability": { "enabled": true }
+  "observability": { "enabled": true },
 }

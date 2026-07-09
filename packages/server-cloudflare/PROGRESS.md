@@ -13,12 +13,12 @@ Client smoke test (`scripts/smoke-test.mjs`): PASSED — 1,000 events via Idempo
 
 Milestones:
 
-| Milestone | Result | Commit |
-|---|---|---|
-| Scaffold (worker + DO + SQLite schema) | boots, routes | 27c2418 |
+| Milestone                                                                         | Result                        | Commit  |
+| --------------------------------------------------------------------------------- | ----------------------------- | ------- |
+| Scaffold (worker + DO + SQLite schema)                                            | boots, routes                 | 27c2418 |
 | Phases 1–6 port (lifecycle, reads, long-poll, SSE, producers, closure, TTL, HTTP) | 247 pass / 79 fail (all fork) | 3c43dc6 |
-| Phase 7 fork semantics (cross-DO RPC) | 326 pass / 0 fail | 867ab76 |
-| 413 drain flake fix | 5× consecutive green | (next) |
+| Phase 7 fork semantics (cross-DO RPC)                                             | 326 pass / 0 fail             | 867ab76 |
+| 413 drain flake fix                                                               | 5× consecutive green          | (next)  |
 
 ## Step 0 answer: does the reference server separate protocol handling from storage?
 
@@ -43,3 +43,11 @@ Baseline (reference server 0.3.7, suite 0.3.5): 326 passed, 6 skipped, 0 failed.
 ## Blockers
 
 None.
+
+## Library packaging (2026-07-09)
+
+- Restructured as a consumable npm package (PartyKit-style): `src/index.ts` exports `StreamObject` + `createStreamsHandler({ auth, cors })`; `template/index.ts` is the deployable Worker (wrangler `main`) and doubles as the consumer example. DO binding name `STREAMS` is required (fork RPC inside the class).
+- License: Apache-2.0 (matches upstream; ports demanded it) with LICENSE + NOTICE; conformance suite pinned to exact 0.3.5.
+- Switched to pnpm 11 (`packageManager` pinned, `allowBuilds` in pnpm-workspace.yaml, fresh lockfile past the minimumReleaseAge policy; `deploy` script renamed `deploy:worker` since `pnpm deploy` is reserved).
+- Added strict TS flags (noUnusedLocals/Parameters, noImplicitReturns, noPropertyAccessFromIndexSignature, …), typescript-eslint strictTypeChecked + stylistic, Prettier; all wired into the conformance CI workflow. Lint surfaced one real dead assignment (SSE loop `currentOffset`) and an always-true condition; both cleaned.
+- Re-verified after restructure: 326 passed | 6 skipped, smoke test green, bearer-auth 401/201/preflight behavior confirmed.

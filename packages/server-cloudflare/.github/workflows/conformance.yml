@@ -12,20 +12,31 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4 # version comes from packageManager in package.json
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Typecheck
-        run: npx tsc --noEmit
+        run: pnpm typecheck
+
+      - name: Lint
+        run: pnpm lint
+
+      - name: Format check
+        run: pnpm format:check
+
+      - name: Build library
+        run: pnpm build
 
       - name: Boot wrangler dev
         run: |
-          npx wrangler dev --port 8787 > wrangler-dev.log 2>&1 &
+          pnpm exec wrangler dev --port 8787 > wrangler-dev.log 2>&1 &
           echo $! > wrangler.pid
           for i in $(seq 1 60); do
             if curl -sf http://localhost:8787/ > /dev/null; then
@@ -39,7 +50,7 @@ jobs:
           exit 1
 
       - name: Run conformance suite
-        run: CONFORMANCE_TEST_URL=http://localhost:8787 npx vitest run --no-coverage conformance/conformance.test.mjs
+        run: CONFORMANCE_TEST_URL=http://localhost:8787 pnpm exec vitest run --no-coverage conformance/conformance.test.mjs
 
       - name: Run client smoke test
         run: node scripts/smoke-test.mjs http://localhost:8787

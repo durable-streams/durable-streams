@@ -17,13 +17,15 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - uses: pnpm/action-setup@v4 # version comes from packageManager in package.json
+
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-          cache: npm
+          cache: pnpm
 
       - name: Install dependencies
-        run: npm ci
+        run: pnpm install --frozen-lockfile
 
       - name: Run conformance suite against deployed instance
         # --testTimeout raises vitest's 5s default (which assumes a local
@@ -35,7 +37,7 @@ jobs:
         # pipefail keeps a failing suite failing the build through tee.
         run: |
           set -o pipefail
-          CONFORMANCE_TEST_URL="$LIVE_URL" npx vitest run --no-coverage --testTimeout=120000 --retry=2 conformance/conformance.test.mjs 2>&1 | tee live-conformance-summary.txt
+          CONFORMANCE_TEST_URL="$LIVE_URL" pnpm exec vitest run --no-coverage --testTimeout=120000 --retry=2 conformance/conformance.test.mjs 2>&1 | tee live-conformance-summary.txt
 
       - name: Run client smoke test against deployed instance
         run: node scripts/smoke-test.mjs "$LIVE_URL"

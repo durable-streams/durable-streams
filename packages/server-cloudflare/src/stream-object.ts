@@ -15,7 +15,6 @@
  * per-producer promise locks.
  */
 import { DurableObject } from "cloudflare:workers";
-import type { Env } from "./index";
 import {
   CURSOR_QUERY_PARAM,
   LIVE_QUERY_PARAM,
@@ -161,7 +160,7 @@ function base64FromString(s: string): string {
 }
 
 interface WaitResult {
-  messages: Array<StoredMessage>;
+  messages: StoredMessage[];
   timedOut: boolean;
   streamClosed: boolean;
   /** True when the returned batch was byte-capped — more data remains. */
@@ -179,11 +178,22 @@ interface ProducerHeaders {
   seq: number;
 }
 
-export class StreamObject extends DurableObject<Env> {
-  private readonly store: SqliteStore;
-  private waiters: Array<PendingWaiter> = [];
+/**
+ * Environment the StreamObject requires from the hosting Worker.
+ *
+ * The binding MUST be named `STREAMS`: fork semantics do DO-to-DO RPC
+ * through `this.env.STREAMS`, so the name is fixed by this class, not
+ * by the router.
+ */
+export interface StreamsEnv {
+  STREAMS: DurableObjectNamespace<StreamObject>;
+}
 
-  constructor(ctx: DurableObjectState, env: Env) {
+export class StreamObject extends DurableObject<StreamsEnv> {
+  private readonly store: SqliteStore;
+  private waiters: PendingWaiter[] = [];
+
+  constructor(ctx: DurableObjectState, env: StreamsEnv) {
     super(ctx, env);
     this.store = new SqliteStore(ctx.storage.sql);
     this.store.ensureSchema();
@@ -334,7 +344,8 @@ export class StreamObject extends DurableObject<Env> {
       contentType.trim() === "" ||
       !CONTENT_TYPE_SHAPE.test(contentType)
     ) {
-      contentType = forkedFrom !== undefined ? undefined : "application/octet-stream";
+      contentType =
+        forkedFrom !== undefined ? undefined : "application/octet-stream";
     }
 
     const ttlHeader = request.headers.get(STREAM_TTL_HEADER) ?? undefined;
@@ -379,7 +390,10 @@ export class StreamObject extends DurableObject<Env> {
     let forkSubOffset: number | undefined;
     if (forkSubOffsetHeader !== undefined) {
       if (forkedFrom === undefined) {
-        return this.text(400, "Stream-Fork-Sub-Offset requires Stream-Forked-From");
+        return this.text(
+          400,
+          "Stream-Fork-Sub-Offset requires Stream-Forked-From",
+        );
       }
       if (!SUB_OFFSET_PATTERN.test(forkSubOffsetHeader)) {
         return this.text(400, "Invalid Stream-Fork-Sub-Offset format");
@@ -454,7 +468,11 @@ export class StreamObject extends DurableObject<Env> {
 
     let currentOffset = this.store.getMetaRaw()?.currentOffset ?? "";
     if (initialPayload !== undefined && initialPayload.length > 0) {
-      currentOffset = this.store.appendMessage(currentOffset, initialPayload, now);
+      currentOffset = this.store.appendMessage(
+        currentOffset,
+        initialPayload,
+        now,
+      );
     }
 
     await this.syncExpiryAlarm();
@@ -520,9 +538,7 @@ export class StreamObject extends DurableObject<Env> {
       // Idempotent success — the body is ignored for existing streams.
       const headers: Record<string, string> = {
         "content-type":
-          existing.contentType ??
-          req.contentType ??
-          "application/octet-stream",
+          existing.contentType ?? req.contentType ?? "application/octet-stream",
         [STREAM_OFFSET_HEADER]: existing.currentOffset,
       };
       if (existing.closed) {
@@ -621,7 +637,7 @@ export class StreamObject extends DurableObject<Env> {
       if (isJson) {
         const text = new TextDecoder().decode(first.data);
         const trimmed = text.endsWith(",") ? text.slice(0, -1) : text;
-        let values: Array<unknown>;
+        let values: unknown[];
         try {
           const parsed: unknown = JSON.parse(`[${trimmed}]`);
           if (!Array.isArray(parsed)) {
@@ -707,10 +723,18 @@ export class StreamObject extends DurableObject<Env> {
 
       currentOffset = acquired.forkOffset;
       if (subOffsetPrefix !== undefined && subOffsetPrefix.length > 0) {
-        currentOffset = this.store.appendMessage(currentOffset, subOffsetPrefix, now);
+        currentOffset = this.store.appendMessage(
+          currentOffset,
+          subOffsetPrefix,
+          now,
+        );
       }
       if (initialPayload !== undefined && initialPayload.length > 0) {
-        currentOffset = this.store.appendMessage(currentOffset, initialPayload, now);
+        currentOffset = this.store.appendMessage(
+          currentOffset,
+          initialPayload,
+          now,
+        );
       }
     } catch (err) {
       // Never leak the acquired source reference on a failed create.
@@ -808,7 +832,7 @@ export class StreamObject extends DurableObject<Env> {
         ct.startsWith("text/") || ct === "application/json";
       const useBase64 = !isTextCompatible;
       const sseOffset =
-        offsetParam === "now" ? meta.currentOffset : offsetParam ?? "-1";
+        offsetParam === "now" ? meta.currentOffset : (offsetParam ?? "-1");
       return this.handleSse(meta, sseOffset, cursor, useBase64);
     }
 
@@ -923,7 +947,8 @@ export class StreamObject extends DurableObject<Env> {
     // Recommended shared-cache headers for catch-up reads (§10.1);
     // live-mode responses stay uncached.
     if (live !== "long-poll") {
-      headers["cache-control"] = "public, max-age=60, stale-while-revalidate=300";
+      headers["cache-control"] =
+        "public, max-age=60, stale-while-revalidate=300";
     }
 
     const fragments = messages.map((m) => m.data);
@@ -945,7 +970,10 @@ export class StreamObject extends DurableObject<Env> {
     cursor: string | undefined,
     useBase64: boolean,
   ): Response {
-    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>();
+    const { readable, writable } = new TransformStream<
+      Uint8Array,
+      Uint8Array
+    >();
     const writer = writable.getWriter();
     const isJson =
       normalizeContentType(meta.contentType) === "application/json";
@@ -953,7 +981,14 @@ export class StreamObject extends DurableObject<Env> {
     // Pump in the background; the pending stream keeps the DO alive.
     // Write failures mean the client disconnected — expected; anything
     // else is logged so real storage/RPC failures stay observable.
-    void this.pumpSse(meta.generation, initialOffset, cursor, useBase64, isJson, writer)
+    void this.pumpSse(
+      meta.generation,
+      initialOffset,
+      cursor,
+      useBase64,
+      isJson,
+      writer,
+    )
       .catch((err: unknown) => {
         console.warn("SSE pump ended with error", err);
       })
@@ -991,7 +1026,7 @@ export class StreamObject extends DurableObject<Env> {
 
     for (;;) {
       const loopMeta = this.store.getMetaRaw();
-      if (!loopMeta || loopMeta.generation !== generation) {
+      if (loopMeta?.generation !== generation) {
         // Stream deleted/expired (and possibly recreated) mid-tail: this
         // subscription belongs to the old generation — end it rather than
         // silently rebinding to a different stream.
@@ -1018,11 +1053,10 @@ export class StreamObject extends DurableObject<Env> {
           dataPayload = decoder.decode(message.data);
         }
         frame += `event: data\n` + encodeSseData(dataPayload);
-        currentOffset = message.offset;
       }
 
       const freshMeta = this.store.getMetaRaw();
-      if (!freshMeta || freshMeta.generation !== generation) {
+      if (freshMeta?.generation !== generation) {
         return;
       }
       this.store.touchAccess(Date.now());
@@ -1076,13 +1110,15 @@ export class StreamObject extends DurableObject<Env> {
           [SSE_OFFSET_FIELD]: currentOffset,
           [SSE_CLOSED_FIELD]: true,
         };
-        await write(`event: control\n` + encodeSseData(JSON.stringify(finalControl)));
+        await write(
+          `event: control\n` + encodeSseData(JSON.stringify(finalControl)),
+        );
         return;
       }
 
       if (result.timedOut) {
         const afterWait = this.store.getMetaRaw();
-        if (!afterWait || afterWait.generation !== generation) return;
+        if (afterWait?.generation !== generation) return;
         if (afterWait.closed) {
           const closedControl: Record<string, string | boolean> = {
             [SSE_OFFSET_FIELD]: currentOffset,
@@ -1098,7 +1134,9 @@ export class StreamObject extends DurableObject<Env> {
           [SSE_CURSOR_FIELD]: generateResponseCursor(cursor),
           [SSE_UP_TO_DATE_FIELD]: true,
         };
-        await write(`event: control\n` + encodeSseData(JSON.stringify(keepAlive)));
+        await write(
+          `event: control\n` + encodeSseData(JSON.stringify(keepAlive)),
+        );
       }
       // Loop continues: read any new messages.
     }
@@ -1205,8 +1243,7 @@ export class StreamObject extends DurableObject<Env> {
     if (meta.closed) {
       if (
         producer !== undefined &&
-        meta.closedBy !== undefined &&
-        meta.closedBy.producerId === producer.producerId &&
+        meta.closedBy?.producerId === producer.producerId &&
         meta.closedBy.epoch === producer.epoch &&
         meta.closedBy.seq === producer.seq
       ) {
@@ -1225,7 +1262,7 @@ export class StreamObject extends DurableObject<Env> {
     }
 
     // Content-type mismatch check (normalized, so charset params match).
-    if (contentType !== undefined && meta.contentType !== undefined) {
+    if (meta.contentType !== undefined) {
       if (
         normalizeContentType(contentType) !==
         normalizeContentType(meta.contentType)
@@ -1277,9 +1314,13 @@ export class StreamObject extends DurableObject<Env> {
       }
     }
 
-    const newOffset = this.store.appendMessage(meta.currentOffset, payload, now);
+    const newOffset = this.store.appendMessage(
+      meta.currentOffset,
+      payload,
+      now,
+    );
 
-    if (producerResult !== undefined && producerResult.status === "accepted") {
+    if (producerResult?.status === "accepted") {
       this.store.commitProducerState(
         producerResult.producerId,
         producerResult.proposedState,
@@ -1349,8 +1390,7 @@ export class StreamObject extends DurableObject<Env> {
 
     if (meta.closed) {
       if (
-        meta.closedBy !== undefined &&
-        meta.closedBy.producerId === producer.producerId &&
+        meta.closedBy?.producerId === producer.producerId &&
         meta.closedBy.epoch === producer.epoch &&
         meta.closedBy.seq === producer.seq
       ) {
@@ -1511,7 +1551,11 @@ export class StreamObject extends DurableObject<Env> {
         await stub.forkRelease();
         this.store.dequeueGcRelease(parentPath);
       } catch (err) {
-        console.error("forkRelease failed; will retry via alarm", parentPath, err);
+        console.error(
+          "forkRelease failed; will retry via alarm",
+          parentPath,
+          err,
+        );
         await this.ctx.storage.setAlarm(Date.now() + 5_000);
       }
     }
@@ -1566,7 +1610,7 @@ export class StreamObject extends DurableObject<Env> {
       afterOffset === undefined || afterOffset === "-1"
         ? undefined
         : afterOffset;
-    const out: Array<StoredMessage> = [];
+    const out: StoredMessage[] = [];
 
     if (
       meta.forkedFrom !== undefined &&
@@ -1749,8 +1793,10 @@ export class StreamObject extends DurableObject<Env> {
     if (body === null) {
       return new Uint8Array(0);
     }
-    const reader = body.getReader();
-    const chunks: Array<Uint8Array> = [];
+    // workers-types leaves ReadableStream's chunk type as `any`; a request
+    // body stream always yields bytes.
+    const reader = (body as ReadableStream<Uint8Array>).getReader();
+    const chunks: Uint8Array[] = [];
     let total = 0;
     for (;;) {
       const { done, value } = await reader.read();
@@ -1770,7 +1816,9 @@ export class StreamObject extends DurableObject<Env> {
    * delivered cleanly — responding while the client is still writing
    * resets the connection (the client sees EPIPE instead of the 413).
    */
-  private async drainBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
+  private async drainBody(
+    body: ReadableStream<Uint8Array> | null,
+  ): Promise<void> {
     if (body === null) return;
     await this.drainReader(body.getReader());
   }
@@ -1824,10 +1872,13 @@ export class StreamObject extends DurableObject<Env> {
     );
     h.set("x-content-type-options", "nosniff");
     h.set("cross-origin-resource-policy", "cross-origin");
-    return new Response(status === 204 || status === 304 ? null : body ?? null, {
-      status,
-      headers: h,
-    });
+    return new Response(
+      status === 204 || status === 304 ? null : (body ?? null),
+      {
+        status,
+        headers: h,
+      },
+    );
   }
 
   private text(

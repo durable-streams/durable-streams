@@ -24,7 +24,7 @@ By default it talks to the deployed workers.dev instance. To point it at
 local dev (`npm run dev` in the repo root):
 
 ```js
-localStorage.setItem("ds-server", "http://localhost:8787")
+localStorage.setItem("ds-server", "http://localhost:8787");
 ```
 
 Click **Generate answer**, reload the page mid-stream, and watch the

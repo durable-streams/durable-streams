@@ -53,7 +53,7 @@ export interface StoredMessage {
 }
 
 export interface ReadBatch {
-  messages: Array<StoredMessage>;
+  messages: StoredMessage[];
   /** True when the read stopped early (limit/byte budget) — more may remain. */
   capped: boolean;
 }
@@ -266,11 +266,13 @@ export class SqliteStore {
    * Read messages strictly after `afterOffset` (all when undefined/"-1"),
    * bounded by `byteBudget` so unbounded streams cannot be buffered whole.
    */
-  readMessages(
-    afterOffset: string | undefined,
-    byteBudget: number,
-  ): ReadBatch {
-    return this.readMessagesRange(afterOffset, undefined, undefined, byteBudget);
+  readMessages(afterOffset: string | undefined, byteBudget: number): ReadBatch {
+    return this.readMessagesRange(
+      afterOffset,
+      undefined,
+      undefined,
+      byteBudget,
+    );
   }
 
   /**
@@ -288,14 +290,14 @@ export class SqliteStore {
     const after =
       afterOffset === undefined || afterOffset === "-1" ? "" : afterOffset;
     const conditions = ["msg_offset > ?"];
-    const bindings: Array<string | number> = [after];
+    const bindings: (string | number)[] = [after];
     if (capOffset !== undefined) {
       conditions.push("msg_offset <= ?");
       bindings.push(capOffset);
     }
     const query = `SELECT msg_offset, data FROM messages WHERE ${conditions.join(" AND ")} ORDER BY msg_offset ASC`;
     const cursor = this.sql.exec<MessageRow>(query, ...bindings);
-    const messages: Array<StoredMessage> = [];
+    const messages: StoredMessage[] = [];
     let bytes = 0;
     let capped = false;
     for (const row of cursor) {
@@ -338,7 +340,7 @@ export class SqliteStore {
     this.sql.exec(`DELETE FROM gc_queue WHERE parent_path = ?`, parentPath);
   }
 
-  pendingGcReleases(): Array<string> {
+  pendingGcReleases(): string[] {
     return this.sql
       .exec<{ parent_path: string }>(`SELECT parent_path FROM gc_queue`)
       .toArray()
@@ -372,10 +374,7 @@ export class SqliteStore {
       toArrayBuffer(payload),
       now,
     );
-    this.sql.exec(
-      `UPDATE meta SET current_offset = ? WHERE id = 1`,
-      newOffset,
-    );
+    this.sql.exec(`UPDATE meta SET current_offset = ? WHERE id = 1`, newOffset);
     return newOffset;
   }
 
@@ -404,7 +403,11 @@ export class SqliteStore {
       .toArray();
     const row = rows[0];
     if (!row) return undefined;
-    return { epoch: row.epoch, lastSeq: row.last_seq, lastUpdated: row.last_updated };
+    return {
+      epoch: row.epoch,
+      lastSeq: row.last_seq,
+      lastUpdated: row.last_updated,
+    };
   }
 
   commitProducerState(producerId: string, state: ProducerState): void {

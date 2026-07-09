@@ -1,22 +1,68 @@
 {
   "name": "durable-object-streams",
-  "version": "0.1.0",
-  "private": true,
-  "description": "Durable Streams protocol server on Cloudflare Workers + Durable Objects",
-  "license": "MIT",
+  "version": "0.2.0",
+  "description": "Durable Streams protocol server on Cloudflare Workers + Durable Objects — export the StreamObject class and mount the handler in your own Worker",
+  "license": "Apache-2.0",
+  "author": "Tom Beckenham",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/tombeckenham/durable-object-streams.git"
+  },
+  "keywords": [
+    "durable-streams",
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "streams",
+    "sse",
+    "resumable"
+  ],
   "type": "module",
+  "sideEffects": false,
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "types": "./dist/index.d.ts",
+  "files": [
+    "dist",
+    "src",
+    "template",
+    "NOTICE"
+  ],
   "scripts": {
     "dev": "wrangler dev --port 8787",
-    "deploy": "wrangler deploy",
+    "deploy:worker": "wrangler deploy",
+    "build": "tsc -p tsconfig.build.json",
+    "prepublishOnly": "pnpm typecheck && pnpm lint && pnpm build",
     "typecheck": "tsc --noEmit",
+    "lint": "eslint .",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
     "conformance": "vitest run --no-coverage conformance/conformance.test.mjs"
+  },
+  "peerDependencies": {
+    "@cloudflare/workers-types": "^4.20250620.0"
+  },
+  "peerDependenciesMeta": {
+    "@cloudflare/workers-types": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^4.20250620.0",
     "@durable-streams/client": "^0.2.6",
-    "@durable-streams/server-conformance-tests": "^0.3.5",
+    "@durable-streams/server-conformance-tests": "0.3.5",
+    "@eslint/js": "^10.0.1",
+    "eslint": "^10.6.0",
+    "eslint-config-prettier": "^10.1.8",
+    "prettier": "^3.9.4",
     "typescript": "^5.8.3",
+    "typescript-eslint": "^8.63.0",
     "vitest": "^4.1.10",
     "wrangler": "^4.107.1"
-  }
+  },
+  "packageManager": "pnpm@11.10.0+sha512.0b7f8b98060031904c017e3a41eb187a16d40eeb829b95c4f8cb03681761fc4ab53dd219115b9b447f4dce1a05a214764461e7d3703392a9f32f9511ce8c86c8"
 }
