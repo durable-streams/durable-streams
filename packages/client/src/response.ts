@@ -98,7 +98,8 @@ export interface StreamResponseConfig {
     resumingFromPause?: boolean,
     cacheBuster?: string,
     overrideHeaders?: HeadersRecord,
-    overrideParams?: ParamsRecord
+    overrideParams?: ParamsRecord,
+    effectiveLive?: boolean | `long-poll` | `sse`
   ) => Promise<Response>
   /** Function to start SSE connection and return a Response with SSE body */
   startSSE?: (
@@ -550,6 +551,28 @@ export class StreamResponseImpl<
     this.#sseConnectionStartTime = Date.now()
   }
 
+  #shouldUseSSE(): boolean {
+    return (
+      this.#syncState instanceof LiveState &&
+      this.#syncState.shouldUseSse({
+        liveSseEnabled: this.#startSSE !== undefined,
+        resumingFromPause: false,
+      })
+    )
+  }
+
+  #effectiveLiveMode(): boolean | `long-poll` | `sse` {
+    if (this.#syncState instanceof LiveState) {
+      return this.#syncState.shouldUseSse({
+        liveSseEnabled: this.#startSSE !== undefined,
+        resumingFromPause: false,
+      })
+        ? `sse`
+        : `long-poll`
+    }
+    return this.#startSSE ? `sse` : true
+  }
+
   /**
    * Try to reconnect SSE, fall back to long-poll, or close if reconnection is
    * not possible.
@@ -875,6 +898,7 @@ export class StreamResponseImpl<
             !sseEventIterator &&
             this.upToDate &&
             this.#startSSE &&
+            this.#shouldUseSSE() &&
             this.#shouldContinueLive()
           ) {
             if (this.#pauseLock.isPaused) {
@@ -1033,8 +1057,9 @@ export class StreamResponseImpl<
                   )
                   break
                 case `backoff`:
-                  await new Promise((resolve) =>
-                    setTimeout(resolve, loopResult.delayMs)
+                  await sleepWithAbort(
+                    loopResult.delayMs,
+                    this.#abortController.signal
                   )
                   break
                 case `fatal`:
@@ -1084,7 +1109,8 @@ export class StreamResponseImpl<
               resumingFromPause,
               cacheBuster,
               this.#overrideHeaders,
-              this.#overrideParams
+              this.#overrideParams,
+              this.#effectiveLiveMode()
             )
 
             const suppressBatch = this.#processResponseBatch(response, false)

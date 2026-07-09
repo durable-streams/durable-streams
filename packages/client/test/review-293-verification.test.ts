@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from "vitest"
 import { stream } from "../src/stream-api"
 import {
+  STREAM_CLOSED_HEADER,
+  STREAM_CURSOR_HEADER,
+  STREAM_OFFSET_HEADER,
+  STREAM_UP_TO_DATE_HEADER,
+} from "../src/index"
+import {
   createFetchWithChunkBuffer,
   createFetchWithConsumedBody,
 } from "../src/fetch"
@@ -147,6 +153,61 @@ describe(`PR 293 external review verification`, () => {
 
     reader.releaseLock()
     res.cancel()
+  })
+
+  it(`falls back to long-poll after empty short SSE closes without re-entering SSE`, async () => {
+    const fetch = vi
+      .fn<typeof globalThis.fetch>()
+      .mockResolvedValueOnce(
+        new Response(``, {
+          status: 200,
+          headers: {
+            [STREAM_OFFSET_HEADER]: `1`,
+            [STREAM_CURSOR_HEADER]: `c`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(``, {
+          status: 200,
+          headers: {
+            "content-type": `text/event-stream`,
+            [STREAM_OFFSET_HEADER]: `1`,
+            [STREAM_CURSOR_HEADER]: `c`,
+          },
+        })
+      )
+      .mockResolvedValueOnce(
+        new Response(`lp`, {
+          status: 200,
+          headers: {
+            [STREAM_OFFSET_HEADER]: `2`,
+            [STREAM_CURSOR_HEADER]: `c2`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+            [STREAM_CLOSED_HEADER]: `true`,
+          },
+        })
+      )
+
+    const res = await stream({
+      url: `https://example.com/s`,
+      fetch,
+      live: `sse`,
+      sseResilience: {
+        minConnectionDuration: 10_000,
+        maxShortConnections: 1,
+        backoffBaseDelay: 0,
+        backoffMaxDelay: 0,
+        logWarnings: false,
+      },
+    })
+
+    const reader = res.textStream().getReader()
+    await expect(reader.read()).resolves.toMatchObject({ value: `lp` })
+    await expect(res.closed).resolves.toBeUndefined()
+    expect(fetch).toHaveBeenCalledTimes(3)
+    expect(String(fetch.mock.calls[2]![0])).not.toContain(`live=sse`)
   })
 
   it(`aborts a consumed prefetched response while its body is being consumed`, async () => {

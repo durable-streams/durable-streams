@@ -311,7 +311,8 @@ async function streamInternal<TJson = unknown>(
     resumingFromPause?: boolean,
     cacheBuster?: string,
     overrideHeaders?: HeadersRecord,
-    overrideParams?: ParamsRecord
+    overrideParams?: ParamsRecord,
+    effectiveLive: boolean | `long-poll` | `sse` = live
   ): Promise<Response> => {
     const nextUrl = new URL(url)
     nextUrl.searchParams.set(OFFSET_QUERY_PARAM, offset)
@@ -324,9 +325,9 @@ async function streamInternal<TJson = unknown>(
     // without live are cacheable by CDNs/browsers.
     // Also skip live when resuming from pause (needs immediate response for UI status).
     if (upToDate && !resumingFromPause) {
-      if (live === `sse`) {
+      if (effectiveLive === `sse`) {
         nextUrl.searchParams.set(LIVE_QUERY_PARAM, `sse`)
-      } else if (live === true || live === `long-poll`) {
+      } else if (effectiveLive === true || effectiveLive === `long-poll`) {
         nextUrl.searchParams.set(LIVE_QUERY_PARAM, `long-poll`)
       }
     }
