@@ -10,10 +10,26 @@ if /usr/libexec/java_home -v 21 &>/dev/null; then
     export JAVA_HOME=$(/usr/libexec/java_home -v 21)
 fi
 
-# Check if the JAR exists, if not build it
+# Build when the adapter jar is missing or stale relative to tracked sources/build files.
 JAR_PATH="conformance-adapter/build/libs/conformance-adapter.jar"
+NEEDS_BUILD=0
 
 if [ ! -f "$JAR_PATH" ]; then
+    NEEDS_BUILD=1
+elif find \
+    src \
+    conformance-adapter/src \
+    gradle/wrapper \
+    build.gradle \
+    conformance-adapter/build.gradle \
+    settings.gradle \
+    gradlew \
+    run-conformance-adapter.sh \
+    -type f -newer "$JAR_PATH" | grep -q .; then
+    NEEDS_BUILD=1
+fi
+
+if [ "$NEEDS_BUILD" -eq 1 ]; then
     echo "Building Java conformance adapter..." >&2
     # Pass native access flag to avoid JVM warnings on Java 22+ that corrupt stdout
     GRADLE_OPTS="${GRADLE_OPTS:-} --enable-native-access=ALL-UNNAMED"

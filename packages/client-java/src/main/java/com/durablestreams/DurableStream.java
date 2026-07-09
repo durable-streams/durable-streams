@@ -326,7 +326,7 @@ public final class DurableStream implements AutoCloseable {
     Chunk readOnce(String url, Offset offset, LiveMode liveMode, Duration timeout, String cursor)
             throws DurableStreamException {
         HttpRequest request = buildReadRequest(url, offset, liveMode, timeout, cursor);
-        return executeWithRetry(request, "read", response -> parseReadResponse(response, url, offset));
+        return executeWithRetry(request, "read", response -> parseReadResponse(response, url, offset, liveMode));
     }
 
     SSEStreamingReader openSSEStream(String url, Offset offset, String cursor)
@@ -710,12 +710,13 @@ public final class DurableStream implements AutoCloseable {
         }
     }
 
-    Chunk parseReadResponse(HttpResponse<byte[]> response, String url, Offset requestOffset)
+    Chunk parseReadResponse(HttpResponse<byte[]> response, String url, Offset requestOffset, LiveMode liveMode)
             throws DurableStreamException {
         int status = response.statusCode();
 
         if (status == 200) {
             byte[] body = response.body();
+            validateReadResponseHeaders(response, url, liveMode != null && liveMode != LiveMode.OFF);
             String nextOffset = response.headers().firstValue("Stream-Next-Offset").orElse(null);
             String upToDateStr = response.headers().firstValue("Stream-Up-To-Date").orElse(null);
             String newCursor = response.headers().firstValue("Stream-Cursor").orElse(null);
@@ -743,6 +744,28 @@ public final class DurableStream implements AutoCloseable {
             throw new OffsetGoneException(offsetStr);
         } else {
             throw new DurableStreamException("Read failed with status: " + status, status);
+        }
+    }
+
+    private void validateReadResponseHeaders(HttpResponse<?> response, String url, boolean liveRequest)
+            throws MissingHeadersException {
+        String nextOffset = response.headers().firstValue("Stream-Next-Offset").orElse(null);
+        if (nextOffset == null || nextOffset.isBlank()) {
+            throw new MissingHeadersException("Missing required Stream-Next-Offset header for " + url);
+        }
+
+        if (!liveRequest) {
+            return;
+        }
+
+        String streamClosed = response.headers().firstValue("Stream-Closed").orElse(null);
+        if ("true".equalsIgnoreCase(streamClosed)) {
+            return;
+        }
+
+        String cursor = response.headers().firstValue("Stream-Cursor").orElse(null);
+        if (cursor == null || cursor.isBlank()) {
+            throw new MissingHeadersException("Missing required Stream-Cursor header for " + url);
         }
     }
 

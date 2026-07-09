@@ -9,7 +9,7 @@ describe(`warnIfUsingHttpInBrowser`, () => {
   let addedWindow: boolean
   let originalConsole: typeof globalThis.console
   let originalNodeEnv: string | undefined
-  let consoleWarnSpy: ReturnType<typeof vi.fn>
+  let consoleWarnSpy: typeof console.warn & ReturnType<typeof vi.fn>
 
   beforeEach(() => {
     // Track original state
@@ -18,7 +18,8 @@ describe(`warnIfUsingHttpInBrowser`, () => {
     originalNodeEnv = process.env.NODE_ENV
 
     // Create a mock console.warn
-    consoleWarnSpy = vi.fn()
+    consoleWarnSpy = vi.fn() as unknown as typeof console.warn &
+      ReturnType<typeof vi.fn>
 
     // Reset the warned origins set before each test
     _resetHttpWarningForTesting()

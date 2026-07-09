@@ -3,6 +3,7 @@ package durablestreams
 import (
 	"context"
 	"encoding/base64"
+	"fmt"
 	"io"
 	"net/http"
 	"strings"
@@ -50,12 +51,12 @@ type Chunk struct {
 //
 // Always call Close() when done to release resources.
 type ChunkIterator struct {
-	stream   *Stream
-	ctx      context.Context
-	cancel   context.CancelFunc
-	offset   Offset
-	live     LiveMode
-	cursor   string
+	stream  *Stream
+	ctx     context.Context
+	cancel  context.CancelFunc
+	offset  Offset
+	live    LiveMode
+	cursor  string
 	headers map[string]string
 	timeout time.Duration
 
@@ -153,6 +154,10 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		case LiveModeLongPoll, LiveModeSSE:
 			liveForRequest = LiveModeLongPoll
 		}
+	} else if it.live == LiveModeLongPoll && !it.offset.IsStart() && it.offset != Offset("now") {
+		// A concrete offset with explicit long-poll is a resumed live request.
+		// Include live on the wire so missing Stream-Cursor is validated.
+		liveForRequest = LiveModeLongPoll
 	}
 	readURL := it.stream.buildReadURL(it.offset, liveForRequest, it.cursor)
 
@@ -181,6 +186,12 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 	// Handle response status
 	switch resp.StatusCode {
 	case http.StatusOK:
+		// Validate required protocol headers
+		if err := it.validateResponseHeaders(resp, liveForRequest); err != nil {
+			io.Copy(io.Discard, resp.Body)
+			return nil, err
+		}
+
 		// Read body
 		data, err := io.ReadAll(resp.Body)
 		if err != nil {
@@ -203,8 +214,9 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		it.UpToDate = upToDate
 		it.StreamClosed = streamClosed
 
-		// If up to date and not in live mode, mark as done for next call
-		if upToDate && it.live == LiveModeNone {
+		// If the stream is closed, or we're up to date in non-live mode,
+		// mark as done for the next call.
+		if streamClosed || (upToDate && it.live == LiveModeNone) {
 			it.doneOnce = true
 		}
 		it.mu.Unlock()
@@ -220,6 +232,11 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		}, nil
 
 	case http.StatusNoContent:
+		// Validate required protocol headers
+		if err := it.validateResponseHeaders(resp, liveForRequest); err != nil {
+			return nil, err
+		}
+
 		// 204 - Long-poll timeout or caught up with no new data
 		nextOffset := Offset(resp.Header.Get(headerStreamOffset))
 		cursor := resp.Header.Get(headerStreamCursor)
@@ -238,11 +255,22 @@ func (it *ChunkIterator) nextHTTP() (*Chunk, error) {
 		it.UpToDate = upToDate
 		it.StreamClosed = streamClosed
 
-		// In non-live mode, 204 means we're done
-		if it.live == LiveModeNone {
+		// In non-live mode, 204 means we're done. A closed stream is done in
+		// all modes.
+		if it.live == LiveModeNone || streamClosed {
 			it.doneOnce = true
 			it.mu.Unlock()
-			return nil, Done
+			if it.live == LiveModeNone {
+				return nil, Done
+			}
+			return &Chunk{
+				NextOffset:   nextOffset,
+				Data:         nil,
+				UpToDate:     upToDate,
+				StreamClosed: streamClosed,
+				Cursor:       cursor,
+				StatusCode:   http.StatusNoContent,
+			}, nil
 		}
 		it.mu.Unlock()
 
@@ -370,6 +398,9 @@ func (it *ChunkIterator) nextSSE() (*Chunk, error) {
 			}
 			it.UpToDate = e.UpToDate
 			it.StreamClosed = e.StreamClosed
+			if e.StreamClosed {
+				it.doneOnce = true
+			}
 
 			// If we have pending data, complete and return it
 			if it.ssePending != nil {
@@ -434,6 +465,10 @@ func (it *ChunkIterator) establishSSEConnection() error {
 			return newStreamError("read", it.stream.url, resp.StatusCode,
 				ErrContentTypeMismatch)
 		}
+		if err := it.validateResponseHeaders(resp, LiveModeSSE); err != nil {
+			resp.Body.Close()
+			return err
+		}
 
 		it.mu.Lock()
 		it.sseResponse = resp
@@ -489,6 +524,32 @@ func (it *ChunkIterator) Close() error {
 		it.sseResponse = nil
 	}
 	it.sseParser = nil
+
+	return nil
+}
+
+// validateResponseHeaders checks that required protocol headers are present
+// on a 2xx response. Returns a StreamError if any required header is missing.
+func (it *ChunkIterator) validateResponseHeaders(resp *http.Response, liveForRequest LiveMode) error {
+	var missing []string
+
+	// Stream-Next-Offset is required on all 2xx responses
+	if resp.Header.Get(headerStreamOffset) == "" {
+		missing = append(missing, headerStreamOffset)
+	}
+
+	// Stream-Cursor is required on live responses unless stream is closed
+	if liveForRequest != LiveModeNone {
+		streamClosed := resp.Header.Get(headerStreamClosed) == "true"
+		if !streamClosed && resp.Header.Get(headerStreamCursor) == "" {
+			missing = append(missing, headerStreamCursor)
+		}
+	}
+
+	if len(missing) > 0 {
+		msg := fmt.Sprintf("response is missing required protocol header(s): %s. This usually means a proxy or CDN is stripping headers", strings.Join(missing, ", "))
+		return newStreamError("read", it.stream.url, resp.StatusCode, fmt.Errorf("%w: %s", ErrMissingHeader, msg))
+	}
 
 	return nil
 }

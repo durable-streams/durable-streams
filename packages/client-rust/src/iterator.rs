@@ -5,6 +5,7 @@ use crate::stream::{DurableStream, HEADER_STREAM_CURSOR, HEADER_STREAM_OFFSET, H
 use crate::types::{LiveMode, Offset};
 use base64::Engine;
 use bytes::Bytes;
+use reqwest::header::HeaderMap;
 use std::time::Duration;
 
 /// A chunk of data from the stream.
@@ -152,6 +153,53 @@ struct SseState {
 }
 
 impl ChunkIterator {
+    fn validate_read_headers(
+        headers: &HeaderMap,
+        status: u16,
+        live: LiveMode,
+        url: &str,
+    ) -> Result<(), StreamError> {
+        let next_offset = headers
+            .get(HEADER_STREAM_OFFSET)
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| !v.is_empty());
+
+        if next_offset.is_none() {
+            return Err(StreamError::Protocol(format!(
+                "missing required {} header for {}",
+                HEADER_STREAM_OFFSET, url
+            )));
+        }
+
+        if live == LiveMode::Off || status != 200 {
+            return Ok(());
+        }
+
+        let stream_closed = headers
+            .get("stream-closed")
+            .and_then(|v| v.to_str().ok())
+            .map(|v| v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false);
+
+        if stream_closed {
+            return Ok(());
+        }
+
+        let cursor = headers
+            .get(HEADER_STREAM_CURSOR)
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| !v.is_empty());
+
+        if cursor.is_none() {
+            return Err(StreamError::Protocol(format!(
+                "missing required {} header for {}",
+                HEADER_STREAM_CURSOR, url
+            )));
+        }
+
+        Ok(())
+    }
+
     /// Get the current offset.
     pub fn offset(&self) -> &Offset {
         &self.offset
@@ -241,6 +289,7 @@ impl ChunkIterator {
 
         match status {
             200 => {
+                Self::validate_read_headers(resp.headers(), status, self.live.clone(), &self.stream.url)?;
                 // Extract headers before consuming body
                 let next_offset = resp
                     .headers()
@@ -281,6 +330,7 @@ impl ChunkIterator {
                 }))
             }
             204 => {
+                Self::validate_read_headers(resp.headers(), status, self.live.clone(), &self.stream.url)?;
                 // No content - long-poll timeout or caught up
                 let next_offset = resp
                     .headers()
@@ -382,6 +432,8 @@ impl ChunkIterator {
                     self.live = LiveMode::LongPoll;
                     return self.next_http(Some("long-poll")).await;
                 }
+
+                Self::validate_read_headers(resp.headers(), status, LiveMode::Sse, &self.stream.url)?;
 
                 // Detect encoding from response header
                 self.encoding = resp

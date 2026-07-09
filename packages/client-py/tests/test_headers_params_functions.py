@@ -362,6 +362,7 @@ class TestPerRequestResolutionInLiveMode:
             headers={
                 "content-type": "application/json",
                 "Stream-Next-Offset": "1",
+                "Stream-Cursor": "cursor-1",
                 # No Stream-Up-To-Date = not up to date
             },
         )
@@ -372,6 +373,7 @@ class TestPerRequestResolutionInLiveMode:
             headers={
                 "content-type": "application/json",
                 "Stream-Next-Offset": "2",
+                "Stream-Cursor": "cursor-2",
                 "Stream-Up-To-Date": "true",
             },
         )
@@ -415,6 +417,7 @@ class TestPerRequestResolutionInLiveMode:
             headers={
                 "content-type": "application/json",
                 "Stream-Next-Offset": "1",
+                "Stream-Cursor": "cursor-1",
             },
         )
 
@@ -424,6 +427,7 @@ class TestPerRequestResolutionInLiveMode:
             headers={
                 "content-type": "application/json",
                 "Stream-Next-Offset": "2",
+                "Stream-Cursor": "cursor-2",
                 "Stream-Up-To-Date": "true",
             },
         )
@@ -474,6 +478,7 @@ class TestPerRequestResolutionInLiveMode:
                 headers={
                     "content-type": "application/json",
                     "Stream-Next-Offset": "1",
+                    "Stream-Cursor": "cursor-1",
                     # No Stream-Up-To-Date = not up to date
                 },
             ),
@@ -482,6 +487,7 @@ class TestPerRequestResolutionInLiveMode:
                 headers={
                     "content-type": "application/json",
                     "Stream-Next-Offset": "2",
+                    "Stream-Cursor": "cursor-2",
                     # No Stream-Up-To-Date = not up to date
                 },
             ),
@@ -490,6 +496,7 @@ class TestPerRequestResolutionInLiveMode:
                 headers={
                     "content-type": "application/json",
                     "Stream-Next-Offset": "3",
+                    "Stream-Cursor": "cursor-3",
                     "Stream-Up-To-Date": "true",  # Present = up to date
                 },
             ),

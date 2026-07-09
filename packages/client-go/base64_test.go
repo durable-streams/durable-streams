@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -262,6 +264,113 @@ func TestStreamingWithBase64ReconnectDetectsEncoding(t *testing.T) {
 	}
 }
 
+func TestLongPollStreamClosedReturnsDoneOnNextCall(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Query().Get("live") != "long-poll" {
+			t.Fatalf("expected long-poll request, got %q", r.URL.RawQuery)
+		}
+		w.Header().Set("Stream-Next-Offset", "5")
+		w.Header().Set("Stream-Up-To-Date", "true")
+		w.Header().Set("Stream-Closed", "true")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("hello"))
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL))
+	stream := client.Stream("/test")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	it := stream.Read(ctx, WithOffset(Offset("1")), WithLive(LiveModeLongPoll))
+	defer it.Close()
+
+	chunk, err := it.Next()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !chunk.StreamClosed {
+		t.Fatal("expected stream closed chunk")
+	}
+	if string(chunk.Data) != "hello" {
+		t.Fatalf("got data %q, want hello", string(chunk.Data))
+	}
+
+	_, err = it.Next()
+	if !errors.Is(err, Done) {
+		t.Fatalf("expected Done after closed chunk, got %v", err)
+	}
+}
+
+
+func TestSSEStreamClosedReturnsDoneOnNextCall(t *testing.T) {
+	server := httptest.NewServer(catchUpThenSSE(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintf(w, "event: data\ndata: hello\n\n")
+		fmt.Fprintf(w, "event: control\ndata: {\"streamNextOffset\":\"5\",\"streamCursor\":\"closed-cursor\",\"upToDate\":true,\"streamClosed\":true}\n\n")
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL))
+	stream := client.Stream("/test")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	it := stream.Read(ctx, WithLive(LiveModeSSE))
+	defer it.Close()
+	mustCatchUp(t, it)
+
+	chunk, err := it.Next()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !chunk.StreamClosed {
+		t.Fatal("expected stream closed chunk")
+	}
+	if string(chunk.Data) != "hello" {
+		t.Fatalf("got data %q, want hello", string(chunk.Data))
+	}
+
+	_, err = it.Next()
+	if !errors.Is(err, Done) {
+		t.Fatalf("expected Done after closed SSE chunk, got %v", err)
+	}
+}
+
+func TestSSEMissingDurableStreamHeadersFails(t *testing.T) {
+	server := httptest.NewServer(catchUpThenSSE(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Del("Stream-Next-Offset")
+		w.Header().Del("Stream-Cursor")
+		w.Header().Set("Content-Type", "text/event-stream")
+		w.WriteHeader(http.StatusOK)
+		w.Write([]byte("event: control\ndata: {\"streamNextOffset\":\"100\"}\n\n"))
+	}))
+	defer server.Close()
+
+	client := NewClient(WithBaseURL(server.URL))
+	stream := client.Stream("/test")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	it := stream.Read(ctx, WithLive(LiveModeSSE))
+	defer it.Close()
+
+	mustCatchUp(t, it)
+
+	_, err := it.Next()
+	if err == nil {
+		t.Fatal("expected missing header error")
+	}
+	var streamErr *StreamError
+	if !errors.As(err, &streamErr) || !errors.Is(streamErr.Err, ErrMissingHeader) {
+		t.Fatalf("expected ErrMissingHeader, got %v", err)
+	}
+}
+
 // catchUpThenSSE wraps an SSE handler with a catch-up phase that immediately
 // returns up-to-date, simulating the fetch-then-live pattern used by all tests.
 func catchUpThenSSE(sseHandler http.HandlerFunc) http.HandlerFunc {
@@ -272,6 +381,8 @@ func catchUpThenSSE(sseHandler http.HandlerFunc) http.HandlerFunc {
 			w.WriteHeader(http.StatusOK)
 			return
 		}
+		w.Header().Set("Stream-Next-Offset", "100")
+		w.Header().Set("Stream-Cursor", "sse-cursor")
 		sseHandler(w, r)
 	}
 }

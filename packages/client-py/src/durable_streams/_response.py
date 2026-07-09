@@ -159,7 +159,7 @@ class StreamResponse(Generic[T]):
         - live=False: Stop at first up-to-date (catch-up only)
         - live=True/"long-poll"/"sse": Continue tailing even after up-to-date
         """
-        if self._closed:
+        if self._closed or self._stream_closed:
             return False
         # live=False means catch-up only - stop at first up-to-date
         if self._live is False:
@@ -463,6 +463,7 @@ class StreamResponse(Generic[T]):
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+                self._stream_closed = event.stream_closed
 
     # === JSON iteration ===
 
@@ -610,6 +611,7 @@ class StreamResponse(Generic[T]):
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+                self._stream_closed = event.stream_closed
 
     # === Event iteration ===
 
@@ -1164,7 +1166,7 @@ class AsyncStreamResponse(Generic[T]):
         - live=False: Stop at first up-to-date (catch-up only)
         - live=True/"long-poll"/"sse": Continue tailing even after up-to-date
         """
-        if self._closed:
+        if self._closed or self._stream_closed:
             return False
         # live=False means catch-up only - stop at first up-to-date
         if self._live is False:
@@ -1451,6 +1453,7 @@ class AsyncStreamResponse(Generic[T]):
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+                self._stream_closed = event.stream_closed
 
     # === JSON iteration ===
 
@@ -1579,6 +1582,7 @@ class AsyncStreamResponse(Generic[T]):
                 if event.stream_cursor:
                     self._cursor = event.stream_cursor
                 self._up_to_date = event.up_to_date
+                self._stream_closed = event.stream_closed
 
     # === Event iteration ===
 

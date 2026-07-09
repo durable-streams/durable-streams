@@ -144,10 +144,17 @@ export const SSE_COMPATIBLE_CONTENT_TYPES: ReadonlyArray<string> = [
 ]
 
 /**
+ * Query parameter for CDN cache invalidation.
+ * Client-only — servers ignore unknown query parameters per protocol.
+ */
+export const CACHE_BUSTER_QUERY_PARAM = `cache_buster`
+
+/**
  * Protocol query parameters that should not be set by users.
  */
 export const DURABLE_STREAM_PROTOCOL_QUERY_PARAMS: Array<string> = [
   OFFSET_QUERY_PARAM,
   LIVE_QUERY_PARAM,
   CURSOR_QUERY_PARAM,
+  CACHE_BUSTER_QUERY_PARAM,
 ]

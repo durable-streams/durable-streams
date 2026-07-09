@@ -60,6 +60,30 @@ struct ResponseMetadata: Sendable {
     }
 }
 
+internal func validateReadResponseHeaders(
+    _ metadata: ResponseMetadata,
+    url: URL,
+    liveMode: LiveMode
+) throws {
+    guard let offset = metadata.offset, !offset.rawValue.isEmpty else {
+        throw DurableStreamError(
+            code: .internalError,
+            message: "Missing required Stream-Next-Offset header for \(url)"
+        )
+    }
+
+    guard liveMode != .catchUp, metadata.status == 200, !metadata.streamClosed else {
+        return
+    }
+
+    guard let cursor = metadata.cursor, !cursor.isEmpty else {
+        throw DurableStreamError(
+            code: .internalError,
+            message: "Missing required Stream-Cursor header for \(url)"
+        )
+    }
+}
+
 /// Internal HTTP client wrapper with common functionality.
 internal actor HTTPClient {
     let session: URLSession

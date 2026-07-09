@@ -1291,6 +1291,11 @@ func handleSSERead(
 ) async -> Result {
     let accumulator = SSEAccumulator(startOffset: offset)
     let deadline = Date().addingTimeInterval(timeoutSeconds)
+    let contentType = await state.getContentType(path: path)
+    let normalizedContentType = contentType?.normalizedContentType() ?? "application/octet-stream"
+    let isBinaryStream = !(normalizedContentType.hasPrefix("text/")
+        || normalizedContentType == "application/json"
+        || normalizedContentType.hasSuffix("+json"))
 
     do {
         // Use cached handle if available to avoid extra HEAD request
@@ -1346,13 +1351,12 @@ func handleSSERead(
                 // We need to return it to the test runner:
                 // - If valid UTF-8, return as string
                 // - If not valid UTF-8, base64 encode for transport
-                // Convert from ISO-8859-1 string back to raw bytes
-                if let rawData = event.data.data(using: .isoLatin1) {
-                    // Try to convert to UTF-8 string
+                if !isBinaryStream {
+                    await accumulator.addChunk(ReadChunk(data: event.data, offset: currentOffset.rawValue))
+                } else if let rawData = event.data.data(using: .isoLatin1) {
                     if let utf8String = String(data: rawData, encoding: .utf8) {
                         await accumulator.addChunk(ReadChunk(data: utf8String, offset: currentOffset.rawValue))
                     } else {
-                        // Not valid UTF-8, encode as base64 for transport
                         await accumulator.addChunk(ReadChunk(
                             data: rawData.base64EncodedString(),
                             binary: true,
@@ -1966,6 +1970,8 @@ func mapError(_ commandType: String, _ error: DurableStreamError) -> Result {
         errorCode = "PARSE_ERROR"
     case .streamClosed:
         errorCode = "STREAM_CLOSED"
+    case .internalError:
+        errorCode = "INTERNAL_ERROR"
     default:
         errorCode = "UNEXPECTED_STATUS"
     }

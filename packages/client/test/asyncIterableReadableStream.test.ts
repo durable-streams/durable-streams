@@ -581,11 +581,12 @@ describe(`asAsyncIterableReadableStream`, () => {
 
       const result = asAsyncIterableReadableStream(stream)
       const valuesMethod = (
-        result as unknown as Record<
-          string,
-          () => AsyncIterator<number> & AsyncIterable<number>
-        >
-      )[`values`]
+        result as ReadableStreamAsyncIterable<number> & {
+          values: (
+            this: ReadableStream<number>
+          ) => AsyncIterator<number> & AsyncIterable<number>
+        }
+      ).values
 
       const collected: Array<number> = []
       const iterator = valuesMethod.call(result)
@@ -631,7 +632,9 @@ describe(`asAsyncIterableReadableStream`, () => {
       await iterator.next()
 
       // Return with a reason
-      await iterator.return!(`custom reason`)
+      await (
+        iterator.return as (value?: unknown) => Promise<IteratorResult<number>>
+      )(`custom reason`)
 
       expect(cancelReason).toBe(`custom reason`)
     })
@@ -654,7 +657,11 @@ describe(`asAsyncIterableReadableStream`, () => {
         await iterator.next()
 
         // Return with a value - should still return undefined
-        const returnResult = await iterator.return!(`some value`)
+        const returnResult = await (
+          iterator.return as (
+            value?: unknown
+          ) => Promise<IteratorResult<number>>
+        )(`some value`)
 
         expect(returnResult).toEqual({ done: true, value: undefined })
       }

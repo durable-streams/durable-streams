@@ -109,6 +109,39 @@ public sealed class StreamResponse : IAsyncDisposable
         await MakeRequestAsync().ConfigureAwait(false);
     }
 
+    private void ValidateReadHeaders(HttpResponseMessage response)
+    {
+        var nextOffset = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
+        if (string.IsNullOrEmpty(nextOffset))
+        {
+            throw new DurableStreamException(
+                $"Missing required {Headers.StreamNextOffset} header",
+                DurableStreamErrorCode.Unknown,
+                null,
+                _stream.Url);
+        }
+
+        if (_options.Live == LiveMode.Off || response.StatusCode != HttpStatusCode.OK)
+        {
+            return;
+        }
+
+        if (HttpHelpers.GetBoolHeader(response, Headers.StreamClosed))
+        {
+            return;
+        }
+
+        var cursor = HttpHelpers.GetHeader(response, Headers.StreamCursor);
+        if (string.IsNullOrEmpty(cursor))
+        {
+            throw new DurableStreamException(
+                $"Missing required {Headers.StreamCursor} header",
+                DurableStreamErrorCode.Unknown,
+                null,
+                _stream.Url);
+        }
+    }
+
     /// <summary>
     /// Stream raw byte chunks as they arrive.
     /// </summary>
@@ -297,6 +330,11 @@ public sealed class StreamResponse : IAsyncDisposable
                 throw DurableStreamException.FromStatusCode((int)statusCode, _stream.Url);
             }
 
+            if (statusCode == HttpStatusCode.OK || statusCode == HttpStatusCode.NoContent)
+            {
+                ValidateReadHeaders(response);
+            }
+
             // Update state from headers
             var nextOffset = HttpHelpers.GetHeader(response, Headers.StreamNextOffset);
             var cursor = HttpHelpers.GetHeader(response, Headers.StreamCursor);
@@ -387,6 +425,8 @@ public sealed class StreamResponse : IAsyncDisposable
             {
                 throw DurableStreamException.FromStatusCode((int)statusCode, _stream.Url);
             }
+
+            ValidateReadHeaders(_currentResponse);
 
             var stream = await _currentResponse.Content.ReadAsStreamAsync(cancellationToken).ConfigureAwait(false);
             _sseParser = new SseParser(stream);

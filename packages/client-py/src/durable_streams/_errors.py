@@ -283,6 +283,27 @@ class SSEEncodingError(DurableStreamError):
         super().__init__(message, code="SSE_ENCODING_ERROR")
 
 
+class MissingHeadersError(DurableStreamError):
+    """
+    Exception raised when a 2xx response is missing required protocol headers.
+
+    This usually indicates a proxy/CDN misconfiguration that strips custom
+    Durable Streams headers from successful responses.
+    """
+
+    def __init__(self, missing_headers: list[str], url: str) -> None:
+        super().__init__(
+            (
+                f"Response from {url} is missing required protocol headers: "
+                f"{', '.join(missing_headers)}. This usually means a proxy or CDN "
+                "is stripping headers."
+            ),
+            code="MISSING_HEADERS",
+        )
+        self.missing_headers = missing_headers
+        self.url = url
+
+
 def error_from_status(
     status: int,
     url: str,
