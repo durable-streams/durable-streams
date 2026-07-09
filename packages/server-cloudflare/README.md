@@ -6,15 +6,27 @@ Every stream is its own Durable Object instance (`idFromName(streamPath)`), givi
 
 ## Conformance
 
-Validated with `@durable-streams/server-conformance-tests` **0.3.5** — the full suite, including fork semantics and idempotent-producer fencing:
+Validated with `@durable-streams/server-conformance-tests` **0.3.5** — the full suite, including fork semantics and idempotent-producer fencing.
+
+Against local `wrangler dev` (CI: [`conformance`](.github/workflows/conformance.yml), every push):
 
 ```
-Test Files  1 passed (1)
-     Tests  326 passed | 6 skipped (332)
+ Test Files  1 passed (1)
+      Tests  326 passed | 6 skipped (332)
 ```
 
-- **326 passed, 0 failed** — identical to the upstream reference server's result.
-- The 6 skips are the suite's own `subscriptions`-gated webhook tests (off by default; the experimental `__ds` subscription control plane is out of scope here — see NOTES.md).
+Against the deployed instance `https://durable-object-streams.openstory.workers.dev` (CI: [`live-conformance`](.github/workflows/live-conformance.yml), summary uploaded as an artifact):
+
+```
+ Test Files  1 passed (1)
+      Tests  326 passed | 6 skipped (332)
+   Duration  649.57s
+```
+
+- **326 passed, 0 failed** in both environments — identical to the upstream reference server's result.
+- The 6 skips are the suite's own `subscriptions`-gated webhook tests (off by default; the experimental `__ds` subscription control plane is out of scope — see NOTES.md).
+- The live run uses `--testTimeout=120000 --retry=2` purely for network-transport reasons (RTT arithmetic on 1,000+-round-trip tests; Cloudflare edge SSE re-chunking racing the suite's reader) — no test logic changes; NOTES.md has the full evidence.
+- The published `--run` CLI is broken upstream with vitest 4 ("No test files found" from any directory); all runs use the suite's programmatic `runConformanceTests` entrypoint — the same 332 tests, same mechanism as the upstream repo's own harness.
 
 ## Layout
 

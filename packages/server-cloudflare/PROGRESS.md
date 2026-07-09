@@ -2,7 +2,7 @@
 
 ## Current phase
 
-Post-implementation: adversarial review running; deploy + CI + docs in progress.
+**COMPLETE.** All deliverables done: local + live conformance fully green (326/0/6 both), CI green (honestly — pipefail), deployed, smoke test green, ai-chat example done.
 
 ## Suite status (local, wrangler dev, suite 0.3.5)
 
