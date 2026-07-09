@@ -1,0 +1,19 @@
+{
+  "name": "durable-object-streams",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Durable Streams protocol server on Cloudflare Workers + Durable Objects",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "dev": "wrangler dev --port 8787",
+    "deploy": "wrangler deploy",
+    "typecheck": "tsc --noEmit",
+    "conformance": "npx @durable-streams/server-conformance-tests --run http://localhost:8787"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20250620.0",
+    "typescript": "^5.8.3",
+    "wrangler": "^4.107.1"
+  }
+}
