@@ -37,6 +37,7 @@ import {
   STREAM_SSE_DATA_ENCODING_HEADER,
   STREAM_TTL_HEADER,
   STREAM_UP_TO_DATE_HEADER,
+  ZERO_OFFSET,
 } from "./constants";
 import { generateResponseCursor } from "./cursor";
 import {
@@ -75,6 +76,36 @@ const STRICT_INTEGER_REGEX = /^\d+$/;
 
 /** Minimal shape check for a usable content-type value. */
 const CONTENT_TYPE_SHAPE = /^[\w-]+\/[\w-]+/;
+
+/** Fork offsets must match our concrete offset format. */
+const VALID_FORK_OFFSET_PATTERN = /^\d+_\d+$/;
+
+/** Sub-offset: non-negative decimal integer without leading zeros. */
+const SUB_OFFSET_PATTERN = /^(0|[1-9]\d*)$/;
+
+/** Inclusive upper bound beyond any real offset (for uncapped range reads). */
+const MAX_OFFSET_CAP = "9999999999999999_9999999999999999";
+
+const STREAM_FORKED_FROM_HEADER = "Stream-Forked-From";
+const STREAM_FORK_OFFSET_HEADER = "Stream-Fork-Offset";
+const STREAM_FORK_SUB_OFFSET_HEADER = "Stream-Fork-Sub-Offset";
+
+export type ForkAcquireResult =
+  | {
+      ok: false;
+      error:
+        | "not_found"
+        | "soft_deleted"
+        | "content_type_mismatch"
+        | "invalid_offset";
+    }
+  | {
+      ok: true;
+      forkOffset: string;
+      contentType: string | undefined;
+      ttlSeconds: number | undefined;
+      expiresAt: string | undefined;
+    };
 
 /**
  * Encode a payload for SSE. Each line gets its own `data:` prefix; CR,
@@ -140,7 +171,7 @@ export class StreamObject extends DurableObject<Env> {
       case "POST":
         return this.handlePost(request);
       case "DELETE":
-        return this.handleDelete();
+        return this.handleDelete(path);
       default:
         return this.text(405, "Method not allowed");
     }
@@ -150,10 +181,88 @@ export class StreamObject extends DurableObject<Env> {
     const meta = this.store.getMetaRaw();
     if (!meta) return;
     if (this.store.isExpired(meta, Date.now())) {
-      this.purgeStream();
+      if (meta.refCount > 0) {
+        // Expired but referenced by forks: soft-delete instead of purging.
+        if (!meta.softDeleted) this.store.setSoftDeleted();
+      } else {
+        await this.purgeStream(meta);
+      }
     } else {
       await this.syncExpiryAlarm();
     }
+  }
+
+  // ==========================================================================
+  // Fork RPC (called by other StreamObject instances via their stubs)
+  // ==========================================================================
+
+  /**
+   * Validate this stream as a fork source and atomically take a reference
+   * on it. Runs entirely inside this DO, so the content-type check and the
+   * refcount increment cannot race (a mismatch must not leak a reference).
+   */
+  async forkAcquire(options: {
+    forkOffset: string | undefined;
+    contentTypeProvided: string | undefined;
+  }): Promise<ForkAcquireResult> {
+    const meta = await this.getMeta(Date.now());
+    if (!meta) {
+      return { ok: false, error: "not_found" };
+    }
+    if (meta.softDeleted) {
+      return { ok: false, error: "soft_deleted" };
+    }
+    if (
+      options.contentTypeProvided !== undefined &&
+      options.contentTypeProvided.trim() !== "" &&
+      normalizeContentType(options.contentTypeProvided) !==
+        normalizeContentType(meta.contentType)
+    ) {
+      return { ok: false, error: "content_type_mismatch" };
+    }
+
+    const forkOffset = options.forkOffset ?? meta.currentOffset;
+    if (forkOffset < ZERO_OFFSET || meta.currentOffset < forkOffset) {
+      return { ok: false, error: "invalid_offset" };
+    }
+
+    this.store.incrementRef();
+    return {
+      ok: true,
+      forkOffset,
+      contentType: meta.contentType,
+      ttlSeconds: meta.ttlSeconds,
+      expiresAt: meta.expiresAt,
+    };
+  }
+
+  /**
+   * Release a fork's reference. When the last reference to a soft-deleted
+   * stream drops, the stream is purged and the release cascades up the
+   * fork chain.
+   */
+  async forkRelease(): Promise<void> {
+    const meta = this.store.getMetaRaw();
+    if (!meta) return;
+    const newCount = this.store.decrementRef();
+    if (newCount === 0 && meta.softDeleted) {
+      await this.purgeStream(meta);
+    }
+  }
+
+  /**
+   * Read messages in (afterOffset, capOffset], stitching through the fork
+   * chain. Reads raw state deliberately: forks must read through
+   * soft-deleted (and expired-with-refs) sources.
+   */
+  async readRange(
+    afterOffset: string | undefined,
+    capOffset: string,
+    limit?: number,
+  ): Promise<Array<StoredMessage>> {
+    const meta = this.store.getMetaRaw();
+    if (!meta) return [];
+    return this.readStitched(meta, afterOffset, capOffset, limit);
   }
 
   // ==========================================================================
@@ -167,17 +276,21 @@ export class StreamObject extends DurableObject<Env> {
   ): Promise<Response> {
     let contentType = request.headers.get("content-type") ?? undefined;
 
-    // Fork creation is not implemented yet (see NOTES.md / Phase 7).
-    if (request.headers.get("Stream-Forked-From") !== null) {
-      return this.text(501, "Fork semantics not implemented");
-    }
+    const forkedFrom =
+      request.headers.get(STREAM_FORKED_FROM_HEADER) ?? undefined;
+    const forkOffsetHeader =
+      request.headers.get(STREAM_FORK_OFFSET_HEADER) ?? undefined;
+    const forkSubOffsetHeader =
+      request.headers.get(STREAM_FORK_SUB_OFFSET_HEADER) ?? undefined;
 
+    // Sanitize content-type: empty/invalid falls back to the default —
+    // except for forks, where an omitted Content-Type means "inherit".
     if (
       contentType === undefined ||
       contentType.trim() === "" ||
       !CONTENT_TYPE_SHAPE.test(contentType)
     ) {
-      contentType = "application/octet-stream";
+      contentType = forkedFrom !== undefined ? undefined : "application/octet-stream";
     }
 
     const ttlHeader = request.headers.get(STREAM_TTL_HEADER) ?? undefined;
@@ -209,15 +322,39 @@ export class StreamObject extends DurableObject<Env> {
       }
     }
 
+    if (
+      forkOffsetHeader !== undefined &&
+      !VALID_FORK_OFFSET_PATTERN.test(forkOffsetHeader)
+    ) {
+      return this.text(400, "Invalid Stream-Fork-Offset format");
+    }
+
+    let forkSubOffset: number | undefined;
+    if (forkSubOffsetHeader !== undefined) {
+      if (forkedFrom === undefined) {
+        return this.text(400, "Stream-Fork-Sub-Offset requires Stream-Forked-From");
+      }
+      if (!SUB_OFFSET_PATTERN.test(forkSubOffsetHeader)) {
+        return this.text(400, "Invalid Stream-Fork-Sub-Offset format");
+      }
+      forkSubOffset = parseInt(forkSubOffsetHeader, 10);
+    }
+
     const body = await this.readBody(request);
     if (body === "too_large") {
       return this.text(413, "Payload too large");
     }
 
     const now = Date.now();
-    const existing = this.getMeta(now);
+    const existing = await this.getMeta(now);
 
     if (existing) {
+      if (existing.softDeleted) {
+        return this.text(
+          409,
+          "stream was deleted but still has active forks — path cannot be reused until all forks are removed",
+        );
+      }
       const contentTypeMatches =
         (normalizeContentType(contentType) || "application/octet-stream") ===
         (normalizeContentType(existing.contentType) ||
@@ -225,12 +362,29 @@ export class StreamObject extends DurableObject<Env> {
       const ttlMatches = ttlSeconds === existing.ttlSeconds;
       const expiresMatches = expiresAtHeader === existing.expiresAt;
       const closedMatches = createClosed === existing.closed;
+      const forkedFromMatches = forkedFrom === existing.forkedFrom;
+      // forkOffset only compared when explicitly supplied: an omitted
+      // offset was resolved server-side at creation, so a second PUT
+      // that also omits it stays idempotent.
+      const forkOffsetMatches =
+        forkOffsetHeader === undefined ||
+        forkOffsetHeader === existing.forkOffset;
+      const forkSubOffsetMatches =
+        (forkSubOffset ?? 0) === (existing.forkSubOffset ?? 0);
 
-      if (contentTypeMatches && ttlMatches && expiresMatches && closedMatches) {
+      if (
+        contentTypeMatches &&
+        ttlMatches &&
+        expiresMatches &&
+        closedMatches &&
+        forkedFromMatches &&
+        forkOffsetMatches &&
+        forkSubOffsetMatches
+      ) {
         // Idempotent success — the body is ignored for existing streams.
         const headers: Record<string, string> = {
           "content-type":
-            existing.contentType ?? contentType,
+            existing.contentType ?? contentType ?? "application/octet-stream",
           [STREAM_OFFSET_HEADER]: existing.currentOffset,
         };
         if (existing.closed) {
@@ -244,11 +398,26 @@ export class StreamObject extends DurableObject<Env> {
       );
     }
 
+    if (forkedFrom !== undefined) {
+      return this.createFork(url, path, {
+        forkedFrom,
+        forkOffsetHeader,
+        forkSubOffset,
+        contentType,
+        ttlSeconds,
+        expiresAt: expiresAtHeader,
+        createClosed,
+        body,
+        now,
+      });
+    }
+
     // Process initial data BEFORE creating meta so an invalid JSON body
     // leaves no stream behind.
+    const resolvedContentType = contentType ?? "application/octet-stream";
     let initialPayload: Uint8Array | undefined;
     if (body.length > 0) {
-      if (normalizeContentType(contentType) === "application/json") {
+      if (normalizeContentType(resolvedContentType) === "application/json") {
         try {
           initialPayload = processJsonAppend(body, true);
         } catch (err) {
@@ -263,7 +432,7 @@ export class StreamObject extends DurableObject<Env> {
     }
 
     this.store.createMeta({
-      contentType,
+      contentType: resolvedContentType,
       ttlSeconds,
       expiresAt: expiresAtHeader,
       closed: createClosed,
@@ -278,7 +447,7 @@ export class StreamObject extends DurableObject<Env> {
     await this.syncExpiryAlarm();
 
     const headers: Record<string, string> = {
-      "content-type": contentType,
+      "content-type": resolvedContentType,
       [STREAM_OFFSET_HEADER]: currentOffset,
       location: `${url.origin}${path}`,
     };
@@ -288,14 +457,186 @@ export class StreamObject extends DurableObject<Env> {
     return this.respond(201, headers);
   }
 
+  /** Create this stream as a fork of another stream. */
+  private async createFork(
+    url: URL,
+    path: string,
+    options: {
+      forkedFrom: string;
+      forkOffsetHeader: string | undefined;
+      forkSubOffset: number | undefined;
+      contentType: string | undefined;
+      ttlSeconds: number | undefined;
+      expiresAt: string | undefined;
+      createClosed: boolean;
+      body: Uint8Array;
+      now: number;
+    },
+  ): Promise<Response> {
+    const { forkedFrom, now } = options;
+
+    // A stream cannot fork from itself (calling our own stub would
+    // deadlock); the reference server reports this as source-not-found.
+    if (forkedFrom === path) {
+      return this.text(404, "Source stream not found");
+    }
+
+    const sourceStub = this.env.STREAMS.get(
+      this.env.STREAMS.idFromName(forkedFrom),
+    );
+    const acquired = await sourceStub.forkAcquire({
+      forkOffset: options.forkOffsetHeader,
+      contentTypeProvided: options.contentType,
+    });
+
+    if (!acquired.ok) {
+      switch (acquired.error) {
+        case "not_found":
+          return this.text(404, "Source stream not found");
+        case "soft_deleted":
+          return this.text(
+            409,
+            "source stream was deleted but still has active forks",
+          );
+        case "content_type_mismatch":
+          return this.text(409, "Content type mismatch with source stream");
+        case "invalid_offset":
+          return this.text(400, "Fork offset beyond source stream length");
+      }
+    }
+
+    const release = async (): Promise<void> => {
+      await sourceStub.forkRelease();
+    };
+
+    const resolvedContentType =
+      options.contentType !== undefined && options.contentType.trim() !== ""
+        ? options.contentType
+        : acquired.contentType;
+    const isJson =
+      normalizeContentType(resolvedContentType) === "application/json";
+
+    // Fork expiry: an explicit TTL or Expires-At wins; otherwise inherit
+    // from the source (TTL preferred), giving forks independent lifetimes.
+    let effectiveTtl = options.ttlSeconds;
+    let effectiveExpiresAt = options.expiresAt;
+    if (effectiveTtl === undefined && effectiveExpiresAt === undefined) {
+      if (acquired.ttlSeconds !== undefined) {
+        effectiveTtl = acquired.ttlSeconds;
+      } else if (acquired.expiresAt !== undefined) {
+        effectiveExpiresAt = acquired.expiresAt;
+      }
+    }
+
+    // Resolve the sub-offset prefix (a synthetic first message holding the
+    // leading slice of the source message at the fork point).
+    let subOffsetPrefix: Uint8Array | undefined;
+    if (options.forkSubOffset !== undefined && options.forkSubOffset > 0) {
+      const past = await sourceStub.readRange(
+        acquired.forkOffset,
+        MAX_OFFSET_CAP,
+        1,
+      );
+      const first = past[0];
+      if (!first) {
+        await release();
+        return this.text(400, "Invalid fork sub-offset");
+      }
+      if (isJson) {
+        const text = new TextDecoder().decode(first.data);
+        const trimmed = text.endsWith(",") ? text.slice(0, -1) : text;
+        let values: Array<unknown>;
+        try {
+          const parsed: unknown = JSON.parse(`[${trimmed}]`);
+          if (!Array.isArray(parsed)) {
+            throw new JsonAppendError("Invalid fork sub-offset");
+          }
+          values = parsed;
+        } catch {
+          await release();
+          return this.text(400, "Invalid fork sub-offset");
+        }
+        if (options.forkSubOffset > values.length) {
+          await release();
+          return this.text(400, "Invalid fork sub-offset");
+        }
+        const prefix = values
+          .slice(0, options.forkSubOffset)
+          .map((v) => JSON.stringify(v));
+        subOffsetPrefix = new TextEncoder().encode(prefix.join(",") + ",");
+      } else {
+        if (options.forkSubOffset > first.data.length) {
+          await release();
+          return this.text(400, "Invalid fork sub-offset");
+        }
+        subOffsetPrefix = first.data.slice(0, options.forkSubOffset);
+      }
+    }
+
+    // Process initial body data before creating anything.
+    let initialPayload: Uint8Array | undefined;
+    if (options.body.length > 0) {
+      if (isJson) {
+        try {
+          initialPayload = processJsonAppend(options.body, true);
+        } catch (err) {
+          if (err instanceof JsonAppendError) {
+            await release();
+            return this.text(400, err.message);
+          }
+          throw err;
+        }
+      } else {
+        initialPayload = options.body;
+      }
+    }
+
+    this.store.createMeta({
+      contentType: resolvedContentType,
+      ttlSeconds: effectiveTtl,
+      expiresAt: effectiveExpiresAt,
+      closed: options.createClosed,
+      now,
+      forkedFrom,
+      forkOffset: acquired.forkOffset,
+      forkSubOffset:
+        options.forkSubOffset !== undefined && options.forkSubOffset > 0
+          ? options.forkSubOffset
+          : undefined,
+    });
+
+    let currentOffset = acquired.forkOffset;
+    if (subOffsetPrefix !== undefined && subOffsetPrefix.length > 0) {
+      currentOffset = this.store.appendMessage(currentOffset, subOffsetPrefix, now);
+    }
+    if (initialPayload !== undefined && initialPayload.length > 0) {
+      currentOffset = this.store.appendMessage(currentOffset, initialPayload, now);
+    }
+
+    await this.syncExpiryAlarm();
+
+    const headers: Record<string, string> = {
+      "content-type": resolvedContentType ?? "application/octet-stream",
+      [STREAM_OFFSET_HEADER]: currentOffset,
+      location: `${url.origin}${path}`,
+    };
+    if (options.createClosed) {
+      headers[STREAM_CLOSED_HEADER] = "true";
+    }
+    return this.respond(201, headers);
+  }
+
   // ==========================================================================
   // HEAD — metadata only; must NOT reset the sliding TTL
   // ==========================================================================
 
-  private handleHead(): Response {
-    const meta = this.getMeta(Date.now());
+  private async handleHead(): Promise<Response> {
+    const meta = await this.getMeta(Date.now());
     if (!meta) {
       return this.respond(404, { "content-type": "text/plain" });
+    }
+    if (meta.softDeleted) {
+      return this.respond(410, { "content-type": "text/plain" });
     }
 
     const headers: Record<string, string> = {
@@ -325,9 +666,12 @@ export class StreamObject extends DurableObject<Env> {
 
   private async handleGet(request: Request, url: URL): Promise<Response> {
     const now = Date.now();
-    const meta = this.getMeta(now);
+    const meta = await this.getMeta(now);
     if (!meta) {
       return this.text(404, "Stream not found");
+    }
+    if (meta.softDeleted) {
+      return this.text(410, "Stream is gone");
     }
 
     const offsetParam = url.searchParams.get(OFFSET_QUERY_PARAM) ?? undefined;
@@ -384,7 +728,7 @@ export class StreamObject extends DurableObject<Env> {
     const effectiveOffset =
       offsetParam === "now" ? meta.currentOffset : offsetParam;
 
-    let messages = this.store.readMessages(effectiveOffset);
+    let messages = await this.readStream(meta, effectiveOffset);
     let upToDate = true;
     this.store.touchAccess(now);
     await this.syncExpiryAlarm();
@@ -525,7 +869,13 @@ export class StreamObject extends DurableObject<Env> {
     let currentOffset = initialOffset;
 
     for (;;) {
-      const messages = this.store.readMessages(
+      const loopMeta = this.store.getMetaRaw();
+      if (!loopMeta) {
+        // Stream deleted/expired mid-tail: nothing more to deliver.
+        return;
+      }
+      const messages = await this.readStream(
+        loopMeta,
         currentOffset === "-1" ? undefined : currentOffset,
       );
 
@@ -706,9 +1056,12 @@ export class StreamObject extends DurableObject<Env> {
       return this.text(400, "Content-Type header is required");
     }
 
-    const meta = this.getMeta(now);
+    const meta = await this.getMeta(now);
     if (!meta) {
       return this.text(404, "Stream not found");
+    }
+    if (meta.softDeleted) {
+      return this.text(410, "Stream is gone");
     }
 
     // Closed check comes first so clients always see Stream-Closed.
@@ -830,13 +1183,16 @@ export class StreamObject extends DurableObject<Env> {
     return this.respond(producer !== undefined ? 200 : 204, responseHeaders);
   }
 
-  private handleCloseOnly(
+  private async handleCloseOnly(
     producer: ProducerHeaders | undefined,
     now: number,
-  ): Response {
-    const meta = this.getMeta(now);
+  ): Promise<Response> {
+    const meta = await this.getMeta(now);
     if (!meta) {
       return this.text(404, "Stream not found");
+    }
+    if (meta.softDeleted) {
+      return this.text(410, "Stream is gone");
     }
 
     if (producer === undefined) {
@@ -947,12 +1303,22 @@ export class StreamObject extends DurableObject<Env> {
   // DELETE
   // ==========================================================================
 
-  private handleDelete(): Response {
-    const meta = this.getMeta(Date.now());
+  private async handleDelete(_path: string): Promise<Response> {
+    const meta = await this.getMeta(Date.now());
     if (!meta) {
       return this.text(404, "Stream not found");
     }
-    this.purgeStream();
+    if (meta.softDeleted) {
+      return this.text(410, "Stream is gone");
+    }
+    if (meta.refCount > 0) {
+      // Active forks reference this stream: soft-delete so fork readers
+      // can still stitch through it.
+      this.store.setSoftDeleted();
+      this.notifyClosed();
+      return this.respond(204, {});
+    }
+    await this.purgeStream(meta);
     return this.respond(204, {});
   }
 
@@ -960,21 +1326,36 @@ export class StreamObject extends DurableObject<Env> {
   // Expiry
   // ==========================================================================
 
-  /** Read meta with lazy expiry: an expired stream is purged and reads as absent. */
-  private getMeta(now: number): StreamMeta | undefined {
+  /**
+   * Read meta with lazy expiry: an expired stream is purged (and its
+   * source reference released) and reads as absent — unless forks still
+   * reference it, in which case it is soft-deleted instead.
+   */
+  private async getMeta(now: number): Promise<StreamMeta | undefined> {
     const meta = this.store.getMetaRaw();
     if (!meta) return undefined;
     if (this.store.isExpired(meta, now)) {
-      this.purgeStream();
+      if (meta.refCount > 0) {
+        if (!meta.softDeleted) this.store.setSoftDeleted();
+        return { ...meta, softDeleted: true };
+      }
+      await this.purgeStream(meta);
       return undefined;
     }
     return meta;
   }
 
-  private purgeStream(): void {
+  private async purgeStream(meta: StreamMeta): Promise<void> {
     this.store.purge();
     this.cancelWaiters();
-    void this.ctx.storage.deleteAlarm();
+    await this.ctx.storage.deleteAlarm();
+    if (meta.forkedFrom !== undefined) {
+      // Cascade: dropping this fork releases its reference on the source.
+      const stub = this.env.STREAMS.get(
+        this.env.STREAMS.idFromName(meta.forkedFrom),
+      );
+      await stub.forkRelease();
+    }
   }
 
   /** (Re-)arm the expiry alarm to match the stream's current expiry time. */
@@ -991,10 +1372,81 @@ export class StreamObject extends DurableObject<Env> {
   // Long-poll waiters
   // ==========================================================================
 
-  private waitForMessages(
+  /**
+   * Read messages after `afterOffset` for this stream, stitching inherited
+   * source data when this stream is a fork.
+   */
+  private async readStream(
+    meta: StreamMeta,
+    afterOffset: string | undefined,
+  ): Promise<Array<StoredMessage>> {
+    return this.readStitched(meta, afterOffset, undefined, undefined);
+  }
+
+  private async readStitched(
+    meta: StreamMeta,
+    afterOffset: string | undefined,
+    capOffset: string | undefined,
+    limit: number | undefined,
+  ): Promise<Array<StoredMessage>> {
+    const normalizedAfter =
+      afterOffset === undefined || afterOffset === "-1"
+        ? undefined
+        : afterOffset;
+    const out: Array<StoredMessage> = [];
+
+    if (
+      meta.forkedFrom !== undefined &&
+      meta.forkOffset !== undefined &&
+      (normalizedAfter === undefined || normalizedAfter < meta.forkOffset)
+    ) {
+      const cap =
+        capOffset === undefined || meta.forkOffset < capOffset
+          ? meta.forkOffset
+          : capOffset;
+      const stub = this.env.STREAMS.get(
+        this.env.STREAMS.idFromName(meta.forkedFrom),
+      );
+      const inherited = await stub.readRange(normalizedAfter, cap, limit);
+      out.push(...inherited);
+      if (limit !== undefined && out.length >= limit) {
+        return out.slice(0, limit);
+      }
+    }
+
+    const remaining = limit === undefined ? undefined : limit - out.length;
+    const own = this.store.readMessagesRange(
+      normalizedAfter,
+      capOffset,
+      remaining,
+    );
+    out.push(...own);
+    return out;
+  }
+
+  private async waitForMessages(
     offset: string,
     timeoutMs: number,
   ): Promise<WaitResult> {
+    // Fork inherited range: return the stitched data immediately rather
+    // than waiting (source appends never wake fork waiters).
+    const forkMeta = this.store.getMetaRaw();
+    if (
+      forkMeta?.forkedFrom !== undefined &&
+      forkMeta.forkOffset !== undefined &&
+      offset !== "-1" &&
+      offset < forkMeta.forkOffset
+    ) {
+      const stitched = await this.readStream(forkMeta, offset);
+      return { messages: stitched, timedOut: false, streamClosed: false };
+    }
+    if (forkMeta?.forkedFrom !== undefined && offset === "-1") {
+      const stitched = await this.readStream(forkMeta, undefined);
+      if (stitched.length > 0) {
+        return { messages: stitched, timedOut: false, streamClosed: false };
+      }
+    }
+
     const messages = this.store.readMessages(
       offset === "-1" ? undefined : offset,
     );

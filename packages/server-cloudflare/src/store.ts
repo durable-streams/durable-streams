@@ -32,6 +32,16 @@ export interface StreamMeta {
   lastSeq: string | undefined;
   createdAt: number;
   lastAccessedAt: number;
+  /** Source stream path when this stream is a fork. */
+  forkedFrom: string | undefined;
+  /** Divergence offset from the source (same offset space). */
+  forkOffset: string | undefined;
+  /** User-supplied sub-offset, stored verbatim for idempotency matching. */
+  forkSubOffset: number | undefined;
+  /** Number of forks referencing this stream. */
+  refCount: number;
+  /** Logically deleted but retained for fork readers (410 Gone). */
+  softDeleted: boolean;
 }
 
 export interface StoredMessage {
@@ -50,6 +60,11 @@ interface MetaRow extends Record<string, SqlStorageValue> {
   last_seq: string | null;
   created_at: number;
   last_accessed_at: number;
+  forked_from: string | null;
+  fork_offset: string | null;
+  fork_sub_offset: number | null;
+  ref_count: number;
+  soft_deleted: number;
 }
 
 interface MessageRow extends Record<string, SqlStorageValue> {
@@ -112,7 +127,12 @@ export class SqliteStore {
         current_offset TEXT NOT NULL,
         last_seq TEXT,
         created_at INTEGER NOT NULL,
-        last_accessed_at INTEGER NOT NULL
+        last_accessed_at INTEGER NOT NULL,
+        forked_from TEXT,
+        fork_offset TEXT,
+        fork_sub_offset INTEGER,
+        ref_count INTEGER NOT NULL DEFAULT 0,
+        soft_deleted INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS messages (
         msg_offset TEXT PRIMARY KEY,
@@ -145,6 +165,11 @@ export class SqliteStore {
       lastSeq: row.last_seq ?? undefined,
       createdAt: row.created_at,
       lastAccessedAt: row.last_accessed_at,
+      forkedFrom: row.forked_from ?? undefined,
+      forkOffset: row.fork_offset ?? undefined,
+      forkSubOffset: row.fork_sub_offset ?? undefined,
+      refCount: row.ref_count,
+      softDeleted: row.soft_deleted !== 0,
     };
   }
 
@@ -187,18 +212,27 @@ export class SqliteStore {
     expiresAt: string | undefined;
     closed: boolean;
     now: number;
+    forkedFrom?: string | undefined;
+    forkOffset?: string | undefined;
+    forkSubOffset?: number | undefined;
   }): void {
     this.sql.exec(
       `INSERT INTO meta (id, content_type, ttl_seconds, expires_at, closed, closed_by,
-         current_offset, last_seq, created_at, last_accessed_at)
-       VALUES (1, ?, ?, ?, ?, NULL, ?, NULL, ?, ?)`,
+         current_offset, last_seq, created_at, last_accessed_at,
+         forked_from, fork_offset, fork_sub_offset, ref_count, soft_deleted)
+       VALUES (1, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, 0, 0)`,
       options.contentType ?? null,
       options.ttlSeconds ?? null,
       options.expiresAt ?? null,
       options.closed ? 1 : 0,
-      ZERO_OFFSET,
+      options.forkedFrom !== undefined && options.forkOffset !== undefined
+        ? options.forkOffset
+        : ZERO_OFFSET,
       options.now,
       options.now,
+      options.forkedFrom ?? null,
+      options.forkOffset ?? null,
+      options.forkSubOffset ?? null,
     );
   }
 
@@ -215,23 +249,55 @@ export class SqliteStore {
 
   /** Read messages strictly after `afterOffset` (all messages when undefined/"-1"). */
   readMessages(afterOffset: string | undefined): Array<StoredMessage> {
-    const rows =
-      afterOffset === undefined || afterOffset === "-1"
-        ? this.sql
-            .exec<MessageRow>(
-              `SELECT msg_offset, data FROM messages ORDER BY msg_offset ASC`,
-            )
-            .toArray()
-        : this.sql
-            .exec<MessageRow>(
-              `SELECT msg_offset, data FROM messages WHERE msg_offset > ? ORDER BY msg_offset ASC`,
-              afterOffset,
-            )
-            .toArray();
+    return this.readMessagesRange(afterOffset, undefined, undefined);
+  }
+
+  /**
+   * Read messages with `offset > afterOffset` and (when capped)
+   * `offset <= capOffset`, oldest first, up to `limit`.
+   */
+  readMessagesRange(
+    afterOffset: string | undefined,
+    capOffset: string | undefined,
+    limit: number | undefined,
+  ): Array<StoredMessage> {
+    const after =
+      afterOffset === undefined || afterOffset === "-1" ? "" : afterOffset;
+    const conditions = ["msg_offset > ?"];
+    const bindings: Array<string | number> = [after];
+    if (capOffset !== undefined) {
+      conditions.push("msg_offset <= ?");
+      bindings.push(capOffset);
+    }
+    let query = `SELECT msg_offset, data FROM messages WHERE ${conditions.join(" AND ")} ORDER BY msg_offset ASC`;
+    if (limit !== undefined) {
+      query += ` LIMIT ?`;
+      bindings.push(limit);
+    }
+    const rows = this.sql.exec<MessageRow>(query, ...bindings).toArray();
     return rows.map((row) => ({
       offset: row.msg_offset,
       data: new Uint8Array(row.data),
     }));
+  }
+
+  setSoftDeleted(): void {
+    this.sql.exec(`UPDATE meta SET soft_deleted = 1 WHERE id = 1`);
+  }
+
+  incrementRef(): void {
+    this.sql.exec(`UPDATE meta SET ref_count = ref_count + 1 WHERE id = 1`);
+  }
+
+  /** Decrement the refcount (floored at 0) and return the new value. */
+  decrementRef(): number {
+    this.sql.exec(
+      `UPDATE meta SET ref_count = MAX(ref_count - 1, 0) WHERE id = 1`,
+    );
+    const rows = this.sql
+      .exec<{ ref_count: number }>(`SELECT ref_count FROM meta WHERE id = 1`)
+      .toArray();
+    return rows[0]?.ref_count ?? 0;
   }
 
   /**
