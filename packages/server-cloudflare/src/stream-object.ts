@@ -205,6 +205,8 @@ export class StreamObject extends DurableObject<Env> {
       case "DELETE":
         return this.handleDelete(path);
       default:
+        // Drain any body so the response never races the request stream.
+        await this.drainBody(request.body);
         return this.text(405, "Method not allowed");
     }
   }
@@ -308,6 +310,14 @@ export class StreamObject extends DurableObject<Env> {
     url: URL,
     path: string,
   ): Promise<Response> {
+    // Read the body before ANY validation: responding while the client is
+    // still streaming the request body makes workerd throw ("Can't read
+    // from request stream after response has been sent"), resetting the DO.
+    const body = await this.readBody(request);
+    if (body === "too_large") {
+      return this.text(413, "Payload too large");
+    }
+
     let contentType = request.headers.get("content-type") ?? undefined;
 
     const forkedFrom =
@@ -375,11 +385,6 @@ export class StreamObject extends DurableObject<Env> {
         return this.text(400, "Invalid Stream-Fork-Sub-Offset format");
       }
       forkSubOffset = parseInt(forkSubOffsetHeader, 10);
-    }
-
-    const body = await this.readBody(request);
-    if (body === "too_large") {
-      return this.text(413, "Payload too large");
     }
 
     const now = Date.now();
@@ -1104,6 +1109,12 @@ export class StreamObject extends DurableObject<Env> {
   // ==========================================================================
 
   private async handlePost(request: Request): Promise<Response> {
+    // Body first — see handlePut: early responses mid-upload reset the DO.
+    const body = await this.readBody(request);
+    if (body === "too_large") {
+      return this.text(413, "Payload too large");
+    }
+
     const contentType = request.headers.get("content-type") ?? undefined;
     const seq = request.headers.get(STREAM_SEQ_HEADER) ?? undefined;
     const closeStream =
@@ -1164,11 +1175,6 @@ export class StreamObject extends DurableObject<Env> {
         );
       }
       producer = { producerId, epoch, seq: seqNum };
-    }
-
-    const body = await this.readBody(request);
-    if (body === "too_large") {
-      return this.text(413, "Payload too large");
     }
 
     const now = Date.now();

@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Durable Streams · AI chat transport demo</title>
+<style>
+  :root { color-scheme: light dark; font-family: ui-sans-serif, system-ui, sans-serif; }
+  body { max-width: 720px; margin: 2rem auto; padding: 0 1rem; line-height: 1.5; }
+  h1 { font-size: 1.2rem; }
+  #transcript { border: 1px solid color-mix(in srgb, currentColor 25%, transparent); border-radius: 8px; padding: 1rem; min-height: 8rem; white-space: pre-wrap; }
+  .meta { font-size: 0.8rem; opacity: 0.7; margin-top: 0.5rem; }
+  button { padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; }
+  .hint { background: color-mix(in srgb, currentColor 8%, transparent); border-radius: 8px; padding: 0.6rem 1rem; font-size: 0.9rem; }
+</style>
+</head>
+<body>
+<h1>AI chat over Durable Streams</h1>
+<p class="hint">
+  Click <b>Generate answer</b>, then <b>reload the page mid-stream</b>.
+  The response tokens live in a durable stream on the server, so the
+  transcript catches up instantly from the stream and keeps tailing live —
+  nothing is lost. The (simulated) model keeps writing where it left off
+  using idempotent producer sequencing.
+</p>
+<p>
+  <button id="generate">Generate answer</button>
+  <button id="reset">New conversation</button>
+</p>
+<div id="transcript"></div>
+<p class="meta" id="status">idle</p>
+
+<script type="module">
+// Server base URL: same origin when served by the worker, or set here.
+const SERVER = localStorage.getItem("ds-server") ?? "https://durable-object-streams.openstory.workers.dev";
+
+const ANSWER = `Durable Streams turns an AI response into a durable, resumable
+resource. The model writes tokens into a stream on the server; every reader —
+including this page after a reload — catches up from any offset and then tails
+live over SSE. Closure marks the end of the answer, so readers get a clean EOF
+instead of a dangling connection. Producer sequencing makes the writer safe to
+retry: duplicate batches are acknowledged, never double-appended.`.split(/(?<= )/);
+
+// --- conversation state (survives reload) --------------------------------
+const convo = localStorage.getItem("ds-convo") ?? `chat-${Date.now()}`;
+localStorage.setItem("ds-convo", convo);
+const streamUrl = `${SERVER}/v1/stream/ai-chat-demo/${convo}`;
+
+const transcript = document.getElementById("transcript");
+const status = document.getElementById("status");
+
+// --- reader: catch up + live tail via SSE, resuming from saved offset ----
+let offset = localStorage.getItem(`ds-offset-${convo}`) ?? "-1";
+transcript.textContent = localStorage.getItem(`ds-text-${convo}`) ?? "";
+
+async function tail() {
+  for (;;) {
+    let res;
+    try {
+      res = await fetch(`${streamUrl}?offset=${encodeURIComponent(offset)}&live=sse`);
+    } catch {
+      status.textContent = "connection lost, retrying…";
+      await new Promise((r) => setTimeout(r, 1000));
+      continue;
+    }
+    if (res.status === 404) { status.textContent = "no stream yet — click Generate"; return; }
+    status.textContent = "tailing live (SSE)…";
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx;
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const rawEvent = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        const type = rawEvent.match(/^event: (\w+)$/m)?.[1];
+        const data = rawEvent.split("\n").filter((l) => l.startsWith("data:")).map((l) => l.slice(5)).join("\n");
+        if (type === "data") {
+          for (const token of JSON.parse(data)) {
+            transcript.textContent += token;
+          }
+          localStorage.setItem(`ds-text-${convo}`, transcript.textContent);
+        } else if (type === "control") {
+          const control = JSON.parse(data);
+          offset = control.streamNextOffset;
+          localStorage.setItem(`ds-offset-${convo}`, offset);
+          if (control.streamClosed) {
+            status.textContent = "answer complete (stream closed — EOF)";
+            return;
+          }
+        }
+      }
+    }
+    // Server recycles SSE connections (~60s); reconnect from saved offset.
+  }
+}
+
+// --- writer: the "model", resumable via producer sequencing ---------------
+// Progress persists so a reload resumes generation where it stopped; the
+// (producerId, epoch, seq) tuple means a retried batch can never be
+// double-appended by the server.
+async function generate() {
+  let i = Number(localStorage.getItem(`ds-gen-${convo}`) ?? "0");
+  let seq = Number(localStorage.getItem(`ds-seq-${convo}`) ?? "-1");
+  if (i === 0) {
+    const created = await fetch(streamUrl, {
+      method: "PUT",
+      headers: { "content-type": "application/json" },
+    });
+    if (created.status === 409) {
+      status.textContent = "conversation already answered — click New conversation";
+      return;
+    }
+    tail();
+  }
+  status.textContent = "model is writing into the stream…";
+  const BATCH = 4;
+  while (i < ANSWER.length) {
+    const tokens = ANSWER.slice(i, i + BATCH);
+    seq += 1;
+    const res = await fetch(streamUrl, {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "Producer-Id": `demo-writer-${convo}`,
+        "Producer-Epoch": "0",
+        "Producer-Seq": String(seq),
+      },
+      body: JSON.stringify(tokens),
+    });
+    if (!res.ok && res.status !== 204) {
+      status.textContent = `append failed (${res.status})`; return;
+    }
+    i += tokens.length;
+    localStorage.setItem(`ds-gen-${convo}`, String(i));
+    localStorage.setItem(`ds-seq-${convo}`, String(seq));
+    await new Promise((r) => setTimeout(r, 150)); // simulated token latency
+  }
+  // Close the stream: EOF for every reader, in every read mode.
+  await fetch(streamUrl, { method: "POST", headers: { "Stream-Closed": "true" } });
+  localStorage.removeItem(`ds-gen-${convo}`);
+}
+
+document.getElementById("generate").addEventListener("click", generate);
+document.getElementById("reset").addEventListener("click", () => {
+  for (const k of Object.keys(localStorage)) if (k.startsWith("ds-")) localStorage.removeItem(k);
+  location.reload();
+});
+
+// On load: resume both sides. The reader always resumes; the writer only
+// if a generation was interrupted mid-answer.
+tail();
+if (localStorage.getItem(`ds-gen-${convo}`) !== null && Number(localStorage.getItem(`ds-gen-${convo}`)) > 0) {
+  generate();
+}
+</script>
+</body>
+</html>
