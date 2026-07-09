@@ -38,11 +38,19 @@ function generateJitterIntervals(intervalSeconds: number): number {
  * Generate a response cursor that is >= the current interval and strictly
  * greater than any client-provided cursor.
  */
+/**
+ * Cursors we emit are small decimal interval counters; only accept the
+ * same shape back. Anything else (huge digit strings that parse to
+ * Infinity, exponents, garbage) is treated as no-cursor so we can never
+ * be steered into emitting a non-numeric or non-monotonic cursor.
+ */
+const VALID_CLIENT_CURSOR = /^\d{1,15}$/;
+
 export function generateResponseCursor(
   clientCursor: string | undefined,
 ): string {
   const currentCursor = calculateCursor();
-  if (!clientCursor) {
+  if (!clientCursor || !VALID_CLIENT_CURSOR.test(clientCursor)) {
     return currentCursor;
   }
 

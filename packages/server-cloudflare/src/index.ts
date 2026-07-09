@@ -50,6 +50,16 @@ export default {
     const url = new URL(request.url);
     const streamPath = url.pathname;
 
+    // `__ds` is the protocol's reserved control-plane prefix (§6): route it
+    // before stream ops. Subscriptions are not implemented, so it 404s
+    // rather than being treated as a stream path.
+    if (streamPath.endsWith("/__ds") || streamPath.includes("/__ds/")) {
+      return new Response("Subscription APIs are not supported", {
+        status: 404,
+        headers: { ...CORS_HEADERS, "content-type": "text/plain" },
+      });
+    }
+
     if (streamPath === "/" || streamPath === "") {
       return new Response("Durable Streams server. Streams live at /<path>.", {
         status: 200,

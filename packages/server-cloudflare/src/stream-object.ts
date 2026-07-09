@@ -50,7 +50,7 @@ import {
 import { validateProducer } from "./producer";
 import type { ProducerValidationResult } from "./producer";
 import { SqliteStore } from "./store";
-import type { ClosedBy, StoredMessage, StreamMeta } from "./store";
+import type { ClosedBy, ReadBatch, StoredMessage, StreamMeta } from "./store";
 
 /**
  * How long a long-poll (or SSE keep-alive interval) waits for new data.
@@ -72,6 +72,26 @@ const VALID_OFFSET_PATTERN = /^(-1|now|\d+_\d+)$/;
 /** Strict TTL: non-negative decimal integer, no leading zeros/sign/float. */
 const TTL_PATTERN = /^(0|[1-9]\d*)$/;
 
+/**
+ * Upper bound on Stream-TTL (100 years in seconds). Anything larger risks
+ * losing integer precision in `lastAccessedAt + ttl*1000` and produces
+ * nonsense alarm times.
+ */
+const MAX_TTL_SECONDS = 3_153_600_000;
+
+/**
+ * Per-response read budget. Bounds the memory of catch-up reads and the
+ * structured-clone size of fork readRange RPCs; larger streams are served
+ * as partial chunks (Stream-Up-To-Date omitted) per protocol §5.6.
+ */
+const MAX_READ_BATCH_BYTES = 4 * 1024 * 1024;
+
+/**
+ * Recycle SSE connections after ~60s (protocol §5.8/§10.2 SHOULD) so CDNs
+ * can collapse and the DO is not pinned forever by one client.
+ */
+const MAX_SSE_LIFETIME_MS = 60_000;
+
 const STRICT_INTEGER_REGEX = /^\d+$/;
 
 /** Minimal shape check for a usable content-type value. */
@@ -89,6 +109,16 @@ const MAX_OFFSET_CAP = "9999999999999999_9999999999999999";
 const STREAM_FORKED_FROM_HEADER = "Stream-Forked-From";
 const STREAM_FORK_OFFSET_HEADER = "Stream-Fork-Offset";
 const STREAM_FORK_SUB_OFFSET_HEADER = "Stream-Fork-Sub-Offset";
+
+interface RequestedCreateConfig {
+  contentType: string | undefined;
+  ttlSeconds: number | undefined;
+  expiresAt: string | undefined;
+  createClosed: boolean;
+  forkedFrom: string | undefined;
+  forkOffsetHeader: string | undefined;
+  forkSubOffset: number | undefined;
+}
 
 export type ForkAcquireResult =
   | {
@@ -134,11 +164,13 @@ interface WaitResult {
   messages: Array<StoredMessage>;
   timedOut: boolean;
   streamClosed: boolean;
+  /** True when the returned batch was byte-capped — more data remains. */
+  capped: boolean;
 }
 
 interface PendingWaiter {
   offset: string;
-  resolve: (messages: Array<StoredMessage>) => void;
+  resolve: (batch: ReadBatch) => void;
 }
 
 interface ProducerHeaders {
@@ -178,6 +210,7 @@ export class StreamObject extends DurableObject<Env> {
   }
 
   override async alarm(): Promise<void> {
+    await this.processGcReleases();
     const meta = this.store.getMetaRaw();
     if (!meta) return;
     if (this.store.isExpired(meta, Date.now())) {
@@ -253,15 +286,16 @@ export class StreamObject extends DurableObject<Env> {
   /**
    * Read messages in (afterOffset, capOffset], stitching through the fork
    * chain. Reads raw state deliberately: forks must read through
-   * soft-deleted (and expired-with-refs) sources.
+   * soft-deleted (and expired-with-refs) sources. Byte-budgeted so a fork
+   * read never moves more than one bounded batch per RPC.
    */
   async readRange(
     afterOffset: string | undefined,
     capOffset: string,
     limit?: number,
-  ): Promise<Array<StoredMessage>> {
+  ): Promise<ReadBatch> {
     const meta = this.store.getMetaRaw();
-    if (!meta) return [];
+    if (!meta) return { messages: [], capped: false };
     return this.readStitched(meta, afterOffset, capOffset, limit);
   }
 
@@ -313,6 +347,9 @@ export class StreamObject extends DurableObject<Env> {
         return this.text(400, "Invalid Stream-TTL value");
       }
       ttlSeconds = parseInt(ttlHeader, 10);
+      if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds > MAX_TTL_SECONDS) {
+        return this.text(400, "Invalid Stream-TTL value");
+      }
     }
 
     if (expiresAtHeader !== undefined) {
@@ -346,56 +383,24 @@ export class StreamObject extends DurableObject<Env> {
     }
 
     const now = Date.now();
-    const existing = await this.getMeta(now);
+    const requested: RequestedCreateConfig = {
+      contentType,
+      ttlSeconds,
+      expiresAt: expiresAtHeader,
+      createClosed,
+      forkedFrom,
+      forkOffsetHeader,
+      forkSubOffset,
+    };
+
+    // getMeta can await (expiry purge cascades a cross-DO forkRelease),
+    // which opens the input gate — so a concurrent PUT may have created
+    // the stream even when getMeta returned undefined. Re-read raw state
+    // to make PUT idempotent instead of crashing on a duplicate INSERT.
+    const existing = (await this.getMeta(now)) ?? this.store.getMetaRaw();
 
     if (existing) {
-      if (existing.softDeleted) {
-        return this.text(
-          409,
-          "stream was deleted but still has active forks — path cannot be reused until all forks are removed",
-        );
-      }
-      const contentTypeMatches =
-        (normalizeContentType(contentType) || "application/octet-stream") ===
-        (normalizeContentType(existing.contentType) ||
-          "application/octet-stream");
-      const ttlMatches = ttlSeconds === existing.ttlSeconds;
-      const expiresMatches = expiresAtHeader === existing.expiresAt;
-      const closedMatches = createClosed === existing.closed;
-      const forkedFromMatches = forkedFrom === existing.forkedFrom;
-      // forkOffset only compared when explicitly supplied: an omitted
-      // offset was resolved server-side at creation, so a second PUT
-      // that also omits it stays idempotent.
-      const forkOffsetMatches =
-        forkOffsetHeader === undefined ||
-        forkOffsetHeader === existing.forkOffset;
-      const forkSubOffsetMatches =
-        (forkSubOffset ?? 0) === (existing.forkSubOffset ?? 0);
-
-      if (
-        contentTypeMatches &&
-        ttlMatches &&
-        expiresMatches &&
-        closedMatches &&
-        forkedFromMatches &&
-        forkOffsetMatches &&
-        forkSubOffsetMatches
-      ) {
-        // Idempotent success — the body is ignored for existing streams.
-        const headers: Record<string, string> = {
-          "content-type":
-            existing.contentType ?? contentType ?? "application/octet-stream",
-          [STREAM_OFFSET_HEADER]: existing.currentOffset,
-        };
-        if (existing.closed) {
-          headers[STREAM_CLOSED_HEADER] = "true";
-        }
-        return this.respond(200, headers);
-      }
-      return this.text(
-        409,
-        "Stream already exists with different configuration",
-      );
+      return this.existingStreamResponse(existing, requested);
     }
 
     if (forkedFrom !== undefined) {
@@ -426,6 +431,9 @@ export class StreamObject extends DurableObject<Env> {
           }
           throw err;
         }
+        if (initialPayload.length > MAX_BODY_BYTES) {
+          return this.text(413, "Payload too large");
+        }
       } else {
         initialPayload = body;
       }
@@ -455,6 +463,69 @@ export class StreamObject extends DurableObject<Env> {
       headers[STREAM_CLOSED_HEADER] = "true";
     }
     return this.respond(201, headers);
+  }
+
+  /**
+   * Respond to a PUT on an already-existing stream: 200 when the
+   * requested config matches (idempotent), 409 otherwise.
+   */
+  private existingStreamResponse(
+    existing: StreamMeta,
+    req: RequestedCreateConfig,
+  ): Response {
+    if (existing.softDeleted) {
+      return this.text(
+        409,
+        "stream was deleted but still has active forks — path cannot be reused until all forks are removed",
+      );
+    }
+    // A fork re-PUT that omits Content-Type means "inherit from source",
+    // which matches whatever the fork inherited — skip the comparison.
+    const contentTypeMatches =
+      req.contentType === undefined &&
+      req.forkedFrom !== undefined &&
+      req.forkedFrom === existing.forkedFrom
+        ? true
+        : (normalizeContentType(req.contentType) ||
+            "application/octet-stream") ===
+          (normalizeContentType(existing.contentType) ||
+            "application/octet-stream");
+    const ttlMatches = req.ttlSeconds === existing.ttlSeconds;
+    const expiresMatches = req.expiresAt === existing.expiresAt;
+    const closedMatches = req.createClosed === existing.closed;
+    const forkedFromMatches = req.forkedFrom === existing.forkedFrom;
+    // forkOffset only compared when explicitly supplied: an omitted
+    // offset was resolved server-side at creation, so a second PUT
+    // that also omits it stays idempotent.
+    const forkOffsetMatches =
+      req.forkOffsetHeader === undefined ||
+      req.forkOffsetHeader === existing.forkOffset;
+    const forkSubOffsetMatches =
+      (req.forkSubOffset ?? 0) === (existing.forkSubOffset ?? 0);
+
+    if (
+      contentTypeMatches &&
+      ttlMatches &&
+      expiresMatches &&
+      closedMatches &&
+      forkedFromMatches &&
+      forkOffsetMatches &&
+      forkSubOffsetMatches
+    ) {
+      // Idempotent success — the body is ignored for existing streams.
+      const headers: Record<string, string> = {
+        "content-type":
+          existing.contentType ??
+          req.contentType ??
+          "application/octet-stream",
+        [STREAM_OFFSET_HEADER]: existing.currentOffset,
+      };
+      if (existing.closed) {
+        headers[STREAM_CLOSED_HEADER] = "true";
+      }
+      return this.respond(200, headers);
+    }
+    return this.text(409, "Stream already exists with different configuration");
   }
 
   /** Create this stream as a fork of another stream. */
@@ -537,7 +608,7 @@ export class StreamObject extends DurableObject<Env> {
         MAX_OFFSET_CAP,
         1,
       );
-      const first = past[0];
+      const first = past.messages[0];
       if (!first) {
         await release();
         return this.text(400, "Invalid fork sub-offset");
@@ -586,31 +657,60 @@ export class StreamObject extends DurableObject<Env> {
           }
           throw err;
         }
+        if (initialPayload.length > MAX_BODY_BYTES) {
+          await release();
+          return this.text(413, "Payload too large");
+        }
       } else {
         initialPayload = options.body;
       }
     }
 
-    this.store.createMeta({
-      contentType: resolvedContentType,
-      ttlSeconds: effectiveTtl,
-      expiresAt: effectiveExpiresAt,
-      closed: options.createClosed,
-      now,
-      forkedFrom,
-      forkOffset: acquired.forkOffset,
-      forkSubOffset:
-        options.forkSubOffset !== undefined && options.forkSubOffset > 0
-          ? options.forkSubOffset
-          : undefined,
-    });
-
-    let currentOffset = acquired.forkOffset;
-    if (subOffsetPrefix !== undefined && subOffsetPrefix.length > 0) {
-      currentOffset = this.store.appendMessage(currentOffset, subOffsetPrefix, now);
+    // The forkAcquire / readRange RPCs above opened the input gate: a
+    // concurrent PUT may have created this path in the meantime. Creating
+    // again would violate the meta PK, so release our reference and fall
+    // back to the idempotency comparison.
+    const raced = this.store.getMetaRaw();
+    if (raced) {
+      await release();
+      return this.existingStreamResponse(raced, {
+        contentType: options.contentType,
+        ttlSeconds: options.ttlSeconds,
+        expiresAt: options.expiresAt,
+        createClosed: options.createClosed,
+        forkedFrom,
+        forkOffsetHeader: options.forkOffsetHeader,
+        forkSubOffset: options.forkSubOffset,
+      });
     }
-    if (initialPayload !== undefined && initialPayload.length > 0) {
-      currentOffset = this.store.appendMessage(currentOffset, initialPayload, now);
+
+    let currentOffset: string;
+    try {
+      this.store.createMeta({
+        contentType: resolvedContentType,
+        ttlSeconds: effectiveTtl,
+        expiresAt: effectiveExpiresAt,
+        closed: options.createClosed,
+        now,
+        forkedFrom,
+        forkOffset: acquired.forkOffset,
+        forkSubOffset:
+          options.forkSubOffset !== undefined && options.forkSubOffset > 0
+            ? options.forkSubOffset
+            : undefined,
+      });
+
+      currentOffset = acquired.forkOffset;
+      if (subOffsetPrefix !== undefined && subOffsetPrefix.length > 0) {
+        currentOffset = this.store.appendMessage(currentOffset, subOffsetPrefix, now);
+      }
+      if (initialPayload !== undefined && initialPayload.length > 0) {
+        currentOffset = this.store.appendMessage(currentOffset, initialPayload, now);
+      }
+    } catch (err) {
+      // Never leak the acquired source reference on a failed create.
+      await release();
+      throw err;
     }
 
     await this.syncExpiryAlarm();
@@ -728,8 +828,10 @@ export class StreamObject extends DurableObject<Env> {
     const effectiveOffset =
       offsetParam === "now" ? meta.currentOffset : offsetParam;
 
-    let messages = await this.readStream(meta, effectiveOffset);
-    let upToDate = true;
+    const initialBatch = await this.readStream(meta, effectiveOffset);
+    let messages = initialBatch.messages;
+    // Partial (byte-capped) responses omit Stream-Up-To-Date per §5.6.
+    let upToDate = !initialBatch.capped;
     this.store.touchAccess(now);
     await this.syncExpiryAlarm();
 
@@ -777,7 +879,7 @@ export class StreamObject extends DurableObject<Env> {
       }
 
       messages = result.messages;
-      upToDate = true;
+      upToDate = !result.capped;
     }
 
     // Build the response. Re-read meta: it may have changed during a wait.
@@ -813,6 +915,12 @@ export class StreamObject extends DurableObject<Env> {
       return this.respond(304, { etag });
     }
 
+    // Recommended shared-cache headers for catch-up reads (§10.1);
+    // live-mode responses stay uncached.
+    if (live !== "long-poll") {
+      headers["cache-control"] = "public, max-age=60, stale-while-revalidate=300";
+    }
+
     const fragments = messages.map((m) => m.data);
     const body =
       normalizeContentType(freshMeta.contentType) === "application/json"
@@ -838,16 +946,22 @@ export class StreamObject extends DurableObject<Env> {
       normalizeContentType(meta.contentType) === "application/json";
 
     // Pump in the background; the pending stream keeps the DO alive.
-    // Write failures mean the client disconnected — the only sane
-    // response is to stop pumping.
-    void this.pumpSse(initialOffset, cursor, useBase64, isJson, writer)
-      .catch(() => undefined)
+    // Write failures mean the client disconnected — expected; anything
+    // else is logged so real storage/RPC failures stay observable.
+    void this.pumpSse(meta.generation, initialOffset, cursor, useBase64, isJson, writer)
+      .catch((err: unknown) => {
+        console.warn("SSE pump ended with error", err);
+      })
       .finally(() => writer.close().catch(() => undefined));
 
     const headers: Record<string, string> = {
       "content-type": "text/event-stream",
       "cache-control": "no-cache",
       connection: "keep-alive",
+      // Prevent edge compression from buffering SSE events: compressed
+      // responses are flushed in compressor-sized blocks, which delays
+      // (and can split) events for live clients.
+      "content-encoding": "identity",
     };
     if (useBase64) {
       headers[STREAM_SSE_DATA_ENCODING_HEADER] = "base64";
@@ -856,6 +970,7 @@ export class StreamObject extends DurableObject<Env> {
   }
 
   private async pumpSse(
+    generation: string,
     initialOffset: string,
     cursor: string | undefined,
     useBase64: boolean,
@@ -865,16 +980,19 @@ export class StreamObject extends DurableObject<Env> {
     const encoder = new TextEncoder();
     const decoder = new TextDecoder();
     const write = (s: string): Promise<void> => writer.write(encoder.encode(s));
+    const startedAt = Date.now();
 
     let currentOffset = initialOffset;
 
     for (;;) {
       const loopMeta = this.store.getMetaRaw();
-      if (!loopMeta) {
-        // Stream deleted/expired mid-tail: nothing more to deliver.
+      if (!loopMeta || loopMeta.generation !== generation) {
+        // Stream deleted/expired (and possibly recreated) mid-tail: this
+        // subscription belongs to the old generation — end it rather than
+        // silently rebinding to a different stream.
         return;
       }
-      const messages = await this.readStream(
+      const batch = await this.readStream(
         loopMeta,
         currentOffset === "-1" ? undefined : currentOffset,
       );
@@ -885,7 +1003,7 @@ export class StreamObject extends DurableObject<Env> {
       // marker can appear inside a data payload), then fail to parse the
       // incomplete event.
       let frame = "";
-      for (const message of messages) {
+      for (const message of batch.messages) {
         let dataPayload: string;
         if (useBase64) {
           dataPayload = base64FromBytes(message.data);
@@ -899,16 +1017,16 @@ export class StreamObject extends DurableObject<Env> {
       }
 
       const freshMeta = this.store.getMetaRaw();
-      if (!freshMeta) {
-        // Stream deleted/expired mid-tail: nothing more to deliver.
+      if (!freshMeta || freshMeta.generation !== generation) {
         return;
       }
       this.store.touchAccess(Date.now());
       await this.syncExpiryAlarm();
 
-      const lastMessage = messages[messages.length - 1];
+      const lastMessage = batch.messages[batch.messages.length - 1];
       const controlOffset = lastMessage?.offset ?? freshMeta.currentOffset;
-      const clientAtTail = controlOffset === freshMeta.currentOffset;
+      const clientAtTail =
+        !batch.capped && controlOffset === freshMeta.currentOffset;
 
       const controlData: Record<string, string | boolean> = {
         [SSE_OFFSET_FIELD]: controlOffset,
@@ -918,7 +1036,9 @@ export class StreamObject extends DurableObject<Env> {
         controlData[SSE_CLOSED_FIELD] = true;
       } else {
         controlData[SSE_CURSOR_FIELD] = generateResponseCursor(cursor);
-        controlData[SSE_UP_TO_DATE_FIELD] = true;
+        if (!batch.capped) {
+          controlData[SSE_UP_TO_DATE_FIELD] = true;
+        }
       }
       frame += `event: control\n` + encodeSseData(JSON.stringify(controlData));
       await write(frame);
@@ -927,6 +1047,17 @@ export class StreamObject extends DurableObject<Env> {
         return;
       }
       currentOffset = controlOffset;
+
+      if (batch.capped) {
+        // More catch-up data remains — keep reading without waiting.
+        continue;
+      }
+
+      // Recycle long-lived connections (§5.8 SHOULD, ~60s) at a clean
+      // control boundary; the client reconnects from streamNextOffset.
+      if (Date.now() - startedAt >= MAX_SSE_LIFETIME_MS) {
+        return;
+      }
 
       const result = await this.waitForMessages(
         currentOffset,
@@ -946,7 +1077,7 @@ export class StreamObject extends DurableObject<Env> {
 
       if (result.timedOut) {
         const afterWait = this.store.getMetaRaw();
-        if (!afterWait) return;
+        if (!afterWait || afterWait.generation !== generation) return;
         if (afterWait.closed) {
           const closedControl: Record<string, string | boolean> = {
             [SSE_OFFSET_FIELD]: currentOffset,
@@ -1132,6 +1263,11 @@ export class StreamObject extends DurableObject<Env> {
           return this.text(400, err.message);
         }
         throw err;
+      }
+      // JSON normalization can expand the payload (e.g. escaping); the
+      // stored fragment must still fit SQLite's per-value cap.
+      if (payload.length > MAX_BODY_BYTES) {
+        return this.text(413, "Payload too large");
       }
     }
 
@@ -1351,21 +1487,52 @@ export class StreamObject extends DurableObject<Env> {
     await this.ctx.storage.deleteAlarm();
     if (meta.forkedFrom !== undefined) {
       // Cascade: dropping this fork releases its reference on the source.
-      const stub = this.env.STREAMS.get(
-        this.env.STREAMS.idFromName(meta.forkedFrom),
-      );
-      await stub.forkRelease();
+      // The release must not be lost if the RPC fails (that would pin the
+      // source's refcount forever), so queue it durably and retry from
+      // the alarm handler on failure.
+      this.store.enqueueGcRelease(meta.forkedFrom);
+      await this.processGcReleases();
     }
   }
+
+  /** Retry queued forkRelease calls; re-arm the alarm if any still fail. */
+  private async processGcReleases(): Promise<void> {
+    for (const parentPath of this.store.pendingGcReleases()) {
+      const stub = this.env.STREAMS.get(
+        this.env.STREAMS.idFromName(parentPath),
+      );
+      try {
+        await stub.forkRelease();
+        this.store.dequeueGcRelease(parentPath);
+      } catch (err) {
+        console.error("forkRelease failed; will retry via alarm", parentPath, err);
+        await this.ctx.storage.setAlarm(Date.now() + 5_000);
+      }
+    }
+  }
+
+  /** Last alarm time armed by syncExpiryAlarm (write-amplification guard). */
+  private lastArmedAlarm: number | undefined;
 
   /** (Re-)arm the expiry alarm to match the stream's current expiry time. */
   private async syncExpiryAlarm(): Promise<void> {
     const meta = this.store.getMetaRaw();
-    if (!meta) return;
-    const expiry = this.store.expiryTime(meta);
-    if (expiry !== undefined) {
-      await this.ctx.storage.setAlarm(expiry);
+    if (!meta) {
+      this.lastArmedAlarm = undefined;
+      return;
     }
+    const expiry = this.store.expiryTime(meta);
+    if (expiry === undefined) return;
+    // Skip the storage write when the target barely moved (sliding-TTL
+    // touches on every read would otherwise write an alarm per request).
+    if (
+      this.lastArmedAlarm !== undefined &&
+      Math.abs(expiry - this.lastArmedAlarm) < 500
+    ) {
+      return;
+    }
+    await this.ctx.storage.setAlarm(expiry);
+    this.lastArmedAlarm = expiry;
   }
 
   // ==========================================================================
@@ -1379,7 +1546,7 @@ export class StreamObject extends DurableObject<Env> {
   private async readStream(
     meta: StreamMeta,
     afterOffset: string | undefined,
-  ): Promise<Array<StoredMessage>> {
+  ): Promise<ReadBatch> {
     return this.readStitched(meta, afterOffset, undefined, undefined);
   }
 
@@ -1388,7 +1555,7 @@ export class StreamObject extends DurableObject<Env> {
     afterOffset: string | undefined,
     capOffset: string | undefined,
     limit: number | undefined,
-  ): Promise<Array<StoredMessage>> {
+  ): Promise<ReadBatch> {
     const normalizedAfter =
       afterOffset === undefined || afterOffset === "-1"
         ? undefined
@@ -1408,9 +1575,14 @@ export class StreamObject extends DurableObject<Env> {
         this.env.STREAMS.idFromName(meta.forkedFrom),
       );
       const inherited = await stub.readRange(normalizedAfter, cap, limit);
-      out.push(...inherited);
+      out.push(...inherited.messages);
+      if (inherited.capped) {
+        // More inherited data remains: return the partial batch and let
+        // the reader continue from its Stream-Next-Offset.
+        return { messages: out, capped: true };
+      }
       if (limit !== undefined && out.length >= limit) {
-        return out.slice(0, limit);
+        return { messages: out.slice(0, limit), capped: true };
       }
     }
 
@@ -1419,9 +1591,10 @@ export class StreamObject extends DurableObject<Env> {
       normalizedAfter,
       capOffset,
       remaining,
+      MAX_READ_BATCH_BYTES,
     );
-    out.push(...own);
-    return out;
+    out.push(...own.messages);
+    return { messages: out, capped: own.capped };
   }
 
   private async waitForMessages(
@@ -1438,20 +1611,36 @@ export class StreamObject extends DurableObject<Env> {
       offset < forkMeta.forkOffset
     ) {
       const stitched = await this.readStream(forkMeta, offset);
-      return { messages: stitched, timedOut: false, streamClosed: false };
+      return {
+        messages: stitched.messages,
+        timedOut: false,
+        streamClosed: false,
+        capped: stitched.capped,
+      };
     }
     if (forkMeta?.forkedFrom !== undefined && offset === "-1") {
       const stitched = await this.readStream(forkMeta, undefined);
-      if (stitched.length > 0) {
-        return { messages: stitched, timedOut: false, streamClosed: false };
+      if (stitched.messages.length > 0) {
+        return {
+          messages: stitched.messages,
+          timedOut: false,
+          streamClosed: false,
+          capped: stitched.capped,
+        };
       }
     }
 
-    const messages = this.store.readMessages(
+    const initial = this.store.readMessages(
       offset === "-1" ? undefined : offset,
+      MAX_READ_BATCH_BYTES,
     );
-    if (messages.length > 0) {
-      return Promise.resolve({ messages, timedOut: false, streamClosed: false });
+    if (initial.messages.length > 0) {
+      return {
+        messages: initial.messages,
+        timedOut: false,
+        streamClosed: false,
+        capped: initial.capped,
+      };
     }
 
     const meta = this.store.getMetaRaw();
@@ -1460,6 +1649,7 @@ export class StreamObject extends DurableObject<Env> {
         messages: [],
         timedOut: false,
         streamClosed: false,
+        capped: false,
       });
     }
     if (meta.closed && offset === meta.currentOffset) {
@@ -1467,19 +1657,25 @@ export class StreamObject extends DurableObject<Env> {
         messages: [],
         timedOut: false,
         streamClosed: true,
+        capped: false,
       });
     }
 
     return new Promise<WaitResult>((resolve) => {
       const waiter: PendingWaiter = {
         offset,
-        resolve: (msgs) => {
+        resolve: (batch) => {
           clearTimeout(timeoutId);
           this.removeWaiter(waiter);
           const current = this.store.getMetaRaw();
           const streamClosed =
-            current?.closed === true && msgs.length === 0;
-          resolve({ messages: msgs, timedOut: false, streamClosed });
+            current?.closed === true && batch.messages.length === 0;
+          resolve({
+            messages: batch.messages,
+            timedOut: false,
+            streamClosed,
+            capped: batch.capped,
+          });
         },
       };
 
@@ -1490,6 +1686,7 @@ export class StreamObject extends DurableObject<Env> {
           messages: [],
           timedOut: true,
           streamClosed: current?.closed === true,
+          capped: false,
         });
       }, timeoutMs);
 
@@ -1499,24 +1696,25 @@ export class StreamObject extends DurableObject<Env> {
 
   private notifyAppend(): void {
     for (const waiter of [...this.waiters]) {
-      const messages = this.store.readMessages(
+      const batch = this.store.readMessages(
         waiter.offset === "-1" ? undefined : waiter.offset,
+        MAX_READ_BATCH_BYTES,
       );
-      if (messages.length > 0) {
-        waiter.resolve(messages);
+      if (batch.messages.length > 0) {
+        waiter.resolve(batch);
       }
     }
   }
 
   private notifyClosed(): void {
     for (const waiter of [...this.waiters]) {
-      waiter.resolve([]);
+      waiter.resolve({ messages: [], capped: false });
     }
   }
 
   private cancelWaiters(): void {
     for (const waiter of [...this.waiters]) {
-      waiter.resolve([]);
+      waiter.resolve({ messages: [], capped: false });
     }
     this.waiters = [];
   }

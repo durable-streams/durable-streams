@@ -23,6 +23,8 @@ export interface ClosedBy {
 }
 
 export interface StreamMeta {
+  /** Random id minted at creation; distinguishes delete+recreate generations. */
+  generation: string;
   contentType: string | undefined;
   ttlSeconds: number | undefined;
   expiresAt: string | undefined;
@@ -50,7 +52,14 @@ export interface StoredMessage {
   offset: string;
 }
 
+export interface ReadBatch {
+  messages: Array<StoredMessage>;
+  /** True when the read stopped early (limit/byte budget) — more may remain. */
+  capped: boolean;
+}
+
 interface MetaRow extends Record<string, SqlStorageValue> {
+  gen: string;
   content_type: string | null;
   ttl_seconds: number | null;
   expires_at: string | null;
@@ -119,6 +128,7 @@ export class SqliteStore {
     this.sql.exec(`
       CREATE TABLE IF NOT EXISTS meta (
         id INTEGER PRIMARY KEY CHECK (id = 1),
+        gen TEXT NOT NULL,
         content_type TEXT,
         ttl_seconds INTEGER,
         expires_at TEXT,
@@ -145,6 +155,9 @@ export class SqliteStore {
         last_seq INTEGER NOT NULL,
         last_updated INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS gc_queue (
+        parent_path TEXT PRIMARY KEY
+      );
     `);
   }
 
@@ -156,6 +169,7 @@ export class SqliteStore {
     const row = rows[0];
     if (!row) return undefined;
     return {
+      generation: row.gen,
       contentType: row.content_type ?? undefined,
       ttlSeconds: row.ttl_seconds ?? undefined,
       expiresAt: row.expires_at ?? undefined,
@@ -217,10 +231,11 @@ export class SqliteStore {
     forkSubOffset?: number | undefined;
   }): void {
     this.sql.exec(
-      `INSERT INTO meta (id, content_type, ttl_seconds, expires_at, closed, closed_by,
+      `INSERT INTO meta (id, gen, content_type, ttl_seconds, expires_at, closed, closed_by,
          current_offset, last_seq, created_at, last_accessed_at,
          forked_from, fork_offset, fork_sub_offset, ref_count, soft_deleted)
-       VALUES (1, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, 0, 0)`,
+       VALUES (1, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, 0, 0)`,
+      crypto.randomUUID(),
       options.contentType ?? null,
       options.ttlSeconds ?? null,
       options.expiresAt ?? null,
@@ -247,20 +262,29 @@ export class SqliteStore {
     this.sql.exec(`UPDATE meta SET last_accessed_at = ? WHERE id = 1`, now);
   }
 
-  /** Read messages strictly after `afterOffset` (all messages when undefined/"-1"). */
-  readMessages(afterOffset: string | undefined): Array<StoredMessage> {
-    return this.readMessagesRange(afterOffset, undefined, undefined);
+  /**
+   * Read messages strictly after `afterOffset` (all when undefined/"-1"),
+   * bounded by `byteBudget` so unbounded streams cannot be buffered whole.
+   */
+  readMessages(
+    afterOffset: string | undefined,
+    byteBudget: number,
+  ): ReadBatch {
+    return this.readMessagesRange(afterOffset, undefined, undefined, byteBudget);
   }
 
   /**
    * Read messages with `offset > afterOffset` and (when capped)
-   * `offset <= capOffset`, oldest first, up to `limit`.
+   * `offset <= capOffset`, oldest first. Stops at `limit` messages or once
+   * `byteBudget` bytes have been collected (always returning at least one
+   * message); `capped: true` means more data may remain.
    */
   readMessagesRange(
     afterOffset: string | undefined,
     capOffset: string | undefined,
     limit: number | undefined,
-  ): Array<StoredMessage> {
+    byteBudget: number | undefined,
+  ): ReadBatch {
     const after =
       afterOffset === undefined || afterOffset === "-1" ? "" : afterOffset;
     const conditions = ["msg_offset > ?"];
@@ -269,16 +293,29 @@ export class SqliteStore {
       conditions.push("msg_offset <= ?");
       bindings.push(capOffset);
     }
-    let query = `SELECT msg_offset, data FROM messages WHERE ${conditions.join(" AND ")} ORDER BY msg_offset ASC`;
-    if (limit !== undefined) {
-      query += ` LIMIT ?`;
-      bindings.push(limit);
+    const query = `SELECT msg_offset, data FROM messages WHERE ${conditions.join(" AND ")} ORDER BY msg_offset ASC`;
+    const cursor = this.sql.exec<MessageRow>(query, ...bindings);
+    const messages: Array<StoredMessage> = [];
+    let bytes = 0;
+    let capped = false;
+    for (const row of cursor) {
+      if (limit !== undefined && messages.length >= limit) {
+        capped = true;
+        break;
+      }
+      const data = new Uint8Array(row.data);
+      if (
+        byteBudget !== undefined &&
+        messages.length > 0 &&
+        bytes + data.byteLength > byteBudget
+      ) {
+        capped = true;
+        break;
+      }
+      messages.push({ offset: row.msg_offset, data });
+      bytes += data.byteLength;
     }
-    const rows = this.sql.exec<MessageRow>(query, ...bindings).toArray();
-    return rows.map((row) => ({
-      offset: row.msg_offset,
-      data: new Uint8Array(row.data),
-    }));
+    return { messages, capped };
   }
 
   setSoftDeleted(): void {
@@ -287,6 +324,25 @@ export class SqliteStore {
 
   incrementRef(): void {
     this.sql.exec(`UPDATE meta SET ref_count = ref_count + 1 WHERE id = 1`);
+  }
+
+  /** Queue a parent path whose forkRelease RPC failed, for alarm retry. */
+  enqueueGcRelease(parentPath: string): void {
+    this.sql.exec(
+      `INSERT OR IGNORE INTO gc_queue (parent_path) VALUES (?)`,
+      parentPath,
+    );
+  }
+
+  dequeueGcRelease(parentPath: string): void {
+    this.sql.exec(`DELETE FROM gc_queue WHERE parent_path = ?`, parentPath);
+  }
+
+  pendingGcReleases(): Array<string> {
+    return this.sql
+      .exec<{ parent_path: string }>(`SELECT parent_path FROM gc_queue`)
+      .toArray()
+      .map((r) => r.parent_path);
   }
 
   /** Decrement the refcount (floored at 0) and return the new value. */
