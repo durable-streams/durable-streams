@@ -1533,14 +1533,15 @@ export class StreamObject extends DurableObject<Env> {
   // ==========================================================================
 
   private async readBody(request: Request): Promise<Uint8Array | "too_large"> {
+    const body = request.body;
     const lengthHeader = request.headers.get("content-length");
     if (lengthHeader !== null) {
       const length = Number(lengthHeader);
       if (Number.isFinite(length) && length > MAX_BODY_BYTES) {
+        await this.drainBody(body);
         return "too_large";
       }
     }
-    const body = request.body;
     if (body === null) {
       return new Uint8Array(0);
     }
@@ -1552,12 +1553,31 @@ export class StreamObject extends DurableObject<Env> {
       if (done) break;
       total += value.byteLength;
       if (total > MAX_BODY_BYTES) {
-        await reader.cancel();
+        await this.drainReader(reader);
         return "too_large";
       }
       chunks.push(value);
     }
     return concatBytes(chunks);
+  }
+
+  /**
+   * Consume and discard the rest of an oversized upload so the 413 can be
+   * delivered cleanly — responding while the client is still writing
+   * resets the connection (the client sees EPIPE instead of the 413).
+   */
+  private async drainBody(body: ReadableStream<Uint8Array> | null): Promise<void> {
+    if (body === null) return;
+    await this.drainReader(body.getReader());
+  }
+
+  private async drainReader(
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+  ): Promise<void> {
+    for (;;) {
+      const { done } = await reader.read();
+      if (done) return;
+    }
   }
 
   private makeEtag(
