@@ -28,12 +28,17 @@ Key ported invariants: offset format `<16-digit readSeq>_<16-digit byteOffset>` 
 
 Baseline (reference server 0.3.7, suite 0.3.5): 326 passed, 6 skipped, 0 failed.
 
+## Review + deploy status
+
+- Adversarial multi-agent review (4 lenses, 32 agents): 20 confirmed findings, all fixed (see NOTES.md).
+- Deployed: https://durable-object-streams.openstory.workers.dev (fork race fix verified live; SSE verified streaming unbuffered).
+- CI surfaced a real workerd bug (early error responses mid-upload reset the DO → 503s); fixed by consuming bodies before validation.
+- GitHub: https://github.com/tombeckenham/durable-object-streams — `conformance` (wrangler dev) + `live-conformance` (deployed URL) workflows.
+- Stretch `examples/ai-chat`: done; HTTP flow verified headlessly (producer-dedup resume + SSE offset resume + EOF).
+
 ## Remaining work
 
-- [ ] Adversarial multi-agent code review (running) + fixes
-- [ ] Deploy to workers.dev + run suite against live URL
-- [ ] Push GitHub repo + CI
-- [ ] Stretch: examples/ai-chat
+- [ ] Both CI workflows green; capture live-URL conformance summary artifact into README.
 
 ## Blockers
 
