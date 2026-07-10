@@ -43,6 +43,15 @@ export default [
   },
   {
     files: [`**/*.ts`, `**/*.tsx`],
+    languageOptions: {
+      parserOptions: {
+        // Anchor `project: true` tsconfig discovery to the repo root so
+        // typed linting works no matter which working directory the
+        // editor's ESLint server picks (e.g. a package with its own
+        // eslint.config.js).
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
       "@typescript-eslint/no-unused-vars": [
         `error`,

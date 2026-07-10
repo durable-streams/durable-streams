@@ -1,3 +1,4 @@
+import { waitUntil } from "cloudflare:workers"
 import { createFileRoute } from "@tanstack/react-router"
 import { chat } from "@tanstack/ai"
 import { openaiText } from "@tanstack/ai-openai"
@@ -65,6 +66,10 @@ export const Route = createFileRoute(`/api/chat`)({
           },
           newMessages,
           responseStream,
+          // The 202 returns before generation finishes; without waitUntil,
+          // workerd cancels the orphaned pipe when the request context ends
+          // and no assistant chunks are ever written.
+          waitUntil,
         })
       },
     },
