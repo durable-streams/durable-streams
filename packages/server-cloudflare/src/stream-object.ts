@@ -47,8 +47,8 @@ import {
   processJsonAppend,
 } from "./json";
 import { validateProducer } from "./producer";
-import type { ProducerValidationResult } from "./producer";
 import { SqliteStore } from "./store";
+import type { ProducerValidationResult } from "./producer";
 import type { ClosedBy, ReadBatch, StoredMessage, StreamMeta } from "./store";
 
 /**
@@ -103,11 +103,11 @@ const VALID_FORK_OFFSET_PATTERN = /^\d+_\d+$/;
 const SUB_OFFSET_PATTERN = /^(0|[1-9]\d*)$/;
 
 /** Inclusive upper bound beyond any real offset (for uncapped range reads). */
-const MAX_OFFSET_CAP = "9999999999999999_9999999999999999";
+const MAX_OFFSET_CAP = `9999999999999999_9999999999999999`;
 
-const STREAM_FORKED_FROM_HEADER = "Stream-Forked-From";
-const STREAM_FORK_OFFSET_HEADER = "Stream-Fork-Offset";
-const STREAM_FORK_SUB_OFFSET_HEADER = "Stream-Fork-Sub-Offset";
+const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`;
+const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`;
+const STREAM_FORK_SUB_OFFSET_HEADER = `Stream-Fork-Sub-Offset`;
 
 interface RequestedCreateConfig {
   contentType: string | undefined;
@@ -123,10 +123,10 @@ export type ForkAcquireResult =
   | {
       ok: false;
       error:
-        | "not_found"
-        | "soft_deleted"
-        | "content_type_mismatch"
-        | "invalid_offset";
+        | `not_found`
+        | `soft_deleted`
+        | `content_type_mismatch`
+        | `invalid_offset`;
     }
   | {
       ok: true;
@@ -143,11 +143,11 @@ export type ForkAcquireResult =
  */
 function encodeSseData(payload: string): string {
   const lines = payload.split(/\r\n|\r|\n/);
-  return lines.map((line) => `data:${line}`).join("\n") + "\n\n";
+  return lines.map((line) => `data:${line}`).join(`\n`) + `\n\n`;
 }
 
 function base64FromBytes(bytes: Uint8Array): string {
-  let bin = "";
+  let bin = ``;
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
     bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
@@ -159,8 +159,22 @@ function base64FromString(s: string): string {
   return base64FromBytes(new TextEncoder().encode(s));
 }
 
+/**
+ * workerd rejects pending writes with errors like "Network connection
+ * lost." or "This WritableStream has been closed." when the SSE client
+ * goes away — routine disconnects (tab closed, navigation), not failures.
+ */
+function isClientDisconnect(err: unknown): boolean {
+  return (
+    err instanceof Error &&
+    /network connection lost|stream.*(closed|canceled|cancelled|aborted)/i.test(
+      err.message,
+    )
+  );
+}
+
 interface WaitResult {
-  messages: StoredMessage[];
+  messages: Array<StoredMessage>;
   timedOut: boolean;
   streamClosed: boolean;
   /** True when the returned batch was byte-capped — more data remains. */
@@ -191,7 +205,7 @@ export interface StreamsEnv {
 
 export class StreamObject extends DurableObject<StreamsEnv> {
   private readonly store: SqliteStore;
-  private waiters: PendingWaiter[] = [];
+  private waiters: Array<PendingWaiter> = [];
 
   constructor(ctx: DurableObjectState, env: StreamsEnv) {
     super(ctx, env);
@@ -204,20 +218,20 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     const path = url.pathname;
 
     switch (request.method) {
-      case "PUT":
+      case `PUT`:
         return this.handlePut(request, url, path);
-      case "HEAD":
+      case `HEAD`:
         return this.handleHead();
-      case "GET":
+      case `GET`:
         return this.handleGet(request, url);
-      case "POST":
+      case `POST`:
         return this.handlePost(request);
-      case "DELETE":
+      case `DELETE`:
         return this.handleDelete(path);
       default:
         // Drain any body so the response never races the request stream.
         await this.drainBody(request.body);
-        return this.text(405, "Method not allowed");
+        return this.text(405, `Method not allowed`);
     }
   }
 
@@ -252,23 +266,23 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   }): Promise<ForkAcquireResult> {
     const meta = await this.getMeta(Date.now());
     if (!meta) {
-      return { ok: false, error: "not_found" };
+      return { ok: false, error: `not_found` };
     }
     if (meta.softDeleted) {
-      return { ok: false, error: "soft_deleted" };
+      return { ok: false, error: `soft_deleted` };
     }
     if (
       options.contentTypeProvided !== undefined &&
-      options.contentTypeProvided.trim() !== "" &&
+      options.contentTypeProvided.trim() !== `` &&
       normalizeContentType(options.contentTypeProvided) !==
         normalizeContentType(meta.contentType)
     ) {
-      return { ok: false, error: "content_type_mismatch" };
+      return { ok: false, error: `content_type_mismatch` };
     }
 
     const forkOffset = options.forkOffset ?? meta.currentOffset;
     if (forkOffset < ZERO_OFFSET || meta.currentOffset < forkOffset) {
-      return { ok: false, error: "invalid_offset" };
+      return { ok: false, error: `invalid_offset` };
     }
 
     this.store.incrementRef();
@@ -324,11 +338,11 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // still streaming the request body makes workerd throw ("Can't read
     // from request stream after response has been sent"), resetting the DO.
     const body = await this.readBody(request);
-    if (body === "too_large") {
-      return this.text(413, "Payload too large");
+    if (body === `too_large`) {
+      return this.text(413, `Payload too large`);
     }
 
-    let contentType = request.headers.get("content-type") ?? undefined;
+    let contentType = request.headers.get(`content-type`) ?? undefined;
 
     const forkedFrom =
       request.headers.get(STREAM_FORKED_FROM_HEADER) ?? undefined;
@@ -341,42 +355,42 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // except for forks, where an omitted Content-Type means "inherit".
     if (
       contentType === undefined ||
-      contentType.trim() === "" ||
+      contentType.trim() === `` ||
       !CONTENT_TYPE_SHAPE.test(contentType)
     ) {
       contentType =
-        forkedFrom !== undefined ? undefined : "application/octet-stream";
+        forkedFrom !== undefined ? undefined : `application/octet-stream`;
     }
 
     const ttlHeader = request.headers.get(STREAM_TTL_HEADER) ?? undefined;
     const expiresAtHeader =
       request.headers.get(STREAM_EXPIRES_AT_HEADER) ?? undefined;
     const createClosed =
-      (request.headers.get(STREAM_CLOSED_HEADER) ?? "").toLowerCase() ===
-      "true";
+      (request.headers.get(STREAM_CLOSED_HEADER) ?? ``).toLowerCase() ===
+      `true`;
 
     if (ttlHeader !== undefined && expiresAtHeader !== undefined) {
       return this.text(
         400,
-        "Cannot specify both Stream-TTL and Stream-Expires-At",
+        `Cannot specify both Stream-TTL and Stream-Expires-At`,
       );
     }
 
     let ttlSeconds: number | undefined;
     if (ttlHeader !== undefined) {
       if (!TTL_PATTERN.test(ttlHeader)) {
-        return this.text(400, "Invalid Stream-TTL value");
+        return this.text(400, `Invalid Stream-TTL value`);
       }
       ttlSeconds = parseInt(ttlHeader, 10);
       if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds > MAX_TTL_SECONDS) {
-        return this.text(400, "Invalid Stream-TTL value");
+        return this.text(400, `Invalid Stream-TTL value`);
       }
     }
 
     if (expiresAtHeader !== undefined) {
       const timestamp = new Date(expiresAtHeader);
       if (Number.isNaN(timestamp.getTime())) {
-        return this.text(400, "Invalid Stream-Expires-At timestamp");
+        return this.text(400, `Invalid Stream-Expires-At timestamp`);
       }
     }
 
@@ -384,7 +398,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       forkOffsetHeader !== undefined &&
       !VALID_FORK_OFFSET_PATTERN.test(forkOffsetHeader)
     ) {
-      return this.text(400, "Invalid Stream-Fork-Offset format");
+      return this.text(400, `Invalid Stream-Fork-Offset format`);
     }
 
     let forkSubOffset: number | undefined;
@@ -392,11 +406,11 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       if (forkedFrom === undefined) {
         return this.text(
           400,
-          "Stream-Fork-Sub-Offset requires Stream-Forked-From",
+          `Stream-Fork-Sub-Offset requires Stream-Forked-From`,
         );
       }
       if (!SUB_OFFSET_PATTERN.test(forkSubOffsetHeader)) {
-        return this.text(400, "Invalid Stream-Fork-Sub-Offset format");
+        return this.text(400, `Invalid Stream-Fork-Sub-Offset format`);
       }
       forkSubOffset = parseInt(forkSubOffsetHeader, 10);
     }
@@ -438,10 +452,10 @@ export class StreamObject extends DurableObject<StreamsEnv> {
 
     // Process initial data BEFORE creating meta so an invalid JSON body
     // leaves no stream behind.
-    const resolvedContentType = contentType ?? "application/octet-stream";
+    const resolvedContentType = contentType ?? `application/octet-stream`;
     let initialPayload: Uint8Array | undefined;
     if (body.length > 0) {
-      if (normalizeContentType(resolvedContentType) === "application/json") {
+      if (normalizeContentType(resolvedContentType) === `application/json`) {
         try {
           initialPayload = processJsonAppend(body, true);
         } catch (err) {
@@ -451,7 +465,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
           throw err;
         }
         if (initialPayload.length > MAX_BODY_BYTES) {
-          return this.text(413, "Payload too large");
+          return this.text(413, `Payload too large`);
         }
       } else {
         initialPayload = body;
@@ -466,7 +480,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       now,
     });
 
-    let currentOffset = this.store.getMetaRaw()?.currentOffset ?? "";
+    let currentOffset = this.store.getMetaRaw()?.currentOffset ?? ``;
     if (initialPayload !== undefined && initialPayload.length > 0) {
       currentOffset = this.store.appendMessage(
         currentOffset,
@@ -483,7 +497,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       location: `${url.origin}${path}`,
     };
     if (createClosed) {
-      headers[STREAM_CLOSED_HEADER] = "true";
+      headers[STREAM_CLOSED_HEADER] = `true`;
     }
     return this.respond(201, headers);
   }
@@ -499,7 +513,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     if (existing.softDeleted) {
       return this.text(
         409,
-        "stream was deleted but still has active forks — path cannot be reused until all forks are removed",
+        `stream was deleted but still has active forks — path cannot be reused until all forks are removed`,
       );
     }
     // A fork re-PUT that omits Content-Type means "inherit from source",
@@ -510,9 +524,9 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       req.forkedFrom === existing.forkedFrom
         ? true
         : (normalizeContentType(req.contentType) ||
-            "application/octet-stream") ===
+            `application/octet-stream`) ===
           (normalizeContentType(existing.contentType) ||
-            "application/octet-stream");
+            `application/octet-stream`);
     const ttlMatches = req.ttlSeconds === existing.ttlSeconds;
     const expiresMatches = req.expiresAt === existing.expiresAt;
     const closedMatches = req.createClosed === existing.closed;
@@ -538,15 +552,15 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       // Idempotent success — the body is ignored for existing streams.
       const headers: Record<string, string> = {
         "content-type":
-          existing.contentType ?? req.contentType ?? "application/octet-stream",
+          existing.contentType ?? req.contentType ?? `application/octet-stream`,
         [STREAM_OFFSET_HEADER]: existing.currentOffset,
       };
       if (existing.closed) {
-        headers[STREAM_CLOSED_HEADER] = "true";
+        headers[STREAM_CLOSED_HEADER] = `true`;
       }
       return this.respond(200, headers);
     }
-    return this.text(409, "Stream already exists with different configuration");
+    return this.text(409, `Stream already exists with different configuration`);
   }
 
   /** Create this stream as a fork of another stream. */
@@ -570,7 +584,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // A stream cannot fork from itself (calling our own stub would
     // deadlock); the reference server reports this as source-not-found.
     if (forkedFrom === path) {
-      return this.text(404, "Source stream not found");
+      return this.text(404, `Source stream not found`);
     }
 
     const sourceStub = this.env.STREAMS.get(
@@ -583,17 +597,17 @@ export class StreamObject extends DurableObject<StreamsEnv> {
 
     if (!acquired.ok) {
       switch (acquired.error) {
-        case "not_found":
-          return this.text(404, "Source stream not found");
-        case "soft_deleted":
+        case `not_found`:
+          return this.text(404, `Source stream not found`);
+        case `soft_deleted`:
           return this.text(
             409,
-            "source stream was deleted but still has active forks",
+            `source stream was deleted but still has active forks`,
           );
-        case "content_type_mismatch":
-          return this.text(409, "Content type mismatch with source stream");
-        case "invalid_offset":
-          return this.text(400, "Fork offset beyond source stream length");
+        case `content_type_mismatch`:
+          return this.text(409, `Content type mismatch with source stream`);
+        case `invalid_offset`:
+          return this.text(400, `Fork offset beyond source stream length`);
       }
     }
 
@@ -602,11 +616,11 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     };
 
     const resolvedContentType =
-      options.contentType !== undefined && options.contentType.trim() !== ""
+      options.contentType !== undefined && options.contentType.trim() !== ``
         ? options.contentType
         : acquired.contentType;
     const isJson =
-      normalizeContentType(resolvedContentType) === "application/json";
+      normalizeContentType(resolvedContentType) === `application/json`;
 
     // Fork expiry: an explicit TTL or Expires-At wins; otherwise inherit
     // from the source (TTL preferred), giving forks independent lifetimes.
@@ -632,34 +646,34 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       const first = past.messages[0];
       if (!first) {
         await release();
-        return this.text(400, "Invalid fork sub-offset");
+        return this.text(400, `Invalid fork sub-offset`);
       }
       if (isJson) {
         const text = new TextDecoder().decode(first.data);
-        const trimmed = text.endsWith(",") ? text.slice(0, -1) : text;
-        let values: unknown[];
+        const trimmed = text.endsWith(`,`) ? text.slice(0, -1) : text;
+        let values: Array<unknown>;
         try {
           const parsed: unknown = JSON.parse(`[${trimmed}]`);
           if (!Array.isArray(parsed)) {
-            throw new JsonAppendError("Invalid fork sub-offset");
+            throw new JsonAppendError(`Invalid fork sub-offset`);
           }
           values = parsed;
         } catch {
           await release();
-          return this.text(400, "Invalid fork sub-offset");
+          return this.text(400, `Invalid fork sub-offset`);
         }
         if (options.forkSubOffset > values.length) {
           await release();
-          return this.text(400, "Invalid fork sub-offset");
+          return this.text(400, `Invalid fork sub-offset`);
         }
         const prefix = values
           .slice(0, options.forkSubOffset)
           .map((v) => JSON.stringify(v));
-        subOffsetPrefix = new TextEncoder().encode(prefix.join(",") + ",");
+        subOffsetPrefix = new TextEncoder().encode(prefix.join(`,`) + `,`);
       } else {
         if (options.forkSubOffset > first.data.length) {
           await release();
-          return this.text(400, "Invalid fork sub-offset");
+          return this.text(400, `Invalid fork sub-offset`);
         }
         subOffsetPrefix = first.data.slice(0, options.forkSubOffset);
       }
@@ -680,7 +694,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         }
         if (initialPayload.length > MAX_BODY_BYTES) {
           await release();
-          return this.text(413, "Payload too large");
+          return this.text(413, `Payload too large`);
         }
       } else {
         initialPayload = options.body;
@@ -745,12 +759,12 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     await this.syncExpiryAlarm();
 
     const headers: Record<string, string> = {
-      "content-type": resolvedContentType ?? "application/octet-stream",
+      "content-type": resolvedContentType ?? `application/octet-stream`,
       [STREAM_OFFSET_HEADER]: currentOffset,
       location: `${url.origin}${path}`,
     };
     if (options.createClosed) {
-      headers[STREAM_CLOSED_HEADER] = "true";
+      headers[STREAM_CLOSED_HEADER] = `true`;
     }
     return this.respond(201, headers);
   }
@@ -762,21 +776,21 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   private async handleHead(): Promise<Response> {
     const meta = await this.getMeta(Date.now());
     if (!meta) {
-      return this.respond(404, { "content-type": "text/plain" });
+      return this.respond(404, { "content-type": `text/plain` });
     }
     if (meta.softDeleted) {
-      return this.respond(410, { "content-type": "text/plain" });
+      return this.respond(410, { "content-type": `text/plain` });
     }
 
     const headers: Record<string, string> = {
       [STREAM_OFFSET_HEADER]: meta.currentOffset,
-      "cache-control": "no-store",
+      "cache-control": `no-store`,
     };
     if (meta.contentType !== undefined) {
-      headers["content-type"] = meta.contentType;
+      headers[`content-type`] = meta.contentType;
     }
     if (meta.closed) {
-      headers[STREAM_CLOSED_HEADER] = "true";
+      headers[STREAM_CLOSED_HEADER] = `true`;
     }
     if (meta.ttlSeconds !== undefined) {
       headers[STREAM_TTL_HEADER] = String(meta.ttlSeconds);
@@ -784,7 +798,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     if (meta.expiresAt !== undefined) {
       headers[STREAM_EXPIRES_AT_HEADER] = meta.expiresAt;
     }
-    headers["etag"] = this.makeEtag("-1", meta.currentOffset, meta.closed);
+    headers[`etag`] = this.makeEtag(`-1`, meta.currentOffset, meta.closed);
 
     return this.respond(200, headers);
   }
@@ -797,10 +811,10 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     const now = Date.now();
     const meta = await this.getMeta(now);
     if (!meta) {
-      return this.text(404, "Stream not found");
+      return this.text(404, `Stream not found`);
     }
     if (meta.softDeleted) {
-      return this.text(410, "Stream is gone");
+      return this.text(410, `Stream is gone`);
     }
 
     const offsetParam = url.searchParams.get(OFFSET_QUERY_PARAM) ?? undefined;
@@ -808,54 +822,54 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     const cursor = url.searchParams.get(CURSOR_QUERY_PARAM) ?? undefined;
 
     if (offsetParam !== undefined) {
-      if (offsetParam === "") {
-        return this.text(400, "Empty offset parameter");
+      if (offsetParam === ``) {
+        return this.text(400, `Empty offset parameter`);
       }
       if (url.searchParams.getAll(OFFSET_QUERY_PARAM).length > 1) {
-        return this.text(400, "Multiple offset parameters not allowed");
+        return this.text(400, `Multiple offset parameters not allowed`);
       }
       if (!VALID_OFFSET_PATTERN.test(offsetParam)) {
-        return this.text(400, "Invalid offset format");
+        return this.text(400, `Invalid offset format`);
       }
     }
 
-    if ((live === "long-poll" || live === "sse") && offsetParam === undefined) {
+    if ((live === `long-poll` || live === `sse`) && offsetParam === undefined) {
       return this.text(
         400,
-        `${live === "sse" ? "SSE" : "Long-poll"} requires offset parameter`,
+        `${live === `sse` ? `SSE` : `Long-poll`} requires offset parameter`,
       );
     }
 
-    if (live === "sse") {
+    if (live === `sse`) {
       const ct = normalizeContentType(meta.contentType);
       const isTextCompatible =
-        ct.startsWith("text/") || ct === "application/json";
+        ct.startsWith(`text/`) || ct === `application/json`;
       const useBase64 = !isTextCompatible;
       const sseOffset =
-        offsetParam === "now" ? meta.currentOffset : (offsetParam ?? "-1");
+        offsetParam === `now` ? meta.currentOffset : (offsetParam ?? `-1`);
       return this.handleSse(meta, sseOffset, cursor, useBase64);
     }
 
     // Catch-up read at the tail: empty response, never cached.
-    if (offsetParam === "now" && live !== "long-poll") {
+    if (offsetParam === `now` && live !== `long-poll`) {
       const headers: Record<string, string> = {
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
-        [STREAM_UP_TO_DATE_HEADER]: "true",
-        "cache-control": "no-store",
+        [STREAM_UP_TO_DATE_HEADER]: `true`,
+        "cache-control": `no-store`,
       };
       if (meta.contentType !== undefined) {
-        headers["content-type"] = meta.contentType;
+        headers[`content-type`] = meta.contentType;
       }
       if (meta.closed) {
-        headers[STREAM_CLOSED_HEADER] = "true";
+        headers[STREAM_CLOSED_HEADER] = `true`;
       }
       const isJsonMode =
-        normalizeContentType(meta.contentType) === "application/json";
-      return this.respond(200, headers, isJsonMode ? "[]" : "");
+        normalizeContentType(meta.contentType) === `application/json`;
+      return this.respond(200, headers, isJsonMode ? `[]` : ``);
     }
 
     const effectiveOffset =
-      offsetParam === "now" ? meta.currentOffset : offsetParam;
+      offsetParam === `now` ? meta.currentOffset : offsetParam;
 
     const initialBatch = await this.readStream(meta, effectiveOffset);
     let messages = initialBatch.messages;
@@ -867,14 +881,14 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     const clientIsCaughtUp =
       (effectiveOffset !== undefined &&
         effectiveOffset === meta.currentOffset) ||
-      offsetParam === "now";
-    if (live === "long-poll" && clientIsCaughtUp && messages.length === 0) {
+      offsetParam === `now`;
+    if (live === `long-poll` && clientIsCaughtUp && messages.length === 0) {
       if (meta.closed) {
         // Closed and at tail: EOF immediately, no waiting.
         return this.respond(204, {
           [STREAM_OFFSET_HEADER]: meta.currentOffset,
-          [STREAM_UP_TO_DATE_HEADER]: "true",
-          [STREAM_CLOSED_HEADER]: "true",
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
+          [STREAM_CLOSED_HEADER]: `true`,
         });
       }
 
@@ -889,20 +903,20 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       if (result.streamClosed && result.messages.length === 0) {
         return this.respond(204, {
           [STREAM_OFFSET_HEADER]: waitOffset,
-          [STREAM_UP_TO_DATE_HEADER]: "true",
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
           [STREAM_CURSOR_HEADER]: generateResponseCursor(cursor),
-          [STREAM_CLOSED_HEADER]: "true",
+          [STREAM_CLOSED_HEADER]: `true`,
         });
       }
 
       if (result.timedOut) {
         const headers: Record<string, string> = {
           [STREAM_OFFSET_HEADER]: waitOffset,
-          [STREAM_UP_TO_DATE_HEADER]: "true",
+          [STREAM_UP_TO_DATE_HEADER]: `true`,
           [STREAM_CURSOR_HEADER]: generateResponseCursor(cursor),
         };
         if (this.store.getMetaRaw()?.closed === true) {
-          headers[STREAM_CLOSED_HEADER] = "true";
+          headers[STREAM_CLOSED_HEADER] = `true`;
         }
         return this.respond(204, headers);
       }
@@ -915,45 +929,45 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     const freshMeta = this.store.getMetaRaw() ?? meta;
     const headers: Record<string, string> = {};
     if (freshMeta.contentType !== undefined) {
-      headers["content-type"] = freshMeta.contentType;
+      headers[`content-type`] = freshMeta.contentType;
     }
 
     const lastMessage = messages[messages.length - 1];
     const responseOffset = lastMessage?.offset ?? freshMeta.currentOffset;
     headers[STREAM_OFFSET_HEADER] = responseOffset;
 
-    if (live === "long-poll") {
+    if (live === `long-poll`) {
       headers[STREAM_CURSOR_HEADER] = generateResponseCursor(cursor);
     }
     if (upToDate) {
-      headers[STREAM_UP_TO_DATE_HEADER] = "true";
+      headers[STREAM_UP_TO_DATE_HEADER] = `true`;
     }
 
     const clientAtTail = responseOffset === freshMeta.currentOffset;
     const closedSuffix = freshMeta.closed && clientAtTail && upToDate;
     if (closedSuffix) {
-      headers[STREAM_CLOSED_HEADER] = "true";
+      headers[STREAM_CLOSED_HEADER] = `true`;
     }
 
-    const startOffset = offsetParam ?? "-1";
+    const startOffset = offsetParam ?? `-1`;
     const etag = this.makeEtag(startOffset, responseOffset, closedSuffix);
-    headers["etag"] = etag;
+    headers[`etag`] = etag;
 
-    const ifNoneMatch = request.headers.get("if-none-match");
+    const ifNoneMatch = request.headers.get(`if-none-match`);
     if (ifNoneMatch !== null && ifNoneMatch === etag) {
       return this.respond(304, { etag });
     }
 
     // Recommended shared-cache headers for catch-up reads (§10.1);
     // live-mode responses stay uncached.
-    if (live !== "long-poll") {
-      headers["cache-control"] =
-        "public, max-age=60, stale-while-revalidate=300";
+    if (live !== `long-poll`) {
+      headers[`cache-control`] =
+        `public, max-age=60, stale-while-revalidate=300`;
     }
 
     const fragments = messages.map((m) => m.data);
     const body =
-      normalizeContentType(freshMeta.contentType) === "application/json"
+      normalizeContentType(freshMeta.contentType) === `application/json`
         ? formatJsonMessages(fragments)
         : concatBytes(fragments);
 
@@ -976,7 +990,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     >();
     const writer = writable.getWriter();
     const isJson =
-      normalizeContentType(meta.contentType) === "application/json";
+      normalizeContentType(meta.contentType) === `application/json`;
 
     // Pump in the background; the pending stream keeps the DO alive.
     // Write failures mean the client disconnected — expected; anything
@@ -990,21 +1004,23 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       writer,
     )
       .catch((err: unknown) => {
-        console.warn("SSE pump ended with error", err);
+        if (!isClientDisconnect(err)) {
+          console.warn(`SSE pump ended with error`, err);
+        }
       })
       .finally(() => writer.close().catch(() => undefined));
 
     const headers: Record<string, string> = {
-      "content-type": "text/event-stream",
-      "cache-control": "no-cache",
-      connection: "keep-alive",
+      "content-type": `text/event-stream`,
+      "cache-control": `no-cache`,
+      connection: `keep-alive`,
       // Prevent edge compression from buffering SSE events: compressed
       // responses are flushed in compressor-sized blocks, which delays
       // (and can split) events for live clients.
-      "content-encoding": "identity",
+      "content-encoding": `identity`,
     };
     if (useBase64) {
-      headers[STREAM_SSE_DATA_ENCODING_HEADER] = "base64";
+      headers[STREAM_SSE_DATA_ENCODING_HEADER] = `base64`;
     }
     return this.respond(200, headers, readable);
   }
@@ -1034,7 +1050,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       }
       const batch = await this.readStream(
         loopMeta,
-        currentOffset === "-1" ? undefined : currentOffset,
+        currentOffset === `-1` ? undefined : currentOffset,
       );
 
       // Batch this iteration's data events and the control event into ONE
@@ -1042,7 +1058,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       // suite's SSE reader may stop between them mid-event (its stop
       // marker can appear inside a data payload), then fail to parse the
       // incomplete event.
-      let frame = "";
+      let frame = ``;
       for (const message of batch.messages) {
         let dataPayload: string;
         if (useBase64) {
@@ -1149,15 +1165,15 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   private async handlePost(request: Request): Promise<Response> {
     // Body first — see handlePut: early responses mid-upload reset the DO.
     const body = await this.readBody(request);
-    if (body === "too_large") {
-      return this.text(413, "Payload too large");
+    if (body === `too_large`) {
+      return this.text(413, `Payload too large`);
     }
 
-    const contentType = request.headers.get("content-type") ?? undefined;
+    const contentType = request.headers.get(`content-type`) ?? undefined;
     const seq = request.headers.get(STREAM_SEQ_HEADER) ?? undefined;
     const closeStream =
-      (request.headers.get(STREAM_CLOSED_HEADER) ?? "").toLowerCase() ===
-      "true";
+      (request.headers.get(STREAM_CLOSED_HEADER) ?? ``).toLowerCase() ===
+      `true`;
 
     const producerId = request.headers.get(PRODUCER_ID_HEADER) ?? undefined;
     const producerEpochStr =
@@ -1177,11 +1193,11 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     if (hasAnyProducerHeader && !hasAllProducerHeaders) {
       return this.text(
         400,
-        "All producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together",
+        `All producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together`,
       );
     }
-    if (hasAllProducerHeaders && producerId === "") {
-      return this.text(400, "Invalid Producer-Id: must not be empty");
+    if (hasAllProducerHeaders && producerId === ``) {
+      return this.text(400, `Invalid Producer-Id: must not be empty`);
     }
 
     let producer: ProducerHeaders | undefined;
@@ -1189,27 +1205,27 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       if (!STRICT_INTEGER_REGEX.test(producerEpochStr)) {
         return this.text(
           400,
-          "Invalid Producer-Epoch: must be a non-negative integer",
+          `Invalid Producer-Epoch: must be a non-negative integer`,
         );
       }
       const epoch = Number(producerEpochStr);
       if (!Number.isSafeInteger(epoch)) {
         return this.text(
           400,
-          "Invalid Producer-Epoch: must be a non-negative integer",
+          `Invalid Producer-Epoch: must be a non-negative integer`,
         );
       }
       if (!STRICT_INTEGER_REGEX.test(producerSeqStr)) {
         return this.text(
           400,
-          "Invalid Producer-Seq: must be a non-negative integer",
+          `Invalid Producer-Seq: must be a non-negative integer`,
         );
       }
       const seqNum = Number(producerSeqStr);
       if (!Number.isSafeInteger(seqNum)) {
         return this.text(
           400,
-          "Invalid Producer-Seq: must be a non-negative integer",
+          `Invalid Producer-Seq: must be a non-negative integer`,
         );
       }
       producer = { producerId, epoch, seq: seqNum };
@@ -1224,19 +1240,19 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     }
 
     if (body.length === 0) {
-      return this.text(400, "Empty body");
+      return this.text(400, `Empty body`);
     }
 
     if (contentType === undefined) {
-      return this.text(400, "Content-Type header is required");
+      return this.text(400, `Content-Type header is required`);
     }
 
     const meta = await this.getMeta(now);
     if (!meta) {
-      return this.text(404, "Stream not found");
+      return this.text(404, `Stream not found`);
     }
     if (meta.softDeleted) {
-      return this.text(410, "Stream is gone");
+      return this.text(410, `Stream is gone`);
     }
 
     // Closed check comes first so clients always see Stream-Closed.
@@ -1250,13 +1266,13 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         // Duplicate of the closing request — idempotent success.
         return this.respond(204, {
           [STREAM_OFFSET_HEADER]: meta.currentOffset,
-          [STREAM_CLOSED_HEADER]: "true",
+          [STREAM_CLOSED_HEADER]: `true`,
           [PRODUCER_EPOCH_HEADER]: String(producer.epoch),
           [PRODUCER_SEQ_HEADER]: String(producer.seq),
         });
       }
-      return this.text(409, "Stream is closed", {
-        [STREAM_CLOSED_HEADER]: "true",
+      return this.text(409, `Stream is closed`, {
+        [STREAM_CLOSED_HEADER]: `true`,
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
       });
     }
@@ -1267,7 +1283,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         normalizeContentType(contentType) !==
         normalizeContentType(meta.contentType)
       ) {
-        return this.text(409, "Content-type mismatch");
+        return this.text(409, `Content-type mismatch`);
       }
     }
 
@@ -1283,7 +1299,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         producer.seq,
         now,
       );
-      if (producerResult.status !== "accepted") {
+      if (producerResult.status !== `accepted`) {
         return this.producerFailureResponse(producerResult, producer, false);
       }
     }
@@ -1292,13 +1308,13 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // increasing.
     if (seq !== undefined) {
       if (meta.lastSeq !== undefined && seq <= meta.lastSeq) {
-        return this.text(409, "Sequence conflict");
+        return this.text(409, `Sequence conflict`);
       }
     }
 
     // Process the payload (JSON validation) BEFORE committing any state.
     let payload = body;
-    if (normalizeContentType(meta.contentType) === "application/json") {
+    if (normalizeContentType(meta.contentType) === `application/json`) {
       try {
         payload = processJsonAppend(body, false);
       } catch (err) {
@@ -1310,7 +1326,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       // JSON normalization can expand the payload (e.g. escaping); the
       // stored fragment must still fit SQLite's per-value cap.
       if (payload.length > MAX_BODY_BYTES) {
-        return this.text(413, "Payload too large");
+        return this.text(413, `Payload too large`);
       }
     }
 
@@ -1320,7 +1336,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       now,
     );
 
-    if (producerResult?.status === "accepted") {
+    if (producerResult?.status === `accepted`) {
       this.store.commitProducerState(
         producerResult.producerId,
         producerResult.proposedState,
@@ -1360,7 +1376,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       responseHeaders[PRODUCER_SEQ_HEADER] = String(producer.seq);
     }
     if (closeStream) {
-      responseHeaders[STREAM_CLOSED_HEADER] = "true";
+      responseHeaders[STREAM_CLOSED_HEADER] = `true`;
     }
     // 200 for producer appends (with headers), 204 for plain appends.
     return this.respond(producer !== undefined ? 200 : 204, responseHeaders);
@@ -1372,10 +1388,10 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   ): Promise<Response> {
     const meta = await this.getMeta(now);
     if (!meta) {
-      return this.text(404, "Stream not found");
+      return this.text(404, `Stream not found`);
     }
     if (meta.softDeleted) {
-      return this.text(410, "Stream is gone");
+      return this.text(410, `Stream is gone`);
     }
 
     if (producer === undefined) {
@@ -1384,7 +1400,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       this.notifyClosed();
       return this.respond(204, {
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
-        [STREAM_CLOSED_HEADER]: "true",
+        [STREAM_CLOSED_HEADER]: `true`,
       });
     }
 
@@ -1396,14 +1412,14 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       ) {
         return this.respond(204, {
           [STREAM_OFFSET_HEADER]: meta.currentOffset,
-          [STREAM_CLOSED_HEADER]: "true",
+          [STREAM_CLOSED_HEADER]: `true`,
           [PRODUCER_EPOCH_HEADER]: String(producer.epoch),
           [PRODUCER_SEQ_HEADER]: String(producer.seq),
         });
       }
       // Already closed by a different request — conflict.
-      return this.text(409, "Stream is closed", {
-        [STREAM_CLOSED_HEADER]: "true",
+      return this.text(409, `Stream is closed`, {
+        [STREAM_CLOSED_HEADER]: `true`,
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
       });
     }
@@ -1416,7 +1432,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       producer.seq,
       now,
     );
-    if (producerResult.status !== "accepted") {
+    if (producerResult.status !== `accepted`) {
       return this.producerFailureResponse(producerResult, producer, true);
     }
 
@@ -1433,7 +1449,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
 
     return this.respond(204, {
       [STREAM_OFFSET_HEADER]: meta.currentOffset,
-      [STREAM_CLOSED_HEADER]: "true",
+      [STREAM_CLOSED_HEADER]: `true`,
       [PRODUCER_EPOCH_HEADER]: String(producer.epoch),
       [PRODUCER_SEQ_HEADER]: String(producer.seq),
     });
@@ -1441,41 +1457,41 @@ export class StreamObject extends DurableObject<StreamsEnv> {
 
   /** Map a non-accepted producer validation result to its response. */
   private producerFailureResponse(
-    result: Exclude<ProducerValidationResult, { status: "accepted" }>,
+    result: Exclude<ProducerValidationResult, { status: `accepted` }>,
     producer: ProducerHeaders,
     isCloseOnly: boolean,
   ): Response {
     switch (result.status) {
-      case "duplicate": {
+      case `duplicate`: {
         const headers: Record<string, string> = {
           [PRODUCER_EPOCH_HEADER]: String(producer.epoch),
           [PRODUCER_SEQ_HEADER]: String(result.lastSeq),
         };
         if (isCloseOnly) {
           const meta = this.store.getMetaRaw();
-          headers[STREAM_OFFSET_HEADER] = meta?.currentOffset ?? "";
+          headers[STREAM_OFFSET_HEADER] = meta?.currentOffset ?? ``;
           if (meta?.closed === true) {
-            headers[STREAM_CLOSED_HEADER] = "true";
+            headers[STREAM_CLOSED_HEADER] = `true`;
           }
         }
         return this.respond(204, headers);
       }
-      case "stale_epoch":
-        return this.text(403, "Stale producer epoch", {
+      case `stale_epoch`:
+        return this.text(403, `Stale producer epoch`, {
           [PRODUCER_EPOCH_HEADER]: String(result.currentEpoch),
         });
-      case "invalid_epoch_seq":
-        return this.text(400, "New epoch must start with sequence 0");
-      case "sequence_gap":
-        return this.text(409, "Producer sequence gap", {
+      case `invalid_epoch_seq`:
+        return this.text(400, `New epoch must start with sequence 0`);
+      case `sequence_gap`:
+        return this.text(409, `Producer sequence gap`, {
           [PRODUCER_EXPECTED_SEQ_HEADER]: String(result.expectedSeq),
           [PRODUCER_RECEIVED_SEQ_HEADER]: String(result.receivedSeq),
         });
-      case "stream_closed": {
+      case `stream_closed`: {
         const meta = this.store.getMetaRaw();
-        return this.text(409, "Stream is closed", {
-          [STREAM_CLOSED_HEADER]: "true",
-          [STREAM_OFFSET_HEADER]: meta?.currentOffset ?? "",
+        return this.text(409, `Stream is closed`, {
+          [STREAM_CLOSED_HEADER]: `true`,
+          [STREAM_OFFSET_HEADER]: meta?.currentOffset ?? ``,
         });
       }
     }
@@ -1488,10 +1504,10 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   private async handleDelete(_path: string): Promise<Response> {
     const meta = await this.getMeta(Date.now());
     if (!meta) {
-      return this.text(404, "Stream not found");
+      return this.text(404, `Stream not found`);
     }
     if (meta.softDeleted) {
-      return this.text(410, "Stream is gone");
+      return this.text(410, `Stream is gone`);
     }
     if (meta.refCount > 0) {
       // Active forks reference this stream: soft-delete so fork readers
@@ -1552,7 +1568,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         this.store.dequeueGcRelease(parentPath);
       } catch (err) {
         console.error(
-          "forkRelease failed; will retry via alarm",
+          `forkRelease failed; will retry via alarm`,
           parentPath,
           err,
         );
@@ -1607,10 +1623,10 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     limit: number | undefined,
   ): Promise<ReadBatch> {
     const normalizedAfter =
-      afterOffset === undefined || afterOffset === "-1"
+      afterOffset === undefined || afterOffset === `-1`
         ? undefined
         : afterOffset;
-    const out: StoredMessage[] = [];
+    const out: Array<StoredMessage> = [];
 
     if (
       meta.forkedFrom !== undefined &&
@@ -1657,7 +1673,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     if (
       forkMeta?.forkedFrom !== undefined &&
       forkMeta.forkOffset !== undefined &&
-      offset !== "-1" &&
+      offset !== `-1` &&
       offset < forkMeta.forkOffset
     ) {
       const stitched = await this.readStream(forkMeta, offset);
@@ -1668,7 +1684,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         capped: stitched.capped,
       };
     }
-    if (forkMeta?.forkedFrom !== undefined && offset === "-1") {
+    if (forkMeta?.forkedFrom !== undefined && offset === `-1`) {
       const stitched = await this.readStream(forkMeta, undefined);
       if (stitched.messages.length > 0) {
         return {
@@ -1681,7 +1697,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     }
 
     const initial = this.store.readMessages(
-      offset === "-1" ? undefined : offset,
+      offset === `-1` ? undefined : offset,
       MAX_READ_BATCH_BYTES,
     );
     if (initial.messages.length > 0) {
@@ -1747,7 +1763,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   private notifyAppend(): void {
     for (const waiter of [...this.waiters]) {
       const batch = this.store.readMessages(
-        waiter.offset === "-1" ? undefined : waiter.offset,
+        waiter.offset === `-1` ? undefined : waiter.offset,
         MAX_READ_BATCH_BYTES,
       );
       if (batch.messages.length > 0) {
@@ -1780,14 +1796,14 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   // Helpers
   // ==========================================================================
 
-  private async readBody(request: Request): Promise<Uint8Array | "too_large"> {
+  private async readBody(request: Request): Promise<Uint8Array | `too_large`> {
     const body = request.body;
-    const lengthHeader = request.headers.get("content-length");
+    const lengthHeader = request.headers.get(`content-length`);
     if (lengthHeader !== null) {
       const length = Number(lengthHeader);
       if (Number.isFinite(length) && length > MAX_BODY_BYTES) {
         await this.drainBody(body);
-        return "too_large";
+        return `too_large`;
       }
     }
     if (body === null) {
@@ -1796,7 +1812,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // workers-types leaves ReadableStream's chunk type as `any`; a request
     // body stream always yields bytes.
     const reader = (body as ReadableStream<Uint8Array>).getReader();
-    const chunks: Uint8Array[] = [];
+    const chunks: Array<Uint8Array> = [];
     let total = 0;
     for (;;) {
       const { done, value } = await reader.read();
@@ -1804,7 +1820,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       total += value.byteLength;
       if (total > MAX_BODY_BYTES) {
         await this.drainReader(reader);
-        return "too_large";
+        return `too_large`;
       }
       chunks.push(value);
     }
@@ -1838,7 +1854,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     closed: boolean,
   ): string {
     const path = this.pathForEtag();
-    const closedSuffix = closed ? ":c" : "";
+    const closedSuffix = closed ? `:c` : ``;
     return `"${base64FromString(path)}:${startOffset}:${endOffset}${closedSuffix}"`;
   }
 
@@ -1857,21 +1873,21 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     body?: BodyInit,
   ): Response {
     const h = new Headers(headers);
-    h.set("access-control-allow-origin", "*");
+    h.set(`access-control-allow-origin`, `*`);
     h.set(
-      "access-control-allow-methods",
-      "GET, POST, PUT, DELETE, HEAD, OPTIONS",
+      `access-control-allow-methods`,
+      `GET, POST, PUT, DELETE, HEAD, OPTIONS`,
     );
     h.set(
-      "access-control-allow-headers",
-      "content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset",
+      `access-control-allow-headers`,
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`,
     );
     h.set(
-      "access-control-expose-headers",
-      "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary",
+      `access-control-expose-headers`,
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`,
     );
-    h.set("x-content-type-options", "nosniff");
-    h.set("cross-origin-resource-policy", "cross-origin");
+    h.set(`x-content-type-options`, `nosniff`);
+    h.set(`cross-origin-resource-policy`, `cross-origin`);
     return new Response(
       status === 204 || status === 304 ? null : (body ?? null),
       {
@@ -1888,7 +1904,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   ): Response {
     return this.respond(
       status,
-      { "content-type": "text/plain", ...extraHeaders },
+      { "content-type": `text/plain`, ...extraHeaders },
       message,
     );
   }

@@ -4,7 +4,7 @@ import { Chat } from "~/components/chat"
 import { loadChatSession } from "~/lib/chat-session.server"
 
 const getChatData = createServerFn({ method: `GET` })
-  .inputValidator((id: string) => id)
+  .validator((id: string) => id)
   .handler(async ({ data }) => loadChatSession(data))
 
 export const Route = createFileRoute(`/chat/$id`)({
