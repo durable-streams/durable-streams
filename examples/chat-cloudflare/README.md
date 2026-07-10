@@ -1,6 +1,10 @@
 # Chat Cloudflare example
 
+[![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/durable-streams/durable-streams/tree/main/examples/chat-cloudflare)
+
 Same app as [`chat-tanstack`](../chat-tanstack), but built for Cloudflare with the [Cloudflare Vite plugin](https://developers.cloudflare.com/workers/vite-plugin/): the TanStack Start app and the Durable Streams server (`@durable-streams/server-cloudflare`) run in a single Worker. `src/server.ts` routes `/streams/*` to the streams handler (one Durable Object per stream) and everything else to TanStack Start.
+
+After deploying, set your OpenAI key on the Worker: `npx wrangler secret put OPENAI_API_KEY` (or add it as a secret in the dashboard).
 
 `pnpm dev` runs it all in one process — vite serves the app and workerd runs the Worker with a local Durable Object, no separate streams server. Chat metadata for the sidebar is stored in a durable stream too (`chats/index`), since Workers have no filesystem.
 
