@@ -14,13 +14,13 @@ Your Worker entry:
 
 ```ts
 // src/index.ts
-import { createStreamsHandler } from "@durable-streams/server-cloudflare";
+import { createStreamsHandler } from "@durable-streams/server-cloudflare"
 
-export { StreamObject } from "@durable-streams/server-cloudflare";
+export { StreamObject } from "@durable-streams/server-cloudflare"
 
 export default {
   fetch: createStreamsHandler(),
-};
+}
 ```
 
 Your wrangler config — the DO binding **must be named `STREAMS`** (fork semantics do DO-to-DO RPC through it) and needs a SQLite migration:
@@ -38,7 +38,9 @@ Your wrangler config — the DO binding **must be named `STREAMS`** (fork semant
 }
 ```
 
-Streams live at `/<path>` — the full request pathname is the stream path. If you mount the handler inside a larger Worker, route only the stream URLs to it (fork references between streams use these paths, so keep them stable). See the [`chat-tanstack-cf` example](../../examples/chat-tanstack-cf) for a TanStack Start app and this server sharing one Worker.
+The library's types reference Workers runtime types (`DurableObjectNamespace`, etc.) — generate them in your project with [`wrangler types`](https://developers.cloudflare.com/workers/languages/typescript/#generate-types).
+
+Streams live at `/<path>` — the full request pathname is the stream path. If you mount the handler inside a larger Worker, route only the stream URLs to it (fork references between streams use these paths, so keep them stable). See the [`chat-cloudflare` example](../../examples/chat-cloudflare) for a TanStack Start app and this server sharing one Worker.
 
 ### Auth
 
@@ -49,19 +51,19 @@ export default {
   fetch: createStreamsHandler({
     auth: async (request, env) => {
       if (!(await isAuthorized(request, env))) {
-        return new Response("Unauthorized", { status: 401 });
+        return new Response("Unauthorized", { status: 401 })
       }
-      return undefined;
+      return undefined
     },
   }),
-};
+}
 ```
 
 `createStreamsHandler({ cors: false })` omits the permissive default CORS headers.
 
 ## Conformance
 
-Validated with `@durable-streams/server-conformance-tests` — the full suite, including fork semantics and idempotent-producer fencing: **326 passed, 0 failed** (identical to the reference server; the 6 skips are the suite's own `subscriptions`-gated webhook tests, off by default — the experimental `__ds` subscription control plane is out of scope, see NOTES.md).
+Validated with `@durable-streams/server-conformance-tests` — the full suite, including fork semantics and idempotent-producer fencing: **326 passed, 0 failed** (identical to the reference server; the 6 skips are the suite's own `subscriptions`-gated webhook tests, off by default — the experimental `__ds` subscription control plane is not implemented and returns `404`).
 
 ```bash
 pnpm conformance   # boots template/index.ts via wrangler dev (test/wrangler.jsonc) and runs the suite
@@ -86,8 +88,10 @@ pnpm conformance   # boots template/index.ts via wrangler dev (test/wrangler.jso
 ```bash
 pnpm build       # emit dist/ (library build)
 pnpm conformance # full conformance suite against a local wrangler dev instance
-pnpm lint && pnpm format:check && pnpm typecheck
+pnpm typecheck
 ```
+
+Linting and formatting come from the repo root (`pnpm lint`, `pnpm format` at the monorepo root).
 
 ## Design notes
 

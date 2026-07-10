@@ -1,4 +1,4 @@
-# Chat TanStack + Cloudflare example
+# Chat Cloudflare example
 
 Same app as [`chat-tanstack`](../chat-tanstack), but built for Cloudflare with the [Cloudflare Vite plugin](https://developers.cloudflare.com/workers/vite-plugin/): the TanStack Start app and the Durable Streams server (`@durable-streams/server-cloudflare`) run in a single Worker. `src/server.ts` routes `/streams/*` to the streams handler (one Durable Object per stream) and everything else to TanStack Start.
 

@@ -11,7 +11,7 @@
  * See `template/` in the repo for a complete deployable Worker and the
  * required wrangler DO binding + migration.
  */
-export { StreamObject } from "./stream-object";
-export type { StreamsEnv } from "./stream-object";
-export { createStreamsHandler } from "./handler";
-export type { StreamsHandlerOptions, DefaultAuthEnv } from "./handler";
+export { StreamObject } from "./stream-object"
+export type { StreamsEnv } from "./stream-object"
+export { createStreamsHandler } from "./handler"
+export type { StreamsHandlerOptions, DefaultAuthEnv } from "./handler"

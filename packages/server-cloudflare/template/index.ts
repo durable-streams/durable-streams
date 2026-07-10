@@ -8,11 +8,11 @@
  * whenever the AUTH_TOKEN secret/var is set, and is open otherwise.
  * Pass your own `auth` function to createStreamsHandler to change that.
  */
-import { createStreamsHandler } from "../src";
-import type { DefaultAuthEnv } from "../src";
+import { createStreamsHandler } from "../src"
+import type { DefaultAuthEnv } from "../src"
 
-export { StreamObject } from "../src";
+export { StreamObject } from "../src"
 
 export default {
   fetch: createStreamsHandler(),
-} satisfies ExportedHandler<DefaultAuthEnv>;
+} satisfies ExportedHandler<DefaultAuthEnv>

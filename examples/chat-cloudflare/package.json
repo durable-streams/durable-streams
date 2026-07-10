@@ -1,5 +1,5 @@
 {
-  "name": "@durable-streams/example-chat-tanstack-cf",
+  "name": "@durable-streams/example-chat-cloudflare",
   "private": true,
   "version": "0.0.0",
   "type": "module",

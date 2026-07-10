@@ -14,7 +14,7 @@
  * escape (durability before ack). This replaces the reference server's
  * per-producer promise locks.
  */
-import { DurableObject } from "cloudflare:workers";
+import { DurableObject } from "cloudflare:workers"
 import {
   CURSOR_QUERY_PARAM,
   LIVE_QUERY_PARAM,
@@ -37,104 +37,104 @@ import {
   STREAM_TTL_HEADER,
   STREAM_UP_TO_DATE_HEADER,
   ZERO_OFFSET,
-} from "./constants";
-import { generateResponseCursor } from "./cursor";
+} from "./constants"
+import { generateResponseCursor } from "./cursor"
 import {
   JsonAppendError,
   concatBytes,
   formatJsonMessages,
   normalizeContentType,
   processJsonAppend,
-} from "./json";
-import { validateProducer } from "./producer";
-import { SqliteStore } from "./store";
-import type { ProducerValidationResult } from "./producer";
-import type { ClosedBy, ReadBatch, StoredMessage, StreamMeta } from "./store";
+} from "./json"
+import { validateProducer } from "./producer"
+import { SqliteStore } from "./store"
+import type { ProducerValidationResult } from "./producer"
+import type { ClosedBy, ReadBatch, StoredMessage, StreamMeta } from "./store"
 
 /**
  * How long a long-poll (or SSE keep-alive interval) waits for new data.
  * Must be comfortably under the conformance suite's 5s per-test budget
  * while longer than the ~500ms its delivery tests need (see NOTES.md).
  */
-const LONG_POLL_TIMEOUT_MS = 2000;
+const LONG_POLL_TIMEOUT_MS = 2000
 
 /**
  * Maximum accepted request body. DO SQLite caps a single value at 2MB;
  * larger bodies get the protocol's 413 (the conformance suite accepts
  * 413 for its 10MB payload test).
  */
-const MAX_BODY_BYTES = 1_900_000;
+const MAX_BODY_BYTES = 1_900_000
 
 /** Offset params must be a sentinel or our `digits_digits` format. */
-const VALID_OFFSET_PATTERN = /^(-1|now|\d+_\d+)$/;
+const VALID_OFFSET_PATTERN = /^(-1|now|\d+_\d+)$/
 
 /** Strict TTL: non-negative decimal integer, no leading zeros/sign/float. */
-const TTL_PATTERN = /^(0|[1-9]\d*)$/;
+const TTL_PATTERN = /^(0|[1-9]\d*)$/
 
 /**
  * Upper bound on Stream-TTL (100 years in seconds). Anything larger risks
  * losing integer precision in `lastAccessedAt + ttl*1000` and produces
  * nonsense alarm times.
  */
-const MAX_TTL_SECONDS = 3_153_600_000;
+const MAX_TTL_SECONDS = 3_153_600_000
 
 /**
  * Per-response read budget. Bounds the memory of catch-up reads and the
  * structured-clone size of fork readRange RPCs; larger streams are served
  * as partial chunks (Stream-Up-To-Date omitted) per protocol §5.6.
  */
-const MAX_READ_BATCH_BYTES = 4 * 1024 * 1024;
+const MAX_READ_BATCH_BYTES = 4 * 1024 * 1024
 
 /**
  * Recycle SSE connections after ~60s (protocol §5.8/§10.2 SHOULD) so CDNs
  * can collapse and the DO is not pinned forever by one client.
  */
-const MAX_SSE_LIFETIME_MS = 60_000;
+const MAX_SSE_LIFETIME_MS = 60_000
 
-const STRICT_INTEGER_REGEX = /^\d+$/;
+const STRICT_INTEGER_REGEX = /^\d+$/
 
 /** Minimal shape check for a usable content-type value. */
-const CONTENT_TYPE_SHAPE = /^[\w-]+\/[\w-]+/;
+const CONTENT_TYPE_SHAPE = /^[\w-]+\/[\w-]+/
 
 /** Fork offsets must match our concrete offset format. */
-const VALID_FORK_OFFSET_PATTERN = /^\d+_\d+$/;
+const VALID_FORK_OFFSET_PATTERN = /^\d+_\d+$/
 
 /** Sub-offset: non-negative decimal integer without leading zeros. */
-const SUB_OFFSET_PATTERN = /^(0|[1-9]\d*)$/;
+const SUB_OFFSET_PATTERN = /^(0|[1-9]\d*)$/
 
 /** Inclusive upper bound beyond any real offset (for uncapped range reads). */
-const MAX_OFFSET_CAP = `9999999999999999_9999999999999999`;
+const MAX_OFFSET_CAP = `9999999999999999_9999999999999999`
 
-const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`;
-const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`;
-const STREAM_FORK_SUB_OFFSET_HEADER = `Stream-Fork-Sub-Offset`;
+const STREAM_FORKED_FROM_HEADER = `Stream-Forked-From`
+const STREAM_FORK_OFFSET_HEADER = `Stream-Fork-Offset`
+const STREAM_FORK_SUB_OFFSET_HEADER = `Stream-Fork-Sub-Offset`
 
 interface RequestedCreateConfig {
-  contentType: string | undefined;
-  ttlSeconds: number | undefined;
-  expiresAt: string | undefined;
-  createClosed: boolean;
-  forkedFrom: string | undefined;
-  forkOffsetHeader: string | undefined;
-  forkSubOffset: number | undefined;
+  contentType: string | undefined
+  ttlSeconds: number | undefined
+  expiresAt: string | undefined
+  createClosed: boolean
+  forkedFrom: string | undefined
+  forkOffsetHeader: string | undefined
+  forkSubOffset: number | undefined
 }
 
 export type ForkAcquireResult =
   | {
-      ok: false;
+      ok: false
       error:
         | `not_found`
         | `soft_deleted`
         | `content_type_mismatch`
-        | `invalid_offset`;
+        | `invalid_offset`
     }
   | {
-      ok: true;
-      forkOffset: string;
-      contentType: string | undefined;
-      ttlSeconds: number | undefined;
-      expiresAt: string | undefined;
-    };
+      ok: true
+      forkOffset: string
+      contentType: string | undefined
+      ttlSeconds: number | undefined
+      expiresAt: string | undefined
+    }
 
 /**
  * Encode a payload for SSE. Each line gets its own `data:` prefix; CR,
@@ -142,21 +142,21 @@ export type ForkAcquireResult =
  * No space after `data:` — clients strip exactly one leading space.
  */
 function encodeSseData(payload: string): string {
-  const lines = payload.split(/\r\n|\r|\n/);
-  return lines.map((line) => `data:${line}`).join(`\n`) + `\n\n`;
+  const lines = payload.split(/\r\n|\r|\n/)
+  return lines.map((line) => `data:${line}`).join(`\n`) + `\n\n`
 }
 
 function base64FromBytes(bytes: Uint8Array): string {
-  let bin = ``;
-  const CHUNK = 0x8000;
+  let bin = ``
+  const CHUNK = 0x8000
   for (let i = 0; i < bytes.length; i += CHUNK) {
-    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+    bin += String.fromCharCode(...bytes.subarray(i, i + CHUNK))
   }
-  return btoa(bin);
+  return btoa(bin)
 }
 
 function base64FromString(s: string): string {
-  return base64FromBytes(new TextEncoder().encode(s));
+  return base64FromBytes(new TextEncoder().encode(s))
 }
 
 /**
@@ -168,28 +168,28 @@ function isClientDisconnect(err: unknown): boolean {
   return (
     err instanceof Error &&
     /network connection lost|stream.*(closed|canceled|cancelled|aborted)/i.test(
-      err.message,
+      err.message
     )
-  );
+  )
 }
 
 interface WaitResult {
-  messages: Array<StoredMessage>;
-  timedOut: boolean;
-  streamClosed: boolean;
+  messages: Array<StoredMessage>
+  timedOut: boolean
+  streamClosed: boolean
   /** True when the returned batch was byte-capped — more data remains. */
-  capped: boolean;
+  capped: boolean
 }
 
 interface PendingWaiter {
-  offset: string;
-  resolve: (batch: ReadBatch) => void;
+  offset: string
+  resolve: (batch: ReadBatch) => void
 }
 
 interface ProducerHeaders {
-  producerId: string;
-  epoch: number;
-  seq: number;
+  producerId: string
+  epoch: number
+  seq: number
 }
 
 /**
@@ -200,54 +200,54 @@ interface ProducerHeaders {
  * by the router.
  */
 export interface StreamsEnv {
-  STREAMS: DurableObjectNamespace<StreamObject>;
+  STREAMS: DurableObjectNamespace<StreamObject>
 }
 
 export class StreamObject extends DurableObject<StreamsEnv> {
-  private readonly store: SqliteStore;
-  private waiters: Array<PendingWaiter> = [];
+  private readonly store: SqliteStore
+  private waiters: Array<PendingWaiter> = []
 
   constructor(ctx: DurableObjectState, env: StreamsEnv) {
-    super(ctx, env);
-    this.store = new SqliteStore(ctx.storage.sql);
-    this.store.ensureSchema();
+    super(ctx, env)
+    this.store = new SqliteStore(ctx.storage.sql)
+    this.store.ensureSchema()
   }
 
   override async fetch(request: Request): Promise<Response> {
-    const url = new URL(request.url);
-    const path = url.pathname;
+    const url = new URL(request.url)
+    const path = url.pathname
 
     switch (request.method) {
       case `PUT`:
-        return this.handlePut(request, url, path);
+        return this.handlePut(request, url, path)
       case `HEAD`:
-        return this.handleHead();
+        return this.handleHead()
       case `GET`:
-        return this.handleGet(request, url);
+        return this.handleGet(request, url)
       case `POST`:
-        return this.handlePost(request);
+        return this.handlePost(request)
       case `DELETE`:
-        return this.handleDelete(path);
+        return this.handleDelete(path)
       default:
         // Drain any body so the response never races the request stream.
-        await this.drainBody(request.body);
-        return this.text(405, `Method not allowed`);
+        await this.drainBody(request.body)
+        return this.text(405, `Method not allowed`)
     }
   }
 
   override async alarm(): Promise<void> {
-    await this.processGcReleases();
-    const meta = this.store.getMetaRaw();
-    if (!meta) return;
+    await this.processGcReleases()
+    const meta = this.store.getMetaRaw()
+    if (!meta) return
     if (this.store.isExpired(meta, Date.now())) {
       if (meta.refCount > 0) {
         // Expired but referenced by forks: soft-delete instead of purging.
-        if (!meta.softDeleted) this.store.setSoftDeleted();
+        if (!meta.softDeleted) this.store.setSoftDeleted()
       } else {
-        await this.purgeStream(meta);
+        await this.purgeStream(meta)
       }
     } else {
-      await this.syncExpiryAlarm();
+      await this.syncExpiryAlarm()
     }
   }
 
@@ -261,15 +261,15 @@ export class StreamObject extends DurableObject<StreamsEnv> {
    * refcount increment cannot race (a mismatch must not leak a reference).
    */
   async forkAcquire(options: {
-    forkOffset: string | undefined;
-    contentTypeProvided: string | undefined;
+    forkOffset: string | undefined
+    contentTypeProvided: string | undefined
   }): Promise<ForkAcquireResult> {
-    const meta = await this.getMeta(Date.now());
+    const meta = await this.getMeta(Date.now())
     if (!meta) {
-      return { ok: false, error: `not_found` };
+      return { ok: false, error: `not_found` }
     }
     if (meta.softDeleted) {
-      return { ok: false, error: `soft_deleted` };
+      return { ok: false, error: `soft_deleted` }
     }
     if (
       options.contentTypeProvided !== undefined &&
@@ -277,22 +277,22 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       normalizeContentType(options.contentTypeProvided) !==
         normalizeContentType(meta.contentType)
     ) {
-      return { ok: false, error: `content_type_mismatch` };
+      return { ok: false, error: `content_type_mismatch` }
     }
 
-    const forkOffset = options.forkOffset ?? meta.currentOffset;
+    const forkOffset = options.forkOffset ?? meta.currentOffset
     if (forkOffset < ZERO_OFFSET || meta.currentOffset < forkOffset) {
-      return { ok: false, error: `invalid_offset` };
+      return { ok: false, error: `invalid_offset` }
     }
 
-    this.store.incrementRef();
+    this.store.incrementRef()
     return {
       ok: true,
       forkOffset,
       contentType: meta.contentType,
       ttlSeconds: meta.ttlSeconds,
       expiresAt: meta.expiresAt,
-    };
+    }
   }
 
   /**
@@ -301,11 +301,11 @@ export class StreamObject extends DurableObject<StreamsEnv> {
    * fork chain.
    */
   async forkRelease(): Promise<void> {
-    const meta = this.store.getMetaRaw();
-    if (!meta) return;
-    const newCount = this.store.decrementRef();
+    const meta = this.store.getMetaRaw()
+    if (!meta) return
+    const newCount = this.store.decrementRef()
     if (newCount === 0 && meta.softDeleted) {
-      await this.purgeStream(meta);
+      await this.purgeStream(meta)
     }
   }
 
@@ -318,11 +318,11 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   async readRange(
     afterOffset: string | undefined,
     capOffset: string,
-    limit?: number,
+    limit?: number
   ): Promise<ReadBatch> {
-    const meta = this.store.getMetaRaw();
-    if (!meta) return { messages: [], capped: false };
-    return this.readStitched(meta, afterOffset, capOffset, limit);
+    const meta = this.store.getMetaRaw()
+    if (!meta) return { messages: [], capped: false }
+    return this.readStitched(meta, afterOffset, capOffset, limit)
   }
 
   // ==========================================================================
@@ -332,24 +332,24 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   private async handlePut(
     request: Request,
     url: URL,
-    path: string,
+    path: string
   ): Promise<Response> {
     // Read the body before ANY validation: responding while the client is
     // still streaming the request body makes workerd throw ("Can't read
     // from request stream after response has been sent"), resetting the DO.
-    const body = await this.readBody(request);
+    const body = await this.readBody(request)
     if (body === `too_large`) {
-      return this.text(413, `Payload too large`);
+      return this.text(413, `Payload too large`)
     }
 
-    let contentType = request.headers.get(`content-type`) ?? undefined;
+    let contentType = request.headers.get(`content-type`) ?? undefined
 
     const forkedFrom =
-      request.headers.get(STREAM_FORKED_FROM_HEADER) ?? undefined;
+      request.headers.get(STREAM_FORKED_FROM_HEADER) ?? undefined
     const forkOffsetHeader =
-      request.headers.get(STREAM_FORK_OFFSET_HEADER) ?? undefined;
+      request.headers.get(STREAM_FORK_OFFSET_HEADER) ?? undefined
     const forkSubOffsetHeader =
-      request.headers.get(STREAM_FORK_SUB_OFFSET_HEADER) ?? undefined;
+      request.headers.get(STREAM_FORK_SUB_OFFSET_HEADER) ?? undefined
 
     // Sanitize content-type: empty/invalid falls back to the default —
     // except for forks, where an omitted Content-Type means "inherit".
@@ -359,38 +359,37 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       !CONTENT_TYPE_SHAPE.test(contentType)
     ) {
       contentType =
-        forkedFrom !== undefined ? undefined : `application/octet-stream`;
+        forkedFrom !== undefined ? undefined : `application/octet-stream`
     }
 
-    const ttlHeader = request.headers.get(STREAM_TTL_HEADER) ?? undefined;
+    const ttlHeader = request.headers.get(STREAM_TTL_HEADER) ?? undefined
     const expiresAtHeader =
-      request.headers.get(STREAM_EXPIRES_AT_HEADER) ?? undefined;
+      request.headers.get(STREAM_EXPIRES_AT_HEADER) ?? undefined
     const createClosed =
-      (request.headers.get(STREAM_CLOSED_HEADER) ?? ``).toLowerCase() ===
-      `true`;
+      (request.headers.get(STREAM_CLOSED_HEADER) ?? ``).toLowerCase() === `true`
 
     if (ttlHeader !== undefined && expiresAtHeader !== undefined) {
       return this.text(
         400,
-        `Cannot specify both Stream-TTL and Stream-Expires-At`,
-      );
+        `Cannot specify both Stream-TTL and Stream-Expires-At`
+      )
     }
 
-    let ttlSeconds: number | undefined;
+    let ttlSeconds: number | undefined
     if (ttlHeader !== undefined) {
       if (!TTL_PATTERN.test(ttlHeader)) {
-        return this.text(400, `Invalid Stream-TTL value`);
+        return this.text(400, `Invalid Stream-TTL value`)
       }
-      ttlSeconds = parseInt(ttlHeader, 10);
+      ttlSeconds = parseInt(ttlHeader, 10)
       if (!Number.isSafeInteger(ttlSeconds) || ttlSeconds > MAX_TTL_SECONDS) {
-        return this.text(400, `Invalid Stream-TTL value`);
+        return this.text(400, `Invalid Stream-TTL value`)
       }
     }
 
     if (expiresAtHeader !== undefined) {
-      const timestamp = new Date(expiresAtHeader);
+      const timestamp = new Date(expiresAtHeader)
       if (Number.isNaN(timestamp.getTime())) {
-        return this.text(400, `Invalid Stream-Expires-At timestamp`);
+        return this.text(400, `Invalid Stream-Expires-At timestamp`)
       }
     }
 
@@ -398,24 +397,24 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       forkOffsetHeader !== undefined &&
       !VALID_FORK_OFFSET_PATTERN.test(forkOffsetHeader)
     ) {
-      return this.text(400, `Invalid Stream-Fork-Offset format`);
+      return this.text(400, `Invalid Stream-Fork-Offset format`)
     }
 
-    let forkSubOffset: number | undefined;
+    let forkSubOffset: number | undefined
     if (forkSubOffsetHeader !== undefined) {
       if (forkedFrom === undefined) {
         return this.text(
           400,
-          `Stream-Fork-Sub-Offset requires Stream-Forked-From`,
-        );
+          `Stream-Fork-Sub-Offset requires Stream-Forked-From`
+        )
       }
       if (!SUB_OFFSET_PATTERN.test(forkSubOffsetHeader)) {
-        return this.text(400, `Invalid Stream-Fork-Sub-Offset format`);
+        return this.text(400, `Invalid Stream-Fork-Sub-Offset format`)
       }
-      forkSubOffset = parseInt(forkSubOffsetHeader, 10);
+      forkSubOffset = parseInt(forkSubOffsetHeader, 10)
     }
 
-    const now = Date.now();
+    const now = Date.now()
     const requested: RequestedCreateConfig = {
       contentType,
       ttlSeconds,
@@ -424,16 +423,16 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       forkedFrom,
       forkOffsetHeader,
       forkSubOffset,
-    };
+    }
 
     // getMeta can await (expiry purge cascades a cross-DO forkRelease),
     // which opens the input gate — so a concurrent PUT may have created
     // the stream even when getMeta returned undefined. Re-read raw state
     // to make PUT idempotent instead of crashing on a duplicate INSERT.
-    const existing = (await this.getMeta(now)) ?? this.store.getMetaRaw();
+    const existing = (await this.getMeta(now)) ?? this.store.getMetaRaw()
 
     if (existing) {
-      return this.existingStreamResponse(existing, requested);
+      return this.existingStreamResponse(existing, requested)
     }
 
     if (forkedFrom !== undefined) {
@@ -447,28 +446,28 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         createClosed,
         body,
         now,
-      });
+      })
     }
 
     // Process initial data BEFORE creating meta so an invalid JSON body
     // leaves no stream behind.
-    const resolvedContentType = contentType ?? `application/octet-stream`;
-    let initialPayload: Uint8Array | undefined;
+    const resolvedContentType = contentType ?? `application/octet-stream`
+    let initialPayload: Uint8Array | undefined
     if (body.length > 0) {
       if (normalizeContentType(resolvedContentType) === `application/json`) {
         try {
-          initialPayload = processJsonAppend(body, true);
+          initialPayload = processJsonAppend(body, true)
         } catch (err) {
           if (err instanceof JsonAppendError) {
-            return this.text(400, err.message);
+            return this.text(400, err.message)
           }
-          throw err;
+          throw err
         }
         if (initialPayload.length > MAX_BODY_BYTES) {
-          return this.text(413, `Payload too large`);
+          return this.text(413, `Payload too large`)
         }
       } else {
-        initialPayload = body;
+        initialPayload = body
       }
     }
 
@@ -478,28 +477,28 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       expiresAt: expiresAtHeader,
       closed: createClosed,
       now,
-    });
+    })
 
-    let currentOffset = this.store.getMetaRaw()?.currentOffset ?? ``;
+    let currentOffset = this.store.getMetaRaw()?.currentOffset ?? ``
     if (initialPayload !== undefined && initialPayload.length > 0) {
       currentOffset = this.store.appendMessage(
         currentOffset,
         initialPayload,
-        now,
-      );
+        now
+      )
     }
 
-    await this.syncExpiryAlarm();
+    await this.syncExpiryAlarm()
 
     const headers: Record<string, string> = {
       "content-type": resolvedContentType,
       [STREAM_OFFSET_HEADER]: currentOffset,
       location: `${url.origin}${path}`,
-    };
-    if (createClosed) {
-      headers[STREAM_CLOSED_HEADER] = `true`;
     }
-    return this.respond(201, headers);
+    if (createClosed) {
+      headers[STREAM_CLOSED_HEADER] = `true`
+    }
+    return this.respond(201, headers)
   }
 
   /**
@@ -508,13 +507,13 @@ export class StreamObject extends DurableObject<StreamsEnv> {
    */
   private existingStreamResponse(
     existing: StreamMeta,
-    req: RequestedCreateConfig,
+    req: RequestedCreateConfig
   ): Response {
     if (existing.softDeleted) {
       return this.text(
         409,
-        `stream was deleted but still has active forks — path cannot be reused until all forks are removed`,
-      );
+        `stream was deleted but still has active forks — path cannot be reused until all forks are removed`
+      )
     }
     // A fork re-PUT that omits Content-Type means "inherit from source",
     // which matches whatever the fork inherited — skip the comparison.
@@ -526,19 +525,19 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         : (normalizeContentType(req.contentType) ||
             `application/octet-stream`) ===
           (normalizeContentType(existing.contentType) ||
-            `application/octet-stream`);
-    const ttlMatches = req.ttlSeconds === existing.ttlSeconds;
-    const expiresMatches = req.expiresAt === existing.expiresAt;
-    const closedMatches = req.createClosed === existing.closed;
-    const forkedFromMatches = req.forkedFrom === existing.forkedFrom;
+            `application/octet-stream`)
+    const ttlMatches = req.ttlSeconds === existing.ttlSeconds
+    const expiresMatches = req.expiresAt === existing.expiresAt
+    const closedMatches = req.createClosed === existing.closed
+    const forkedFromMatches = req.forkedFrom === existing.forkedFrom
     // forkOffset only compared when explicitly supplied: an omitted
     // offset was resolved server-side at creation, so a second PUT
     // that also omits it stays idempotent.
     const forkOffsetMatches =
       req.forkOffsetHeader === undefined ||
-      req.forkOffsetHeader === existing.forkOffset;
+      req.forkOffsetHeader === existing.forkOffset
     const forkSubOffsetMatches =
-      (req.forkSubOffset ?? 0) === (existing.forkSubOffset ?? 0);
+      (req.forkSubOffset ?? 0) === (existing.forkSubOffset ?? 0)
 
     if (
       contentTypeMatches &&
@@ -554,13 +553,13 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         "content-type":
           existing.contentType ?? req.contentType ?? `application/octet-stream`,
         [STREAM_OFFSET_HEADER]: existing.currentOffset,
-      };
-      if (existing.closed) {
-        headers[STREAM_CLOSED_HEADER] = `true`;
       }
-      return this.respond(200, headers);
+      if (existing.closed) {
+        headers[STREAM_CLOSED_HEADER] = `true`
+      }
+      return this.respond(200, headers)
     }
-    return this.text(409, `Stream already exists with different configuration`);
+    return this.text(409, `Stream already exists with different configuration`)
   }
 
   /** Create this stream as a fork of another stream. */
@@ -568,136 +567,136 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     url: URL,
     path: string,
     options: {
-      forkedFrom: string;
-      forkOffsetHeader: string | undefined;
-      forkSubOffset: number | undefined;
-      contentType: string | undefined;
-      ttlSeconds: number | undefined;
-      expiresAt: string | undefined;
-      createClosed: boolean;
-      body: Uint8Array;
-      now: number;
-    },
+      forkedFrom: string
+      forkOffsetHeader: string | undefined
+      forkSubOffset: number | undefined
+      contentType: string | undefined
+      ttlSeconds: number | undefined
+      expiresAt: string | undefined
+      createClosed: boolean
+      body: Uint8Array
+      now: number
+    }
   ): Promise<Response> {
-    const { forkedFrom, now } = options;
+    const { forkedFrom, now } = options
 
     // A stream cannot fork from itself (calling our own stub would
     // deadlock); the reference server reports this as source-not-found.
     if (forkedFrom === path) {
-      return this.text(404, `Source stream not found`);
+      return this.text(404, `Source stream not found`)
     }
 
     const sourceStub = this.env.STREAMS.get(
-      this.env.STREAMS.idFromName(forkedFrom),
-    );
+      this.env.STREAMS.idFromName(forkedFrom)
+    )
     const acquired = await sourceStub.forkAcquire({
       forkOffset: options.forkOffsetHeader,
       contentTypeProvided: options.contentType,
-    });
+    })
 
     if (!acquired.ok) {
       switch (acquired.error) {
         case `not_found`:
-          return this.text(404, `Source stream not found`);
+          return this.text(404, `Source stream not found`)
         case `soft_deleted`:
           return this.text(
             409,
-            `source stream was deleted but still has active forks`,
-          );
+            `source stream was deleted but still has active forks`
+          )
         case `content_type_mismatch`:
-          return this.text(409, `Content type mismatch with source stream`);
+          return this.text(409, `Content type mismatch with source stream`)
         case `invalid_offset`:
-          return this.text(400, `Fork offset beyond source stream length`);
+          return this.text(400, `Fork offset beyond source stream length`)
       }
     }
 
     const release = async (): Promise<void> => {
-      await sourceStub.forkRelease();
-    };
+      await sourceStub.forkRelease()
+    }
 
     const resolvedContentType =
       options.contentType !== undefined && options.contentType.trim() !== ``
         ? options.contentType
-        : acquired.contentType;
+        : acquired.contentType
     const isJson =
-      normalizeContentType(resolvedContentType) === `application/json`;
+      normalizeContentType(resolvedContentType) === `application/json`
 
     // Fork expiry: an explicit TTL or Expires-At wins; otherwise inherit
     // from the source (TTL preferred), giving forks independent lifetimes.
-    let effectiveTtl = options.ttlSeconds;
-    let effectiveExpiresAt = options.expiresAt;
+    let effectiveTtl = options.ttlSeconds
+    let effectiveExpiresAt = options.expiresAt
     if (effectiveTtl === undefined && effectiveExpiresAt === undefined) {
       if (acquired.ttlSeconds !== undefined) {
-        effectiveTtl = acquired.ttlSeconds;
+        effectiveTtl = acquired.ttlSeconds
       } else if (acquired.expiresAt !== undefined) {
-        effectiveExpiresAt = acquired.expiresAt;
+        effectiveExpiresAt = acquired.expiresAt
       }
     }
 
     // Resolve the sub-offset prefix (a synthetic first message holding the
     // leading slice of the source message at the fork point).
-    let subOffsetPrefix: Uint8Array | undefined;
+    let subOffsetPrefix: Uint8Array | undefined
     if (options.forkSubOffset !== undefined && options.forkSubOffset > 0) {
       const past = await sourceStub.readRange(
         acquired.forkOffset,
         MAX_OFFSET_CAP,
-        1,
-      );
-      const first = past.messages[0];
+        1
+      )
+      const first = past.messages[0]
       if (!first) {
-        await release();
-        return this.text(400, `Invalid fork sub-offset`);
+        await release()
+        return this.text(400, `Invalid fork sub-offset`)
       }
       if (isJson) {
-        const text = new TextDecoder().decode(first.data);
-        const trimmed = text.endsWith(`,`) ? text.slice(0, -1) : text;
-        let values: Array<unknown>;
+        const text = new TextDecoder().decode(first.data)
+        const trimmed = text.endsWith(`,`) ? text.slice(0, -1) : text
+        let values: Array<unknown>
         try {
-          const parsed: unknown = JSON.parse(`[${trimmed}]`);
+          const parsed: unknown = JSON.parse(`[${trimmed}]`)
           if (!Array.isArray(parsed)) {
-            throw new JsonAppendError(`Invalid fork sub-offset`);
+            throw new JsonAppendError(`Invalid fork sub-offset`)
           }
-          values = parsed;
+          values = parsed
         } catch {
-          await release();
-          return this.text(400, `Invalid fork sub-offset`);
+          await release()
+          return this.text(400, `Invalid fork sub-offset`)
         }
         if (options.forkSubOffset > values.length) {
-          await release();
-          return this.text(400, `Invalid fork sub-offset`);
+          await release()
+          return this.text(400, `Invalid fork sub-offset`)
         }
         const prefix = values
           .slice(0, options.forkSubOffset)
-          .map((v) => JSON.stringify(v));
-        subOffsetPrefix = new TextEncoder().encode(prefix.join(`,`) + `,`);
+          .map((v) => JSON.stringify(v))
+        subOffsetPrefix = new TextEncoder().encode(prefix.join(`,`) + `,`)
       } else {
         if (options.forkSubOffset > first.data.length) {
-          await release();
-          return this.text(400, `Invalid fork sub-offset`);
+          await release()
+          return this.text(400, `Invalid fork sub-offset`)
         }
-        subOffsetPrefix = first.data.slice(0, options.forkSubOffset);
+        subOffsetPrefix = first.data.slice(0, options.forkSubOffset)
       }
     }
 
     // Process initial body data before creating anything.
-    let initialPayload: Uint8Array | undefined;
+    let initialPayload: Uint8Array | undefined
     if (options.body.length > 0) {
       if (isJson) {
         try {
-          initialPayload = processJsonAppend(options.body, true);
+          initialPayload = processJsonAppend(options.body, true)
         } catch (err) {
           if (err instanceof JsonAppendError) {
-            await release();
-            return this.text(400, err.message);
+            await release()
+            return this.text(400, err.message)
           }
-          throw err;
+          throw err
         }
         if (initialPayload.length > MAX_BODY_BYTES) {
-          await release();
-          return this.text(413, `Payload too large`);
+          await release()
+          return this.text(413, `Payload too large`)
         }
       } else {
-        initialPayload = options.body;
+        initialPayload = options.body
       }
     }
 
@@ -705,9 +704,9 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // concurrent PUT may have created this path in the meantime. Creating
     // again would violate the meta PK, so release our reference and fall
     // back to the idempotency comparison.
-    const raced = this.store.getMetaRaw();
+    const raced = this.store.getMetaRaw()
     if (raced) {
-      await release();
+      await release()
       return this.existingStreamResponse(raced, {
         contentType: options.contentType,
         ttlSeconds: options.ttlSeconds,
@@ -716,10 +715,10 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         forkedFrom,
         forkOffsetHeader: options.forkOffsetHeader,
         forkSubOffset: options.forkSubOffset,
-      });
+      })
     }
 
-    let currentOffset: string;
+    let currentOffset: string
     try {
       this.store.createMeta({
         contentType: resolvedContentType,
@@ -733,40 +732,40 @@ export class StreamObject extends DurableObject<StreamsEnv> {
           options.forkSubOffset !== undefined && options.forkSubOffset > 0
             ? options.forkSubOffset
             : undefined,
-      });
+      })
 
-      currentOffset = acquired.forkOffset;
+      currentOffset = acquired.forkOffset
       if (subOffsetPrefix !== undefined && subOffsetPrefix.length > 0) {
         currentOffset = this.store.appendMessage(
           currentOffset,
           subOffsetPrefix,
-          now,
-        );
+          now
+        )
       }
       if (initialPayload !== undefined && initialPayload.length > 0) {
         currentOffset = this.store.appendMessage(
           currentOffset,
           initialPayload,
-          now,
-        );
+          now
+        )
       }
     } catch (err) {
       // Never leak the acquired source reference on a failed create.
-      await release();
-      throw err;
+      await release()
+      throw err
     }
 
-    await this.syncExpiryAlarm();
+    await this.syncExpiryAlarm()
 
     const headers: Record<string, string> = {
       "content-type": resolvedContentType ?? `application/octet-stream`,
       [STREAM_OFFSET_HEADER]: currentOffset,
       location: `${url.origin}${path}`,
-    };
-    if (options.createClosed) {
-      headers[STREAM_CLOSED_HEADER] = `true`;
     }
-    return this.respond(201, headers);
+    if (options.createClosed) {
+      headers[STREAM_CLOSED_HEADER] = `true`
+    }
+    return this.respond(201, headers)
   }
 
   // ==========================================================================
@@ -774,33 +773,33 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   // ==========================================================================
 
   private async handleHead(): Promise<Response> {
-    const meta = await this.getMeta(Date.now());
+    const meta = await this.getMeta(Date.now())
     if (!meta) {
-      return this.respond(404, { "content-type": `text/plain` });
+      return this.respond(404, { "content-type": `text/plain` })
     }
     if (meta.softDeleted) {
-      return this.respond(410, { "content-type": `text/plain` });
+      return this.respond(410, { "content-type": `text/plain` })
     }
 
     const headers: Record<string, string> = {
       [STREAM_OFFSET_HEADER]: meta.currentOffset,
       "cache-control": `no-store`,
-    };
+    }
     if (meta.contentType !== undefined) {
-      headers[`content-type`] = meta.contentType;
+      headers[`content-type`] = meta.contentType
     }
     if (meta.closed) {
-      headers[STREAM_CLOSED_HEADER] = `true`;
+      headers[STREAM_CLOSED_HEADER] = `true`
     }
     if (meta.ttlSeconds !== undefined) {
-      headers[STREAM_TTL_HEADER] = String(meta.ttlSeconds);
+      headers[STREAM_TTL_HEADER] = String(meta.ttlSeconds)
     }
     if (meta.expiresAt !== undefined) {
-      headers[STREAM_EXPIRES_AT_HEADER] = meta.expiresAt;
+      headers[STREAM_EXPIRES_AT_HEADER] = meta.expiresAt
     }
-    headers[`etag`] = this.makeEtag(`-1`, meta.currentOffset, meta.closed);
+    headers[`etag`] = this.makeEtag(`-1`, meta.currentOffset, meta.closed)
 
-    return this.respond(200, headers);
+    return this.respond(200, headers)
   }
 
   // ==========================================================================
@@ -808,46 +807,46 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   // ==========================================================================
 
   private async handleGet(request: Request, url: URL): Promise<Response> {
-    const now = Date.now();
-    const meta = await this.getMeta(now);
+    const now = Date.now()
+    const meta = await this.getMeta(now)
     if (!meta) {
-      return this.text(404, `Stream not found`);
+      return this.text(404, `Stream not found`)
     }
     if (meta.softDeleted) {
-      return this.text(410, `Stream is gone`);
+      return this.text(410, `Stream is gone`)
     }
 
-    const offsetParam = url.searchParams.get(OFFSET_QUERY_PARAM) ?? undefined;
-    const live = url.searchParams.get(LIVE_QUERY_PARAM);
-    const cursor = url.searchParams.get(CURSOR_QUERY_PARAM) ?? undefined;
+    const offsetParam = url.searchParams.get(OFFSET_QUERY_PARAM) ?? undefined
+    const live = url.searchParams.get(LIVE_QUERY_PARAM)
+    const cursor = url.searchParams.get(CURSOR_QUERY_PARAM) ?? undefined
 
     if (offsetParam !== undefined) {
       if (offsetParam === ``) {
-        return this.text(400, `Empty offset parameter`);
+        return this.text(400, `Empty offset parameter`)
       }
       if (url.searchParams.getAll(OFFSET_QUERY_PARAM).length > 1) {
-        return this.text(400, `Multiple offset parameters not allowed`);
+        return this.text(400, `Multiple offset parameters not allowed`)
       }
       if (!VALID_OFFSET_PATTERN.test(offsetParam)) {
-        return this.text(400, `Invalid offset format`);
+        return this.text(400, `Invalid offset format`)
       }
     }
 
     if ((live === `long-poll` || live === `sse`) && offsetParam === undefined) {
       return this.text(
         400,
-        `${live === `sse` ? `SSE` : `Long-poll`} requires offset parameter`,
-      );
+        `${live === `sse` ? `SSE` : `Long-poll`} requires offset parameter`
+      )
     }
 
     if (live === `sse`) {
-      const ct = normalizeContentType(meta.contentType);
+      const ct = normalizeContentType(meta.contentType)
       const isTextCompatible =
-        ct.startsWith(`text/`) || ct === `application/json`;
-      const useBase64 = !isTextCompatible;
+        ct.startsWith(`text/`) || ct === `application/json`
+      const useBase64 = !isTextCompatible
       const sseOffset =
-        offsetParam === `now` ? meta.currentOffset : (offsetParam ?? `-1`);
-      return this.handleSse(meta, sseOffset, cursor, useBase64);
+        offsetParam === `now` ? meta.currentOffset : (offsetParam ?? `-1`)
+      return this.handleSse(meta, sseOffset, cursor, useBase64)
     }
 
     // Catch-up read at the tail: empty response, never cached.
@@ -856,32 +855,32 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
         [STREAM_UP_TO_DATE_HEADER]: `true`,
         "cache-control": `no-store`,
-      };
+      }
       if (meta.contentType !== undefined) {
-        headers[`content-type`] = meta.contentType;
+        headers[`content-type`] = meta.contentType
       }
       if (meta.closed) {
-        headers[STREAM_CLOSED_HEADER] = `true`;
+        headers[STREAM_CLOSED_HEADER] = `true`
       }
       const isJsonMode =
-        normalizeContentType(meta.contentType) === `application/json`;
-      return this.respond(200, headers, isJsonMode ? `[]` : ``);
+        normalizeContentType(meta.contentType) === `application/json`
+      return this.respond(200, headers, isJsonMode ? `[]` : ``)
     }
 
     const effectiveOffset =
-      offsetParam === `now` ? meta.currentOffset : offsetParam;
+      offsetParam === `now` ? meta.currentOffset : offsetParam
 
-    const initialBatch = await this.readStream(meta, effectiveOffset);
-    let messages = initialBatch.messages;
+    const initialBatch = await this.readStream(meta, effectiveOffset)
+    let messages = initialBatch.messages
     // Partial (byte-capped) responses omit Stream-Up-To-Date per §5.6.
-    let upToDate = !initialBatch.capped;
-    this.store.touchAccess(now);
-    await this.syncExpiryAlarm();
+    let upToDate = !initialBatch.capped
+    this.store.touchAccess(now)
+    await this.syncExpiryAlarm()
 
     const clientIsCaughtUp =
       (effectiveOffset !== undefined &&
         effectiveOffset === meta.currentOffset) ||
-      offsetParam === `now`;
+      offsetParam === `now`
     if (live === `long-poll` && clientIsCaughtUp && messages.length === 0) {
       if (meta.closed) {
         // Closed and at tail: EOF immediately, no waiting.
@@ -889,16 +888,16 @@ export class StreamObject extends DurableObject<StreamsEnv> {
           [STREAM_OFFSET_HEADER]: meta.currentOffset,
           [STREAM_UP_TO_DATE_HEADER]: `true`,
           [STREAM_CLOSED_HEADER]: `true`,
-        });
+        })
       }
 
-      const waitOffset = effectiveOffset ?? meta.currentOffset;
+      const waitOffset = effectiveOffset ?? meta.currentOffset
       const result = await this.waitForMessages(
         waitOffset,
-        LONG_POLL_TIMEOUT_MS,
-      );
-      this.store.touchAccess(Date.now());
-      await this.syncExpiryAlarm();
+        LONG_POLL_TIMEOUT_MS
+      )
+      this.store.touchAccess(Date.now())
+      await this.syncExpiryAlarm()
 
       if (result.streamClosed && result.messages.length === 0) {
         return this.respond(204, {
@@ -906,7 +905,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
           [STREAM_UP_TO_DATE_HEADER]: `true`,
           [STREAM_CURSOR_HEADER]: generateResponseCursor(cursor),
           [STREAM_CLOSED_HEADER]: `true`,
-        });
+        })
       }
 
       if (result.timedOut) {
@@ -914,64 +913,64 @@ export class StreamObject extends DurableObject<StreamsEnv> {
           [STREAM_OFFSET_HEADER]: waitOffset,
           [STREAM_UP_TO_DATE_HEADER]: `true`,
           [STREAM_CURSOR_HEADER]: generateResponseCursor(cursor),
-        };
-        if (this.store.getMetaRaw()?.closed === true) {
-          headers[STREAM_CLOSED_HEADER] = `true`;
         }
-        return this.respond(204, headers);
+        if (this.store.getMetaRaw()?.closed === true) {
+          headers[STREAM_CLOSED_HEADER] = `true`
+        }
+        return this.respond(204, headers)
       }
 
-      messages = result.messages;
-      upToDate = !result.capped;
+      messages = result.messages
+      upToDate = !result.capped
     }
 
     // Build the response. Re-read meta: it may have changed during a wait.
-    const freshMeta = this.store.getMetaRaw() ?? meta;
-    const headers: Record<string, string> = {};
+    const freshMeta = this.store.getMetaRaw() ?? meta
+    const headers: Record<string, string> = {}
     if (freshMeta.contentType !== undefined) {
-      headers[`content-type`] = freshMeta.contentType;
+      headers[`content-type`] = freshMeta.contentType
     }
 
-    const lastMessage = messages[messages.length - 1];
-    const responseOffset = lastMessage?.offset ?? freshMeta.currentOffset;
-    headers[STREAM_OFFSET_HEADER] = responseOffset;
+    const lastMessage = messages[messages.length - 1]
+    const responseOffset = lastMessage?.offset ?? freshMeta.currentOffset
+    headers[STREAM_OFFSET_HEADER] = responseOffset
 
     if (live === `long-poll`) {
-      headers[STREAM_CURSOR_HEADER] = generateResponseCursor(cursor);
+      headers[STREAM_CURSOR_HEADER] = generateResponseCursor(cursor)
     }
     if (upToDate) {
-      headers[STREAM_UP_TO_DATE_HEADER] = `true`;
+      headers[STREAM_UP_TO_DATE_HEADER] = `true`
     }
 
-    const clientAtTail = responseOffset === freshMeta.currentOffset;
-    const closedSuffix = freshMeta.closed && clientAtTail && upToDate;
+    const clientAtTail = responseOffset === freshMeta.currentOffset
+    const closedSuffix = freshMeta.closed && clientAtTail && upToDate
     if (closedSuffix) {
-      headers[STREAM_CLOSED_HEADER] = `true`;
+      headers[STREAM_CLOSED_HEADER] = `true`
     }
 
-    const startOffset = offsetParam ?? `-1`;
-    const etag = this.makeEtag(startOffset, responseOffset, closedSuffix);
-    headers[`etag`] = etag;
+    const startOffset = offsetParam ?? `-1`
+    const etag = this.makeEtag(startOffset, responseOffset, closedSuffix)
+    headers[`etag`] = etag
 
-    const ifNoneMatch = request.headers.get(`if-none-match`);
+    const ifNoneMatch = request.headers.get(`if-none-match`)
     if (ifNoneMatch !== null && ifNoneMatch === etag) {
-      return this.respond(304, { etag });
+      return this.respond(304, { etag })
     }
 
     // Recommended shared-cache headers for catch-up reads (§10.1);
     // live-mode responses stay uncached.
     if (live !== `long-poll`) {
       headers[`cache-control`] =
-        `public, max-age=60, stale-while-revalidate=300`;
+        `public, max-age=60, stale-while-revalidate=300`
     }
 
-    const fragments = messages.map((m) => m.data);
+    const fragments = messages.map((m) => m.data)
     const body =
       normalizeContentType(freshMeta.contentType) === `application/json`
         ? formatJsonMessages(fragments)
-        : concatBytes(fragments);
+        : concatBytes(fragments)
 
-    return this.respond(200, headers, body);
+    return this.respond(200, headers, body)
   }
 
   // ==========================================================================
@@ -982,15 +981,11 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     meta: StreamMeta,
     initialOffset: string,
     cursor: string | undefined,
-    useBase64: boolean,
+    useBase64: boolean
   ): Response {
-    const { readable, writable } = new TransformStream<
-      Uint8Array,
-      Uint8Array
-    >();
-    const writer = writable.getWriter();
-    const isJson =
-      normalizeContentType(meta.contentType) === `application/json`;
+    const { readable, writable } = new TransformStream<Uint8Array, Uint8Array>()
+    const writer = writable.getWriter()
+    const isJson = normalizeContentType(meta.contentType) === `application/json`
 
     // Pump in the background; the pending stream keeps the DO alive.
     // Write failures mean the client disconnected — expected; anything
@@ -1001,14 +996,14 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       cursor,
       useBase64,
       isJson,
-      writer,
+      writer
     )
       .catch((err: unknown) => {
         if (!isClientDisconnect(err)) {
-          console.warn(`SSE pump ended with error`, err);
+          console.warn(`SSE pump ended with error`, err)
         }
       })
-      .finally(() => writer.close().catch(() => undefined));
+      .finally(() => writer.close().catch(() => undefined))
 
     const headers: Record<string, string> = {
       "content-type": `text/event-stream`,
@@ -1018,11 +1013,11 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       // responses are flushed in compressor-sized blocks, which delays
       // (and can split) events for live clients.
       "content-encoding": `identity`,
-    };
-    if (useBase64) {
-      headers[STREAM_SSE_DATA_ENCODING_HEADER] = `base64`;
     }
-    return this.respond(200, headers, readable);
+    if (useBase64) {
+      headers[STREAM_SSE_DATA_ENCODING_HEADER] = `base64`
+    }
+    return this.respond(200, headers, readable)
   }
 
   private async pumpSse(
@@ -1031,128 +1026,128 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     cursor: string | undefined,
     useBase64: boolean,
     isJson: boolean,
-    writer: WritableStreamDefaultWriter<Uint8Array>,
+    writer: WritableStreamDefaultWriter<Uint8Array>
   ): Promise<void> {
-    const encoder = new TextEncoder();
-    const decoder = new TextDecoder();
-    const write = (s: string): Promise<void> => writer.write(encoder.encode(s));
-    const startedAt = Date.now();
+    const encoder = new TextEncoder()
+    const decoder = new TextDecoder()
+    const write = (s: string): Promise<void> => writer.write(encoder.encode(s))
+    const startedAt = Date.now()
 
-    let currentOffset = initialOffset;
+    let currentOffset = initialOffset
 
     for (;;) {
-      const loopMeta = this.store.getMetaRaw();
+      const loopMeta = this.store.getMetaRaw()
       if (loopMeta?.generation !== generation) {
         // Stream deleted/expired (and possibly recreated) mid-tail: this
         // subscription belongs to the old generation — end it rather than
         // silently rebinding to a different stream.
-        return;
+        return
       }
       const batch = await this.readStream(
         loopMeta,
-        currentOffset === `-1` ? undefined : currentOffset,
-      );
+        currentOffset === `-1` ? undefined : currentOffset
+      )
 
       // Batch this iteration's data events and the control event into ONE
       // write. Separate writes become separate transport chunks, and the
       // suite's SSE reader may stop between them mid-event (its stop
       // marker can appear inside a data payload), then fail to parse the
       // incomplete event.
-      let frame = ``;
+      let frame = ``
       for (const message of batch.messages) {
-        let dataPayload: string;
+        let dataPayload: string
         if (useBase64) {
-          dataPayload = base64FromBytes(message.data);
+          dataPayload = base64FromBytes(message.data)
         } else if (isJson) {
-          dataPayload = decoder.decode(formatJsonMessages([message.data]));
+          dataPayload = decoder.decode(formatJsonMessages([message.data]))
         } else {
-          dataPayload = decoder.decode(message.data);
+          dataPayload = decoder.decode(message.data)
         }
-        frame += `event: data\n` + encodeSseData(dataPayload);
+        frame += `event: data\n` + encodeSseData(dataPayload)
       }
 
-      const freshMeta = this.store.getMetaRaw();
+      const freshMeta = this.store.getMetaRaw()
       if (freshMeta?.generation !== generation) {
-        return;
+        return
       }
-      this.store.touchAccess(Date.now());
-      await this.syncExpiryAlarm();
+      this.store.touchAccess(Date.now())
+      await this.syncExpiryAlarm()
 
-      const lastMessage = batch.messages[batch.messages.length - 1];
-      const controlOffset = lastMessage?.offset ?? freshMeta.currentOffset;
+      const lastMessage = batch.messages[batch.messages.length - 1]
+      const controlOffset = lastMessage?.offset ?? freshMeta.currentOffset
       const clientAtTail =
-        !batch.capped && controlOffset === freshMeta.currentOffset;
+        !batch.capped && controlOffset === freshMeta.currentOffset
 
       const controlData: Record<string, string | boolean> = {
         [SSE_OFFSET_FIELD]: controlOffset,
-      };
+      }
       if (freshMeta.closed && clientAtTail) {
         // Final control event: streamCursor omitted, upToDate implied.
-        controlData[SSE_CLOSED_FIELD] = true;
+        controlData[SSE_CLOSED_FIELD] = true
       } else {
-        controlData[SSE_CURSOR_FIELD] = generateResponseCursor(cursor);
+        controlData[SSE_CURSOR_FIELD] = generateResponseCursor(cursor)
         if (!batch.capped) {
-          controlData[SSE_UP_TO_DATE_FIELD] = true;
+          controlData[SSE_UP_TO_DATE_FIELD] = true
         }
       }
-      frame += `event: control\n` + encodeSseData(JSON.stringify(controlData));
-      await write(frame);
+      frame += `event: control\n` + encodeSseData(JSON.stringify(controlData))
+      await write(frame)
 
       if (freshMeta.closed && clientAtTail) {
-        return;
+        return
       }
-      currentOffset = controlOffset;
+      currentOffset = controlOffset
 
       if (batch.capped) {
         // More catch-up data remains — keep reading without waiting.
-        continue;
+        continue
       }
 
       // Recycle long-lived connections (§5.8 SHOULD, ~60s) at a clean
       // control boundary; the client reconnects from streamNextOffset.
       if (Date.now() - startedAt >= MAX_SSE_LIFETIME_MS) {
-        return;
+        return
       }
 
       const result = await this.waitForMessages(
         currentOffset,
-        LONG_POLL_TIMEOUT_MS,
-      );
-      this.store.touchAccess(Date.now());
-      await this.syncExpiryAlarm();
+        LONG_POLL_TIMEOUT_MS
+      )
+      this.store.touchAccess(Date.now())
+      await this.syncExpiryAlarm()
 
       if (result.streamClosed && result.messages.length === 0) {
         const finalControl: Record<string, string | boolean> = {
           [SSE_OFFSET_FIELD]: currentOffset,
           [SSE_CLOSED_FIELD]: true,
-        };
+        }
         await write(
-          `event: control\n` + encodeSseData(JSON.stringify(finalControl)),
-        );
-        return;
+          `event: control\n` + encodeSseData(JSON.stringify(finalControl))
+        )
+        return
       }
 
       if (result.timedOut) {
-        const afterWait = this.store.getMetaRaw();
-        if (afterWait?.generation !== generation) return;
+        const afterWait = this.store.getMetaRaw()
+        if (afterWait?.generation !== generation) return
         if (afterWait.closed) {
           const closedControl: Record<string, string | boolean> = {
             [SSE_OFFSET_FIELD]: currentOffset,
             [SSE_CLOSED_FIELD]: true,
-          };
+          }
           await write(
-            `event: control\n` + encodeSseData(JSON.stringify(closedControl)),
-          );
-          return;
+            `event: control\n` + encodeSseData(JSON.stringify(closedControl))
+          )
+          return
         }
         const keepAlive: Record<string, string | boolean> = {
           [SSE_OFFSET_FIELD]: currentOffset,
           [SSE_CURSOR_FIELD]: generateResponseCursor(cursor),
           [SSE_UP_TO_DATE_FIELD]: true,
-        };
+        }
         await write(
-          `event: control\n` + encodeSseData(JSON.stringify(keepAlive)),
-        );
+          `event: control\n` + encodeSseData(JSON.stringify(keepAlive))
+        )
       }
       // Loop continues: read any new messages.
     }
@@ -1164,95 +1159,93 @@ export class StreamObject extends DurableObject<StreamsEnv> {
 
   private async handlePost(request: Request): Promise<Response> {
     // Body first — see handlePut: early responses mid-upload reset the DO.
-    const body = await this.readBody(request);
+    const body = await this.readBody(request)
     if (body === `too_large`) {
-      return this.text(413, `Payload too large`);
+      return this.text(413, `Payload too large`)
     }
 
-    const contentType = request.headers.get(`content-type`) ?? undefined;
-    const seq = request.headers.get(STREAM_SEQ_HEADER) ?? undefined;
+    const contentType = request.headers.get(`content-type`) ?? undefined
+    const seq = request.headers.get(STREAM_SEQ_HEADER) ?? undefined
     const closeStream =
-      (request.headers.get(STREAM_CLOSED_HEADER) ?? ``).toLowerCase() ===
-      `true`;
+      (request.headers.get(STREAM_CLOSED_HEADER) ?? ``).toLowerCase() === `true`
 
-    const producerId = request.headers.get(PRODUCER_ID_HEADER) ?? undefined;
+    const producerId = request.headers.get(PRODUCER_ID_HEADER) ?? undefined
     const producerEpochStr =
-      request.headers.get(PRODUCER_EPOCH_HEADER) ?? undefined;
-    const producerSeqStr =
-      request.headers.get(PRODUCER_SEQ_HEADER) ?? undefined;
+      request.headers.get(PRODUCER_EPOCH_HEADER) ?? undefined
+    const producerSeqStr = request.headers.get(PRODUCER_SEQ_HEADER) ?? undefined
 
     const hasAnyProducerHeader =
       producerId !== undefined ||
       producerEpochStr !== undefined ||
-      producerSeqStr !== undefined;
+      producerSeqStr !== undefined
     const hasAllProducerHeaders =
       producerId !== undefined &&
       producerEpochStr !== undefined &&
-      producerSeqStr !== undefined;
+      producerSeqStr !== undefined
 
     if (hasAnyProducerHeader && !hasAllProducerHeaders) {
       return this.text(
         400,
-        `All producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together`,
-      );
+        `All producer headers (Producer-Id, Producer-Epoch, Producer-Seq) must be provided together`
+      )
     }
     if (hasAllProducerHeaders && producerId === ``) {
-      return this.text(400, `Invalid Producer-Id: must not be empty`);
+      return this.text(400, `Invalid Producer-Id: must not be empty`)
     }
 
-    let producer: ProducerHeaders | undefined;
+    let producer: ProducerHeaders | undefined
     if (hasAllProducerHeaders) {
       if (!STRICT_INTEGER_REGEX.test(producerEpochStr)) {
         return this.text(
           400,
-          `Invalid Producer-Epoch: must be a non-negative integer`,
-        );
+          `Invalid Producer-Epoch: must be a non-negative integer`
+        )
       }
-      const epoch = Number(producerEpochStr);
+      const epoch = Number(producerEpochStr)
       if (!Number.isSafeInteger(epoch)) {
         return this.text(
           400,
-          `Invalid Producer-Epoch: must be a non-negative integer`,
-        );
+          `Invalid Producer-Epoch: must be a non-negative integer`
+        )
       }
       if (!STRICT_INTEGER_REGEX.test(producerSeqStr)) {
         return this.text(
           400,
-          `Invalid Producer-Seq: must be a non-negative integer`,
-        );
+          `Invalid Producer-Seq: must be a non-negative integer`
+        )
       }
-      const seqNum = Number(producerSeqStr);
+      const seqNum = Number(producerSeqStr)
       if (!Number.isSafeInteger(seqNum)) {
         return this.text(
           400,
-          `Invalid Producer-Seq: must be a non-negative integer`,
-        );
+          `Invalid Producer-Seq: must be a non-negative integer`
+        )
       }
-      producer = { producerId, epoch, seq: seqNum };
+      producer = { producerId, epoch, seq: seqNum }
     }
 
-    const now = Date.now();
+    const now = Date.now()
 
     // Close-only request (empty body + Stream-Closed: true). Content-Type
     // validation is skipped per protocol §5.2.
     if (body.length === 0 && closeStream) {
-      return this.handleCloseOnly(producer, now);
+      return this.handleCloseOnly(producer, now)
     }
 
     if (body.length === 0) {
-      return this.text(400, `Empty body`);
+      return this.text(400, `Empty body`)
     }
 
     if (contentType === undefined) {
-      return this.text(400, `Content-Type header is required`);
+      return this.text(400, `Content-Type header is required`)
     }
 
-    const meta = await this.getMeta(now);
+    const meta = await this.getMeta(now)
     if (!meta) {
-      return this.text(404, `Stream not found`);
+      return this.text(404, `Stream not found`)
     }
     if (meta.softDeleted) {
-      return this.text(410, `Stream is gone`);
+      return this.text(410, `Stream is gone`)
     }
 
     // Closed check comes first so clients always see Stream-Closed.
@@ -1269,12 +1262,12 @@ export class StreamObject extends DurableObject<StreamsEnv> {
           [STREAM_CLOSED_HEADER]: `true`,
           [PRODUCER_EPOCH_HEADER]: String(producer.epoch),
           [PRODUCER_SEQ_HEADER]: String(producer.seq),
-        });
+        })
       }
       return this.text(409, `Stream is closed`, {
         [STREAM_CLOSED_HEADER]: `true`,
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
-      });
+      })
     }
 
     // Content-type mismatch check (normalized, so charset params match).
@@ -1283,24 +1276,24 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         normalizeContentType(contentType) !==
         normalizeContentType(meta.contentType)
       ) {
-        return this.text(409, `Content-type mismatch`);
+        return this.text(409, `Content-type mismatch`)
       }
     }
 
     // Producer validation runs BEFORE the Stream-Seq check so a retry
     // carrying both is deduplicated to 204 instead of a Stream-Seq 409.
-    let producerResult: ProducerValidationResult | undefined;
+    let producerResult: ProducerValidationResult | undefined
     if (producer !== undefined) {
-      const state = this.store.getProducerState(producer.producerId, now);
+      const state = this.store.getProducerState(producer.producerId, now)
       producerResult = validateProducer(
         state,
         producer.producerId,
         producer.epoch,
         producer.seq,
-        now,
-      );
+        now
+      )
       if (producerResult.status !== `accepted`) {
-        return this.producerFailureResponse(producerResult, producer, false);
+        return this.producerFailureResponse(producerResult, producer, false)
       }
     }
 
@@ -1308,100 +1301,96 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // increasing.
     if (seq !== undefined) {
       if (meta.lastSeq !== undefined && seq <= meta.lastSeq) {
-        return this.text(409, `Sequence conflict`);
+        return this.text(409, `Sequence conflict`)
       }
     }
 
     // Process the payload (JSON validation) BEFORE committing any state.
-    let payload = body;
+    let payload = body
     if (normalizeContentType(meta.contentType) === `application/json`) {
       try {
-        payload = processJsonAppend(body, false);
+        payload = processJsonAppend(body, false)
       } catch (err) {
         if (err instanceof JsonAppendError) {
-          return this.text(400, err.message);
+          return this.text(400, err.message)
         }
-        throw err;
+        throw err
       }
       // JSON normalization can expand the payload (e.g. escaping); the
       // stored fragment must still fit SQLite's per-value cap.
       if (payload.length > MAX_BODY_BYTES) {
-        return this.text(413, `Payload too large`);
+        return this.text(413, `Payload too large`)
       }
     }
 
-    const newOffset = this.store.appendMessage(
-      meta.currentOffset,
-      payload,
-      now,
-    );
+    const newOffset = this.store.appendMessage(meta.currentOffset, payload, now)
 
     if (producerResult?.status === `accepted`) {
       this.store.commitProducerState(
         producerResult.producerId,
-        producerResult.proposedState,
-      );
+        producerResult.proposedState
+      )
     }
     if (seq !== undefined) {
-      this.store.setLastSeq(seq);
+      this.store.setLastSeq(seq)
     }
 
-    let closedBy: ClosedBy | undefined;
+    let closedBy: ClosedBy | undefined
     if (closeStream) {
       if (producer !== undefined) {
         closedBy = {
           producerId: producer.producerId,
           epoch: producer.epoch,
           seq: producer.seq,
-        };
+        }
       }
-      this.store.setClosed(closedBy);
+      this.store.setClosed(closedBy)
     }
 
-    this.store.touchAccess(now);
-    await this.syncExpiryAlarm();
+    this.store.touchAccess(now)
+    await this.syncExpiryAlarm()
 
     // Data waiters are notified before close waiters so append-and-close
     // delivers the final message before the EOF signal.
-    this.notifyAppend();
+    this.notifyAppend()
     if (closeStream) {
-      this.notifyClosed();
+      this.notifyClosed()
     }
 
     const responseHeaders: Record<string, string> = {
       [STREAM_OFFSET_HEADER]: newOffset,
-    };
+    }
     if (producer !== undefined) {
-      responseHeaders[PRODUCER_EPOCH_HEADER] = String(producer.epoch);
-      responseHeaders[PRODUCER_SEQ_HEADER] = String(producer.seq);
+      responseHeaders[PRODUCER_EPOCH_HEADER] = String(producer.epoch)
+      responseHeaders[PRODUCER_SEQ_HEADER] = String(producer.seq)
     }
     if (closeStream) {
-      responseHeaders[STREAM_CLOSED_HEADER] = `true`;
+      responseHeaders[STREAM_CLOSED_HEADER] = `true`
     }
     // 200 for producer appends (with headers), 204 for plain appends.
-    return this.respond(producer !== undefined ? 200 : 204, responseHeaders);
+    return this.respond(producer !== undefined ? 200 : 204, responseHeaders)
   }
 
   private async handleCloseOnly(
     producer: ProducerHeaders | undefined,
-    now: number,
+    now: number
   ): Promise<Response> {
-    const meta = await this.getMeta(now);
+    const meta = await this.getMeta(now)
     if (!meta) {
-      return this.text(404, `Stream not found`);
+      return this.text(404, `Stream not found`)
     }
     if (meta.softDeleted) {
-      return this.text(410, `Stream is gone`);
+      return this.text(410, `Stream is gone`)
     }
 
     if (producer === undefined) {
       // Simple idempotent close.
-      this.store.setClosed(undefined);
-      this.notifyClosed();
+      this.store.setClosed(undefined)
+      this.notifyClosed()
       return this.respond(204, {
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
         [STREAM_CLOSED_HEADER]: `true`,
-      });
+      })
     }
 
     if (meta.closed) {
@@ -1415,84 +1404,84 @@ export class StreamObject extends DurableObject<StreamsEnv> {
           [STREAM_CLOSED_HEADER]: `true`,
           [PRODUCER_EPOCH_HEADER]: String(producer.epoch),
           [PRODUCER_SEQ_HEADER]: String(producer.seq),
-        });
+        })
       }
       // Already closed by a different request — conflict.
       return this.text(409, `Stream is closed`, {
         [STREAM_CLOSED_HEADER]: `true`,
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
-      });
+      })
     }
 
-    const state = this.store.getProducerState(producer.producerId, now);
+    const state = this.store.getProducerState(producer.producerId, now)
     const producerResult = validateProducer(
       state,
       producer.producerId,
       producer.epoch,
       producer.seq,
-      now,
-    );
+      now
+    )
     if (producerResult.status !== `accepted`) {
-      return this.producerFailureResponse(producerResult, producer, true);
+      return this.producerFailureResponse(producerResult, producer, true)
     }
 
     this.store.commitProducerState(
       producerResult.producerId,
-      producerResult.proposedState,
-    );
+      producerResult.proposedState
+    )
     this.store.setClosed({
       producerId: producer.producerId,
       epoch: producer.epoch,
       seq: producer.seq,
-    });
-    this.notifyClosed();
+    })
+    this.notifyClosed()
 
     return this.respond(204, {
       [STREAM_OFFSET_HEADER]: meta.currentOffset,
       [STREAM_CLOSED_HEADER]: `true`,
       [PRODUCER_EPOCH_HEADER]: String(producer.epoch),
       [PRODUCER_SEQ_HEADER]: String(producer.seq),
-    });
+    })
   }
 
   /** Map a non-accepted producer validation result to its response. */
   private producerFailureResponse(
     result: Exclude<ProducerValidationResult, { status: `accepted` }>,
     producer: ProducerHeaders,
-    isCloseOnly: boolean,
+    isCloseOnly: boolean
   ): Response {
     switch (result.status) {
       case `duplicate`: {
         const headers: Record<string, string> = {
           [PRODUCER_EPOCH_HEADER]: String(producer.epoch),
           [PRODUCER_SEQ_HEADER]: String(result.lastSeq),
-        };
+        }
         if (isCloseOnly) {
-          const meta = this.store.getMetaRaw();
-          headers[STREAM_OFFSET_HEADER] = meta?.currentOffset ?? ``;
+          const meta = this.store.getMetaRaw()
+          headers[STREAM_OFFSET_HEADER] = meta?.currentOffset ?? ``
           if (meta?.closed === true) {
-            headers[STREAM_CLOSED_HEADER] = `true`;
+            headers[STREAM_CLOSED_HEADER] = `true`
           }
         }
-        return this.respond(204, headers);
+        return this.respond(204, headers)
       }
       case `stale_epoch`:
         return this.text(403, `Stale producer epoch`, {
           [PRODUCER_EPOCH_HEADER]: String(result.currentEpoch),
-        });
+        })
       case `invalid_epoch_seq`:
-        return this.text(400, `New epoch must start with sequence 0`);
+        return this.text(400, `New epoch must start with sequence 0`)
       case `sequence_gap`:
         return this.text(409, `Producer sequence gap`, {
           [PRODUCER_EXPECTED_SEQ_HEADER]: String(result.expectedSeq),
           [PRODUCER_RECEIVED_SEQ_HEADER]: String(result.receivedSeq),
-        });
+        })
       case `stream_closed`: {
-        const meta = this.store.getMetaRaw();
+        const meta = this.store.getMetaRaw()
         return this.text(409, `Stream is closed`, {
           [STREAM_CLOSED_HEADER]: `true`,
           [STREAM_OFFSET_HEADER]: meta?.currentOffset ?? ``,
-        });
+        })
       }
     }
   }
@@ -1502,22 +1491,22 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   // ==========================================================================
 
   private async handleDelete(_path: string): Promise<Response> {
-    const meta = await this.getMeta(Date.now());
+    const meta = await this.getMeta(Date.now())
     if (!meta) {
-      return this.text(404, `Stream not found`);
+      return this.text(404, `Stream not found`)
     }
     if (meta.softDeleted) {
-      return this.text(410, `Stream is gone`);
+      return this.text(410, `Stream is gone`)
     }
     if (meta.refCount > 0) {
       // Active forks reference this stream: soft-delete so fork readers
       // can still stitch through it.
-      this.store.setSoftDeleted();
-      this.notifyClosed();
-      return this.respond(204, {});
+      this.store.setSoftDeleted()
+      this.notifyClosed()
+      return this.respond(204, {})
     }
-    await this.purgeStream(meta);
-    return this.respond(204, {});
+    await this.purgeStream(meta)
+    return this.respond(204, {})
   }
 
   // ==========================================================================
@@ -1530,75 +1519,73 @@ export class StreamObject extends DurableObject<StreamsEnv> {
    * reference it, in which case it is soft-deleted instead.
    */
   private async getMeta(now: number): Promise<StreamMeta | undefined> {
-    const meta = this.store.getMetaRaw();
-    if (!meta) return undefined;
+    const meta = this.store.getMetaRaw()
+    if (!meta) return undefined
     if (this.store.isExpired(meta, now)) {
       if (meta.refCount > 0) {
-        if (!meta.softDeleted) this.store.setSoftDeleted();
-        return { ...meta, softDeleted: true };
+        if (!meta.softDeleted) this.store.setSoftDeleted()
+        return { ...meta, softDeleted: true }
       }
-      await this.purgeStream(meta);
-      return undefined;
+      await this.purgeStream(meta)
+      return undefined
     }
-    return meta;
+    return meta
   }
 
   private async purgeStream(meta: StreamMeta): Promise<void> {
-    this.store.purge();
-    this.cancelWaiters();
-    await this.ctx.storage.deleteAlarm();
+    this.store.purge()
+    this.cancelWaiters()
+    await this.ctx.storage.deleteAlarm()
     if (meta.forkedFrom !== undefined) {
       // Cascade: dropping this fork releases its reference on the source.
       // The release must not be lost if the RPC fails (that would pin the
       // source's refcount forever), so queue it durably and retry from
       // the alarm handler on failure.
-      this.store.enqueueGcRelease(meta.forkedFrom);
-      await this.processGcReleases();
+      this.store.enqueueGcRelease(meta.forkedFrom)
+      await this.processGcReleases()
     }
   }
 
   /** Retry queued forkRelease calls; re-arm the alarm if any still fail. */
   private async processGcReleases(): Promise<void> {
     for (const parentPath of this.store.pendingGcReleases()) {
-      const stub = this.env.STREAMS.get(
-        this.env.STREAMS.idFromName(parentPath),
-      );
+      const stub = this.env.STREAMS.get(this.env.STREAMS.idFromName(parentPath))
       try {
-        await stub.forkRelease();
-        this.store.dequeueGcRelease(parentPath);
+        await stub.forkRelease()
+        this.store.dequeueGcRelease(parentPath)
       } catch (err) {
         console.error(
           `forkRelease failed; will retry via alarm`,
           parentPath,
-          err,
-        );
-        await this.ctx.storage.setAlarm(Date.now() + 5_000);
+          err
+        )
+        await this.ctx.storage.setAlarm(Date.now() + 5_000)
       }
     }
   }
 
   /** Last alarm time armed by syncExpiryAlarm (write-amplification guard). */
-  private lastArmedAlarm: number | undefined;
+  private lastArmedAlarm: number | undefined
 
   /** (Re-)arm the expiry alarm to match the stream's current expiry time. */
   private async syncExpiryAlarm(): Promise<void> {
-    const meta = this.store.getMetaRaw();
+    const meta = this.store.getMetaRaw()
     if (!meta) {
-      this.lastArmedAlarm = undefined;
-      return;
+      this.lastArmedAlarm = undefined
+      return
     }
-    const expiry = this.store.expiryTime(meta);
-    if (expiry === undefined) return;
+    const expiry = this.store.expiryTime(meta)
+    if (expiry === undefined) return
     // Skip the storage write when the target barely moved (sliding-TTL
     // touches on every read would otherwise write an alarm per request).
     if (
       this.lastArmedAlarm !== undefined &&
       Math.abs(expiry - this.lastArmedAlarm) < 500
     ) {
-      return;
+      return
     }
-    await this.ctx.storage.setAlarm(expiry);
-    this.lastArmedAlarm = expiry;
+    await this.ctx.storage.setAlarm(expiry)
+    this.lastArmedAlarm = expiry
   }
 
   // ==========================================================================
@@ -1611,22 +1598,22 @@ export class StreamObject extends DurableObject<StreamsEnv> {
    */
   private async readStream(
     meta: StreamMeta,
-    afterOffset: string | undefined,
+    afterOffset: string | undefined
   ): Promise<ReadBatch> {
-    return this.readStitched(meta, afterOffset, undefined, undefined);
+    return this.readStitched(meta, afterOffset, undefined, undefined)
   }
 
   private async readStitched(
     meta: StreamMeta,
     afterOffset: string | undefined,
     capOffset: string | undefined,
-    limit: number | undefined,
+    limit: number | undefined
   ): Promise<ReadBatch> {
     const normalizedAfter =
       afterOffset === undefined || afterOffset === `-1`
         ? undefined
-        : afterOffset;
-    const out: Array<StoredMessage> = [];
+        : afterOffset
+    const out: Array<StoredMessage> = []
 
     if (
       meta.forkedFrom !== undefined &&
@@ -1636,87 +1623,87 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       const cap =
         capOffset === undefined || meta.forkOffset < capOffset
           ? meta.forkOffset
-          : capOffset;
+          : capOffset
       const stub = this.env.STREAMS.get(
-        this.env.STREAMS.idFromName(meta.forkedFrom),
-      );
-      const inherited = await stub.readRange(normalizedAfter, cap, limit);
-      out.push(...inherited.messages);
+        this.env.STREAMS.idFromName(meta.forkedFrom)
+      )
+      const inherited = await stub.readRange(normalizedAfter, cap, limit)
+      out.push(...inherited.messages)
       if (inherited.capped) {
         // More inherited data remains: return the partial batch and let
         // the reader continue from its Stream-Next-Offset.
-        return { messages: out, capped: true };
+        return { messages: out, capped: true }
       }
       if (limit !== undefined && out.length >= limit) {
-        return { messages: out.slice(0, limit), capped: true };
+        return { messages: out.slice(0, limit), capped: true }
       }
     }
 
-    const remaining = limit === undefined ? undefined : limit - out.length;
+    const remaining = limit === undefined ? undefined : limit - out.length
     const own = this.store.readMessagesRange(
       normalizedAfter,
       capOffset,
       remaining,
-      MAX_READ_BATCH_BYTES,
-    );
-    out.push(...own.messages);
-    return { messages: out, capped: own.capped };
+      MAX_READ_BATCH_BYTES
+    )
+    out.push(...own.messages)
+    return { messages: out, capped: own.capped }
   }
 
   private async waitForMessages(
     offset: string,
-    timeoutMs: number,
+    timeoutMs: number
   ): Promise<WaitResult> {
     // Fork inherited range: return the stitched data immediately rather
     // than waiting (source appends never wake fork waiters).
-    const forkMeta = this.store.getMetaRaw();
+    const forkMeta = this.store.getMetaRaw()
     if (
       forkMeta?.forkedFrom !== undefined &&
       forkMeta.forkOffset !== undefined &&
       offset !== `-1` &&
       offset < forkMeta.forkOffset
     ) {
-      const stitched = await this.readStream(forkMeta, offset);
+      const stitched = await this.readStream(forkMeta, offset)
       return {
         messages: stitched.messages,
         timedOut: false,
         streamClosed: false,
         capped: stitched.capped,
-      };
+      }
     }
     if (forkMeta?.forkedFrom !== undefined && offset === `-1`) {
-      const stitched = await this.readStream(forkMeta, undefined);
+      const stitched = await this.readStream(forkMeta, undefined)
       if (stitched.messages.length > 0) {
         return {
           messages: stitched.messages,
           timedOut: false,
           streamClosed: false,
           capped: stitched.capped,
-        };
+        }
       }
     }
 
     const initial = this.store.readMessages(
       offset === `-1` ? undefined : offset,
-      MAX_READ_BATCH_BYTES,
-    );
+      MAX_READ_BATCH_BYTES
+    )
     if (initial.messages.length > 0) {
       return {
         messages: initial.messages,
         timedOut: false,
         streamClosed: false,
         capped: initial.capped,
-      };
+      }
     }
 
-    const meta = this.store.getMetaRaw();
+    const meta = this.store.getMetaRaw()
     if (!meta) {
       return Promise.resolve({
         messages: [],
         timedOut: false,
         streamClosed: false,
         capped: false,
-      });
+      })
     }
     if (meta.closed && offset === meta.currentOffset) {
       return Promise.resolve({
@@ -1724,71 +1711,71 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         timedOut: false,
         streamClosed: true,
         capped: false,
-      });
+      })
     }
 
     return new Promise<WaitResult>((resolve) => {
       const waiter: PendingWaiter = {
         offset,
         resolve: (batch) => {
-          clearTimeout(timeoutId);
-          this.removeWaiter(waiter);
-          const current = this.store.getMetaRaw();
+          clearTimeout(timeoutId)
+          this.removeWaiter(waiter)
+          const current = this.store.getMetaRaw()
           const streamClosed =
-            current?.closed === true && batch.messages.length === 0;
+            current?.closed === true && batch.messages.length === 0
           resolve({
             messages: batch.messages,
             timedOut: false,
             streamClosed,
             capped: batch.capped,
-          });
+          })
         },
-      };
+      }
 
       const timeoutId = setTimeout(() => {
-        this.removeWaiter(waiter);
-        const current = this.store.getMetaRaw();
+        this.removeWaiter(waiter)
+        const current = this.store.getMetaRaw()
         resolve({
           messages: [],
           timedOut: true,
           streamClosed: current?.closed === true,
           capped: false,
-        });
-      }, timeoutMs);
+        })
+      }, timeoutMs)
 
-      this.waiters.push(waiter);
-    });
+      this.waiters.push(waiter)
+    })
   }
 
   private notifyAppend(): void {
     for (const waiter of [...this.waiters]) {
       const batch = this.store.readMessages(
         waiter.offset === `-1` ? undefined : waiter.offset,
-        MAX_READ_BATCH_BYTES,
-      );
+        MAX_READ_BATCH_BYTES
+      )
       if (batch.messages.length > 0) {
-        waiter.resolve(batch);
+        waiter.resolve(batch)
       }
     }
   }
 
   private notifyClosed(): void {
     for (const waiter of [...this.waiters]) {
-      waiter.resolve({ messages: [], capped: false });
+      waiter.resolve({ messages: [], capped: false })
     }
   }
 
   private cancelWaiters(): void {
     for (const waiter of [...this.waiters]) {
-      waiter.resolve({ messages: [], capped: false });
+      waiter.resolve({ messages: [], capped: false })
     }
-    this.waiters = [];
+    this.waiters = []
   }
 
   private removeWaiter(waiter: PendingWaiter): void {
-    const index = this.waiters.indexOf(waiter);
+    const index = this.waiters.indexOf(waiter)
     if (index !== -1) {
-      this.waiters.splice(index, 1);
+      this.waiters.splice(index, 1)
     }
   }
 
@@ -1797,34 +1784,34 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   // ==========================================================================
 
   private async readBody(request: Request): Promise<Uint8Array | `too_large`> {
-    const body = request.body;
-    const lengthHeader = request.headers.get(`content-length`);
+    const body = request.body
+    const lengthHeader = request.headers.get(`content-length`)
     if (lengthHeader !== null) {
-      const length = Number(lengthHeader);
+      const length = Number(lengthHeader)
       if (Number.isFinite(length) && length > MAX_BODY_BYTES) {
-        await this.drainBody(body);
-        return `too_large`;
+        await this.drainBody(body)
+        return `too_large`
       }
     }
     if (body === null) {
-      return new Uint8Array(0);
+      return new Uint8Array(0)
     }
     // workers-types leaves ReadableStream's chunk type as `any`; a request
     // body stream always yields bytes.
-    const reader = (body as ReadableStream<Uint8Array>).getReader();
-    const chunks: Array<Uint8Array> = [];
-    let total = 0;
+    const reader = (body as ReadableStream<Uint8Array>).getReader()
+    const chunks: Array<Uint8Array> = []
+    let total = 0
     for (;;) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      total += value.byteLength;
+      const { done, value } = await reader.read()
+      if (done) break
+      total += value.byteLength
       if (total > MAX_BODY_BYTES) {
-        await this.drainReader(reader);
-        return `too_large`;
+        await this.drainReader(reader)
+        return `too_large`
       }
-      chunks.push(value);
+      chunks.push(value)
     }
-    return concatBytes(chunks);
+    return concatBytes(chunks)
   }
 
   /**
@@ -1833,29 +1820,29 @@ export class StreamObject extends DurableObject<StreamsEnv> {
    * resets the connection (the client sees EPIPE instead of the 413).
    */
   private async drainBody(
-    body: ReadableStream<Uint8Array> | null,
+    body: ReadableStream<Uint8Array> | null
   ): Promise<void> {
-    if (body === null) return;
-    await this.drainReader(body.getReader());
+    if (body === null) return
+    await this.drainReader(body.getReader())
   }
 
   private async drainReader(
-    reader: ReadableStreamDefaultReader<Uint8Array>,
+    reader: ReadableStreamDefaultReader<Uint8Array>
   ): Promise<void> {
     for (;;) {
-      const { done } = await reader.read();
-      if (done) return;
+      const { done } = await reader.read()
+      if (done) return
     }
   }
 
   private makeEtag(
     startOffset: string,
     endOffset: string,
-    closed: boolean,
+    closed: boolean
   ): string {
-    const path = this.pathForEtag();
-    const closedSuffix = closed ? `:c` : ``;
-    return `"${base64FromString(path)}:${startOffset}:${endOffset}${closedSuffix}"`;
+    const path = this.pathForEtag()
+    const closedSuffix = closed ? `:c` : ``
+    return `"${base64FromString(path)}:${startOffset}:${endOffset}${closedSuffix}"`
   }
 
   /**
@@ -1863,49 +1850,49 @@ export class StreamObject extends DurableObject<StreamsEnv> {
    * serves (a DO cannot learn the name it was addressed by).
    */
   private pathForEtag(): string {
-    return this.ctx.id.toString();
+    return this.ctx.id.toString()
   }
 
   /** Standard headers on every response (CORS + browser security). */
   private respond(
     status: number,
     headers: Record<string, string>,
-    body?: BodyInit,
+    body?: BodyInit
   ): Response {
-    const h = new Headers(headers);
-    h.set(`access-control-allow-origin`, `*`);
+    const h = new Headers(headers)
+    h.set(`access-control-allow-origin`, `*`)
     h.set(
       `access-control-allow-methods`,
-      `GET, POST, PUT, DELETE, HEAD, OPTIONS`,
-    );
+      `GET, POST, PUT, DELETE, HEAD, OPTIONS`
+    )
     h.set(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`,
-    );
+      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`
+    )
     h.set(
       `access-control-expose-headers`,
-      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`,
-    );
-    h.set(`x-content-type-options`, `nosniff`);
-    h.set(`cross-origin-resource-policy`, `cross-origin`);
+      `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`
+    )
+    h.set(`x-content-type-options`, `nosniff`)
+    h.set(`cross-origin-resource-policy`, `cross-origin`)
     return new Response(
       status === 204 || status === 304 ? null : (body ?? null),
       {
         status,
         headers: h,
-      },
-    );
+      }
+    )
   }
 
   private text(
     status: number,
     message: string,
-    extraHeaders: Record<string, string> = {},
+    extraHeaders: Record<string, string> = {}
   ): Response {
     return this.respond(
       status,
       { "content-type": `text/plain`, ...extraHeaders },
-      message,
-    );
+      message
+    )
   }
 }

@@ -4,20 +4,20 @@
  * SQLite, no credentials needed).
  */
 
-import { spawn } from "node:child_process";
-import * as path from "node:path";
-import { afterAll, beforeAll, describe } from "vitest";
-import { runConformanceTests } from "@durable-streams/server-conformance-tests";
-import type { ChildProcess } from "node:child_process";
+import { spawn } from "node:child_process"
+import * as path from "node:path"
+import { afterAll, beforeAll, describe } from "vitest"
+import { runConformanceTests } from "@durable-streams/server-conformance-tests"
+import type { ChildProcess } from "node:child_process"
 
 // Shared wrangler dev server for all test suites
-let wrangler: ChildProcess | null = null;
-const port = 8790;
-const config = { baseUrl: `http://localhost:${port}` };
+let wrangler: ChildProcess | null = null
+const port = 8790
+const config = { baseUrl: `http://localhost:${port}` }
 
 beforeAll(async () => {
-  const packageDir = path.join(__dirname, `..`);
-  const wranglerBin = path.join(packageDir, `node_modules`, `.bin`, `wrangler`);
+  const packageDir = path.join(__dirname, `..`)
+  const wranglerBin = path.join(packageDir, `node_modules`, `.bin`, `wrangler`)
 
   wrangler = spawn(
     wranglerBin,
@@ -33,50 +33,50 @@ beforeAll(async () => {
     {
       cwd: packageDir,
       stdio: [`ignore`, `pipe`, `pipe`],
-    },
-  );
+    }
+  )
 
   wrangler.stderr?.on(`data`, (data: Buffer) => {
-    process.stderr.write(`[wrangler] ${data.toString()}`);
-  });
+    process.stderr.write(`[wrangler] ${data.toString()}`)
+  })
 
-  await waitForServer(config.baseUrl, 30000);
-}, 45000);
+  await waitForServer(config.baseUrl, 30000)
+}, 45000)
 
 afterAll(async () => {
   if (wrangler) {
-    wrangler.kill(`SIGTERM`);
-    await new Promise((resolve) => setTimeout(resolve, 500));
+    wrangler.kill(`SIGTERM`)
+    await new Promise((resolve) => setTimeout(resolve, 500))
   }
-});
+})
 
 describe(`Cloudflare Durable Objects Streams Implementation`, () => {
-  runConformanceTests(config);
-});
+  runConformanceTests(config)
+})
 
 async function waitForServer(
   baseUrl: string,
-  timeoutMs: number,
+  timeoutMs: number
 ): Promise<void> {
-  const start = Date.now();
+  const start = Date.now()
 
   while (Date.now() - start < timeoutMs) {
     try {
       const response = await fetch(`${baseUrl}/__health__`, {
         method: `PUT`,
         headers: { "Content-Type": `text/plain` },
-      });
+      })
 
       if (response.ok || response.status === 201) {
-        await fetch(`${baseUrl}/__health__`, { method: `DELETE` });
-        return;
+        await fetch(`${baseUrl}/__health__`, { method: `DELETE` })
+        return
       }
     } catch {
       // Server not ready yet
     }
 
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await new Promise((resolve) => setTimeout(resolve, 100))
   }
 
-  throw new Error(`Server did not become ready within ${timeoutMs}ms`);
+  throw new Error(`Server did not become ready within ${timeoutMs}ms`)
 }

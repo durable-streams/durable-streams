@@ -11,27 +11,27 @@
  */
 
 /** Reference point for interval counting; a past date keeps cursors positive. */
-export const DEFAULT_CURSOR_EPOCH_MS = Date.UTC(2024, 9, 9, 0, 0, 0);
+export const DEFAULT_CURSOR_EPOCH_MS = Date.UTC(2024, 9, 9, 0, 0, 0)
 
-export const DEFAULT_CURSOR_INTERVAL_SECONDS = 20;
+export const DEFAULT_CURSOR_INTERVAL_SECONDS = 20
 
 /** Per protocol spec: jitter is a random value between 1-3600 seconds. */
-const MAX_JITTER_SECONDS = 3600;
-const MIN_JITTER_SECONDS = 1;
+const MAX_JITTER_SECONDS = 3600
+const MIN_JITTER_SECONDS = 1
 
 export function calculateCursor(): string {
-  const intervalMs = DEFAULT_CURSOR_INTERVAL_SECONDS * 1000;
+  const intervalMs = DEFAULT_CURSOR_INTERVAL_SECONDS * 1000
   const intervalNumber = Math.floor(
-    (Date.now() - DEFAULT_CURSOR_EPOCH_MS) / intervalMs,
-  );
-  return String(intervalNumber);
+    (Date.now() - DEFAULT_CURSOR_EPOCH_MS) / intervalMs
+  )
+  return String(intervalNumber)
 }
 
 function generateJitterIntervals(intervalSeconds: number): number {
   const jitterSeconds =
     MIN_JITTER_SECONDS +
-    Math.floor(Math.random() * (MAX_JITTER_SECONDS - MIN_JITTER_SECONDS + 1));
-  return Math.max(1, Math.ceil(jitterSeconds / intervalSeconds));
+    Math.floor(Math.random() * (MAX_JITTER_SECONDS - MIN_JITTER_SECONDS + 1))
+  return Math.max(1, Math.ceil(jitterSeconds / intervalSeconds))
 }
 
 /**
@@ -44,24 +44,24 @@ function generateJitterIntervals(intervalSeconds: number): number {
  * Infinity, exponents, garbage) is treated as no-cursor so we can never
  * be steered into emitting a non-numeric or non-monotonic cursor.
  */
-const VALID_CLIENT_CURSOR = /^\d{1,15}$/;
+const VALID_CLIENT_CURSOR = /^\d{1,15}$/
 
 export function generateResponseCursor(
-  clientCursor: string | undefined,
+  clientCursor: string | undefined
 ): string {
-  const currentCursor = calculateCursor();
+  const currentCursor = calculateCursor()
   if (!clientCursor || !VALID_CLIENT_CURSOR.test(clientCursor)) {
-    return currentCursor;
+    return currentCursor
   }
 
-  const clientInterval = parseInt(clientCursor, 10);
-  const currentInterval = parseInt(currentCursor, 10);
+  const clientInterval = parseInt(clientCursor, 10)
+  const currentInterval = parseInt(currentCursor, 10)
   if (Number.isNaN(clientInterval) || clientInterval < currentInterval) {
-    return currentCursor;
+    return currentCursor
   }
 
   const jitterIntervals = generateJitterIntervals(
-    DEFAULT_CURSOR_INTERVAL_SECONDS,
-  );
-  return String(clientInterval + jitterIntervals);
+    DEFAULT_CURSOR_INTERVAL_SECONDS
+  )
+  return String(clientInterval + jitterIntervals)
 }

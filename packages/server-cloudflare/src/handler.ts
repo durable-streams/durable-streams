@@ -6,7 +6,7 @@
  * idFromName). All protocol semantics live in the DO; this layer handles
  * routing, CORS preflight, and the auth hook.
  */
-import type { StreamsEnv } from "./stream-object";
+import type { StreamsEnv } from "./stream-object"
 
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": `*`,
@@ -15,7 +15,7 @@ const CORS_HEADERS: Record<string, string> = {
   "access-control-expose-headers": `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`,
   "x-content-type-options": `nosniff`,
   "cross-origin-resource-policy": `cross-origin`,
-};
+}
 
 export interface StreamsHandlerOptions<E extends StreamsEnv> {
   /**
@@ -30,28 +30,28 @@ export interface StreamsHandlerOptions<E extends StreamsEnv> {
    */
   auth?: (
     request: Request,
-    env: E,
-  ) => Response | undefined | Promise<Response | undefined>;
+    env: E
+  ) => Response | undefined | Promise<Response | undefined>
   /** Set to false to omit the permissive default CORS headers. */
-  cors?: boolean;
+  cors?: boolean
 }
 
 /** Env accepted by the default bearer-token auth hook. */
 export interface DefaultAuthEnv extends StreamsEnv {
-  AUTH_TOKEN?: string;
+  AUTH_TOKEN?: string
 }
 
 function defaultAuth(
   request: Request,
-  env: DefaultAuthEnv,
+  env: DefaultAuthEnv
 ): Response | undefined {
-  if (env.AUTH_TOKEN === undefined || env.AUTH_TOKEN === ``) return undefined;
-  const auth = request.headers.get(`authorization`);
-  if (auth === `Bearer ${env.AUTH_TOKEN}`) return undefined;
+  if (env.AUTH_TOKEN === undefined || env.AUTH_TOKEN === ``) return undefined
+  const auth = request.headers.get(`authorization`)
+  if (auth === `Bearer ${env.AUTH_TOKEN}`) return undefined
   return new Response(`Unauthorized`, {
     status: 401,
     headers: { "content-type": `text/plain` },
-  });
+  })
 }
 
 /**
@@ -76,31 +76,31 @@ function defaultAuth(
  * it inside a larger Worker.
  */
 export function createStreamsHandler<E extends StreamsEnv = DefaultAuthEnv>(
-  options: StreamsHandlerOptions<E> = {},
+  options: StreamsHandlerOptions<E> = {}
 ): (request: Request, env: E) => Promise<Response> {
-  const cors = options.cors === false ? {} : CORS_HEADERS;
-  const auth = options.auth ?? defaultAuth;
+  const cors = options.cors === false ? {} : CORS_HEADERS
+  const auth = options.auth ?? defaultAuth
 
   return async (request: Request, env: E): Promise<Response> => {
     if (request.method === `OPTIONS`) {
-      return new Response(null, { status: 204, headers: cors });
+      return new Response(null, { status: 204, headers: cors })
     }
 
-    const rejection = await auth(request, env);
+    const rejection = await auth(request, env)
     if (rejection !== undefined) {
-      const headers = new Headers(rejection.headers);
+      const headers = new Headers(rejection.headers)
       for (const [name, value] of Object.entries(cors)) {
-        if (!headers.has(name)) headers.set(name, value);
+        if (!headers.has(name)) headers.set(name, value)
       }
       return new Response(rejection.body, {
         status: rejection.status,
         statusText: rejection.statusText,
         headers,
-      });
+      })
     }
 
-    const url = new URL(request.url);
-    const streamPath = url.pathname;
+    const url = new URL(request.url)
+    const streamPath = url.pathname
 
     // `__ds` is the protocol's reserved control-plane prefix (§6): route it
     // before stream ops. Subscriptions are not implemented, so it 404s
@@ -109,18 +109,18 @@ export function createStreamsHandler<E extends StreamsEnv = DefaultAuthEnv>(
       return new Response(`Subscription APIs are not supported`, {
         status: 404,
         headers: { ...cors, "content-type": `text/plain` },
-      });
+      })
     }
 
     if (streamPath === `/` || streamPath === ``) {
       return new Response(`Durable Streams server. Streams live at /<path>.`, {
         status: 200,
         headers: { ...cors, "content-type": `text/plain` },
-      });
+      })
     }
 
-    const id = env.STREAMS.idFromName(streamPath);
-    const stub = env.STREAMS.get(id);
-    return stub.fetch(request);
-  };
+    const id = env.STREAMS.idFromName(streamPath)
+    const stub = env.STREAMS.get(id)
+    return stub.fetch(request)
+  }
 }

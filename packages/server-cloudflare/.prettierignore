@@ -1,4 +1,0 @@
-dist/
-.wrangler/
-pnpm-lock.yaml
-examples/ai-chat/index.html
