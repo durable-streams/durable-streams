@@ -11,7 +11,7 @@
  */
 
 /** Reference point for interval counting; a past date keeps cursors positive. */
-export const DEFAULT_CURSOR_EPOCH_MS = Date.UTC(2024, 9, 9, 0, 0, 0)
+export const DEFAULT_CURSOR_EPOCH_MS: number = Date.UTC(2024, 9, 9, 0, 0, 0)
 
 export const DEFAULT_CURSOR_INTERVAL_SECONDS = 20
 

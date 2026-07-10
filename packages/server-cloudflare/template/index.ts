@@ -13,6 +13,8 @@ import type { DefaultAuthEnv } from "../src"
 
 export { StreamObject } from "../src"
 
-export default {
+const worker: ExportedHandler<DefaultAuthEnv> = {
   fetch: createStreamsHandler(),
-} satisfies ExportedHandler<DefaultAuthEnv>
+}
+
+export default worker
