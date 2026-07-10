@@ -3,6 +3,7 @@ import {
   DURABLE_STREAMS_READ_HEADERS,
   buildChatStreamPath,
   buildReadStreamUrl,
+  streamsFetch,
 } from "~/lib/durable-streams-config"
 
 function normalizeChatId(id: string | null): string | null {
@@ -47,7 +48,7 @@ export const Route = createFileRoute(`/api/chat-stream`)({
         }
 
         const accept = request.headers.get(`accept`)
-        const upstreamResponse = await fetch(upstreamUrl, {
+        const upstreamResponse = await streamsFetch(upstreamUrl, {
           method: `GET`,
           headers: {
             ...(accept ? { Accept: accept } : {}),

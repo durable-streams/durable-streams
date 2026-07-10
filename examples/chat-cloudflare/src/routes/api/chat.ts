@@ -7,6 +7,7 @@ import {
   DURABLE_STREAMS_WRITE_HEADERS,
   buildChatStreamPath,
   buildWriteStreamUrl,
+  streamsFetch,
 } from "~/lib/durable-streams-config"
 import { saveChatMessages } from "~/lib/chat-store"
 
@@ -63,6 +64,7 @@ export const Route = createFileRoute(`/api/chat`)({
           stream: {
             writeUrl,
             headers: DURABLE_STREAMS_WRITE_HEADERS,
+            fetchClient: streamsFetch,
           },
           newMessages,
           responseStream,

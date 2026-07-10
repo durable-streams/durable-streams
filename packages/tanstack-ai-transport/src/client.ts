@@ -133,7 +133,7 @@ export function durableStreamConnection(
       if (!response.ok) {
         const body = await parseJsonSafely(response)
         if (body && typeof body === `object` && `error` in body) {
-          throw new Error(String((body as { error: unknown }).error))
+          throw new Error(String(body.error))
         }
         throw new Error(
           `HTTP error! status: ${response.status} ${response.statusText}`
@@ -341,6 +341,8 @@ export async function materializeSnapshotFromDurableStream(options: {
   readUrl: string
   headers?: HeadersInit
   offset?: string
+  /** Custom fetch (e.g. a service binding or in-process handler). */
+  fetchClient?: typeof fetch
 }): Promise<{ messages: Array<any>; offset?: string }> {
   const streamResponse = await stream<TanStackChunk>({
     url: options.readUrl,
@@ -348,6 +350,7 @@ export async function materializeSnapshotFromDurableStream(options: {
     live: false,
     offset: options.offset,
     headers: mergeHeaders(options.headers),
+    fetch: options.fetchClient,
   })
   const chunks = await streamResponse.json<TanStackChunk>()
   return {

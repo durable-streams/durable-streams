@@ -60,6 +60,7 @@ async function ensureDurableStreamWithContentType(
     url: writeUrl,
     headers,
     contentType,
+    fetch: streamTarget.fetchClient,
   })
   await ensureStreamExists(stream, contentType, createIfMissing)
   return stream

@@ -4,5 +4,6 @@
  * pulling in @cloudflare/workers-types would conflict with DOM globals.
  */
 declare module "cloudflare:workers" {
+  export const env: Record<string, unknown>
   export function waitUntil(promise: Promise<unknown>): void
 }

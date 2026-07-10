@@ -9,6 +9,7 @@ import {
   buildChatStreamPath,
   buildReadStreamUrl,
   buildWriteStreamUrl,
+  streamsFetch,
 } from "~/lib/durable-streams-config"
 
 /** Creates local metadata and the durable stream for a new chat session. */
@@ -17,6 +18,7 @@ export async function createChatSession(): Promise<string> {
   await ensureDurableChatSessionStream({
     writeUrl: buildWriteStreamUrl(buildChatStreamPath(id)),
     headers: DURABLE_STREAMS_WRITE_HEADERS,
+    fetchClient: streamsFetch,
   })
   return id
 }
@@ -29,6 +31,7 @@ export async function loadChatSession(chatId: string) {
   await ensureDurableChatSessionStream({
     writeUrl: buildWriteStreamUrl(buildChatStreamPath(chatId)),
     headers: DURABLE_STREAMS_WRITE_HEADERS,
+    fetchClient: streamsFetch,
   })
   const streamPath = buildChatStreamPath(chatId)
 
@@ -36,6 +39,7 @@ export async function loadChatSession(chatId: string) {
     const snapshot = await materializeSnapshotFromDurableStream({
       readUrl: buildReadStreamUrl(streamPath),
       headers: DURABLE_STREAMS_READ_HEADERS,
+      fetchClient: streamsFetch,
     })
     return {
       ...chatMetadata,

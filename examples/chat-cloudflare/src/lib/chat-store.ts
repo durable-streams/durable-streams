@@ -9,6 +9,7 @@ import {
   DURABLE_STREAMS_WRITE_HEADERS,
   buildReadStreamUrl,
   buildWriteStreamUrl,
+  streamsFetch,
 } from "~/lib/durable-streams-config"
 
 // Workers have no filesystem, so chat metadata is itself a durable stream:
@@ -25,6 +26,7 @@ async function indexStream(): Promise<DurableStream> {
     url: indexUrl,
     headers: DURABLE_STREAMS_WRITE_HEADERS,
     contentType: JSON_CONTENT_TYPE,
+    fetch: streamsFetch,
   })
   try {
     await durableStream.create({ contentType: JSON_CONTENT_TYPE })
@@ -43,6 +45,7 @@ async function readIndex(): Promise<Array<ChatData>> {
       json: true,
       live: false,
       headers: DURABLE_STREAMS_READ_HEADERS,
+      fetch: streamsFetch,
     })
     return await response.json<ChatData>()
   } catch (error) {
