@@ -4,9 +4,8 @@ import { chat } from "@tanstack/ai"
 import { openaiText } from "@tanstack/ai-openai"
 import { toDurableChatSessionResponse } from "@durable-streams/tanstack-ai-transport"
 import {
-  DURABLE_STREAMS_WRITE_HEADERS,
   buildChatStreamPath,
-  buildWriteStreamUrl,
+  buildStreamUrl,
   streamsFetch,
 } from "~/lib/durable-streams-config"
 import { saveChatMessages } from "~/lib/chat-store"
@@ -45,7 +44,7 @@ export const Route = createFileRoute(`/api/chat`)({
 
         // Durable session model: one append-only stream per chat id.
         const streamPath = buildChatStreamPath(id)
-        const writeUrl = buildWriteStreamUrl(streamPath)
+        const writeUrl = buildStreamUrl(streamPath)
         // Explicitly append only the new prompt message for this request.
         const latestUserMessage = extractLatestUserMessage(messages)
         const newMessages = latestUserMessage ? [latestUserMessage] : []
@@ -63,7 +62,6 @@ export const Route = createFileRoute(`/api/chat`)({
         return toDurableChatSessionResponse({
           stream: {
             writeUrl,
-            headers: DURABLE_STREAMS_WRITE_HEADERS,
             fetchClient: streamsFetch,
           },
           newMessages,

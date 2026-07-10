@@ -1,8 +1,7 @@
 import { createFileRoute } from "@tanstack/react-router"
 import {
-  DURABLE_STREAMS_READ_HEADERS,
   buildChatStreamPath,
-  buildReadStreamUrl,
+  buildStreamUrl,
   streamsFetch,
 } from "~/lib/durable-streams-config"
 
@@ -29,7 +28,8 @@ export const Route = createFileRoute(`/api/chat-stream`)({
   server: {
     handlers: {
       GET: async ({ request }) => {
-        // Read proxy for durable streams; keeps read credentials off the client.
+        // Read proxy for durable streams: resolves the stream path from the
+        // chat id server-side and forwards the response.
         const incomingUrl = new URL(request.url)
         const chatId = normalizeChatId(incomingUrl.searchParams.get(`id`))
         if (!chatId) {
@@ -40,7 +40,7 @@ export const Route = createFileRoute(`/api/chat-stream`)({
         }
         const streamPath = buildChatStreamPath(chatId)
 
-        const upstreamUrl = new URL(buildReadStreamUrl(streamPath))
+        const upstreamUrl = new URL(buildStreamUrl(streamPath))
         for (const [key, value] of incomingUrl.searchParams.entries()) {
           if (key === `id`) continue
           // Pass through offset/live/sse controls from the browser request.
@@ -50,10 +50,7 @@ export const Route = createFileRoute(`/api/chat-stream`)({
         const accept = request.headers.get(`accept`)
         const upstreamResponse = await streamsFetch(upstreamUrl, {
           method: `GET`,
-          headers: {
-            ...(accept ? { Accept: accept } : {}),
-            ...(DURABLE_STREAMS_READ_HEADERS ?? {}),
-          },
+          headers: accept ? { Accept: accept } : {},
         })
 
         return new Response(upstreamResponse.body, {

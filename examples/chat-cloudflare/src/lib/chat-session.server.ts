@@ -4,11 +4,8 @@ import {
 } from "@durable-streams/tanstack-ai-transport"
 import { createChat, loadChatIfExists } from "~/lib/chat-store"
 import {
-  DURABLE_STREAMS_READ_HEADERS,
-  DURABLE_STREAMS_WRITE_HEADERS,
   buildChatStreamPath,
-  buildReadStreamUrl,
-  buildWriteStreamUrl,
+  buildStreamUrl,
   streamsFetch,
 } from "~/lib/durable-streams-config"
 
@@ -16,8 +13,7 @@ import {
 export async function createChatSession(): Promise<string> {
   const id = await createChat()
   await ensureDurableChatSessionStream({
-    writeUrl: buildWriteStreamUrl(buildChatStreamPath(id)),
-    headers: DURABLE_STREAMS_WRITE_HEADERS,
+    writeUrl: buildStreamUrl(buildChatStreamPath(id)),
     fetchClient: streamsFetch,
   })
   return id
@@ -28,17 +24,15 @@ export async function loadChatSession(chatId: string) {
   const chatMetadata = await loadChatIfExists(chatId)
   if (!chatMetadata) return null
 
+  const streamPath = buildChatStreamPath(chatId)
   await ensureDurableChatSessionStream({
-    writeUrl: buildWriteStreamUrl(buildChatStreamPath(chatId)),
-    headers: DURABLE_STREAMS_WRITE_HEADERS,
+    writeUrl: buildStreamUrl(streamPath),
     fetchClient: streamsFetch,
   })
-  const streamPath = buildChatStreamPath(chatId)
 
   try {
     const snapshot = await materializeSnapshotFromDurableStream({
-      readUrl: buildReadStreamUrl(streamPath),
-      headers: DURABLE_STREAMS_READ_HEADERS,
+      readUrl: buildStreamUrl(streamPath),
       fetchClient: streamsFetch,
     })
     return {

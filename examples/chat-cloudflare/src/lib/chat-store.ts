@@ -4,13 +4,7 @@ import {
   stream,
 } from "@durable-streams/client"
 import type { ChatSummary } from "~/lib/chat-types"
-import {
-  DURABLE_STREAMS_READ_HEADERS,
-  DURABLE_STREAMS_WRITE_HEADERS,
-  buildReadStreamUrl,
-  buildWriteStreamUrl,
-  streamsFetch,
-} from "~/lib/durable-streams-config"
+import { buildStreamUrl, streamsFetch } from "~/lib/durable-streams-config"
 
 // Workers have no filesystem, so chat metadata is itself a durable stream:
 // an append-only JSON log of {id, title, createdAt} records where the last
@@ -21,10 +15,8 @@ const JSON_CONTENT_TYPE = `application/json`
 type ChatData = ChatSummary
 
 async function indexStream(): Promise<DurableStream> {
-  const indexUrl = buildWriteStreamUrl(INDEX_STREAM_PATH)
   const durableStream = new DurableStream({
-    url: indexUrl,
-    headers: DURABLE_STREAMS_WRITE_HEADERS,
+    url: buildStreamUrl(INDEX_STREAM_PATH),
     contentType: JSON_CONTENT_TYPE,
     fetch: streamsFetch,
   })
@@ -41,10 +33,9 @@ async function indexStream(): Promise<DurableStream> {
 async function readIndex(): Promise<Array<ChatData>> {
   try {
     const response = await stream<ChatData>({
-      url: buildReadStreamUrl(INDEX_STREAM_PATH),
+      url: buildStreamUrl(INDEX_STREAM_PATH),
       json: true,
       live: false,
-      headers: DURABLE_STREAMS_READ_HEADERS,
       fetch: streamsFetch,
     })
     return await response.json<ChatData>()

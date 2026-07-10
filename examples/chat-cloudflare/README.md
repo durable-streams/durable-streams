@@ -34,13 +34,11 @@ Or use the Deploy to Cloudflare button above (then set the `OPENAI_API_KEY` secr
 ## Environment variables
 
 - `OPENAI_API_KEY` (required): OpenAI API key used by `@tanstack/ai-openai` — set in `.dev.vars` locally, or as a Worker secret in production
-- `DURABLE_STREAMS_URL` (or the `DURABLE_STREAMS_WRITE_URL` / `DURABLE_STREAMS_READ_URL` variants, optional): point server-side stream calls at a separately deployed streams server over HTTP instead of the in-process handler
-- `DURABLE_STREAMS_WRITE_BEARER_TOKEN` / `DURABLE_STREAMS_READ_BEARER_TOKEN` (optional): bearer tokens for server-side writes/reads against a protected external streams server
 
 ## Request/response contract
 
 - Client posts to `/api/chat`
-- Browser reads from `/api/chat-stream`; this route forwards to Durable Streams with server-side auth headers
+- Browser reads from `/api/chat-stream`; this route resolves the stream from the chat id and forwards the response
 - Server returns an empty success response:
   - `202` in immediate mode
   - `200` in await mode
