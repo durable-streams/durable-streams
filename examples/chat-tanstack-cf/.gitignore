@@ -1,0 +1,9 @@
+node_modules
+.output
+.vinxi
+.env
+.env.local
+.dev.vars
+.wrangler
+dist
+worker-configuration.d.ts

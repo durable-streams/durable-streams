@@ -17,7 +17,7 @@
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc --build && pnpm -r --filter '@durable-streams/example-*' typecheck",
+    "typecheck": "tsc --build && pnpm -r --filter '@durable-streams/example-*' --filter '@durable-streams/server-cloudflare' typecheck",
     "prepare": "husky",
     "changeset": "changeset",
     "changeset:version": "changeset version && pnpm install --no-frozen-lockfile",
