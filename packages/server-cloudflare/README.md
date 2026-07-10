@@ -10,7 +10,7 @@ Every stream is its own Durable Object instance (`idFromName(streamPath)`), givi
 pnpm add @durable-streams/server-cloudflare   # or npm install / yarn add
 ```
 
-Your Worker entry (see [`template/index.ts`](template/index.ts) for the complete file):
+Your Worker entry:
 
 ```ts
 // src/index.ts
@@ -78,7 +78,7 @@ pnpm conformance   # boots template/index.ts via wrangler dev (test/wrangler.jso
 | `src/producer.ts`      | Pure idempotent-producer validation state machine                                                                    |
 | `src/json.ts`          | JSON-mode helpers (array flattening, fragment storage, array-wrapped reads)                                          |
 | `src/cursor.ts`        | CDN cache-collapsing cursor math                                                                                     |
-| `template/index.ts`    | Consumer Worker template (also the entry the conformance test boots)                                                 |
+| `template/index.ts`    | Worker entry the conformance test boots (the usage snippet above, complete)                                          |
 | `test/`                | Conformance harness: boots `wrangler dev` and runs the shared suite                                                  |
 
 ## Develop

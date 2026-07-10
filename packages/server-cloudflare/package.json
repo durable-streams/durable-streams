@@ -33,7 +33,6 @@
   "files": [
     "dist",
     "src",
-    "template",
     "NOTICE"
   ],
   "scripts": {
