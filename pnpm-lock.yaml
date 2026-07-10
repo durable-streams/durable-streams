@@ -661,6 +661,9 @@ importers:
       '@durable-streams/server-conformance-tests':
         specifier: workspace:*
         version: link:../server-conformance-tests
+      tsdown:
+        specifier: ^0.9.0
+        version: 0.9.9(typescript@5.9.3)
       typescript:
         specifier: ^5.8.3
         version: 5.9.3
