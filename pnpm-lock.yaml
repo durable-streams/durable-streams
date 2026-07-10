@@ -661,9 +661,6 @@ importers:
       '@cloudflare/workers-types':
         specifier: ^4.20250620.0
         version: 4.20260702.1
-      '@durable-streams/client':
-        specifier: workspace:*
-        version: link:../client
       '@durable-streams/server-conformance-tests':
         specifier: workspace:*
         version: link:../server-conformance-tests

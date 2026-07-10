@@ -1,0 +1,12 @@
+// Test-only Worker config: boots the consumer template (template/index.ts)
+// so the conformance suite can run against a local workerd instance.
+// The package itself is a library and ships no deployable Worker.
+{
+  "name": "server-cloudflare-conformance",
+  "main": "../template/index.ts",
+  "compatibility_date": "2025-06-01",
+  "durable_objects": {
+    "bindings": [{ "name": "STREAMS", "class_name": "StreamObject" }],
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["StreamObject"] }],
+}

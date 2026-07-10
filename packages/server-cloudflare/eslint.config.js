@@ -4,7 +4,7 @@ import tseslint from "typescript-eslint";
 
 export default tseslint.config(
   {
-    ignores: ["dist/", ".wrangler/", "examples/"],
+    ignores: ["dist/", ".wrangler/", "test/"],
   },
   {
     files: ["src/**/*.ts", "template/**/*.ts"],
@@ -31,24 +31,6 @@ export default tseslint.config(
         "error",
         { allowNumber: true },
       ],
-    },
-  },
-  {
-    files: ["conformance/**/*.mjs", "scripts/**/*.mjs"],
-    extends: [js.configs.recommended],
-    languageOptions: {
-      globals: {
-        process: "readonly",
-        console: "readonly",
-        fetch: "readonly",
-        URL: "readonly",
-        TextEncoder: "readonly",
-        TextDecoder: "readonly",
-        setTimeout: "readonly",
-        clearTimeout: "readonly",
-        AbortController: "readonly",
-        crypto: "readonly",
-      },
     },
   },
   prettier,

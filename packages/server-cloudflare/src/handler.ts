@@ -9,14 +9,12 @@
 import type { StreamsEnv } from "./stream-object";
 
 const CORS_HEADERS: Record<string, string> = {
-  "access-control-allow-origin": "*",
-  "access-control-allow-methods": "GET, POST, PUT, DELETE, HEAD, OPTIONS",
-  "access-control-allow-headers":
-    "content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset",
-  "access-control-expose-headers":
-    "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary",
-  "x-content-type-options": "nosniff",
-  "cross-origin-resource-policy": "cross-origin",
+  "access-control-allow-origin": `*`,
+  "access-control-allow-methods": `GET, POST, PUT, DELETE, HEAD, OPTIONS`,
+  "access-control-allow-headers": `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`,
+  "access-control-expose-headers": `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`,
+  "x-content-type-options": `nosniff`,
+  "cross-origin-resource-policy": `cross-origin`,
 };
 
 export interface StreamsHandlerOptions<E extends StreamsEnv> {
@@ -47,12 +45,12 @@ function defaultAuth(
   request: Request,
   env: DefaultAuthEnv,
 ): Response | undefined {
-  if (env.AUTH_TOKEN === undefined || env.AUTH_TOKEN === "") return undefined;
-  const auth = request.headers.get("authorization");
+  if (env.AUTH_TOKEN === undefined || env.AUTH_TOKEN === ``) return undefined;
+  const auth = request.headers.get(`authorization`);
   if (auth === `Bearer ${env.AUTH_TOKEN}`) return undefined;
-  return new Response("Unauthorized", {
+  return new Response(`Unauthorized`, {
     status: 401,
-    headers: { "content-type": "text/plain" },
+    headers: { "content-type": `text/plain` },
   });
 }
 
@@ -60,7 +58,7 @@ function defaultAuth(
  * Build the Worker fetch handler. Mount it alongside the exported DO class:
  *
  * ```ts
- * export { StreamObject } from "durable-object-streams";
+ * export { StreamObject } from "@durable-streams/server-cloudflare";
  * export default { fetch: createStreamsHandler() };
  * ```
  *
@@ -84,7 +82,7 @@ export function createStreamsHandler<E extends StreamsEnv = DefaultAuthEnv>(
   const auth = options.auth ?? defaultAuth;
 
   return async (request: Request, env: E): Promise<Response> => {
-    if (request.method === "OPTIONS") {
+    if (request.method === `OPTIONS`) {
       return new Response(null, { status: 204, headers: cors });
     }
 
@@ -107,17 +105,17 @@ export function createStreamsHandler<E extends StreamsEnv = DefaultAuthEnv>(
     // `__ds` is the protocol's reserved control-plane prefix (§6): route it
     // before stream ops. Subscriptions are not implemented, so it 404s
     // rather than being treated as a stream path.
-    if (streamPath.endsWith("/__ds") || streamPath.includes("/__ds/")) {
-      return new Response("Subscription APIs are not supported", {
+    if (streamPath.endsWith(`/__ds`) || streamPath.includes(`/__ds/`)) {
+      return new Response(`Subscription APIs are not supported`, {
         status: 404,
-        headers: { ...cors, "content-type": "text/plain" },
+        headers: { ...cors, "content-type": `text/plain` },
       });
     }
 
-    if (streamPath === "/" || streamPath === "") {
-      return new Response("Durable Streams server. Streams live at /<path>.", {
+    if (streamPath === `/` || streamPath === ``) {
+      return new Response(`Durable Streams server. Streams live at /<path>.`, {
         status: 200,
-        headers: { ...cors, "content-type": "text/plain" },
+        headers: { ...cors, "content-type": `text/plain` },
       });
     }
 

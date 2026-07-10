@@ -1,7 +1,7 @@
 /**
  * Deployable Durable Streams server — the template for mounting the
  * library in a Worker. This is exactly what a consumer's entry looks
- * like, except imports come from the `durable-object-streams` package
+ * like, except imports come from the `@durable-streams/server-cloudflare` package
  * instead of `../src`.
  *
  * Auth: the default hook requires `Authorization: Bearer <AUTH_TOKEN>`

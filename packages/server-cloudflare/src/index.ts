@@ -1,10 +1,10 @@
 /**
- * durable-object-streams — a Durable Streams protocol server as a library.
+ * @durable-streams/server-cloudflare — a Durable Streams protocol server as a library.
  *
  * Consumers mount it in their own Worker:
  *
  * ```ts
- * export { StreamObject } from "durable-object-streams";
+ * export { StreamObject } from "@durable-streams/server-cloudflare";
  * export default { fetch: createStreamsHandler({ auth: ... }) };
  * ```
  *
