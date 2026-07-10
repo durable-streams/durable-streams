@@ -75,7 +75,7 @@ export function Sidebar({
 
       <div className="border-t border-gray-200 px-4 py-3">
         <p className="text-[10px] leading-tight text-gray-400">
-          Streams via Durable Streams Proxy
+          Streams via Durable Objects on Cloudflare
         </p>
       </div>
     </aside>

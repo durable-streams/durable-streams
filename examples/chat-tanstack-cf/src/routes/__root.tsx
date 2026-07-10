@@ -12,7 +12,7 @@ export const Route = createRootRoute({
     meta: [
       { charSet: `utf-8` },
       { name: `viewport`, content: `width=device-width, initial-scale=1` },
-      { title: `Durable Chat — TanStack Start + TanStack AI` },
+      { title: `Durable Chat — TanStack Start + TanStack AI on Cloudflare` },
     ],
     links: [
       {

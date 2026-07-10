@@ -24,6 +24,9 @@ function ChatLayout() {
           <span className="rounded-full bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-700">
             TanStack Start + TanStack AI
           </span>
+          <span className="rounded-full bg-orange-100 px-2.5 py-0.5 text-xs font-medium text-orange-700">
+            Cloudflare Workers
+          </span>
         </header>
         <Outlet />
       </main>
