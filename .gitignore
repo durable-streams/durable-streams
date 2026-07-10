@@ -193,7 +193,7 @@ target/
 # Claude local settings
 .claude/settings.local.json
 .beads
-examples/yjs-demo/.tanstack
+.tanstack/
 .opentrace/
 .tool-versions
 
