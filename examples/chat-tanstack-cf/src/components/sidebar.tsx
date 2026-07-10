@@ -1,39 +1,13 @@
 "use client"
 
 import { Link, useLocation } from "@tanstack/react-router"
-import { useCallback, useEffect, useState } from "react"
 import type { ChatSummary } from "~/lib/chat-types"
 
-export function Sidebar({
-  initialChats,
-}: {
-  initialChats: Array<ChatSummary>
-}) {
+export function Sidebar({ chats }: { chats: Array<ChatSummary> }) {
   const location = useLocation()
   const activeChatId = location.pathname.startsWith(`/chat/`)
     ? location.pathname.split(`/`)[2]
     : undefined
-
-  const [chats, setChats] = useState(initialChats)
-
-  const refreshChats = useCallback(async () => {
-    try {
-      const res = await fetch(`/api/chats`)
-      if (res.ok) setChats(await res.json())
-    } catch {
-      // ignore
-    }
-  }, [])
-
-  useEffect(() => {
-    refreshChats()
-  }, [location.pathname, refreshChats])
-
-  useEffect(() => {
-    const handler = () => refreshChats()
-    window.addEventListener(`chat-updated`, handler)
-    return () => window.removeEventListener(`chat-updated`, handler)
-  }, [refreshChats])
 
   return (
     <aside className="flex h-full w-64 shrink-0 flex-col border-r border-gray-200 bg-gray-50">

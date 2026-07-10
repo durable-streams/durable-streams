@@ -17,7 +17,7 @@ function ChatLayout() {
 
   return (
     <div className="flex h-dvh">
-      <Sidebar initialChats={chats} />
+      <Sidebar chats={chats} />
       <main className="flex min-w-0 flex-1 flex-col">
         <header className="flex items-center gap-3 border-b border-gray-200 px-6 py-4">
           <h1 className="text-lg font-semibold">Durable Chat</h1>
