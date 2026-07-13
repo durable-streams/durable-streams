@@ -156,12 +156,23 @@ export const YjsStreamPaths = {
   },
 
   /**
-   * Get the awareness index stream path for a document.
-   * This append-only stream tracks which named awareness streams have been created,
-   * enabling discovery during cascade delete.
+   * Get the legacy awareness index stream path for a document.
+   *
+   * @deprecated New writes use awarenessRegistryStream so snapshot subscription
+   * globs cannot mistake awareness registry updates for snapshot availability.
+   * Retained for cleanup of streams created by earlier server versions.
    */
   awarenessIndexStream(service: string, docPath: string): string {
     return `/v1/stream/yjs/${service}/docs/${docPath}/.awareness/.index`
+  },
+
+  /**
+   * Get the awareness registry stream path for a document.
+   * New awareness names are recorded here so they cannot match snapshot
+   * subscriptions or collide with a valid named awareness stream.
+   */
+  awarenessRegistryStream(service: string, docPath: string): string {
+    return `/v1/stream/yjs/${service}/docs/${docPath}/.awareness-index`
   },
 
   /**

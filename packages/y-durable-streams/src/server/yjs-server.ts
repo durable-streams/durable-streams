@@ -29,6 +29,17 @@ import type { YjsDocumentState, YjsIndexEntry, YjsServerOptions } from "./types"
 
 const DEFAULT_COMPACTION_THRESHOLD = 1024 * 1024 // 1MB
 
+function isValidAwarenessName(name: string): boolean {
+  return (
+    name.length > 0 &&
+    name.length <= 256 &&
+    name !== `.` &&
+    name !== `..` &&
+    name !== `.index` &&
+    /^[a-zA-Z0-9_.-]+$/.test(name)
+  )
+}
+
 /**
  * Check if an error is a 404 Not Found error.
  */
@@ -243,6 +254,18 @@ export class YjsServer {
     try {
       // Handle awareness streams
       if (awareness !== null) {
+        if (!isValidAwarenessName(awareness)) {
+          res.writeHead(400, { "content-type": `application/json` })
+          res.end(
+            JSON.stringify({
+              error: {
+                code: `INVALID_REQUEST`,
+                message: `Invalid awareness name`,
+              },
+            })
+          )
+          return
+        }
         await this.handleAwareness(req, res, route, awareness, url)
         return
       }
@@ -923,16 +946,21 @@ export class YjsServer {
     }
 
     // Load indices in parallel
-    const [snapshotOffsets, awarenessNames] = await Promise.all([
-      this.loadIndexEntries(
-        YjsStreamPaths.indexStream(service, docPath),
-        (entry) => entry.snapshotOffset as string | undefined
-      ),
-      this.loadIndexEntries(
-        YjsStreamPaths.awarenessIndexStream(service, docPath),
-        (entry) => entry.name as string | undefined
-      ),
-    ])
+    const [snapshotOffsets, awarenessNames, legacyAwarenessNames] =
+      await Promise.all([
+        this.loadIndexEntries(
+          YjsStreamPaths.indexStream(service, docPath),
+          (entry) => entry.snapshotOffset as string | undefined
+        ),
+        this.loadIndexEntries(
+          YjsStreamPaths.awarenessRegistryStream(service, docPath),
+          (entry) => entry.name as string | undefined
+        ),
+        this.loadIndexEntries(
+          YjsStreamPaths.awarenessIndexStream(service, docPath),
+          (entry) => entry.name as string | undefined
+        ),
+      ])
 
     // Build list of all paths to delete
     const pathsToDelete: Array<string> = []
@@ -948,9 +976,10 @@ export class YjsServer {
     pathsToDelete.push(
       YjsStreamPaths.awarenessStream(service, docPath, `default`)
     )
-    for (const name of awarenessNames) {
+    for (const name of new Set([...awarenessNames, ...legacyAwarenessNames])) {
       pathsToDelete.push(YjsStreamPaths.awarenessStream(service, docPath, name))
     }
+    pathsToDelete.push(YjsStreamPaths.awarenessRegistryStream(service, docPath))
     pathsToDelete.push(YjsStreamPaths.awarenessIndexStream(service, docPath))
 
     // Delete all streams in parallel (best-effort)
@@ -1069,9 +1098,9 @@ export class YjsServer {
       try {
         const created = await this.tryCreateStream(dsPath)
 
-        // Record non-default awareness streams in the awareness index for discovery
+        // Record non-default awareness streams in the registry for discovery
         if (created && awarenessName !== `default`) {
-          const indexPath = YjsStreamPaths.awarenessIndexStream(
+          const indexPath = YjsStreamPaths.awarenessRegistryStream(
             route.service,
             route.docPath
           )
@@ -1080,7 +1109,7 @@ export class YjsServer {
             createdAt: Date.now(),
           }).catch((err) => {
             console.error(
-              `[YjsServer] Failed to append to awareness index:`,
+              `[YjsServer] Failed to append to awareness registry:`,
               err
             )
           })

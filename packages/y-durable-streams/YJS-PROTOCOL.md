@@ -338,9 +338,11 @@ Awareness is accessed via the `awareness` query parameter on the same document U
 
 - `?awareness=default`: Default stream for cursor positions, selections, user presence
 - `?awareness=admin`: Separate stream for admin-only awareness (e.g., moderator cursors)
-- `?awareness=<name>`: Any custom name for role-based or feature-specific awareness
+- `?awareness=<name>`: A custom name for role-based or feature-specific awareness
 
 Awareness streams are scoped to the document path. Two documents (`/docs/a` and `/docs/b`) have completely separate awareness streams, even if they use the same name.
+
+Awareness names MUST be 1–256 ASCII letters, digits, `.`, `_`, or `-`, and MUST NOT be `.`, `..`, or `.index`. Names identify one path segment; `.index` is reserved for snapshot bookkeeping.
 
 #### Request (SSE)
 
@@ -499,6 +501,8 @@ Content-Type: application/json
 ```
 
 `document_pattern` is relative to the service's document namespace. `*` matches exactly one path segment and `**` matches zero or more path segments. The only event defined by this version is `snapshot.available`.
+
+The reference server accepts service path segments containing ASCII letters, digits, `.`, `_`, and `-` (excluding `.` and `..`). This restriction keeps the service segment literal when translating the request to a Durable Streams subscription glob.
 
 The response uses the base subscription representation with these additional fields:
 
@@ -966,11 +970,13 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 
 #### A.1.8. Snapshot subscriptions
 
-| Test                                   | Description                                                                |
-| -------------------------------------- | -------------------------------------------------------------------------- |
-| `snapshot-subscription.lifecycle`      | Create, re-confirm, read, and delete a snapshot availability subscription  |
-| `snapshot-subscription.delivery`       | A matching snapshot index append produces a signed webhook wake            |
-| `snapshot-subscription.invalid-filter` | Events other than `snapshot.available` are rejected with `INVALID_REQUEST` |
+| Test                                   | Description                                                                                           |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `snapshot-subscription.lifecycle`      | Create, normalize, re-confirm, conflict, read, and delete a snapshot availability subscription        |
+| `snapshot-subscription.delivery`       | A matching snapshot index append produces a signed wake while awareness registry updates do not       |
+| `snapshot-subscription.invalid-filter` | Unsupported events and document patterns are rejected with `INVALID_REQUEST`                          |
+| `snapshot-subscription.service`        | Subscription routes accept the reference server's documented dotted service names                     |
+| `snapshot-subscription.proxy`          | Configured upstream headers win, invalid upstream scopes are omitted, and connection failures use 502 |
 
 ### A.2. Running Conformance Tests
 

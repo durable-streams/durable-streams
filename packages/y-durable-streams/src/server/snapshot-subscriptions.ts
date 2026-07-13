@@ -23,9 +23,17 @@ export function parseSnapshotSubscriptionRoute(
   if (!match) return null
 
   try {
-    const service = decodeURIComponent(match[1]!)
+    const service = match[1]!
     const subscriptionId = decodeURIComponent(match[2]!)
-    if (!/^[a-zA-Z0-9_-]+$/.test(service)) return null
+    if (
+      service.length === 0 ||
+      service.length > 256 ||
+      service === `.` ||
+      service === `..` ||
+      !/^[a-zA-Z0-9_.-]+$/.test(service)
+    ) {
+      return null
+    }
     if (
       subscriptionId.length === 0 ||
       subscriptionId.length > 256 ||
@@ -93,7 +101,7 @@ export class SnapshotSubscriptionHandler {
     }
 
     const input = parsed.value
-    const response = await fetch(this.subscriptionUrl(route), {
+    const response = await this.requestSubscription(res, route, {
       method: `PUT`,
       headers: this.requestHeaders(req, true),
       body: JSON.stringify({
@@ -104,6 +112,7 @@ export class SnapshotSubscriptionHandler {
         description: input.description,
       }),
     })
+    if (!response) return
 
     await this.forwardResponse(res, response, route)
   }
@@ -113,10 +122,11 @@ export class SnapshotSubscriptionHandler {
     res: ServerResponse,
     route: SnapshotSubscriptionRoute
   ): Promise<void> {
-    const response = await fetch(this.subscriptionUrl(route), {
+    const response = await this.requestSubscription(res, route, {
       method: `GET`,
       headers: this.requestHeaders(req),
     })
+    if (!response) return
     await this.forwardResponse(res, response, route)
   }
 
@@ -125,10 +135,11 @@ export class SnapshotSubscriptionHandler {
     res: ServerResponse,
     route: SnapshotSubscriptionRoute
   ): Promise<void> {
-    const response = await fetch(this.subscriptionUrl(route), {
+    const response = await this.requestSubscription(res, route, {
       method: `DELETE`,
       headers: this.requestHeaders(req),
     })
+    if (!response) return
     await this.forwardResponse(res, response, route)
   }
 
@@ -224,19 +235,62 @@ export class SnapshotSubscriptionHandler {
   private requestHeaders(
     req: IncomingMessage,
     jsonBody: boolean = false
-  ): Record<string, string> {
-    const headers: Record<string, string> = { ...this.dsServerHeaders }
-    for (const [key, value] of Object.entries(req.headers)) {
-      if (
-        key.toLowerCase() !== `host` &&
-        key.toLowerCase() !== `content-length` &&
-        value
-      ) {
-        headers[key] = Array.isArray(value) ? value.join(`, `) : value
+  ): globalThis.Headers {
+    const excludedHeaders = new Set([
+      `connection`,
+      `content-length`,
+      `host`,
+      `keep-alive`,
+      `proxy-authenticate`,
+      `proxy-authorization`,
+      `proxy-connection`,
+      `te`,
+      `trailer`,
+      `transfer-encoding`,
+      `upgrade`,
+    ])
+    const connection = req.headers.connection
+    const connectionValues = Array.isArray(connection)
+      ? connection
+      : connection === undefined
+        ? []
+        : [connection]
+    for (const value of connectionValues) {
+      for (const name of value.split(`,`)) {
+        const normalized = name.trim().toLowerCase()
+        if (normalized) excludedHeaders.add(normalized)
       }
     }
-    if (jsonBody) headers[`content-type`] = `application/json`
+
+    const headers = new globalThis.Headers()
+    for (const [key, value] of Object.entries(req.headers)) {
+      if (!excludedHeaders.has(key.toLowerCase()) && value !== undefined) {
+        headers.set(key, Array.isArray(value) ? value.join(`, `) : value)
+      }
+    }
+    for (const [key, value] of Object.entries(this.dsServerHeaders)) {
+      headers.set(key, value)
+    }
+    if (jsonBody) headers.set(`content-type`, `application/json`)
     return headers
+  }
+
+  private async requestSubscription(
+    res: ServerResponse,
+    route: SnapshotSubscriptionRoute,
+    init: globalThis.RequestInit
+  ): Promise<globalThis.Response | null> {
+    try {
+      return await fetch(this.subscriptionUrl(route), init)
+    } catch {
+      this.writeError(
+        res,
+        502,
+        `PROXY_ERROR`,
+        `Failed to reach Durable Streams server`
+      )
+      return null
+    }
   }
 
   private async forwardResponse(
@@ -285,7 +339,9 @@ export class SnapshotSubscriptionHandler {
         delivery_subscription_id: deliverySubscriptionId,
         service: route.service,
         events: [SNAPSHOT_AVAILABLE_EVENT],
-        document_pattern: documentPattern,
+        ...(documentPattern === undefined
+          ? {}
+          : { document_pattern: documentPattern }),
       })
     )
   }
@@ -293,13 +349,16 @@ export class SnapshotSubscriptionHandler {
   private documentPatternFromSubscription(
     subscription: Record<string, unknown>,
     service: string
-  ): string {
+  ): string | undefined {
     const pattern = subscription.pattern
-    if (typeof pattern !== `string`) return `**`
+    if (typeof pattern !== `string`) return undefined
     const prefix = `yjs/${service}/docs/`
     const suffix = `/.index`
-    if (!pattern.startsWith(prefix) || !pattern.endsWith(suffix)) return `**`
-    return pattern.slice(prefix.length, -suffix.length)
+    if (!pattern.startsWith(prefix) || !pattern.endsWith(suffix)) {
+      return undefined
+    }
+    const documentPattern = pattern.slice(prefix.length, -suffix.length)
+    return documentPattern.length > 0 ? documentPattern : undefined
   }
 
   private async readBody(req: IncomingMessage): Promise<Buffer> {

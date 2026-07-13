@@ -9,7 +9,10 @@
  * Protocol: https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/YJS-PROTOCOL.md
  */
 
-import { createServer as createHttpServer } from "node:http"
+import {
+  request as createHttpRequest,
+  createServer as createHttpServer,
+} from "node:http"
 import {
   afterAll,
   afterEach,
@@ -23,7 +26,7 @@ import { DurableStreamTestServer } from "@durable-streams/server"
 import * as Y from "yjs"
 import { Awareness } from "y-protocols/awareness"
 import { YjsProvider } from "../src"
-import { YjsServer } from "../src/server"
+import { YjsServer, YjsStreamPaths } from "../src/server"
 
 const DEFAULT_TIMEOUT_MS = 10000
 const POLL_INTERVAL_MS = 50
@@ -34,6 +37,7 @@ async function createWebhookReceiver(): Promise<{
     body: Record<string, unknown>
     signature: string | null
   }>
+  requestCount: () => number
   close: () => Promise<void>
 }> {
   const received: Array<{
@@ -88,6 +92,7 @@ async function createWebhookReceiver(): Promise<{
       }
       return received[received.length - 1]!
     },
+    requestCount: () => received.length,
     close: async () => {
       server.closeAllConnections()
       await new Promise<void>((resolve) => server.close(() => resolve()))
@@ -357,6 +362,26 @@ describe(`Yjs Durable Streams Protocol`, () => {
         })
         expect(confirmedResponse.status).toBe(200)
 
+        const normalizedResponse = await fetch(subscriptionUrl, {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            ...request,
+            document_pattern: `/projects/**/`,
+          }),
+        })
+        expect(normalizedResponse.status).toBe(200)
+
+        const conflictResponse = await fetch(subscriptionUrl, {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            ...request,
+            webhook: { url: `${receiver.url}/different` },
+          }),
+        })
+        expect(conflictResponse.status).toBe(409)
+
         const getResponse = await fetch(subscriptionUrl)
         expect(getResponse.status).toBe(200)
         const subscription = (await getResponse.json()) as {
@@ -408,6 +433,26 @@ describe(`Yjs Durable Streams Protocol`, () => {
         const doc = new Y.Doc()
         provider = new YjsProvider({ doc, baseUrl, docId })
         await waitForSync(provider)
+
+        const reservedAwarenessResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=.index`,
+          { method: `PUT` }
+        )
+        expect(reservedAwarenessResponse.status).toBe(400)
+        expect(await reservedAwarenessResponse.json()).toEqual({
+          error: {
+            code: `INVALID_REQUEST`,
+            message: `Invalid awareness name`,
+          },
+        })
+
+        const awarenessResponse = await fetch(
+          `${baseUrl}/docs/${docId}?awareness=presence`,
+          { method: `PUT` }
+        )
+        expect(awarenessResponse.status).toBe(201)
+        await new Promise((resolve) => setTimeout(resolve, 500))
+        expect(receiver.requestCount()).toBe(0)
 
         const text = doc.getText(`content`)
         await appendWithSync(provider, text, `W`.repeat(200), 10)
@@ -478,6 +523,194 @@ describe(`Yjs Durable Streams Protocol`, () => {
           message: `events must contain only snapshot.available`,
         },
       })
+
+      const invalidPatternResponse = await fetch(
+        `${baseUrl}/__ds/subscriptions/invalid-pattern-${Date.now()}`,
+        {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            events: [`snapshot.available`],
+            document_pattern: `projects/[invalid]`,
+            webhook: { url: `http://127.0.0.1:1/webhook` },
+          }),
+        }
+      )
+      expect(invalidPatternResponse.status).toBe(400)
+      expect(await invalidPatternResponse.json()).toEqual({
+        error: {
+          code: `INVALID_REQUEST`,
+          message: `document_pattern must be a valid document glob`,
+        },
+      })
+    })
+
+    it(`snapshot-subscription.service supports dotted service names`, async () => {
+      const receiver = await createWebhookReceiver()
+      const subscriptionId = `snapshot-dotted-service-${Date.now()}`
+      const subscriptionUrl = `${yjsServer!.url}/v1/yjs/my.svc/__ds/subscriptions/${subscriptionId}`
+      const request = {
+        type: `webhook`,
+        events: [`snapshot.available`],
+        document_pattern: `**`,
+        webhook: { url: receiver.url },
+      }
+
+      try {
+        const response = await fetch(subscriptionUrl, {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify(request),
+        })
+        expect(response.status).toBe(201)
+
+        const encodedServiceResponse = await fetch(
+          `${yjsServer!.url}/v1/yjs/my%2Esvc/__ds/subscriptions/encoded-service`,
+          {
+            method: `PUT`,
+            headers: { "content-type": `application/json` },
+            body: JSON.stringify(request),
+          }
+        )
+        expect(encodedServiceResponse.status).toBe(400)
+      } finally {
+        await fetch(subscriptionUrl, { method: `DELETE` })
+        await receiver.close()
+      }
+    })
+
+    it(`snapshot-subscription.proxy preserves configured headers and reports outages`, async () => {
+      let authorization: string | undefined
+      let transferEncoding: string | undefined
+      const upstream = createHttpServer((req, res) => {
+        authorization = req.headers.authorization
+        transferEncoding = req.headers[`transfer-encoding`]
+        req.resume()
+        res.writeHead(201, { "content-type": `application/json` })
+        res.end(
+          JSON.stringify({
+            id: `delivery-id`,
+            subscription_id: `delivery-id`,
+            type: `webhook`,
+            pattern: `malformed-upstream-pattern`,
+            webhook: { url: `http://127.0.0.1:1/webhook` },
+          })
+        )
+      })
+      await new Promise<void>((resolve, reject) => {
+        upstream.on(`error`, reject)
+        upstream.listen(0, `127.0.0.1`, resolve)
+      })
+      const address = upstream.address()
+      if (!address || typeof address === `string`) {
+        throw new Error(`Failed to start fake Durable Streams server`)
+      }
+
+      const facade = new YjsServer({
+        port: 0,
+        dsServerUrl: `http://127.0.0.1:${address.port}`,
+        dsServerHeaders: { authorization: `Bearer configured` },
+      })
+      await facade.start()
+      const subscriptionUrl = `${facade.url}/v1/yjs/test/__ds/subscriptions/proxy-test`
+
+      try {
+        const requestBody = JSON.stringify({
+          type: `webhook`,
+          events: [`snapshot.available`],
+          document_pattern: `**`,
+          webhook: { url: `http://127.0.0.1:1/webhook` },
+        })
+        const created = await new Promise<{
+          status: number
+          body: Record<string, unknown>
+        }>((resolve, reject) => {
+          const request = createHttpRequest(
+            subscriptionUrl,
+            {
+              method: `PUT`,
+              headers: {
+                authorization: `Bearer caller`,
+                "content-type": `application/json`,
+              },
+            },
+            (response) => {
+              const chunks: Array<Buffer> = []
+              response.on(`data`, (chunk: Buffer) => chunks.push(chunk))
+              response.on(`end`, () => {
+                try {
+                  resolve({
+                    status: response.statusCode ?? 0,
+                    body: JSON.parse(
+                      Buffer.concat(chunks).toString(`utf8`)
+                    ) as Record<string, unknown>,
+                  })
+                } catch (error) {
+                  reject(error)
+                }
+              })
+            }
+          )
+          request.on(`error`, reject)
+          const splitAt = Math.floor(requestBody.length / 2)
+          request.write(requestBody.slice(0, splitAt))
+          request.end(requestBody.slice(splitAt))
+        })
+
+        expect(created.status).toBe(201)
+        expect(authorization).toBe(`Bearer configured`)
+        expect(transferEncoding).toBeUndefined()
+        expect(created.body).not.toHaveProperty(`document_pattern`)
+
+        upstream.closeAllConnections()
+        await new Promise<void>((resolve) => upstream.close(() => resolve()))
+
+        const unavailable = await fetch(subscriptionUrl)
+        expect(unavailable.status).toBe(502)
+        expect(await unavailable.json()).toEqual({
+          error: {
+            code: `PROXY_ERROR`,
+            message: `Failed to reach Durable Streams server`,
+          },
+        })
+      } finally {
+        await facade.stop()
+        if (upstream.listening) {
+          upstream.closeAllConnections()
+          await new Promise<void>((resolve) => upstream.close(() => resolve()))
+        }
+      }
+    })
+  })
+
+  describe(`Awareness registry`, () => {
+    it(`does not collide with a dot-prefixed awareness name`, async () => {
+      const docId = `aw-registry-name-${Date.now()}`
+      await createDocument(baseUrl, docId)
+
+      const first = await fetch(`${baseUrl}/docs/${docId}?awareness=presence`, {
+        method: `PUT`,
+      })
+      expect(first.status).toBe(201)
+
+      const named = await fetch(
+        `${baseUrl}/docs/${docId}?awareness=.registry`,
+        {
+          method: `PUT`,
+        }
+      )
+      expect(named.status).toBe(201)
+
+      const posted = await fetch(
+        `${baseUrl}/docs/${docId}?awareness=.registry`,
+        {
+          method: `POST`,
+          headers: { "content-type": `application/octet-stream` },
+          body: new Uint8Array([1, 2, 3]),
+        }
+      )
+      expect(posted.status).toBe(204)
     })
   })
 
@@ -1603,6 +1836,57 @@ describe(`Yjs Durable Streams Protocol`, () => {
         expect(headAfter2.status).toBe(404)
       })
     })
+
+    describe.skipIf(!!externalServerUrl)(
+      `delete.doc-cascades-legacy-awareness-index`,
+      () => {
+        it(`should clean up awareness streams recorded by an earlier server version`, async () => {
+          const docId = `del-cascade-legacy-aw-${Date.now()}`
+          const awarenessName = `legacy-presence`
+          await createDocument(baseUrl, docId)
+
+          const awarenessPath = YjsStreamPaths.awarenessStream(
+            `test`,
+            docId,
+            awarenessName
+          )
+          const createAwareness = await fetch(
+            `${dsServer!.url}${awarenessPath}`,
+            {
+              method: `PUT`,
+              headers: { "content-type": `application/octet-stream` },
+            }
+          )
+          expect(createAwareness.status).toBe(201)
+
+          const legacyIndexPath = YjsStreamPaths.awarenessIndexStream(
+            `test`,
+            docId
+          )
+          await yjsServer!.appendToIndexStream(legacyIndexPath, {
+            name: awarenessName,
+            createdAt: Date.now(),
+          })
+
+          const deleteDocument = await fetch(`${baseUrl}/docs/${docId}`, {
+            method: `DELETE`,
+          })
+          expect(deleteDocument.status).toBe(204)
+
+          const awarenessAfter = await fetch(
+            `${dsServer!.url}${awarenessPath}`,
+            { method: `HEAD` }
+          )
+          expect(awarenessAfter.status).toBe(404)
+
+          const legacyIndexAfter = await fetch(
+            `${dsServer!.url}${legacyIndexPath}`,
+            { method: `HEAD` }
+          )
+          expect(legacyIndexAfter.status).toBe(404)
+        })
+      }
+    )
 
     describe(`delete.doc-cascades-snapshots`, () => {
       let providers: Array<YjsProvider> = []
