@@ -10,6 +10,7 @@ Key benefits:
 
 - **No WebSocket infrastructure** - Works with standard HTTP load balancers and CDNs
 - **Automatic compaction** - Server manages document snapshots to keep sync fast
+- **Snapshot webhooks** - Wake external workers to persist the latest snapshot
 - **Scalable** - Stateless server design, documents stored in durable streams
 - **Presence support** - Optional awareness for cursors, selections, and user status
 
@@ -174,6 +175,41 @@ const server = new YjsServer({
 await server.start()
 console.log(`Yjs server running at ${server.url}`)
 ```
+
+### Snapshot webhooks
+
+Subscribe a webhook to be woken whenever a newer snapshot is available for a
+matching document:
+
+```typescript
+await fetch(
+  `${server.url}/v1/yjs/my-service/__ds/subscriptions/snapshot-archive`,
+  {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      type: "webhook",
+      events: ["snapshot.available"],
+      document_pattern: "projects/**",
+      webhook: { url: "https://archive.example/hooks/yjs" },
+      lease_ttl_ms: 30_000,
+    }),
+  }
+)
+```
+
+`document_pattern` is relative to the service's document namespace. `*`
+matches one path segment and `**` matches recursively. The underlying Durable
+Streams server must support webhook subscriptions.
+
+Webhook requests use the standard Durable Streams subscription payload and
+signature. A notification means one or more newer snapshots are available; it
+does not carry the snapshot bytes and may coalesce multiple compactions. For
+each pending `.index` stream, derive the document path and fetch its latest
+snapshot with `?offset=snapshot`. Return `{ "done": true }` only after the
+snapshot has been persisted successfully. New subscriptions observe future
+snapshots and do not replay the snapshot that was current when they were
+created.
 
 ## Conformance Tests
 

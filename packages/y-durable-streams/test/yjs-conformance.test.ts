@@ -9,6 +9,7 @@
  * Protocol: https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/YJS-PROTOCOL.md
  */
 
+import { createServer as createHttpServer } from "node:http"
 import {
   afterAll,
   afterEach,
@@ -26,6 +27,73 @@ import { YjsServer } from "../src/server"
 
 const DEFAULT_TIMEOUT_MS = 10000
 const POLL_INTERVAL_MS = 50
+
+async function createWebhookReceiver(): Promise<{
+  url: string
+  waitForRequest: (timeoutMs?: number) => Promise<{
+    body: Record<string, unknown>
+    signature: string | null
+  }>
+  close: () => Promise<void>
+}> {
+  const received: Array<{
+    body: Record<string, unknown>
+    signature: string | null
+  }> = []
+  const waiters: Array<() => void> = []
+
+  const server = createHttpServer((req, res) => {
+    const chunks: Array<Buffer> = []
+    req.on(`data`, (chunk: Buffer) => chunks.push(chunk))
+    req.on(`end`, () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString(`utf8`)) as Record<
+        string,
+        unknown
+      >
+      const signatureHeader = req.headers[`webhook-signature`]
+      received.push({
+        body,
+        signature: typeof signatureHeader === `string` ? signatureHeader : null,
+      })
+      for (const waiter of waiters.splice(0)) waiter()
+      res.writeHead(200, { "content-type": `application/json` })
+      res.end(JSON.stringify({ done: true }))
+    })
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.on(`error`, reject)
+    server.listen(0, `127.0.0.1`, resolve)
+  })
+
+  const address = server.address()
+  if (!address || typeof address === `string`) {
+    throw new Error(`Failed to start webhook receiver`)
+  }
+
+  return {
+    url: `http://127.0.0.1:${address.port}/webhook`,
+    waitForRequest: async (timeoutMs = DEFAULT_TIMEOUT_MS) => {
+      if (received.length === 0) {
+        await new Promise<void>((resolve, reject) => {
+          const timeout = setTimeout(
+            () => reject(new Error(`Timed out waiting for webhook request`)),
+            timeoutMs
+          )
+          waiters.push(() => {
+            clearTimeout(timeout)
+            resolve()
+          })
+        })
+      }
+      return received[received.length - 1]!
+    },
+    close: async () => {
+      server.closeAllConnections()
+      await new Promise<void>((resolve) => server.close(() => resolve()))
+    },
+  }
+}
 
 async function waitForCondition(
   condition: () => boolean | Promise<boolean>,
@@ -211,7 +279,7 @@ describe(`Yjs Durable Streams Protocol`, () => {
       console.log(`Using external Yjs server: ${baseUrl}`)
     } else {
       // Start local servers for testing
-      dsServer = new DurableStreamTestServer({ port: 0 })
+      dsServer = new DurableStreamTestServer({ port: 0, webhooks: true })
       await dsServer.start()
 
       yjsServer = new YjsServer({
@@ -236,6 +304,182 @@ describe(`Yjs Durable Streams Protocol`, () => {
     // Give a moment for cleanup
     await new Promise((r) => setTimeout(r, 200))
   }, 5000)
+
+  describe.skipIf(!!externalServerUrl)(`Snapshot Subscriptions`, () => {
+    it(`snapshot-subscription.lifecycle creates, reads, and deletes a webhook subscription`, async () => {
+      const receiver = await createWebhookReceiver()
+      const subscriptionId = `snapshot-lifecycle-${Date.now()}`
+      const subscriptionUrl = `${baseUrl}/__ds/subscriptions/${subscriptionId}`
+      const request = {
+        type: `webhook`,
+        events: [`snapshot.available`],
+        document_pattern: `projects/**`,
+        webhook: { url: receiver.url },
+        lease_ttl_ms: 1000,
+        description: `Archive project snapshots`,
+      }
+
+      try {
+        const createdResponse = await fetch(subscriptionUrl, {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify(request),
+        })
+        expect(createdResponse.status).toBe(201)
+        const created = (await createdResponse.json()) as {
+          id: string
+          subscription_id: string
+          delivery_subscription_id: string
+          service: string
+          events: Array<string>
+          document_pattern: string
+          webhook: {
+            url: string
+            signing: { alg: string; jwks_url: string }
+          }
+        }
+        expect(created.id).toBe(subscriptionId)
+        expect(created.subscription_id).toBe(subscriptionId)
+        expect(created.delivery_subscription_id).toMatch(/^yjs:/)
+        expect(created.service).toBe(`test`)
+        expect(created.events).toEqual([`snapshot.available`])
+        expect(created.document_pattern).toBe(`projects/**`)
+        expect(created.webhook.url).toBe(receiver.url)
+        expect(created.webhook.signing.alg).toBe(`ed25519`)
+        expect(created.webhook.signing.jwks_url).toContain(
+          `/v1/stream/__ds/jwks.json`
+        )
+
+        const confirmedResponse = await fetch(subscriptionUrl, {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify(request),
+        })
+        expect(confirmedResponse.status).toBe(200)
+
+        const getResponse = await fetch(subscriptionUrl)
+        expect(getResponse.status).toBe(200)
+        const subscription = (await getResponse.json()) as {
+          id: string
+          events: Array<string>
+          document_pattern: string
+        }
+        expect(subscription.id).toBe(subscriptionId)
+        expect(subscription.events).toEqual([`snapshot.available`])
+        expect(subscription.document_pattern).toBe(`projects/**`)
+
+        const deleteResponse = await fetch(subscriptionUrl, {
+          method: `DELETE`,
+        })
+        expect(deleteResponse.status).toBe(204)
+
+        const deletedResponse = await fetch(subscriptionUrl)
+        expect(deletedResponse.status).toBe(404)
+      } finally {
+        await fetch(subscriptionUrl, { method: `DELETE` })
+        await receiver.close()
+      }
+    })
+
+    it(`snapshot-subscription.delivery wakes a webhook for a matching document`, async () => {
+      const receiver = await createWebhookReceiver()
+      const subscriptionId = `snapshot-delivery-${Date.now()}`
+      const subscriptionUrl = `${baseUrl}/__ds/subscriptions/${subscriptionId}`
+      const docId = `projects/webhook-${Date.now()}`
+      let provider: YjsProvider | null = null
+
+      try {
+        const createSubscriptionResponse = await fetch(subscriptionUrl, {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            events: [`snapshot.available`],
+            document_pattern: `projects/**`,
+            webhook: { url: receiver.url },
+            lease_ttl_ms: 1000,
+          }),
+        })
+        expect(createSubscriptionResponse.status).toBe(201)
+        const subscription = (await createSubscriptionResponse.json()) as {
+          delivery_subscription_id: string
+        }
+
+        const doc = new Y.Doc()
+        provider = new YjsProvider({ doc, baseUrl, docId })
+        await waitForSync(provider)
+
+        const text = doc.getText(`content`)
+        await appendWithSync(provider, text, `W`.repeat(200), 10)
+        await waitForSnapshot(baseUrl, docId)
+
+        const delivery = await receiver.waitForRequest()
+        expect(delivery.signature).toMatch(
+          /^t=\d+,kid=.+,ed25519=[A-Za-z0-9_-]+$/
+        )
+        expect(delivery.body.subscription_id).toBe(
+          subscription.delivery_subscription_id
+        )
+        const stream = (
+          delivery.body.streams as Array<{
+            path: string
+            has_pending: boolean
+          }>
+        ).find(
+          (candidate) => candidate.path === `yjs/test/docs/${docId}/.index`
+        )
+        expect(stream).toEqual(
+          expect.objectContaining({
+            path: `yjs/test/docs/${docId}/.index`,
+            has_pending: true,
+          })
+        )
+
+        const snapshotDiscovery = await fetch(
+          `${baseUrl}/docs/${docId}?offset=snapshot`,
+          { redirect: `manual` }
+        )
+        expect(snapshotDiscovery.status).toBe(307)
+        const snapshotLocation = snapshotDiscovery.headers.get(`location`)
+        expect(snapshotLocation).toContain(`_snapshot`)
+
+        const snapshotResponse = await fetch(
+          new URL(snapshotLocation!, `${baseUrl}/docs/${docId}`).toString()
+        )
+        expect(snapshotResponse.status).toBe(200)
+        expect(
+          (await snapshotResponse.arrayBuffer()).byteLength
+        ).toBeGreaterThan(0)
+      } finally {
+        provider?.destroy()
+        await fetch(subscriptionUrl, { method: `DELETE` })
+        await receiver.close()
+      }
+    })
+
+    it(`snapshot-subscription.invalid-filter rejects unsupported events`, async () => {
+      const response = await fetch(
+        `${baseUrl}/__ds/subscriptions/invalid-${Date.now()}`,
+        {
+          method: `PUT`,
+          headers: { "content-type": `application/json` },
+          body: JSON.stringify({
+            type: `webhook`,
+            events: [`snapshot.created`],
+            document_pattern: `**`,
+            webhook: { url: `http://127.0.0.1:1/webhook` },
+          }),
+        }
+      )
+      expect(response.status).toBe(400)
+      expect(await response.json()).toEqual({
+        error: {
+          code: `INVALID_REQUEST`,
+          message: `events must contain only snapshot.available`,
+        },
+      })
+    })
+  })
 
   describe(`Snapshot Discovery`, () => {
     describe(`snapshot.discovery-new-doc`, () => {

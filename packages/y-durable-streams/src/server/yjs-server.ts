@@ -6,6 +6,7 @@
  * - Single URL path per document with query parameters
  * - Snapshot discovery via offset=snapshot sentinel (307 redirects)
  * - Automatic compaction when updates exceed threshold
+ * - Snapshot availability webhooks backed by Durable Streams subscriptions
  * - Awareness via ?awareness=<name> query parameter
  *
  * Protocol: https://github.com/durable-streams/durable-streams/blob/main/packages/y-durable-streams/PROTOCOL.md
@@ -18,6 +19,10 @@ import {
   FetchError,
 } from "@durable-streams/client"
 import { Compactor } from "./compaction"
+import {
+  SnapshotSubscriptionHandler,
+  parseSnapshotSubscriptionRoute,
+} from "./snapshot-subscriptions"
 import { PathUtils, YJS_HEADERS, YjsStreamPaths } from "./types"
 import type { IncomingMessage, Server, ServerResponse } from "node:http"
 import type { YjsDocumentState, YjsIndexEntry, YjsServerOptions } from "./types"
@@ -71,6 +76,7 @@ export class YjsServer {
   private readonly host: string
 
   private readonly compactor: Compactor
+  private readonly snapshotSubscriptions: SnapshotSubscriptionHandler
   private readonly documentStates = new Map<string, YjsDocumentState>()
 
   private stateKey(service: string, docPath: string): string {
@@ -89,6 +95,10 @@ export class YjsServer {
     this.host = options.host ?? `127.0.0.1`
 
     this.compactor = new Compactor(this)
+    this.snapshotSubscriptions = new SnapshotSubscriptionHandler({
+      dsServerUrl: this.dsServerUrl,
+      dsServerHeaders: this.dsServerHeaders,
+    })
   }
 
   async start(): Promise<string> {
@@ -195,6 +205,12 @@ export class YjsServer {
           error: { code: `INVALID_REQUEST`, message: `Invalid document path` },
         })
       )
+      return
+    }
+
+    const subscriptionRoute = parseSnapshotSubscriptionRoute(path)
+    if (subscriptionRoute) {
+      await this.snapshotSubscriptions.handle(req, res, subscriptionRoute)
       return
     }
 
