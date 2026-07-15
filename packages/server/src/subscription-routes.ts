@@ -10,7 +10,6 @@ import type {
   SubscriptionCallbackRequest,
   SubscriptionCreateInput,
   SubscriptionErrorCode,
-  SubscriptionType,
 } from "./subscription-types"
 
 const RESERVED_CONTROL_PREFIX = `/v1/stream/__ds`
@@ -347,7 +346,7 @@ export class SubscriptionRoutes {
     if (payload.type !== `webhook` && payload.type !== `pull-wake`) {
       return { error: `type must be "webhook" or "pull-wake"` }
     }
-    const type = payload.type as SubscriptionType
+    const type = payload.type
     const pattern =
       typeof payload.pattern === `string` && payload.pattern.length > 0
         ? normalizeRelativePath(payload.pattern)

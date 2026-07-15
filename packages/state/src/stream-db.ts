@@ -288,7 +288,7 @@ class EventDispatcher {
     }
 
     // Get value, ensuring it's an object
-    const originalValue = (event.value ?? {}) as object
+    const originalValue = event.value ?? {}
 
     // Create a shallow copy to avoid mutating the original
     const value = { ...originalValue }

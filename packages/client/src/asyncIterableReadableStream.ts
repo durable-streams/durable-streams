@@ -87,7 +87,7 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
     const iterator: AsyncIterator<T> & AsyncIterable<T> = {
       async next() {
         if (finished) {
-          return { done: true, value: undefined as unknown as T }
+          return { done: true, value: undefined }
         }
 
         pendingReads++
@@ -97,7 +97,7 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
           if (done) {
             finished = true
             reader.releaseLock()
-            return { done: true, value: undefined as unknown as T }
+            return { done: true, value: undefined }
           }
 
           return { done: false, value: value }
@@ -135,7 +135,7 @@ function defineAsyncIterator<T>(stream: ReadableStream<T>): void {
         const cancelPromise = reader.cancel(value)
         reader.releaseLock()
         await cancelPromise
-        return { done: true, value: undefined as unknown as T }
+        return { done: true, value: undefined }
       },
 
       async throw(err?: unknown) {

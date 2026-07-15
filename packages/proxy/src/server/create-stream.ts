@@ -175,7 +175,7 @@ export async function handleCreateStream(
 
   // Step 6: Prepare upstream request
   const upstreamHeaders = filterHeadersForUpstream(
-    req.headers as Record<string, string | Array<string> | undefined>,
+    req.headers,
     parsedUrl.hostname
   )
 

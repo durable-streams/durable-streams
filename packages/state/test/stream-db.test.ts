@@ -1434,21 +1434,21 @@ describe(`Event Helper Validation`, () => {
     // Try to override operation in insert
     const insertEvent = stateSchema.users.insert({
       value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `delete` as any },
+      headers: { operation: `delete` },
     })
     expect(insertEvent.headers.operation).toBe(`insert`)
 
     // Try to override operation in update
     const updateEvent = stateSchema.users.update({
       value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `delete` as any },
+      headers: { operation: `delete` },
     })
     expect(updateEvent.headers.operation).toBe(`update`)
 
     // Try to override operation in delete
     const deleteEvent = stateSchema.users.delete({
       key: `1`,
-      headers: { operation: `insert` as any },
+      headers: { operation: `insert` },
     })
     expect(deleteEvent.headers.operation).toBe(`delete`)
   })
