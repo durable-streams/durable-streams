@@ -17,5 +17,8 @@ const streams = createStreamsHandler({
 })
 
 /** Fetch for server-side stream calls — dispatches in-process. */
-export const streamsFetch: typeof fetch = async (input, init) =>
-  streams(new Request(input, init), env as never)
+export const streamsFetch: typeof fetch = (input, init) =>
+  streams(
+    new Request(input, init),
+    env as unknown as Parameters<typeof streams>[1]
+  )
