@@ -11,7 +11,7 @@ import type { StreamsEnv } from "./stream-object"
 const CORS_HEADERS: Record<string, string> = {
   "access-control-allow-origin": `*`,
   "access-control-allow-methods": `GET, POST, PUT, DELETE, HEAD, OPTIONS`,
-  "access-control-allow-headers": `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`,
+  "access-control-allow-headers": `content-type, authorization, If-None-Match, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`,
   "access-control-expose-headers": `Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq, etag, content-type, content-encoding, vary`,
   "x-content-type-options": `nosniff`,
   "cross-origin-resource-policy": `cross-origin`,
@@ -27,12 +27,20 @@ export interface StreamsHandlerOptions<E extends StreamsEnv> {
    * is set and non-empty, every request must carry
    * `Authorization: Bearer <token>`. The protocol leaves auth to the
    * implementation; this is the hook.
+   *
+   * When an auth gate is active (a custom hook, or `AUTH_TOKEN` set),
+   * publicly-cacheable catch-up responses are rewritten to
+   * `Cache-Control: no-store` so shared caches never store authenticated
+   * data.
    */
   auth?: (
     request: Request,
     env: E
   ) => Response | undefined | Promise<Response | undefined>
-  /** Set to false to omit the permissive default CORS headers. */
+  /**
+   * Set to false to omit the permissive default CORS headers, including
+   * the ones on stream responses themselves.
+   */
   cors?: boolean
 }
 
@@ -78,7 +86,8 @@ function defaultAuth(
 export function createStreamsHandler<E extends StreamsEnv = DefaultAuthEnv>(
   options: StreamsHandlerOptions<E> = {}
 ): (request: Request, env: E) => Promise<Response> {
-  const cors = options.cors === false ? {} : CORS_HEADERS
+  const corsEnabled = options.cors !== false
+  const cors = corsEnabled ? CORS_HEADERS : {}
   const auth = options.auth ?? defaultAuth
 
   return async (request: Request, env: E): Promise<Response> => {
@@ -121,6 +130,36 @@ export function createStreamsHandler<E extends StreamsEnv = DefaultAuthEnv>(
 
     const id = env.STREAMS.idFromName(streamPath)
     const stub = env.STREAMS.get(id)
-    return stub.fetch(request)
+    const response = await stub.fetch(request)
+
+    // An active auth gate means responses carry authenticated data:
+    // shared caches must never store them, so the DO's public catch-up
+    // caching is downgraded to no-store.
+    const authActive =
+      options.auth !== undefined ||
+      ((env as DefaultAuthEnv).AUTH_TOKEN !== undefined &&
+        (env as DefaultAuthEnv).AUTH_TOKEN !== ``)
+    const publiclyCacheable = (
+      response.headers.get(`cache-control`) ?? ``
+    ).includes(`public`)
+
+    if (corsEnabled && !(authActive && publiclyCacheable)) {
+      return response
+    }
+
+    // The DO adds CORS headers unconditionally; rebuild the response with
+    // mutable headers to strip/rewrite them (the body stream is passed
+    // through untouched).
+    const finalized = new Response(response.body, response)
+    if (!corsEnabled) {
+      finalized.headers.delete(`access-control-allow-origin`)
+      finalized.headers.delete(`access-control-allow-methods`)
+      finalized.headers.delete(`access-control-allow-headers`)
+      finalized.headers.delete(`access-control-expose-headers`)
+    }
+    if (authActive && publiclyCacheable) {
+      finalized.headers.set(`cache-control`, `no-store`)
+    }
+    return finalized
   }
 }
