@@ -9,6 +9,10 @@
  */
 import { env, runInDurableObject } from "cloudflare:test"
 import { describe, expect, it } from "vitest"
+import {
+  setStreamObjectTestHooks,
+  suspendNextInheritedReadForTest,
+} from "../src/stream-object"
 import type { StreamObject } from "../src/stream-object"
 
 function stubFor(path: string): DurableObjectStub<StreamObject> {
@@ -209,6 +213,116 @@ describe(`fork edge idempotency`, () => {
     })
     expect(forkDeleted.status).toBe(204)
     expect(await statusOf(src, srcPath)).toBe(404)
+  })
+
+  it(`autonomously releases an acquire interrupted before local create commit`, async () => {
+    const srcPath = `/streams/edge-interrupted-src`
+    const forkPath = `/streams/edge-interrupted-fork`
+    const src = await createSource(srcPath)
+    const fork = stubFor(forkPath)
+
+    await runInDurableObject(fork, (instance) => {
+      setStreamObjectTestHooks(instance, {
+        afterForkAcquire: () => Promise.reject(new Error(`interrupted`)),
+      })
+    })
+    await expect(
+      fork.fetch(`http://do${forkPath}`, {
+        method: `PUT`,
+        headers: { "Stream-Forked-From": srcPath },
+      })
+    ).rejects.toThrow(`interrupted`)
+    await src.fetch(`http://do${srcPath}`, { method: `DELETE` })
+    expect(await statusOf(src, srcPath)).toBe(410)
+
+    // No PUT retry: the target's durable alarm reconciles the intent.
+    await runInDurableObject(fork, (instance) => instance.alarm())
+    expect(await statusOf(src, srcPath)).toBe(404)
+  })
+
+  it(`does not mix inherited data with a delete-recreated child generation`, async () => {
+    const srcPath = `/streams/read-generation-src`
+    const forkPath = `/streams/read-generation-fork`
+    await createSource(srcPath)
+    const fork = stubFor(forkPath)
+    expect(
+      (
+        await fork.fetch(`http://do${forkPath}`, {
+          method: `PUT`,
+          headers: { "Stream-Forked-From": srcPath },
+        })
+      ).status
+    ).toBe(201)
+
+    let barrier!: ReturnType<typeof suspendNextInheritedReadForTest>
+    await runInDurableObject(fork, (instance) => {
+      barrier = suspendNextInheritedReadForTest(instance)
+    })
+
+    const reading = fork.fetch(`http://do${forkPath}`)
+    while (!(await runInDurableObject(fork, () => barrier.entered()))) {
+      await new Promise((resolve) => setTimeout(resolve, 1))
+    }
+    expect(
+      (await fork.fetch(`http://do${forkPath}`, { method: `DELETE` })).status
+    ).toBe(204)
+    expect(
+      (
+        await fork.fetch(`http://do${forkPath}`, {
+          method: `PUT`,
+          headers: { "Content-Type": `text/plain` },
+          body: `G2`,
+        })
+      ).status
+    ).toBe(201)
+    await runInDurableObject(fork, () => barrier.resume())
+    const response = await reading
+    expect(await response.text()).toBe(`G2`)
+  })
+
+  it(`does not release the winner edge for simultaneous equivalent creates`, async () => {
+    const srcPath = `/streams/edge-race-src`
+    const forkPath = `/streams/edge-race-fork`
+    const src = await createSource(srcPath)
+    const fork = stubFor(forkPath)
+
+    const make = () =>
+      fork.fetch(`http://do${forkPath}`, {
+        method: `PUT`,
+        headers: { "Stream-Forked-From": srcPath },
+      })
+    const responses = await Promise.all([make(), make()])
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      200, 201,
+    ])
+
+    await src.fetch(`http://do${srcPath}`, { method: `DELETE` })
+    expect((await fork.fetch(`http://do${forkPath}`)).status).toBe(200)
+  })
+
+  it(`never lets a simultaneous mismatched content type reuse an intent`, async () => {
+    const srcPath = `/streams/edge-content-race-src`
+    const forkPath = `/streams/edge-content-race-fork`
+    await createSource(srcPath)
+    const fork = stubFor(forkPath)
+    const make = (contentType: string) =>
+      fork.fetch(`http://do${forkPath}`, {
+        method: `PUT`,
+        headers: {
+          "Stream-Forked-From": srcPath,
+          "Content-Type": contentType,
+        },
+      })
+
+    const responses = await Promise.all([
+      make(`text/plain`),
+      make(`application/json`),
+    ])
+    expect(responses.map((response) => response.status).sort()).toEqual([
+      201, 409,
+    ])
+    const head = await fork.fetch(`http://do${forkPath}`, { method: `HEAD` })
+    expect(head.headers.get(`content-type`)).toBe(`text/plain`)
   })
 
   it(`reuses the durable edge intent when a fork create is retried`, async () => {

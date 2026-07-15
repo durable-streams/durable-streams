@@ -3,11 +3,8 @@ import { createFileRoute } from "@tanstack/react-router"
 import { chat } from "@tanstack/ai"
 import { openaiText } from "@tanstack/ai-openai"
 import { toDurableChatSessionResponse } from "@durable-streams/tanstack-ai-transport"
-import {
-  buildChatStreamPath,
-  buildStreamUrl,
-  streamsFetch,
-} from "~/lib/durable-streams-config"
+import { streamsFetch } from "~/lib/durable-streams-config"
+import { resolveChatRequest } from "~/lib/chat-request"
 import { saveChatMessages } from "~/lib/chat-store"
 
 if (!process.env.OPENAI_API_KEY) {
@@ -28,23 +25,9 @@ export const Route = createFileRoute(`/api/chat`)({
   server: {
     handlers: {
       POST: async ({ request }) => {
-        const requestUrl = new URL(request.url)
-        const requestBody = await request.json()
-        const messages = requestBody.messages as Array<any>
-        const idFromBody = requestBody.id as string | undefined
-        const idFromQuery = requestUrl.searchParams.get(`id`)
-        const id = idFromBody ?? idFromQuery ?? undefined
-
-        if (!id) {
-          return Response.json(
-            { error: `Missing chat id in request body or query` },
-            { status: 400 }
-          )
-        }
-
-        // Durable session model: one append-only stream per chat id.
-        const streamPath = buildChatStreamPath(id)
-        const writeUrl = buildStreamUrl(streamPath)
+        const resolved = await resolveChatRequest(request)
+        if (!resolved.ok) return resolved.response
+        const { id, messages, writeUrl } = resolved
         // Explicitly append only the new prompt message for this request.
         const latestUserMessage = extractLatestUserMessage(messages)
         const newMessages = latestUserMessage ? [latestUserMessage] : []

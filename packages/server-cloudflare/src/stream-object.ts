@@ -205,6 +205,36 @@ export interface StreamsEnv {
   STREAMS: DurableObjectNamespace<StreamObject>
 }
 
+type StreamObjectTestHooks = {
+  afterForkAcquire?: () => Promise<void>
+  afterInheritedRead?: () => Promise<void>
+}
+
+const testHooks = new WeakMap<object, StreamObjectTestHooks>()
+
+/** Test-only fault/barrier installation; not exported from the package entry. */
+export function setStreamObjectTestHooks(
+  object: StreamObject,
+  hooks: StreamObjectTestHooks
+): void {
+  testHooks.set(object, hooks)
+}
+
+export function suspendNextInheritedReadForTest(object: StreamObject): {
+  entered: () => boolean
+  resume: () => void
+} {
+  let didEnter = false
+  let resume!: () => void
+  testHooks.set(object, {
+    afterInheritedRead: async () => {
+      didEnter = true
+      await new Promise<void>((resolve) => (resume = resolve))
+    },
+  })
+  return { entered: () => didEnter, resume: () => resume() }
+}
+
 export class StreamObject extends DurableObject<StreamsEnv> {
   private readonly store: SqliteStore
   private waiters: Array<PendingWaiter> = []
@@ -241,6 +271,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // The armed alarm was just consumed: clear the arming cache so any
     // remaining duty is rearmed rather than suppressed as "unchanged".
     this.lastArmedAlarm = undefined
+    await this.processForkIntents()
     await this.processGcReleases()
     const meta = this.store.getMetaRaw()
     if (!meta) return
@@ -645,6 +676,9 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     if (edgeId === undefined) {
       edgeId = crypto.randomUUID()
       this.store.putForkIntent(edgeId, forkedFrom, paramsKey)
+      // If the acquire commits but this object is interrupted before it can
+      // create meta, the alarm turns the intent into a compensating release.
+      await this.armAlarmAt(Date.now() + 5_000)
     }
 
     const acquired = await sourceStub.forkAcquire({
@@ -652,6 +686,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       forkOffset: options.forkOffsetHeader,
       contentTypeProvided: options.contentType,
     })
+    await testHooks.get(this)?.afterForkAcquire?.()
 
     if (!acquired.ok) {
       // Validation failed, so no reference was taken for this edge id.
@@ -1642,6 +1677,38 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     }
   }
 
+  /** Compensate creates interrupted after their remote acquire committed. */
+  private async processForkIntents(): Promise<void> {
+    if (this.store.getMetaRaw()) return
+    for (const intent of this.store.pendingForkIntents()) {
+      const stub = this.env.STREAMS.get(
+        this.env.STREAMS.idFromName(intent.parentPath)
+      )
+      const params = JSON.parse(intent.paramsKey) as [string, string | null]
+      try {
+        // Repeating the idempotent acquire tells us its generation whether
+        // the original RPC committed or not. Releasing it then makes either
+        // outcome leak-free without requiring a client retry.
+        const acquired = await stub.forkAcquire({
+          edgeId: intent.edgeId,
+          forkOffset: params[1] ?? undefined,
+          contentTypeProvided: undefined,
+        })
+        if (acquired.ok) {
+          this.store.enqueueGcRelease(
+            intent.edgeId,
+            intent.parentPath,
+            acquired.sourceGeneration
+          )
+        }
+        this.store.deleteForkIntent(intent.edgeId)
+      } catch (err) {
+        console.error(`fork intent reconciliation failed; will retry`, err)
+        await this.armAlarmAt(Date.now() + 5_000)
+      }
+    }
+  }
+
   /** Retry queued forkRelease calls; re-arm the alarm if any still fail. */
   private async processGcReleases(): Promise<void> {
     for (const pending of this.store.pendingGcReleases()) {
@@ -1747,6 +1814,21 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         limit,
         remainingBytes
       )
+      await testHooks.get(this)?.afterInheritedRead?.()
+      // The parent RPC opens this object's input gate. Never combine its
+      // result with local state from a delete/recreate generation.
+      const current = this.store.getMetaRaw()
+      if (!current || current.generation !== meta.generation) {
+        return current
+          ? this.readStitched(
+              current,
+              afterOffset,
+              capOffset,
+              limit,
+              byteBudget
+            )
+          : { messages: [], capped: false }
+      }
       out.push(...inherited.messages)
       for (const message of inherited.messages) {
         remainingBytes -= message.data.byteLength

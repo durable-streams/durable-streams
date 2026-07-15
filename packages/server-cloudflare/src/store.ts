@@ -438,6 +438,25 @@ export class SqliteStore {
     this.sql.exec(`DELETE FROM fork_intents WHERE edge_id = ?`, edgeId)
   }
 
+  pendingForkIntents(): Array<{
+    edgeId: string
+    parentPath: string
+    paramsKey: string
+  }> {
+    return this.sql
+      .exec<{
+        edge_id: string
+        parent_path: string
+        params_key: string
+      }>(`SELECT edge_id, parent_path, params_key FROM fork_intents`)
+      .toArray()
+      .map((row) => ({
+        edgeId: row.edge_id,
+        parentPath: row.parent_path,
+        paramsKey: row.params_key,
+      }))
+  }
+
   /** Queue a forkRelease that must not be lost, for alarm retry. */
   enqueueGcRelease(
     edgeId: string,

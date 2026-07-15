@@ -360,6 +360,126 @@ describe(`Recovery and Crash Consistency`, () => {
 // Concurrent Append Tests
 // ============================================================================
 
+describe(`Fork graph consistency`, () => {
+  test(`concurrent equivalent fork creates retain exactly one parent reference`, async () => {
+    await server.store.create(`/parent`, { contentType: `text/plain` })
+    const store = server.store as any
+    const originalOpen = store.fileHandlePool.openWriteStream.bind(
+      store.fileHandlePool
+    )
+    let arrivals = 0
+    let release!: () => void
+    const barrier = new Promise<void>((resolve) => (release = resolve))
+    store.fileHandlePool.openWriteStream = async (file: string) => {
+      const result = await originalOpen(file)
+      if (++arrivals === 2) release()
+      await Promise.race([
+        barrier,
+        new Promise((resolve) => setTimeout(resolve, 100)),
+      ])
+      return result
+    }
+    await Promise.all([
+      store.create(`/child`, {
+        contentType: `text/plain`,
+        forkedFrom: `/parent`,
+      }),
+      server.store.create(`/child`, {
+        contentType: `text/plain`,
+        forkedFrom: `/parent`,
+      }),
+    ])
+    expect((server.store as any).db.get(`stream:/parent`).refCount).toBe(1)
+    expect(server.store.has(`/child`)).toBe(true)
+  })
+
+  test(`fork file-open failure rolls back child, file, and parent edge`, async () => {
+    await server.store.create(`/parent`, { contentType: `text/plain` })
+    const store = server.store as any
+    const original = store.fileHandlePool.openWriteStream.bind(
+      store.fileHandlePool
+    )
+    store.fileHandlePool.openWriteStream = () =>
+      Promise.reject(new Error(`injected open failure`))
+    await expect(
+      store.create(`/child`, {
+        contentType: `text/plain`,
+        forkedFrom: `/parent`,
+      })
+    ).rejects.toThrow(`injected open failure`)
+    store.fileHandlePool.openWriteStream = original
+    expect(store.has(`/child`)).toBe(false)
+    expect(store.db.get(`stream:/parent`).refCount ?? 0).toBe(0)
+    expect(fs.readdirSync(path.join(dataDir, `streams`))).toHaveLength(1)
+  })
+
+  test(`initial append failure leaves no metadata or file and retry succeeds`, async () => {
+    const store = server.store as any
+    const original = store.append.bind(store)
+    store.append = () =>
+      Promise.reject(new Error(`injected initial append failure`))
+    await expect(
+      store.create(`/initial`, {
+        contentType: `text/plain`,
+        initialData: encode(`first`),
+      })
+    ).rejects.toThrow(`injected initial append failure`)
+    store.append = original
+    expect(store.has(`/initial`)).toBe(false)
+    expect(fs.readdirSync(path.join(dataDir, `streams`))).toHaveLength(0)
+    await expect(
+      store.create(`/initial`, {
+        contentType: `text/plain`,
+        initialData: encode(`first`),
+      })
+    ).resolves.toBeDefined()
+  })
+
+  test(`restart repairs delete crash after child removal before parent decrement`, async () => {
+    await server.store.create(`/parent`, { contentType: `text/plain` })
+    await server.store.create(`/child`, {
+      contentType: `text/plain`,
+      forkedFrom: `/parent`,
+    })
+    const store = server.store as any
+    store.db.removeSync(`stream:/child`)
+    await server.stop()
+    server = new DurableStreamTestServer({ dataDir, port: 0 })
+    await server.start()
+    expect((server.store as any).db.get(`stream:/parent`).refCount ?? 0).toBe(0)
+  })
+
+  test(`startup derives parent refcounts from surviving fork edges`, async () => {
+    await server.store.create(`/parent`, { contentType: `text/plain` })
+    await server.store.create(`/child`, {
+      contentType: `text/plain`,
+      forkedFrom: `/parent`,
+    })
+    const parent = (server.store as any).db.get(`stream:/parent`)
+    ;(server.store as any).db.putSync(`stream:/parent`, {
+      ...parent,
+      refCount: 99,
+    })
+    await server.stop()
+    server = new DurableStreamTestServer({ dataDir, port: 0 })
+    await server.start()
+    expect((server.store as any).db.get(`stream:/parent`).refCount).toBe(1)
+  })
+
+  test(`a read cannot splice data from a deleted stream generation`, async () => {
+    await server.store.create(`/same`, { contentType: `text/plain` })
+    await server.store.append(`/same`, encode(`old`))
+    const oldOffset = server.store.get(`/same`)!.currentOffset
+    server.store.delete(`/same`)
+    await server.store.create(`/same`, { contentType: `text/plain` })
+    await server.store.append(`/same`, encode(`new`))
+    const result = server.store.read(`/same`, oldOffset)
+    expect(
+      result.messages.map((message) => decode(message.data))
+    ).not.toContain(`old`)
+  })
+})
+
 describe(`Concurrent appends`, () => {
   test(`currentOffset stays in sync with file under concurrent appends to the same stream`, async () => {
     // Regression test: without per-stream serialization in append(), two

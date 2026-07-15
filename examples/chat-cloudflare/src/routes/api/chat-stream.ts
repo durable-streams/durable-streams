@@ -1,17 +1,10 @@
 import { createFileRoute } from "@tanstack/react-router"
+import { parseChatId } from "~/lib/chat-id"
 import {
   buildChatStreamPath,
   buildStreamUrl,
   streamsFetch,
 } from "~/lib/durable-streams-config"
-
-function normalizeChatId(id: string | null): string | null {
-  if (!id) return null
-  const trimmed = id.trim()
-  if (!trimmed) return null
-  if (!/^[a-zA-Z0-9_-]+$/.test(trimmed)) return null
-  return trimmed
-}
 
 function copyHeaders(response: Response): Headers {
   const headers = new Headers()
@@ -31,7 +24,7 @@ export const Route = createFileRoute(`/api/chat-stream`)({
         // Read proxy for durable streams: resolves the stream path from the
         // chat id server-side and forwards the response.
         const incomingUrl = new URL(request.url)
-        const chatId = normalizeChatId(incomingUrl.searchParams.get(`id`))
+        const chatId = parseChatId(incomingUrl.searchParams.get(`id`))
         if (!chatId) {
           return Response.json(
             { error: `Missing or invalid chat id` },

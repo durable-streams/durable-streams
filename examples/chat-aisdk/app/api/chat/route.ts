@@ -8,13 +8,22 @@ import {
   buildReadProxyUrl,
   buildWriteStreamUrl,
 } from "../../utils"
+import { assertValidChatId } from "../../lib/chat-id"
+import { requireAuth } from "../../lib/auth"
 import type { UIMessage } from "ai"
 
 export async function POST(request: Request) {
-  assertOpenAiApiKeyConfigured()
-
+  const unauthorized = requireAuth(request)
+  if (unauthorized) return unauthorized
   const { messages, id }: { messages: Array<UIMessage>; id: string } =
     await request.json()
+  try {
+    assertValidChatId(id)
+  } catch {
+    return Response.json({ error: `Invalid chat id` }, { status: 400 })
+  }
+
+  assertOpenAiApiKeyConfigured()
 
   if (id) {
     await saveChatMessages({ id, messages })

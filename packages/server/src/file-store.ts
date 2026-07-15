@@ -288,6 +288,20 @@ export class FileBackedStreamStore {
    * Key: streamPath
    */
   private streamAppendLocks = new Map<string, Promise<unknown>>()
+  /** Serializes fork graph mutations (create/delete) within this store. */
+  private mutationTail: Promise<void> = Promise.resolve()
+
+  private async withMutationLock<T>(operation: () => Promise<T>): Promise<T> {
+    const previous = this.mutationTail
+    let release!: () => void
+    this.mutationTail = new Promise<void>((resolve) => (release = resolve))
+    await previous
+    try {
+      return await operation()
+    } finally {
+      release()
+    }
+  }
 
   constructor(options: FileBackedStreamStoreOptions) {
     this.dataDir = options.dataDir
@@ -389,6 +403,38 @@ export class FileBackedStreamStore {
         errors++
       }
     }
+
+    // Refcounts are derived data. Rebuild them from the surviving fork edges so
+    // crashes between older multi-step child/parent updates cannot pin parents
+    // or make a live parent collectible.
+    const surviving = Array.from(
+      this.db.getRange({ start: `stream:`, end: `stream:\xFF` })
+    ).filter((entry) => typeof entry.key === `string`) as Array<{
+      key: string
+      value: StreamMetadata
+    }>
+    const expectedRefs = new Map<string, number>()
+    for (const { value } of surviving) {
+      if (value.forkedFrom) {
+        expectedRefs.set(
+          value.forkedFrom,
+          (expectedRefs.get(value.forkedFrom) ?? 0) + 1
+        )
+      }
+    }
+    const collectible: Array<string> = []
+    this.db.transactionSync(() => {
+      for (const { key, value } of surviving) {
+        const streamPath = key.slice(`stream:`.length)
+        const expected = expectedRefs.get(streamPath) ?? 0
+        if ((value.refCount ?? 0) !== expected) {
+          this.db.putSync(key, { ...value, refCount: expected })
+          reconciled++
+        }
+        if (value.softDeleted && expected === 0) collectible.push(streamPath)
+      }
+    })
+    for (const streamPath of collectible) this.deleteWithCascade(streamPath)
 
     serverLog.info(
       `[FileBackedStreamStore] Recovery complete: ${recovered} streams, ` +
@@ -735,6 +781,22 @@ export class FileBackedStreamStore {
       forkSubOffset?: number
     } = {}
   ): Promise<Stream> {
+    return this.withMutationLock(() => this.createInner(streamPath, options))
+  }
+
+  private async createInner(
+    streamPath: string,
+    options: {
+      contentType?: string
+      ttlSeconds?: number
+      expiresAt?: string
+      initialData?: Uint8Array
+      closed?: boolean
+      forkedFrom?: string
+      forkOffset?: string
+      forkSubOffset?: number
+    } = {}
+  ): Promise<Stream> {
     // Use getMetaIfNotExpired to treat expired streams as non-existent
     const existingRaw = this.db.get(`stream:${streamPath}`) as
       | StreamMetadata
@@ -854,13 +916,7 @@ export class FileBackedStreamStore {
         )
       }
 
-      // Atomically increment source refcount in LMDB
-      const freshSource = this.db.get(sourceKey) as StreamMetadata
-      const updatedSource: StreamMetadata = {
-        ...freshSource,
-        refCount: (freshSource.refCount ?? 0) + 1,
-      }
-      this.db.putSync(sourceKey, updatedSource)
+      // The edge is committed atomically with the child metadata below.
     }
 
     // Determine content type: use options, or inherit from source if fork. A
@@ -959,20 +1015,24 @@ export class FileBackedStreamStore {
         // re-creation matching, not the encoded byte length.
         streamMeta.forkSubOffset = options.forkSubOffset
       }
-      await this.db.put(key, streamMeta)
-    } catch (err) {
-      // Rollback source refcount on failure
-      if (isFork && sourceMeta) {
-        const sourceKey = `stream:${options.forkedFrom!}`
-        const freshSource = this.db.get(sourceKey) as StreamMetadata | undefined
-        if (freshSource) {
-          const updatedSource: StreamMetadata = {
-            ...freshSource,
-            refCount: Math.max(0, (freshSource.refCount ?? 0) - 1),
+      this.db.transactionSync(() => {
+        if (isFork) {
+          const sourceKey = `stream:${options.forkedFrom!}`
+          const freshSource = this.db.get(sourceKey) as
+            | StreamMetadata
+            | undefined
+          if (!freshSource || freshSource.softDeleted) {
+            throw new Error(`Source stream is no longer available`)
           }
-          this.db.putSync(sourceKey, updatedSource)
+          this.db.putSync(sourceKey, {
+            ...freshSource,
+            refCount: (freshSource.refCount ?? 0) + 1,
+          })
         }
-      }
+        this.db.putSync(key, streamMeta)
+      })
+    } catch (err) {
+      fs.rmSync(segmentPath, { force: true })
       serverLog.error(
         `[FileBackedStreamStore] Error creating stream before metadata commit:`,
         err
@@ -983,7 +1043,8 @@ export class FileBackedStreamStore {
     try {
       await this.fileHandlePool.openWriteStream(segmentPath)
     } catch (err) {
-      this.db.removeSync(key)
+      this.rollbackCreatedStream(key, streamMeta)
+      fs.rmSync(segmentPath, { force: true })
       serverLog.error(
         `[FileBackedStreamStore] Error creating stream (file open):`,
         err
@@ -1000,20 +1061,9 @@ export class FileBackedStreamStore {
           isInitialCreate: true,
         })
       } catch (err) {
-        // Rollback source refcount on failure
-        if (isFork && sourceMeta) {
-          const sourceKey = `stream:${options.forkedFrom!}`
-          const freshSource = this.db.get(sourceKey) as
-            | StreamMetadata
-            | undefined
-          if (freshSource) {
-            const updatedSource: StreamMetadata = {
-              ...freshSource,
-              refCount: Math.max(0, (freshSource.refCount ?? 0) - 1),
-            }
-            this.db.putSync(sourceKey, updatedSource)
-          }
-        }
+        this.rollbackCreatedStream(key, streamMeta)
+        await this.fileHandlePool.closeFileHandle(segmentPath)
+        fs.rmSync(segmentPath, { force: true })
         throw err
       }
     }
@@ -1045,6 +1095,22 @@ export class FileBackedStreamStore {
       )
     }
     return this.streamMetaToStream(updated)
+  }
+
+  private rollbackCreatedStream(key: string, meta: StreamMetadata): void {
+    this.db.transactionSync(() => {
+      this.db.removeSync(key)
+      if (meta.forkedFrom) {
+        const parentKey = `stream:${meta.forkedFrom}`
+        const parent = this.db.get(parentKey) as StreamMetadata | undefined
+        if (parent) {
+          this.db.putSync(parentKey, {
+            ...parent,
+            refCount: Math.max(0, (parent.refCount ?? 0) - 1),
+          })
+        }
+      }
+    })
   }
 
   get(streamPath: string): Stream | undefined {
@@ -1102,8 +1168,20 @@ export class FileBackedStreamStore {
 
     const segmentPath = segmentFile(this.dataDir, streamMeta.directoryName)
 
-    // Delete from LMDB
-    this.db.removeSync(key)
+    // Remove the child edge and decrement its parent in one LMDB transaction.
+    let cascadeParent: string | undefined
+    this.db.transactionSync(() => {
+      this.db.removeSync(key)
+      if (forkedFrom) {
+        const parentKey = `stream:${forkedFrom}`
+        const parent = this.db.get(parentKey) as StreamMetadata | undefined
+        if (parent) {
+          const refCount = Math.max(0, (parent.refCount ?? 0) - 1)
+          this.db.putSync(parentKey, { ...parent, refCount })
+          if (refCount === 0 && parent.softDeleted) cascadeParent = forkedFrom
+        }
+      }
+    })
 
     // Close handle then delete file (chained to avoid EBUSY on Windows)
     this.fileHandlePool
@@ -1116,24 +1194,7 @@ export class FileBackedStreamStore {
         )
       })
 
-    // If this stream is a fork, decrement the source's refcount
-    if (forkedFrom) {
-      const parentKey = `stream:${forkedFrom}`
-      const parentMeta = this.db.get(parentKey) as StreamMetadata | undefined
-      if (parentMeta) {
-        const newRefCount = Math.max(0, (parentMeta.refCount ?? 0) - 1)
-        const updatedParent: StreamMetadata = {
-          ...parentMeta,
-          refCount: newRefCount,
-        }
-        this.db.putSync(parentKey, updatedParent)
-
-        // If parent refcount hit 0 and parent is soft-deleted, cascade
-        if (newRefCount === 0 && updatedParent.softDeleted) {
-          this.deleteWithCascade(forkedFrom)
-        }
-      }
-    }
+    if (cascadeParent) this.deleteWithCascade(cascadeParent)
   }
 
   /**

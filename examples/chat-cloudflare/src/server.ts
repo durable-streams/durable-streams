@@ -8,14 +8,15 @@
  * StreamObject class still must be exported for the Durable Object
  * binding.
  */
+import { env } from "cloudflare:workers"
 import handler from "@tanstack/react-start/server-entry"
+import { createChatWorker } from "~/lib/chat-worker"
 
 export { StreamObject } from "@durable-streams/server-cloudflare"
 
-export default {
-  async fetch(request: Request): Promise<Response> {
-    // TanStack Start doesn't take the Workers env through fetch args; the
-    // Cloudflare plugin supplies it via the `cloudflare:workers` module.
-    return handler.fetch(request)
-  },
-}
+export const worker = createChatWorker(
+  handler,
+  () => (env as { CHAT_AUTH_TOKEN?: string }).CHAT_AUTH_TOKEN
+)
+
+export default worker

@@ -27,6 +27,10 @@ type FileStore struct {
 	dirCache    map[string]string // path -> directory name
 	metaCacheMu sync.RWMutex
 
+	// readPinnedHook is a deterministic test barrier invoked while a read pins
+	// its metadata generation. It is nil in production.
+	readPinnedHook func()
+
 	// Per-producer locks for serializing validation+append
 	// Key: "{streamPath}:{producerId}"
 	producerLocks   map[string]*sync.Mutex
@@ -81,10 +85,15 @@ func NewFileStore(cfg FileStoreConfig) (*FileStore, error) {
 		cleanupDone:   make(chan struct{}),
 	}
 
-	// Load existing streams into cache
+	// Load existing streams into cache and repair any refcount/child-edge torn
+	// writes left by a process failure between metadata transactions.
 	if err := fs.loadCache(); err != nil {
 		metaStore.Close()
 		return nil, fmt.Errorf("failed to load cache: %w", err)
+	}
+	if err := fs.reconcileRefCounts(); err != nil {
+		metaStore.Close()
+		return nil, fmt.Errorf("failed to reconcile fork references: %w", err)
 	}
 
 	// Start background cleanup if configured
@@ -104,6 +113,31 @@ func (s *FileStore) loadCache() error {
 		s.dirCache[meta.Path] = dirName
 		return nil
 	})
+}
+
+// reconcileRefCounts makes child metadata the durable source of truth for fork
+// edges. It repairs both possible crash windows: an acquired edge without a
+// child and a committed child whose parent count was not updated.
+func (s *FileStore) reconcileRefCounts() error {
+	counts := make(map[string]int32)
+	for _, meta := range s.metaCache {
+		if meta.ForkedFrom != "" {
+			if _, ok := s.metaCache[meta.ForkedFrom]; ok {
+				counts[meta.ForkedFrom]++
+			}
+		}
+	}
+	for path, meta := range s.metaCache {
+		want := counts[path]
+		if meta.RefCount == want {
+			continue
+		}
+		meta.RefCount = want
+		if err := s.metaStore.Put(meta, s.dirCache[path]); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *FileStore) resolveForkExpiry(opts CreateOptions, sourceMeta StreamMetadata) (*int64, *time.Time) {
@@ -133,8 +167,15 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 	if existing, ok := s.metaCache[path]; ok {
 		// If expired, delete it and allow recreation
 		if existing.IsExpired() {
-			if dirName, hasDirName := s.dirCache[path]; hasDirName {
-				s.deleteStreamUnlocked(path, dirName)
+			if existing.RefCount > 0 {
+				existing.SoftDeleted = true
+				if err := s.metaStore.SoftDelete(path); err != nil {
+					return nil, false, err
+				}
+				return nil, false, ErrStreamExists
+			}
+			if err := s.deleteWithCascade(path); err != nil {
+				return nil, false, err
 			}
 		} else if existing.SoftDeleted {
 			// Soft-deleted streams block new creation
@@ -935,10 +976,16 @@ func (s *FileStore) readForkedStream(meta *StreamMetadata, dirName string, offse
 
 // Read reads messages from a stream
 func (s *FileStore) Read(path string, offset Offset) ([]Message, bool, error) {
-	s.metaCacheMu.RLock()
+	// Pin one metadata generation and its complete ancestor chain while reading.
+	// Delete/recreate cannot replace cache entries or segment directories until
+	// recursive traversal has completed.
+	s.metaCacheMu.Lock()
+	defer s.metaCacheMu.Unlock()
 	meta, ok := s.metaCache[path]
 	dirName := s.dirCache[path]
-	s.metaCacheMu.RUnlock()
+	if s.readPinnedHook != nil {
+		s.readPinnedHook()
+	}
 
 	if !ok {
 		return nil, false, ErrStreamNotFound
@@ -956,11 +1003,6 @@ func (s *FileStore) Read(path string, offset Offset) ([]Message, bool, error) {
 
 	// Refresh TTL sliding window
 	meta.LastAccessedAt = time.Now()
-	s.metaCacheMu.Lock()
-	if cached, ok := s.metaCache[path]; ok {
-		cached.LastAccessedAt = meta.LastAccessedAt
-	}
-	s.metaCacheMu.Unlock()
 
 	// Check if already at tail
 	if offset.Equal(meta.CurrentOffset) {
@@ -1259,24 +1301,16 @@ func (s *FileStore) cleanupExpiredStreams() {
 	}
 
 	for _, path := range expiredPaths {
-		dirName := s.dirCache[path]
-
-		// Remove from writer pool
-		segPath := filepath.Join(s.dataDir, "streams", dirName, SegmentFileName)
-		s.writerPool.Remove(segPath)
-
-		// Delete from bbolt
-		s.metaStore.Delete(path)
-
-		// Remove from cache
-		delete(s.metaCache, path)
-		delete(s.dirCache, path)
-
-		// Async delete directory
-		streamDir := filepath.Join(s.dataDir, "streams", dirName)
-		deletedDir := filepath.Join(s.dataDir, "streams", ".deleted~"+dirName+"~"+fmt.Sprintf("%d", time.Now().UnixNano()))
-		os.Rename(streamDir, deletedDir)
-		go os.RemoveAll(deletedDir)
+		meta, ok := s.metaCache[path]
+		if !ok { // may have been removed by an earlier cascade
+			continue
+		}
+		if meta.RefCount > 0 {
+			meta.SoftDeleted = true
+			_ = s.metaStore.SoftDelete(path)
+			continue
+		}
+		_ = s.deleteWithCascade(path)
 	}
 }
 
