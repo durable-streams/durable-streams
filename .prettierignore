@@ -11,3 +11,4 @@ packages/client-py
 packages/client-php/vendor
 scripts
 **/worker-configuration.d.ts
+**/routeTree.gen.ts
