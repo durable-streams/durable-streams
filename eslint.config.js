@@ -19,6 +19,7 @@ export default [
       `docs/.vitepress/**`,
       `eslint.config.js`,
       `vitest.config.ts`,
+      `**/vitest.do.config.ts`,
       `**/vite.config.ts`,
       `**/tsdown.config.ts`,
       `**/tsup.config.ts`,

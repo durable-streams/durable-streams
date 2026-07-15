@@ -5,6 +5,8 @@
  */
 
 import { spawn } from "node:child_process"
+import { mkdtempSync } from "node:fs"
+import * as os from "node:os"
 import * as path from "node:path"
 import { afterAll, beforeAll, describe } from "vitest"
 import { runConformanceTests } from "@durable-streams/server-conformance-tests"
@@ -29,6 +31,10 @@ beforeAll(async () => {
       String(port),
       `--inspector-port`,
       `0`,
+      // Fresh DO storage per run: persisted local state from an earlier
+      // schema must not leak into (or fail) the suite.
+      `--persist-to`,
+      mkdtempSync(path.join(os.tmpdir(), `ds-cf-conformance-`)),
     ],
     {
       cwd: packageDir,

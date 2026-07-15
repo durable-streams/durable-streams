@@ -383,6 +383,10 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	// Handle catch-up mode offset=now: return empty response with tail offset
 	// For long-poll mode, we fall through to wait for new data instead
 	if isNowOffset && liveMode != "long-poll" {
+		// Still a read: refresh the TTL sliding window like any other GET.
+		// A tail read touches LastAccessedAt without moving any data.
+		_, _, _ = h.store.Read(path, meta.CurrentOffset)
+
 		w.Header().Set("Content-Type", meta.ContentType)
 		w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
 		w.Header().Set(HeaderStreamUpToDate, "true")

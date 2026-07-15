@@ -134,6 +134,8 @@ export type ForkAcquireResult =
       contentType: string | undefined
       ttlSeconds: number | undefined
       expiresAt: string | undefined
+      /** Source generation the edge was acquired under (release qualifier). */
+      sourceGeneration: string
     }
 
 /**
@@ -236,6 +238,9 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   }
 
   override async alarm(): Promise<void> {
+    // The armed alarm was just consumed: clear the arming cache so any
+    // remaining duty is rearmed rather than suppressed as "unchanged".
+    this.lastArmedAlarm = undefined
     await this.processGcReleases()
     const meta = this.store.getMetaRaw()
     if (!meta) return
@@ -256,14 +261,36 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   // ==========================================================================
 
   /**
-   * Validate this stream as a fork source and atomically take a reference
-   * on it. Runs entirely inside this DO, so the content-type check and the
-   * refcount increment cannot race (a mismatch must not leak a reference).
+   * Validate this stream as a fork source and take a reference on it,
+   * recorded as a fork-edge row keyed by the caller's stable `edgeId`.
+   * Insert-if-absent makes retries safe: an acquire whose response was
+   * lost and is retried with the same edge id counts exactly once. Runs
+   * entirely inside this DO, so the content-type check and the edge
+   * insert cannot race (a mismatch must not leak a reference).
    */
   async forkAcquire(options: {
+    edgeId: string
     forkOffset: string | undefined
     contentTypeProvided: string | undefined
   }): Promise<ForkAcquireResult> {
+    // Retry of an acquire that already committed: the edge row is the
+    // reference, so return the recorded outcome without revalidating
+    // (the source may have advanced or been soft-deleted since).
+    const existingEdge = this.store.getForkEdge(options.edgeId)
+    if (existingEdge !== undefined) {
+      const rawMeta = this.store.getMetaRaw()
+      if (rawMeta !== undefined) {
+        return {
+          ok: true,
+          forkOffset: existingEdge.forkOffset,
+          contentType: rawMeta.contentType,
+          ttlSeconds: rawMeta.ttlSeconds,
+          expiresAt: rawMeta.expiresAt,
+          sourceGeneration: rawMeta.generation,
+        }
+      }
+    }
+
     const meta = await this.getMeta(Date.now())
     if (!meta) {
       return { ok: false, error: `not_found` }
@@ -285,26 +312,41 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       return { ok: false, error: `invalid_offset` }
     }
 
-    this.store.incrementRef()
+    const recordedOffset = this.store.insertForkEdge(options.edgeId, forkOffset)
     return {
       ok: true,
-      forkOffset,
+      forkOffset: recordedOffset,
       contentType: meta.contentType,
       ttlSeconds: meta.ttlSeconds,
       expiresAt: meta.expiresAt,
+      sourceGeneration: meta.generation,
     }
   }
 
   /**
-   * Release a fork's reference. When the last reference to a soft-deleted
-   * stream drops, the stream is purged and the release cascades up the
-   * fork chain.
+   * Release a fork's reference (delete-if-present, so retries of a
+   * release whose response was lost are no-ops). A release qualified
+   * with a source generation is ignored by any other generation: a
+   * delayed release for a purged-and-recreated stream at the same path
+   * must not consume a live fork's reference. When the last reference to
+   * a soft-deleted stream drops, the stream is purged and the release
+   * cascades up the fork chain.
    */
-  async forkRelease(): Promise<void> {
+  async forkRelease(options: {
+    edgeId: string
+    sourceGeneration: string | undefined
+  }): Promise<void> {
     const meta = this.store.getMetaRaw()
     if (!meta) return
-    const newCount = this.store.decrementRef()
-    if (newCount === 0 && meta.softDeleted) {
+    if (
+      options.sourceGeneration !== undefined &&
+      options.sourceGeneration !== meta.generation
+    ) {
+      return
+    }
+    if (this.store.getForkEdge(options.edgeId) === undefined) return
+    this.store.deleteForkEdge(options.edgeId)
+    if (this.store.getMetaRaw()?.refCount === 0 && meta.softDeleted) {
       await this.purgeStream(meta)
     }
   }
@@ -318,11 +360,12 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   async readRange(
     afterOffset: string | undefined,
     capOffset: string,
-    limit?: number
+    limit?: number,
+    byteBudget?: number
   ): Promise<ReadBatch> {
     const meta = this.store.getMetaRaw()
     if (!meta) return { messages: [], capped: false }
-    return this.readStitched(meta, afterOffset, capOffset, limit)
+    return this.readStitched(meta, afterOffset, capOffset, limit, byteBudget)
   }
 
   // ==========================================================================
@@ -589,12 +632,30 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     const sourceStub = this.env.STREAMS.get(
       this.env.STREAMS.idFromName(forkedFrom)
     )
+
+    // Give the edge a stable identity, persisted BEFORE the acquire RPC:
+    // if the acquire commits on the source but our response is lost, the
+    // create retry finds the intent and re-acquires with the SAME edge id
+    // instead of taking (and leaking) a second reference.
+    const paramsKey = JSON.stringify([
+      forkedFrom,
+      options.forkOffsetHeader ?? null,
+    ])
+    let edgeId = this.store.getForkIntent(paramsKey)
+    if (edgeId === undefined) {
+      edgeId = crypto.randomUUID()
+      this.store.putForkIntent(edgeId, forkedFrom, paramsKey)
+    }
+
     const acquired = await sourceStub.forkAcquire({
+      edgeId,
       forkOffset: options.forkOffsetHeader,
       contentTypeProvided: options.contentType,
     })
 
     if (!acquired.ok) {
+      // Validation failed, so no reference was taken for this edge id.
+      this.store.deleteForkIntent(edgeId)
       switch (acquired.error) {
         case `not_found`:
           return this.text(404, `Source stream not found`)
@@ -611,7 +672,23 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     }
 
     const release = async (): Promise<void> => {
-      await sourceStub.forkRelease()
+      this.store.deleteForkIntent(edgeId)
+      try {
+        await sourceStub.forkRelease({
+          edgeId,
+          sourceGeneration: acquired.sourceGeneration,
+        })
+      } catch (err) {
+        // Never leak the acquired reference: queue the release durably
+        // and retry from the alarm handler.
+        console.error(`forkRelease failed; will retry via alarm`, err)
+        this.store.enqueueGcRelease(
+          edgeId,
+          forkedFrom,
+          acquired.sourceGeneration
+        )
+        await this.armAlarmAt(Date.now() + 5_000)
+      }
     }
 
     const resolvedContentType =
@@ -732,6 +809,8 @@ export class StreamObject extends DurableObject<StreamsEnv> {
           options.forkSubOffset !== undefined && options.forkSubOffset > 0
             ? options.forkSubOffset
             : undefined,
+        forkEdgeId: edgeId,
+        forkSourceGen: acquired.sourceGeneration,
       })
 
       currentOffset = acquired.forkOffset
@@ -755,6 +834,8 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       throw err
     }
 
+    // The edge is now owned by the created stream's meta row.
+    this.store.deleteForkIntent(edgeId)
     await this.syncExpiryAlarm()
 
     const headers: Record<string, string> = {
@@ -851,6 +932,9 @@ export class StreamObject extends DurableObject<StreamsEnv> {
 
     // Catch-up read at the tail: empty response, never cached.
     if (offsetParam === `now` && live !== `long-poll`) {
+      // Still a read: refresh the sliding TTL like any other GET.
+      this.store.touchAccess(now)
+      await this.syncExpiryAlarm()
       const headers: Record<string, string> = {
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
         [STREAM_UP_TO_DATE_HEADER]: `true`,
@@ -1048,20 +1132,22 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         currentOffset === `-1` ? undefined : currentOffset
       )
 
-      // Batch this iteration's data events and the control event into ONE
-      // write. Separate writes become separate transport chunks, and the
-      // suite's SSE reader may stop between them mid-event (its stop
-      // marker can appear inside a data payload), then fail to parse the
-      // incomplete event.
+      // The whole batch becomes ONE data event followed by ONE control
+      // event (§5.8: a control event follows every data event). Per-message
+      // data events sharing a single control would make JSON catch-up
+      // unparseable for clients that collect data up to the control
+      // boundary (`[a][b]` is not a JSON value). One frame also means one
+      // transport chunk, so the suite's SSE reader never stops mid-event.
       let frame = ``
-      for (const message of batch.messages) {
+      if (batch.messages.length > 0) {
+        const fragments = batch.messages.map((m) => m.data)
         let dataPayload: string
         if (useBase64) {
-          dataPayload = base64FromBytes(message.data)
+          dataPayload = base64FromBytes(concatBytes(fragments))
         } else if (isJson) {
-          dataPayload = decoder.decode(formatJsonMessages([message.data]))
+          dataPayload = decoder.decode(formatJsonMessages(fragments))
         } else {
-          dataPayload = decoder.decode(message.data)
+          dataPayload = decoder.decode(concatBytes(fragments))
         }
         frame += `event: data\n` + encodeSseData(dataPayload)
       }
@@ -1541,56 +1627,75 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     this.store.purge()
     this.cancelWaiters()
     await this.ctx.storage.deleteAlarm()
-    if (meta.forkedFrom !== undefined) {
-      // Cascade: dropping this fork releases its reference on the source.
-      // The release must not be lost if the RPC fails (that would pin the
-      // source's refcount forever), so queue it durably and retry from
+    this.lastArmedAlarm = undefined
+    if (meta.forkedFrom !== undefined && meta.forkEdgeId !== undefined) {
+      // Cascade: dropping this fork releases its edge on the source. The
+      // release must not be lost if the RPC fails (that would pin the
+      // source's reference forever), so queue it durably and retry from
       // the alarm handler on failure.
-      this.store.enqueueGcRelease(meta.forkedFrom)
+      this.store.enqueueGcRelease(
+        meta.forkEdgeId,
+        meta.forkedFrom,
+        meta.forkSourceGen
+      )
       await this.processGcReleases()
     }
   }
 
   /** Retry queued forkRelease calls; re-arm the alarm if any still fail. */
   private async processGcReleases(): Promise<void> {
-    for (const parentPath of this.store.pendingGcReleases()) {
-      const stub = this.env.STREAMS.get(this.env.STREAMS.idFromName(parentPath))
+    for (const pending of this.store.pendingGcReleases()) {
+      const stub = this.env.STREAMS.get(
+        this.env.STREAMS.idFromName(pending.parentPath)
+      )
       try {
-        await stub.forkRelease()
-        this.store.dequeueGcRelease(parentPath)
+        await stub.forkRelease({
+          edgeId: pending.edgeId,
+          sourceGeneration: pending.sourceGen,
+        })
+        this.store.dequeueGcRelease(pending.edgeId)
       } catch (err) {
         console.error(
           `forkRelease failed; will retry via alarm`,
-          parentPath,
+          pending.parentPath,
           err
         )
-        await this.ctx.storage.setAlarm(Date.now() + 5_000)
+        await this.armAlarmAt(Date.now() + 5_000)
       }
     }
   }
 
-  /** Last alarm time armed by syncExpiryAlarm (write-amplification guard). */
+  /**
+   * The alarm time this DO last armed and believes is still pending in
+   * storage. Cleared when the alarm fires or is deleted — a consumed alarm
+   * must never suppress rearming (write-amplification guard only).
+   */
   private lastArmedAlarm: number | undefined
 
   /** (Re-)arm the expiry alarm to match the stream's current expiry time. */
   private async syncExpiryAlarm(): Promise<void> {
     const meta = this.store.getMetaRaw()
-    if (!meta) {
-      this.lastArmedAlarm = undefined
-      return
-    }
+    if (!meta) return
     const expiry = this.store.expiryTime(meta)
     if (expiry === undefined) return
-    // Skip the storage write when the target barely moved (sliding-TTL
-    // touches on every read would otherwise write an alarm per request).
-    if (
-      this.lastArmedAlarm !== undefined &&
-      Math.abs(expiry - this.lastArmedAlarm) < 500
-    ) {
-      return
-    }
-    await this.ctx.storage.setAlarm(expiry)
-    this.lastArmedAlarm = expiry
+    await this.armAlarmAt(expiry)
+  }
+
+  /**
+   * Arm the DO alarm for `target` unless a still-pending alarm already
+   * covers it: an earlier pending alarm is kept (it fires first and the
+   * alarm handler re-syncs), and a target that moved less than 500ms past
+   * the pending alarm is skipped so sliding-TTL touches on every read
+   * don't turn into an alarm write per request.
+   */
+  private async armAlarmAt(target: number): Promise<void> {
+    const pending =
+      this.lastArmedAlarm !== undefined && this.lastArmedAlarm > Date.now()
+        ? this.lastArmedAlarm
+        : undefined
+    if (pending !== undefined && pending <= target + 500) return
+    await this.ctx.storage.setAlarm(target)
+    this.lastArmedAlarm = target
   }
 
   // ==========================================================================
@@ -1612,13 +1717,17 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     meta: StreamMeta,
     afterOffset: string | undefined,
     capOffset: string | undefined,
-    limit: number | undefined
+    limit: number | undefined,
+    byteBudget: number = MAX_READ_BATCH_BYTES
   ): Promise<ReadBatch> {
     const normalizedAfter =
       afterOffset === undefined || afterOffset === `-1`
         ? undefined
         : afterOffset
     const out: Array<StoredMessage> = []
+    // One budget for the WHOLE stitched response: inherited segments spend
+    // from it so response size cannot scale with fork depth.
+    let remainingBytes = byteBudget
 
     if (
       meta.forkedFrom !== undefined &&
@@ -1632,8 +1741,16 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       const stub = this.env.STREAMS.get(
         this.env.STREAMS.idFromName(meta.forkedFrom)
       )
-      const inherited = await stub.readRange(normalizedAfter, cap, limit)
+      const inherited = await stub.readRange(
+        normalizedAfter,
+        cap,
+        limit,
+        remainingBytes
+      )
       out.push(...inherited.messages)
+      for (const message of inherited.messages) {
+        remainingBytes -= message.data.byteLength
+      }
       if (inherited.capped) {
         // More inherited data remains: return the partial batch and let
         // the reader continue from its Stream-Next-Offset.
@@ -1642,6 +1759,9 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       if (limit !== undefined && out.length >= limit) {
         return { messages: out.slice(0, limit), capped: true }
       }
+      if (remainingBytes <= 0 && out.length > 0) {
+        return { messages: out, capped: true }
+      }
     }
 
     const remaining = limit === undefined ? undefined : limit - out.length
@@ -1649,7 +1769,10 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       normalizedAfter,
       capOffset,
       remaining,
-      MAX_READ_BATCH_BYTES
+      remainingBytes,
+      // The always-return-progress exception for an oversized first
+      // message applies only when nothing has been emitted yet.
+      out.length === 0
     )
     out.push(...own.messages)
     return { messages: out, capped: own.capped }

@@ -40,7 +40,11 @@ export interface StreamMeta {
   forkOffset: string | undefined
   /** User-supplied sub-offset, stored verbatim for idempotency matching. */
   forkSubOffset: number | undefined
-  /** Number of forks referencing this stream. */
+  /** Stable id of this fork's edge onto its source (release identity). */
+  forkEdgeId: string | undefined
+  /** Source generation the edge was acquired under (release qualifier). */
+  forkSourceGen: string | undefined
+  /** Number of forks referencing this stream (count of fork edges). */
   refCount: number
   /** Logically deleted but retained for fork readers (410 Gone). */
   softDeleted: boolean
@@ -72,7 +76,8 @@ interface MetaRow extends Record<string, SqlStorageValue> {
   forked_from: string | null
   fork_offset: string | null
   fork_sub_offset: number | null
-  ref_count: number
+  fork_edge_id: string | null
+  fork_source_gen: string | null
   soft_deleted: number
 }
 
@@ -141,7 +146,8 @@ export class SqliteStore {
         forked_from TEXT,
         fork_offset TEXT,
         fork_sub_offset INTEGER,
-        ref_count INTEGER NOT NULL DEFAULT 0,
+        fork_edge_id TEXT,
+        fork_source_gen TEXT,
         soft_deleted INTEGER NOT NULL DEFAULT 0
       );
       CREATE TABLE IF NOT EXISTS messages (
@@ -155,10 +161,42 @@ export class SqliteStore {
         last_seq INTEGER NOT NULL,
         last_updated INTEGER NOT NULL
       );
-      CREATE TABLE IF NOT EXISTS gc_queue (
-        parent_path TEXT PRIMARY KEY
+      -- Forks referencing THIS stream, one row per fork edge. A row's
+      -- presence is the reference: insert-if-absent on acquire and
+      -- delete-if-present on release make both retry-safe.
+      CREATE TABLE IF NOT EXISTS fork_edges (
+        edge_id TEXT PRIMARY KEY,
+        fork_offset TEXT NOT NULL
+      );
+      -- Durable intent to acquire a fork edge, written BEFORE the remote
+      -- acquire RPC so a create retry reuses the same edge identity.
+      CREATE TABLE IF NOT EXISTS fork_intents (
+        edge_id TEXT PRIMARY KEY,
+        parent_path TEXT NOT NULL,
+        params_key TEXT NOT NULL
+      );
+      -- forkRelease calls that must not be lost, keyed by edge and
+      -- qualified by the source generation they were acquired under.
+      CREATE TABLE IF NOT EXISTS gc_releases (
+        edge_id TEXT PRIMARY KEY,
+        parent_path TEXT NOT NULL,
+        source_gen TEXT
       );
     `)
+    // Additive migration for meta tables created before fork edges
+    // existed (CREATE IF NOT EXISTS never alters an existing table).
+    const metaColumns = new Set(
+      this.sql
+        .exec<{ name: string }>(`SELECT name FROM pragma_table_info('meta')`)
+        .toArray()
+        .map((row) => row.name)
+    )
+    if (!metaColumns.has(`fork_edge_id`)) {
+      this.sql.exec(`ALTER TABLE meta ADD COLUMN fork_edge_id TEXT`)
+    }
+    if (!metaColumns.has(`fork_source_gen`)) {
+      this.sql.exec(`ALTER TABLE meta ADD COLUMN fork_source_gen TEXT`)
+    }
   }
 
   /** Raw meta read with no expiry handling. */
@@ -182,9 +220,18 @@ export class SqliteStore {
       forkedFrom: row.forked_from ?? undefined,
       forkOffset: row.fork_offset ?? undefined,
       forkSubOffset: row.fork_sub_offset ?? undefined,
-      refCount: row.ref_count,
+      forkEdgeId: row.fork_edge_id ?? undefined,
+      forkSourceGen: row.fork_source_gen ?? undefined,
+      refCount: this.forkEdgeCount(),
       softDeleted: row.soft_deleted !== 0,
     }
+  }
+
+  private forkEdgeCount(): number {
+    const rows = this.sql
+      .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM fork_edges`)
+      .toArray()
+    return rows[0]?.n ?? 0
   }
 
   /**
@@ -229,12 +276,14 @@ export class SqliteStore {
     forkedFrom?: string | undefined
     forkOffset?: string | undefined
     forkSubOffset?: number | undefined
+    forkEdgeId?: string | undefined
+    forkSourceGen?: string | undefined
   }): void {
     this.sql.exec(
       `INSERT INTO meta (id, gen, content_type, ttl_seconds, expires_at, closed, closed_by,
          current_offset, last_seq, created_at, last_accessed_at,
-         forked_from, fork_offset, fork_sub_offset, ref_count, soft_deleted)
-       VALUES (1, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, 0, 0)`,
+         forked_from, fork_offset, fork_sub_offset, fork_edge_id, fork_source_gen, soft_deleted)
+       VALUES (1, ?, ?, ?, ?, ?, NULL, ?, NULL, ?, ?, ?, ?, ?, ?, ?, 0)`,
       crypto.randomUUID(),
       options.contentType ?? null,
       options.ttlSeconds ?? null,
@@ -247,15 +296,23 @@ export class SqliteStore {
       options.now,
       options.forkedFrom ?? null,
       options.forkOffset ?? null,
-      options.forkSubOffset ?? null
+      options.forkSubOffset ?? null,
+      options.forkEdgeId ?? null,
+      options.forkSourceGen ?? null
     )
   }
 
-  /** Delete all stream state. The stream then reads as never-existing. */
+  /**
+   * Delete all stream state. The stream then reads as never-existing.
+   * Pending gc_releases and fork_intents survive on purpose: queued
+   * releases must still reach the source, and a create retry must be able
+   * to reuse its acquired edge identity.
+   */
   purge(): void {
     this.sql.exec(`DELETE FROM meta`)
     this.sql.exec(`DELETE FROM messages`)
     this.sql.exec(`DELETE FROM producers`)
+    this.sql.exec(`DELETE FROM fork_edges`)
   }
 
   touchAccess(now: number): void {
@@ -273,14 +330,18 @@ export class SqliteStore {
   /**
    * Read messages with `offset > afterOffset` and (when capped)
    * `offset <= capOffset`, oldest first. Stops at `limit` messages or once
-   * `byteBudget` bytes have been collected (always returning at least one
-   * message); `capped: true` means more data may remain.
+   * `byteBudget` bytes have been collected; `capped: true` means more data
+   * may remain. A first message larger than the whole budget is still
+   * returned (readers must always make progress) unless
+   * `allowOversizedFirst` is false — stitched fork reads disable it when
+   * the response already carries inherited data.
    */
   readMessagesRange(
     afterOffset: string | undefined,
     capOffset: string | undefined,
     limit: number | undefined,
-    byteBudget: number | undefined
+    byteBudget: number | undefined,
+    allowOversizedFirst: boolean = true
   ): ReadBatch {
     const after =
       afterOffset === undefined || afterOffset === `-1` ? `` : afterOffset
@@ -303,7 +364,7 @@ export class SqliteStore {
       const data = new Uint8Array(row.data)
       if (
         byteBudget !== undefined &&
-        messages.length > 0 &&
+        (messages.length > 0 || !allowOversizedFirst) &&
         bytes + data.byteLength > byteBudget
       ) {
         capped = true
@@ -319,38 +380,99 @@ export class SqliteStore {
     this.sql.exec(`UPDATE meta SET soft_deleted = 1 WHERE id = 1`)
   }
 
-  incrementRef(): void {
-    this.sql.exec(`UPDATE meta SET ref_count = ref_count + 1 WHERE id = 1`)
-  }
-
-  /** Queue a parent path whose forkRelease RPC failed, for alarm retry. */
-  enqueueGcRelease(parentPath: string): void {
+  /**
+   * Record a fork edge if absent (idempotent acquire) and return the
+   * edge's fork offset — the stored one when the edge already existed, so
+   * an acquire retry cannot re-resolve to a different offset.
+   */
+  insertForkEdge(edgeId: string, forkOffset: string): string {
     this.sql.exec(
-      `INSERT OR IGNORE INTO gc_queue (parent_path) VALUES (?)`,
-      parentPath
-    )
-  }
-
-  dequeueGcRelease(parentPath: string): void {
-    this.sql.exec(`DELETE FROM gc_queue WHERE parent_path = ?`, parentPath)
-  }
-
-  pendingGcReleases(): Array<string> {
-    return this.sql
-      .exec<{ parent_path: string }>(`SELECT parent_path FROM gc_queue`)
-      .toArray()
-      .map((r) => r.parent_path)
-  }
-
-  /** Decrement the refcount (floored at 0) and return the new value. */
-  decrementRef(): number {
-    this.sql.exec(
-      `UPDATE meta SET ref_count = MAX(ref_count - 1, 0) WHERE id = 1`
+      `INSERT OR IGNORE INTO fork_edges (edge_id, fork_offset) VALUES (?, ?)`,
+      edgeId,
+      forkOffset
     )
     const rows = this.sql
-      .exec<{ ref_count: number }>(`SELECT ref_count FROM meta WHERE id = 1`)
+      .exec<{
+        fork_offset: string
+      }>(`SELECT fork_offset FROM fork_edges WHERE edge_id = ?`, edgeId)
       .toArray()
-    return rows[0]?.ref_count ?? 0
+    return rows[0]?.fork_offset ?? forkOffset
+  }
+
+  getForkEdge(edgeId: string): { forkOffset: string } | undefined {
+    const rows = this.sql
+      .exec<{
+        fork_offset: string
+      }>(`SELECT fork_offset FROM fork_edges WHERE edge_id = ?`, edgeId)
+      .toArray()
+    const row = rows[0]
+    return row === undefined ? undefined : { forkOffset: row.fork_offset }
+  }
+
+  /** Drop a fork edge if present (idempotent release). */
+  deleteForkEdge(edgeId: string): void {
+    this.sql.exec(`DELETE FROM fork_edges WHERE edge_id = ?`, edgeId)
+  }
+
+  /** Look up a persisted fork-edge intent for these create parameters. */
+  getForkIntent(paramsKey: string): string | undefined {
+    const rows = this.sql
+      .exec<{
+        edge_id: string
+      }>(`SELECT edge_id FROM fork_intents WHERE params_key = ?`, paramsKey)
+      .toArray()
+    return rows[0]?.edge_id
+  }
+
+  /** Persist an edge intent BEFORE the remote acquire RPC. */
+  putForkIntent(edgeId: string, parentPath: string, paramsKey: string): void {
+    this.sql.exec(
+      `INSERT OR IGNORE INTO fork_intents (edge_id, parent_path, params_key) VALUES (?, ?, ?)`,
+      edgeId,
+      parentPath,
+      paramsKey
+    )
+  }
+
+  deleteForkIntent(edgeId: string): void {
+    this.sql.exec(`DELETE FROM fork_intents WHERE edge_id = ?`, edgeId)
+  }
+
+  /** Queue a forkRelease that must not be lost, for alarm retry. */
+  enqueueGcRelease(
+    edgeId: string,
+    parentPath: string,
+    sourceGen: string | undefined
+  ): void {
+    this.sql.exec(
+      `INSERT OR IGNORE INTO gc_releases (edge_id, parent_path, source_gen) VALUES (?, ?, ?)`,
+      edgeId,
+      parentPath,
+      sourceGen ?? null
+    )
+  }
+
+  dequeueGcRelease(edgeId: string): void {
+    this.sql.exec(`DELETE FROM gc_releases WHERE edge_id = ?`, edgeId)
+  }
+
+  pendingGcReleases(): Array<{
+    edgeId: string
+    parentPath: string
+    sourceGen: string | undefined
+  }> {
+    return this.sql
+      .exec<{
+        edge_id: string
+        parent_path: string
+        source_gen: string | null
+      }>(`SELECT edge_id, parent_path, source_gen FROM gc_releases`)
+      .toArray()
+      .map((r) => ({
+        edgeId: r.edge_id,
+        parentPath: r.parent_path,
+        sourceGen: r.source_gen ?? undefined,
+      }))
   }
 
   /**

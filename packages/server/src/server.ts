@@ -923,6 +923,9 @@ export class DurableStreamTestServer {
     // Handle catch-up mode offset=now: return empty response with tail offset
     // For long-poll mode, we fall through to wait for new data instead
     if (offset === `now` && live !== `long-poll`) {
+      // Still a read: refresh the sliding TTL like any other GET
+      this.store.touchAccess(path)
+
       const headers: Record<string, string> = {
         [STREAM_OFFSET_HEADER]: stream.currentOffset,
         [STREAM_UP_TO_DATE_HEADER]: `true`,
@@ -1160,19 +1163,27 @@ export class DurableStreamTestServer {
       const { messages, upToDate } = this.store.read(path, currentOffset)
       this.store.touchAccess(path)
 
-      // Send data events for each message
-      for (const message of messages) {
+      // Send the whole batch as ONE data event: a control event follows
+      // every data event (Protocol Section 5.8), and per-message data
+      // events sharing one control would make JSON catch-up unparseable
+      // for clients that collect data up to the control boundary
+      // (`[a][b]` is not a JSON value).
+      if (messages.length > 0) {
         // Format data based on content type and encoding
         let dataPayload: string
         if (useBase64) {
           // Base64 encode binary data (Protocol Section 5.7)
-          dataPayload = Buffer.from(message.data).toString(`base64`)
+          dataPayload = Buffer.concat(
+            messages.map((message) => Buffer.from(message.data))
+          ).toString(`base64`)
         } else if (isJsonStream) {
           // Use formatResponse to get properly formatted JSON (strips trailing commas)
-          const jsonBytes = this.store.formatResponse(path, [message])
+          const jsonBytes = this.store.formatResponse(path, messages)
           dataPayload = decoder.decode(jsonBytes)
         } else {
-          dataPayload = decoder.decode(message.data)
+          dataPayload = decoder.decode(
+            Buffer.concat(messages.map((message) => Buffer.from(message.data)))
+          )
         }
 
         // Send data event - encode multiline payloads per SSE spec
@@ -1180,7 +1191,7 @@ export class DurableStreamTestServer {
         res.write(`event: data\n`)
         res.write(encodeSSEData(dataPayload))
 
-        currentOffset = message.offset
+        currentOffset = messages[messages.length - 1]!.offset
       }
 
       // Compute offset the same way as HTTP GET: last message's offset, or stream's current offset

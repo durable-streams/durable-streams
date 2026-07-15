@@ -2952,6 +2952,42 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
     })
 
     test.concurrent(
+      `should extend TTL on GET ?offset=now (sliding window)`,
+      async () => {
+        const streamPath = uniquePath(`ttl-renew-offset-now`)
+
+        // Create stream with 2 second TTL
+        const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-TTL": `2`,
+          },
+        })
+        expect(createResponse.status).toBe(201)
+
+        // Wait 1.5s (past the midpoint)
+        await sleep(1500)
+
+        // Non-live tail read — a read, so it should reset the TTL
+        const nowResponse = await fetch(
+          `${getBaseUrl()}${streamPath}?offset=now`
+        )
+        expect(nowResponse.status).toBe(200)
+        expect(nowResponse.headers.get(`Stream-Up-To-Date`)).toBe(`true`)
+
+        // Wait another 1.5s — total 3s since creation, 1.5s since the read
+        await sleep(1500)
+
+        // Stream should still be alive (TTL was reset by the offset=now read)
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.status).toBe(200)
+      }
+    )
+
+    test.concurrent(
       `should extend TTL on close-only POST (sliding window)`,
       async () => {
         const streamPath = uniquePath(`ttl-renew-close`)
@@ -3567,6 +3603,70 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // Verify SSE format: should contain event: and data: lines
       expect(received).toContain(`event:`)
       expect(received).toContain(`data:`)
+    })
+
+    test(`JSON SSE catch-up pairs every data event with a control event`, async () => {
+      const streamPath = `/v1/stream/sse-json-framing-test-${Date.now()}`
+
+      // Two separate appends buffered BEFORE the SSE subscription opens,
+      // so the catch-up read returns a multi-message batch.
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"n":1}]`,
+      })
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/json` },
+        body: `[{"n":2}]`,
+      })
+
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `upToDate` }
+      )
+      expect(response.status).toBe(200)
+
+      // Parse raw SSE frames into (event, payload) pairs, stopping at the
+      // first control event that reports the client caught up.
+      const frames: Array<{ event: string; payload: string }> = []
+      for (const block of received.split(`\n\n`)) {
+        const lines = block.split(`\n`)
+        const eventLine = lines.find((l) => l.startsWith(`event:`))
+        if (!eventLine) continue
+        const payload = lines
+          .filter((l) => l.startsWith(`data:`))
+          .map((l) => l.slice(5).replace(/^ /, ``))
+          .join(`\n`)
+        frames.push({ event: eventLine.slice(6).trim(), payload })
+        if (
+          eventLine.slice(6).trim() === `control` &&
+          (payload.includes(`upToDate`) || payload.includes(`streamClosed`))
+        ) {
+          break
+        }
+      }
+
+      // §5.8: a control event follows EVERY data event. Multiple data
+      // events sharing one control boundary would make JSON catch-up
+      // unparseable for clients that collect data up to the control.
+      const dataFrames = frames.filter((f) => f.event === `data`)
+      expect(dataFrames.length).toBeGreaterThan(0)
+      for (let i = 0; i < frames.length; i++) {
+        if (frames[i]!.event === `data`) {
+          expect(frames[i + 1]?.event).toBe(`control`)
+        }
+      }
+
+      // Each data event must be a complete, independently parseable JSON
+      // value, and together they must carry exactly the appended values.
+      const values: Array<unknown> = []
+      for (const frame of dataFrames) {
+        const parsed: unknown = JSON.parse(frame.payload)
+        expect(Array.isArray(parsed)).toBe(true)
+        values.push(...(parsed as Array<unknown>))
+      }
+      expect(values).toEqual([{ n: 1 }, { n: 2 }])
     })
 
     test(`should send control events with offset`, async () => {
