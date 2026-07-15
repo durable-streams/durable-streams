@@ -450,7 +450,7 @@ export class DurableStreamTestServer {
     )
     res.setHeader(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`
+      `content-type, authorization, If-None-Match, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`
     )
     res.setHeader(
       `access-control-expose-headers`,
@@ -1460,6 +1460,9 @@ export class DurableStreamTestServer {
           return
         }
 
+        // A close is a write: refresh the sliding TTL like any other POST.
+        this.store.touchAccess(path)
+
         res.writeHead(204, {
           [STREAM_OFFSET_HEADER]: closeResult.finalOffset,
           [STREAM_CLOSED_HEADER]: `true`,
@@ -1477,6 +1480,9 @@ export class DurableStreamTestServer {
         res.end(`Stream not found`)
         return
       }
+
+      // A close is a write: refresh the sliding TTL like any other POST.
+      this.store.touchAccess(path)
 
       res.writeHead(204, {
         [STREAM_OFFSET_HEADER]: closeResult.finalOffset,

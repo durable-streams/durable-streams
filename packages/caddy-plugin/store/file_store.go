@@ -1080,6 +1080,9 @@ func (s *FileStore) CloseStream(path string) (*CloseResult, error) {
 	alreadyClosed := meta.Closed
 	meta.Closed = true
 
+	// A close is a write: refresh the TTL sliding window
+	meta.LastAccessedAt = time.Now()
+
 	// Persist to bbolt
 	s.metaStore.SetClosed(path, true, nil)
 
@@ -1174,6 +1177,9 @@ func (s *FileStore) CloseStreamWithProducer(path string, opts CloseProducerOptio
 		Epoch:      opts.ProducerEpoch,
 		Seq:        opts.ProducerSeq,
 	}
+
+	// A close is a write: refresh the TTL sliding window
+	meta.LastAccessedAt = time.Now()
 
 	// Persist producer state + closed state atomically
 	if err := s.metaStore.UpdateAppendState(path, meta.CurrentOffset, "", opts.ProducerId, newState, true, meta.ClosedBy); err != nil {

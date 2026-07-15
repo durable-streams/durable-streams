@@ -2951,6 +2951,85 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(headResponse.status).toBe(200)
     })
 
+    test.concurrent(
+      `should extend TTL on close-only POST (sliding window)`,
+      async () => {
+        const streamPath = uniquePath(`ttl-renew-close`)
+
+        // Create stream with 2 second TTL
+        const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-TTL": `2`,
+          },
+        })
+        expect(createResponse.status).toBe(201)
+
+        // Wait 1.5s (past the midpoint)
+        await sleep(1500)
+
+        // Close-only POST (empty body) — a write, so it should reset the TTL
+        const closeResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: { "Stream-Closed": `true` },
+        })
+        expect(closeResponse.status).toBe(204)
+
+        // Wait another 1.5s — total 3s since creation, 1.5s since the close
+        await sleep(1500)
+
+        // Stream should still be alive (TTL was reset by the close)
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.status).toBe(200)
+        expect(headResponse.headers.get(`Stream-Closed`)).toBe(`true`)
+      }
+    )
+
+    test.concurrent(
+      `should extend TTL on producer close-only POST (sliding window)`,
+      async () => {
+        const streamPath = uniquePath(`ttl-renew-producer-close`)
+
+        // Create stream with 2 second TTL
+        const createResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `PUT`,
+          headers: {
+            "Content-Type": `text/plain`,
+            "Stream-TTL": `2`,
+          },
+        })
+        expect(createResponse.status).toBe(201)
+
+        // Wait 1.5s (past the midpoint)
+        await sleep(1500)
+
+        // Producer close-only POST — a write, so it should reset the TTL
+        const closeResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `POST`,
+          headers: {
+            "Stream-Closed": `true`,
+            "Producer-Id": `ttl-close-producer`,
+            "Producer-Epoch": `0`,
+            "Producer-Seq": `0`,
+          },
+        })
+        expect(closeResponse.status).toBe(204)
+
+        // Wait another 1.5s — total 3s since creation, 1.5s since the close
+        await sleep(1500)
+
+        // Stream should still be alive (TTL was reset by the close)
+        const headResponse = await fetch(`${getBaseUrl()}${streamPath}`, {
+          method: `HEAD`,
+        })
+        expect(headResponse.status).toBe(200)
+        expect(headResponse.headers.get(`Stream-Closed`)).toBe(`true`)
+      }
+    )
+
     test.concurrent(`should extend TTL on read (sliding window)`, async () => {
       const streamPath = uniquePath(`ttl-renew-read`)
 
@@ -3107,6 +3186,26 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       // 304 should have empty body
       const text = await response2.text()
       expect(text).toBe(``)
+    })
+
+    test(`should allow If-None-Match in CORS preflight responses`, async () => {
+      const streamPath = `/v1/stream/etag-preflight-test-${Date.now()}`
+
+      // Preflight for a conditional cross-origin GET
+      const response = await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `OPTIONS`,
+        headers: {
+          Origin: `https://example.com`,
+          "Access-Control-Request-Method": `GET`,
+          "Access-Control-Request-Headers": `if-none-match`,
+        },
+      })
+
+      expect([200, 204]).toContain(response.status)
+      const allowHeaders = response.headers.get(`access-control-allow-headers`)
+      expect(allowHeaders).toBeDefined()
+      // A wildcard also satisfies non-credentialed preflights
+      expect(allowHeaders!.toLowerCase()).toMatch(/if-none-match|\*/)
     })
 
     test(`should return 200 for non-matching If-None-Match`, async () => {

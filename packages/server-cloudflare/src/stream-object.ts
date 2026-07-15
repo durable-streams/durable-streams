@@ -1384,8 +1384,11 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     }
 
     if (producer === undefined) {
-      // Simple idempotent close.
+      // Simple idempotent close. A close is a write, so it refreshes the
+      // sliding TTL like any other successful POST.
       this.store.setClosed(undefined)
+      this.store.touchAccess(now)
+      await this.syncExpiryAlarm()
       this.notifyClosed()
       return this.respond(204, {
         [STREAM_OFFSET_HEADER]: meta.currentOffset,
@@ -1434,6 +1437,8 @@ export class StreamObject extends DurableObject<StreamsEnv> {
       epoch: producer.epoch,
       seq: producer.seq,
     })
+    this.store.touchAccess(now)
+    await this.syncExpiryAlarm()
     this.notifyClosed()
 
     return this.respond(204, {
@@ -1867,7 +1872,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     )
     h.set(
       `access-control-allow-headers`,
-      `content-type, authorization, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`
+      `content-type, authorization, If-None-Match, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset`
     )
     h.set(
       `access-control-expose-headers`,

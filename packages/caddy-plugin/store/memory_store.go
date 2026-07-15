@@ -459,6 +459,9 @@ func (s *MemoryStore) CloseStream(path string) (*CloseResult, error) {
 	alreadyClosed := stream.metadata.Closed
 	stream.metadata.Closed = true
 
+	// A close is a write: refresh the TTL sliding window
+	stream.metadata.LastAccessedAt = time.Now()
+
 	// Notify pending long-polls that stream is closed
 	s.longPoll.notifyClosed(path)
 
@@ -550,6 +553,9 @@ func (s *MemoryStore) CloseStreamWithProducer(path string, opts CloseProducerOpt
 		Epoch:      opts.ProducerEpoch,
 		Seq:        opts.ProducerSeq,
 	}
+
+	// A close is a write: refresh the TTL sliding window
+	stream.metadata.LastAccessedAt = time.Now()
 
 	// Notify pending long-polls that stream is closed
 	s.longPoll.notifyClosed(path)
