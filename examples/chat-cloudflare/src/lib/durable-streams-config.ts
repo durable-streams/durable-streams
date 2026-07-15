@@ -20,5 +20,7 @@ const streams = createStreamsHandler({
 export const streamsFetch: typeof fetch = (input, init) =>
   streams(
     new Request(input, init),
+    // Wrangler's generated binding type is unavailable to this example's tsc.
+
     env as unknown as Parameters<typeof streams>[1]
   )
