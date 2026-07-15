@@ -2,7 +2,9 @@
 
 [![Deploy to Cloudflare](https://deploy.workers.cloudflare.com/button)](https://deploy.workers.cloudflare.com/?url=https://github.com/durable-streams/durable-streams/tree/main/examples/chat-cloudflare)
 
-Same app as [`chat-tanstack`](../chat-tanstack), but built for Cloudflare with the [Cloudflare Vite plugin](https://developers.cloudflare.com/workers/vite-plugin/): the TanStack Start app and the Durable Streams server (`@durable-streams/server-cloudflare`) run in a single Worker. Server routes call the streams handler in-process (one Durable Object per stream), and `src/server.ts` also mounts it at `/streams/*` for direct protocol access. Chat metadata for the sidebar is stored in a durable stream too (`chats/index`), since Workers have no filesystem.
+Same app as [`chat-tanstack`](../chat-tanstack), but built for Cloudflare with the [Cloudflare Vite plugin](https://developers.cloudflare.com/workers/vite-plugin/): the TanStack Start app and the Durable Streams server (`@durable-streams/server-cloudflare`) run in a single Worker. Server routes call the streams handler in-process (one Durable Object per stream), and the browser reads through the `/api/chat-stream` proxy — the raw stream protocol is never exposed publicly, so the example is safe to deploy as-is. Chat metadata for the sidebar is stored in a durable stream too (`chats/index`), since Workers have no filesystem.
+
+To expose direct protocol access instead, mount `createStreamsHandler()` under a route in `src/server.ts` — but protect it first (set an `AUTH_TOKEN` secret for the built-in bearer-token check, or pass a custom `auth` hook), since the raw protocol lets clients create, append to, read, and delete arbitrary streams.
 
 ## Setup
 
@@ -18,7 +20,7 @@ Then:
 pnpm dev
 ```
 
-One process: vite serves the app and workerd runs the Worker with a local Durable Object. The app runs at http://localhost:3002 and streams are also reachable at http://localhost:3002/streams/.
+One process: vite serves the app and workerd runs the Worker with a local Durable Object. The app runs at http://localhost:3002.
 
 ## Deploying
 

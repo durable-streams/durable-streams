@@ -54,7 +54,7 @@ async function appendRecord(data: ChatData): Promise<void> {
 
 /** Creates a new chat metadata record and returns its id. */
 export async function createChat(): Promise<string> {
-  const id = crypto.randomUUID().slice(0, 8)
+  const id = crypto.randomUUID()
   const data: ChatData = {
     id,
     createdAt: new Date().toISOString(),
