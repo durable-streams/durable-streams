@@ -1,5 +1,14 @@
 # @durable-streams/y-durable-streams
 
+## 0.2.8
+
+### Patch Changes
+
+- Add service-scoped webhook subscriptions for `snapshot.available` events, backed by Durable Streams subscriptions over Yjs snapshot index streams. Isolate internal awareness bookkeeping from snapshot triggers and reject awareness names that could collide with reserved stream paths. ([#393](https://github.com/durable-streams/durable-streams/pull/393))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.6
+
 ## 0.2.7
 
 ### Patch Changes

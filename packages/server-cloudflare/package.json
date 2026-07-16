@@ -1,6 +1,6 @@
 {
   "name": "@durable-streams/server-cloudflare",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Durable Streams protocol server on Cloudflare Workers + Durable Objects — export the StreamObject class and mount the handler in your own Worker",
   "license": "Apache-2.0",
   "author": "Tom Beckenham",

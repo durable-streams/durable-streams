@@ -1,5 +1,13 @@
 # @durable-streams/client-conformance-tests
 
+## 0.2.12
+
+### Patch Changes
+
+- Updated dependencies [[`a4d31bc`](https://github.com/durable-streams/durable-streams/commit/a4d31bcca01794aa81a5e482b7401670077cc78e)]:
+  - @durable-streams/server@0.3.8
+  - @durable-streams/client@0.2.6
+
 ## 0.2.11
 
 ### Patch Changes
