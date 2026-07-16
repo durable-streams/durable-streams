@@ -36,7 +36,7 @@ import type { StreamLifecycleEvent, TestServerOptions } from "./types"
 
 const STREAM_SSE_DATA_ENCODING_HEADER = `Stream-SSE-Data-Encoding`
 
-// SSE control event fields (Protocol Section 5.7)
+// SSE control event fields (Protocol Section 5.8)
 const SSE_UP_TO_DATE_FIELD = `upToDate`
 
 // Fork headers (request headers only — not set on responses)
@@ -1172,7 +1172,7 @@ export class DurableStreamTestServer {
         // Format data based on content type and encoding
         let dataPayload: string
         if (useBase64) {
-          // Base64 encode binary data (Protocol Section 5.7)
+          // Base64 encode binary data (Protocol Section 5.8)
           dataPayload = Buffer.concat(
             messages.map((message) => Buffer.from(message.data))
           ).toString(`base64`)
@@ -1204,7 +1204,7 @@ export class DurableStreamTestServer {
       const streamIsClosed = currentStream?.closed ?? false
       const clientAtTail = controlOffset === currentStream!.currentOffset
 
-      // Send control event with current offset/cursor (Protocol Section 5.7)
+      // Send control event with current offset/cursor (Protocol Section 5.8)
       // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
       const responseCursor = generateResponseCursor(
         cursor,
@@ -1278,7 +1278,7 @@ export class DurableStreamTestServer {
         }
 
         if (result.timedOut) {
-          // Send keep-alive control event on timeout (Protocol Section 5.7)
+          // Send keep-alive control event on timeout (Protocol Section 5.8)
           // Generate cursor for CDN cache collapsing (Protocol Section 8.1)
           const keepAliveCursor = generateResponseCursor(
             cursor,

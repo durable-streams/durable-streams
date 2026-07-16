@@ -3669,6 +3669,71 @@ export function runConformanceTests(options: ConformanceTestOptions): void {
       expect(values).toEqual([{ n: 1 }, { n: 2 }])
     })
 
+    test(`base64 SSE catch-up pairs every data event with a control event`, async () => {
+      const streamPath = `/v1/stream/sse-base64-framing-test-${Date.now()}`
+
+      // Two separate binary appends buffered BEFORE the SSE subscription
+      // opens, so the catch-up read returns a multi-message batch.
+      const partOne = new Uint8Array([0, 1, 2, 3])
+      const partTwo = new Uint8Array([4, 5, 6, 7])
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `PUT`,
+        headers: { "Content-Type": `application/octet-stream` },
+        body: partOne,
+      })
+      await fetch(`${getBaseUrl()}${streamPath}`, {
+        method: `POST`,
+        headers: { "Content-Type": `application/octet-stream` },
+        body: partTwo,
+      })
+
+      const { response, received } = await fetchSSE(
+        `${getBaseUrl()}${streamPath}?offset=-1&live=sse`,
+        { untilContent: `upToDate` }
+      )
+      expect(response.status).toBe(200)
+      expect(response.headers.get(`stream-sse-data-encoding`)).toBe(`base64`)
+
+      const frames: Array<{ event: string; payload: string }> = []
+      for (const block of received.split(`\n\n`)) {
+        const lines = block.split(`\n`)
+        const eventLine = lines.find((l) => l.startsWith(`event:`))
+        if (!eventLine) continue
+        const payload = lines
+          .filter((l) => l.startsWith(`data:`))
+          .map((l) => l.slice(5).replace(/^ /, ``))
+          .join(`\n`)
+        frames.push({ event: eventLine.slice(6).trim(), payload })
+        if (
+          eventLine.slice(6).trim() === `control` &&
+          (payload.includes(`upToDate`) || payload.includes(`streamClosed`))
+        ) {
+          break
+        }
+      }
+
+      // §5.8: a control event follows EVERY data event, and each data
+      // event's payload must independently base64-decode — two padded
+      // base64 strings concatenated across a control boundary don't.
+      const dataFrames = frames.filter((f) => f.event === `data`)
+      expect(dataFrames.length).toBeGreaterThan(0)
+      for (let i = 0; i < frames.length; i++) {
+        if (frames[i]!.event === `data`) {
+          expect(frames[i + 1]?.event).toBe(`control`)
+        }
+      }
+
+      const decoded: Array<Buffer> = []
+      for (const frame of dataFrames) {
+        const cleaned = frame.payload.replace(/[\n\r]/g, ``)
+        expect(cleaned.length % 4).toBe(0)
+        decoded.push(Buffer.from(cleaned, `base64`))
+      }
+      expect(new Uint8Array(Buffer.concat(decoded))).toEqual(
+        new Uint8Array([...partOne, ...partTwo])
+      )
+    })
+
     test(`should send control events with offset`, async () => {
       const streamPath = `/v1/stream/sse-control-event-test-${Date.now()}`
 

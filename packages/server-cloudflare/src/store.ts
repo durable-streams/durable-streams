@@ -44,8 +44,6 @@ export interface StreamMeta {
   forkEdgeId: string | undefined
   /** Source generation the edge was acquired under (release qualifier). */
   forkSourceGen: string | undefined
-  /** Number of forks referencing this stream (count of fork edges). */
-  refCount: number
   /** Logically deleted but retained for fork readers (410 Gone). */
   softDeleted: boolean
 }
@@ -185,6 +183,11 @@ export class SqliteStore {
     `)
     // Additive migration for meta tables created before fork edges
     // existed (CREATE IF NOT EXISTS never alters an existing table).
+    // Deliberately NOT migrated (this package has never been released;
+    // only pre-edge dev/preview state is affected): legacy `ref_count`
+    // values read as zero references, and rows in the abandoned
+    // `gc_queue` table are dropped — pre-edge fork bookkeeping cannot be
+    // mapped onto edge identities after the fact.
     const metaColumns = new Set(
       this.sql
         .exec<{ name: string }>(`SELECT name FROM pragma_table_info('meta')`)
@@ -222,12 +225,15 @@ export class SqliteStore {
       forkSubOffset: row.fork_sub_offset ?? undefined,
       forkEdgeId: row.fork_edge_id ?? undefined,
       forkSourceGen: row.fork_source_gen ?? undefined,
-      refCount: this.forkEdgeCount(),
       softDeleted: row.soft_deleted !== 0,
     }
   }
 
-  private forkEdgeCount(): number {
+  /**
+   * Number of forks referencing this stream. One row per fork edge, so
+   * the count cannot drift from the references the way a counter could.
+   */
+  forkEdgeCount(): number {
     const rows = this.sql
       .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM fork_edges`)
       .toArray()
@@ -328,11 +334,11 @@ export class SqliteStore {
   }
 
   /**
-   * Read messages with `offset > afterOffset` and (when capped)
-   * `offset <= capOffset`, oldest first. Stops at `limit` messages or once
-   * `byteBudget` bytes have been collected; `capped: true` means more data
-   * may remain. A first message larger than the whole budget is still
-   * returned (readers must always make progress) unless
+   * Read messages with `offset > afterOffset` and (when a `capOffset` is
+   * given) `offset <= capOffset`, oldest first. Stops at `limit` messages
+   * or before adding a message would exceed `byteBudget`; `capped: true`
+   * means more data may remain. A first message larger than the whole
+   * budget is still returned (readers must always make progress) unless
    * `allowOversizedFirst` is false — stitched fork reads disable it when
    * the response already carries inherited data.
    */

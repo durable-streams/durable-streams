@@ -1,7 +1,7 @@
 /**
  * Regression tests for expiry-alarm scheduling (direct DO access).
  *
- * syncExpiryAlarm keeps an in-memory `lastArmedAlarm` guard to avoid a
+ * armAlarmAt keeps an in-memory `lastArmedAlarm` guard to avoid a
  * storage write per sliding-TTL touch. That cache must not survive alarm
  * consumption or deleteAlarm: comparing a new target against a stale value
  * would suppress the rearm and leave an expiry duty with no alarm.
@@ -42,9 +42,9 @@ describe(`expiry alarm scheduling`, () => {
     expect(created.status).toBe(201)
     expect(await storedAlarm(stub)).not.toBeNull()
 
-    // A read shortly after creation slides the expiry forward by only a
-    // few ms — under the 500ms write-amplification threshold, so the
-    // armed alarm is (correctly) left alone.
+    // A read shortly after creation slides the expiry forward, so the
+    // earlier armed alarm is (correctly) kept — it fires first and the
+    // alarm handler re-syncs.
     const read = await stub.fetch(`http://do${path}`)
     expect(read.status).toBe(200)
 

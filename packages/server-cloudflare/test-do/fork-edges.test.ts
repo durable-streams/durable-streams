@@ -7,7 +7,7 @@
  * (insert-if-absent / delete-if-present), qualified by the source
  * generation so a delayed release can never touch a recreated stream.
  */
-import { env, runInDurableObject } from "cloudflare:test"
+import { env, runDurableObjectAlarm, runInDurableObject } from "cloudflare:test"
 import { describe, expect, it } from "vitest"
 import {
   setStreamObjectTestHooks,
@@ -189,6 +189,7 @@ describe(`fork edge idempotency`, () => {
         `INSERT INTO fork_intents (edge_id, parent_path, params_key) VALUES (?, ?, ?)`,
         edgeId,
         srcPath,
+        // Must match createFork's paramsKey format in src/stream-object.ts.
         JSON.stringify([srcPath, null])
       )
     })
@@ -325,15 +326,16 @@ describe(`fork edge idempotency`, () => {
     expect(head.headers.get(`content-type`)).toBe(`text/plain`)
   })
 
-  it(`reuses the durable edge intent when a fork create is retried`, async () => {
+  it(`holds exactly one reference across sequential idempotent PUT retries`, async () => {
     const srcPath = `/streams/edge-intent-src`
     const forkPath = `/streams/edge-intent-fork`
     const src = await createSource(srcPath)
     const fork = stubFor(forkPath)
 
-    // Two identical fork PUTs — the second is a client retry (e.g. the
-    // first response was lost after commit). Idempotent create: 200/201,
-    // and exactly ONE reference on the source.
+    // Two identical fork PUTs — the second is a client retry after the
+    // first fully succeeded, so it takes the idempotent-match early
+    // return. End to end: 200/201 both times, and exactly ONE reference
+    // on the source. (The lost-response test above pins intent reuse.)
     for (const _attempt of [1, 2]) {
       const response = await fork.fetch(`http://do${forkPath}`, {
         method: `PUT`,
@@ -355,5 +357,134 @@ describe(`fork edge idempotency`, () => {
     })
     expect(forkDeleted.status).toBe(204)
     expect(await statusOf(src, srcPath)).toBe(404)
+  })
+
+  it(`concurrent duplicate fork PUTs leave exactly one live reference`, async () => {
+    const srcPath = `/streams/edge-concurrent-src`
+    const forkPath = `/streams/edge-concurrent-fork`
+    const src = await createSource(srcPath)
+    const fork = stubFor(forkPath)
+
+    // Two racing PUTs for the same not-yet-created fork. Interleaved
+    // creations would share the durable edge intent — and the loser's
+    // cleanup would release the edge the winner's meta owns, silently
+    // orphaning the fork's inherited data.
+    const [a, b] = await Promise.all([
+      fork.fetch(`http://do${forkPath}`, {
+        method: `PUT`,
+        headers: { "Stream-Forked-From": srcPath },
+      }),
+      fork.fetch(`http://do${forkPath}`, {
+        method: `PUT`,
+        headers: { "Stream-Forked-From": srcPath },
+      }),
+    ])
+    expect([200, 201]).toContain(a.status)
+    expect([200, 201]).toContain(b.status)
+
+    // The surviving fork's reference must still be counted: deleting the
+    // source soft-deletes (410), it must NOT purge straight to 404.
+    const deleted = await src.fetch(`http://do${srcPath}`, {
+      method: `DELETE`,
+    })
+    expect(deleted.status).toBe(204)
+    expect(await statusOf(src, srcPath)).toBe(410)
+
+    // And the fork can still read its inherited data through the
+    // soft-deleted source.
+    const read = await fork.fetch(`http://do${forkPath}`)
+    expect(read.status).toBe(200)
+    expect(await read.text()).toBe(`source data`)
+
+    const forkDeleted = await fork.fetch(`http://do${forkPath}`, {
+      method: `DELETE`,
+    })
+    expect(forkDeleted.status).toBe(204)
+    expect(await statusOf(src, srcPath)).toBe(404)
+  })
+
+  it(`delivers a queued release via the alarm`, async () => {
+    const srcPath = `/streams/edge-gc-alarm-src`
+    const forkPath = `/streams/edge-gc-alarm-fork`
+    const src = await createSource(srcPath)
+    const fork = stubFor(forkPath)
+
+    // One outstanding edge; source soft-deleted behind it.
+    const acquired = await src.forkAcquire({
+      edgeId: `edge-gc-alarm`,
+      forkOffset: undefined,
+      contentTypeProvided: undefined,
+    })
+    expect(acquired.ok).toBe(true)
+    if (!acquired.ok) return
+    const deleted = await src.fetch(`http://do${srcPath}`, {
+      method: `DELETE`,
+    })
+    expect(deleted.status).toBe(204)
+    expect(await statusOf(src, srcPath)).toBe(410)
+
+    // Simulate a fork whose release RPC previously failed: the durable
+    // gc_releases row exists and the retry alarm is armed. The alarm
+    // must deliver the release and dequeue it.
+    await runInDurableObject(fork, (_instance, state) => {
+      state.storage.sql.exec(
+        `INSERT INTO gc_releases (edge_id, parent_path, source_gen) VALUES (?, ?, ?)`,
+        `edge-gc-alarm`,
+        srcPath,
+        acquired.sourceGeneration
+      )
+      // Far enough out that it cannot fire on its own before
+      // runDurableObjectAlarm forces it.
+      return state.storage.setAlarm(Date.now() + 60_000)
+    })
+    const ran = await runDurableObjectAlarm(fork)
+    expect(ran).toBe(true)
+
+    expect(await statusOf(src, srcPath)).toBe(404)
+    const queued = await runInDurableObject(fork, (_instance, state) =>
+      state.storage.sql
+        .exec<{ n: number }>(`SELECT COUNT(*) AS n FROM gc_releases`)
+        .toArray()
+    )
+    expect(queued[0]?.n).toBe(0)
+  })
+
+  it(`soft-deletes (not purges) an expired source that forks still reference`, async () => {
+    const path = `/streams/edge-expired-referenced`
+    const stub = stubFor(path)
+    const created = await stub.fetch(`http://do${path}`, {
+      method: `PUT`,
+      headers: { "content-type": `text/plain`, "Stream-TTL": `60` },
+      body: `inherited`,
+    })
+    expect(created.status).toBe(201)
+
+    const acquired = await stub.forkAcquire({
+      edgeId: `edge-expired`,
+      forkOffset: undefined,
+      contentTypeProvided: undefined,
+    })
+    expect(acquired.ok).toBe(true)
+    if (!acquired.ok) return
+
+    // Push last access into the past so the sliding TTL has elapsed,
+    // then fire the expiry alarm.
+    await runInDurableObject(stub, (_instance, state) => {
+      state.storage.sql.exec(
+        `UPDATE meta SET last_accessed_at = ? WHERE id = 1`,
+        Date.now() - 120_000
+      )
+    })
+    const ran = await runDurableObjectAlarm(stub)
+    expect(ran).toBe(true)
+
+    // Referenced: the expiry must soft-delete, preserving inherited data.
+    expect(await statusOf(stub, path)).toBe(410)
+
+    await stub.forkRelease({
+      edgeId: `edge-expired`,
+      sourceGeneration: acquired.sourceGeneration,
+    })
+    expect(await statusOf(stub, path)).toBe(404)
   })
 })

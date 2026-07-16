@@ -83,7 +83,7 @@ const MAX_TTL_SECONDS = 3_153_600_000
  * structured-clone size of fork readRange RPCs; larger streams are served
  * as partial chunks (Stream-Up-To-Date omitted) per protocol §5.6.
  */
-const MAX_READ_BATCH_BYTES = 4 * 1024 * 1024
+export const MAX_READ_BATCH_BYTES: number = 4 * 1024 * 1024
 
 /**
  * Recycle SSE connections after ~60s (protocol §5.8/§10.2 SHOULD) so CDNs
@@ -238,6 +238,18 @@ export function suspendNextInheritedReadForTest(object: StreamObject): {
 export class StreamObject extends DurableObject<StreamsEnv> {
   private readonly store: SqliteStore
   private waiters: Array<PendingWaiter> = []
+  /** Serializes createFork runs (see handlePut); always settles, never rejects. */
+  private forkCreateLock: Promise<void> = Promise.resolve()
+
+  private withForkCreateLock<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.forkCreateLock.then(fn)
+    // The lock itself must never reject, or it would poison later runs.
+    this.forkCreateLock = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
 
   constructor(ctx: DurableObjectState, env: StreamsEnv) {
     super(ctx, env)
@@ -271,12 +283,15 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // The armed alarm was just consumed: clear the arming cache so any
     // remaining duty is rearmed rather than suppressed as "unchanged".
     this.lastArmedAlarm = undefined
-    await this.processForkIntents()
+    // Under the fork create lock: reconciling an intent whose createFork
+    // is still in flight would queue a compensating release for the edge
+    // that create is about to own.
+    await this.withForkCreateLock(() => this.processForkIntents())
     await this.processGcReleases()
     const meta = this.store.getMetaRaw()
     if (!meta) return
     if (this.store.isExpired(meta, Date.now())) {
-      if (meta.refCount > 0) {
+      if (this.store.forkEdgeCount() > 0) {
         // Expired but referenced by forks: soft-delete instead of purging.
         if (!meta.softDeleted) this.store.setSoftDeleted()
       } else {
@@ -304,9 +319,15 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     forkOffset: string | undefined
     contentTypeProvided: string | undefined
   }): Promise<ForkAcquireResult> {
+    if (options.edgeId === ``) {
+      // An empty PRIMARY KEY would silently become a shared edge identity.
+      throw new Error(`forkAcquire requires a non-empty edgeId`)
+    }
     // Retry of an acquire that already committed: the edge row is the
-    // reference, so return the recorded outcome without revalidating
-    // (the source may have advanced or been soft-deleted since).
+    // reference, so return the recorded outcome without revalidating —
+    // the content-type check is deliberately skipped, and reading current
+    // meta is sound because purge() clears fork_edges, so an existing
+    // edge implies the meta is still the generation it was acquired under.
     const existingEdge = this.store.getForkEdge(options.edgeId)
     if (existingEdge !== undefined) {
       const rawMeta = this.store.getMetaRaw()
@@ -367,6 +388,9 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     edgeId: string
     sourceGeneration: string | undefined
   }): Promise<void> {
+    if (options.edgeId === ``) {
+      throw new Error(`forkRelease requires a non-empty edgeId`)
+    }
     const meta = this.store.getMetaRaw()
     if (!meta) return
     if (
@@ -377,7 +401,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     }
     if (this.store.getForkEdge(options.edgeId) === undefined) return
     this.store.deleteForkEdge(options.edgeId)
-    if (this.store.getMetaRaw()?.refCount === 0 && meta.softDeleted) {
+    if (this.store.forkEdgeCount() === 0 && meta.softDeleted) {
       await this.purgeStream(meta)
     }
   }
@@ -510,17 +534,23 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     }
 
     if (forkedFrom !== undefined) {
-      return this.createFork(url, path, {
-        forkedFrom,
-        forkOffsetHeader,
-        forkSubOffset,
-        contentType,
-        ttlSeconds,
-        expiresAt: expiresAtHeader,
-        createClosed,
-        body,
-        now,
-      })
+      // Serialize fork creations: createFork awaits RPCs mid-flow (which
+      // opens the input gate), and two interleaved creations for the same
+      // path would share the durable edge intent — the loser's release
+      // would then destroy the winner's reference on the source.
+      return this.withForkCreateLock(() =>
+        this.createFork(url, path, {
+          forkedFrom,
+          forkOffsetHeader,
+          forkSubOffset,
+          contentType,
+          ttlSeconds,
+          expiresAt: expiresAtHeader,
+          createClosed,
+          body,
+          now,
+        })
+      )
     }
 
     // Process initial data BEFORE creating meta so an invalid JSON body
@@ -707,23 +737,13 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     }
 
     const release = async (): Promise<void> => {
+      // Queue the release durably BEFORE the RPC (and drop the intent in
+      // the same commit): if this isolate dies mid-release, the queued
+      // duty survives and the alarm retries it — otherwise the acquired
+      // edge would pin the source with no recovery record anywhere.
+      this.store.enqueueGcRelease(edgeId, forkedFrom, acquired.sourceGeneration)
       this.store.deleteForkIntent(edgeId)
-      try {
-        await sourceStub.forkRelease({
-          edgeId,
-          sourceGeneration: acquired.sourceGeneration,
-        })
-      } catch (err) {
-        // Never leak the acquired reference: queue the release durably
-        // and retry from the alarm handler.
-        console.error(`forkRelease failed; will retry via alarm`, err)
-        this.store.enqueueGcRelease(
-          edgeId,
-          forkedFrom,
-          acquired.sourceGeneration
-        )
-        await this.armAlarmAt(Date.now() + 5_000)
-      }
+      await this.flushGcReleases()
     }
 
     const resolvedContentType =
@@ -815,10 +835,17 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     // The forkAcquire / readRange RPCs above opened the input gate: a
     // concurrent PUT may have created this path in the meantime. Creating
     // again would violate the meta PK, so release our reference and fall
-    // back to the idempotency comparison.
+    // back to the idempotency comparison. Defense in depth (the fork
+    // create lock should prevent this interleaving): if the existing
+    // stream owns this very edge, releasing it would destroy the
+    // surviving fork's reference — drop only the intent.
     const raced = this.store.getMetaRaw()
     if (raced) {
-      await release()
+      if (raced.forkEdgeId === edgeId) {
+        this.store.deleteForkIntent(edgeId)
+      } else {
+        await release()
+      }
       return this.existingStreamResponse(raced, {
         contentType: options.contentType,
         ttlSeconds: options.ttlSeconds,
@@ -1624,7 +1651,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     if (meta.softDeleted) {
       return this.text(410, `Stream is gone`)
     }
-    if (meta.refCount > 0) {
+    if (this.store.forkEdgeCount() > 0) {
       // Active forks reference this stream: soft-delete so fork readers
       // can still stitch through it.
       this.store.setSoftDeleted()
@@ -1648,7 +1675,7 @@ export class StreamObject extends DurableObject<StreamsEnv> {
     const meta = this.store.getMetaRaw()
     if (!meta) return undefined
     if (this.store.isExpired(meta, now)) {
-      if (meta.refCount > 0) {
+      if (this.store.forkEdgeCount() > 0) {
         if (!meta.softDeleted) this.store.setSoftDeleted()
         return { ...meta, softDeleted: true }
       }
@@ -1673,8 +1700,23 @@ export class StreamObject extends DurableObject<StreamsEnv> {
         meta.forkedFrom,
         meta.forkSourceGen
       )
-      await this.processGcReleases()
     }
+    // Drain unconditionally: the queue can hold releases from an earlier
+    // generation at this path (even a non-fork one), and the deleteAlarm
+    // above just killed the retry alarm that would have delivered them.
+    await this.flushGcReleases()
+  }
+
+  /**
+   * Deliver queued forkRelease duties. The retry alarm is armed BEFORE
+   * the RPCs so an isolate death mid-release cannot strand the queue —
+   * nothing but the alarm ever picks it up. A stray alarm firing after
+   * the queue drained is a cheap no-op.
+   */
+  private async flushGcReleases(): Promise<void> {
+    if (this.store.pendingGcReleases().length === 0) return
+    await this.armAlarmAt(Date.now() + 5_000)
+    await this.processGcReleases()
   }
 
   /** Compensate creates interrupted after their remote acquire committed. */
@@ -1749,11 +1791,12 @@ export class StreamObject extends DurableObject<StreamsEnv> {
   }
 
   /**
-   * Arm the DO alarm for `target` unless a still-pending alarm already
-   * covers it: an earlier pending alarm is kept (it fires first and the
-   * alarm handler re-syncs), and a target that moved less than 500ms past
-   * the pending alarm is skipped so sliding-TTL touches on every read
-   * don't turn into an alarm write per request.
+   * Arm the DO alarm for `target` only when it is more than 500ms
+   * earlier than the still-pending alarm. A later target keeps the
+   * earlier pending alarm — it fires first and the handler re-syncs;
+   * this is what absorbs per-read sliding-TTL touches. A target up to
+   * 500ms before the pending alarm is absorbed too (firing up to 500ms
+   * late), so near-identical rearms don't each cost a storage write.
    */
   private async armAlarmAt(target: number): Promise<void> {
     const pending =

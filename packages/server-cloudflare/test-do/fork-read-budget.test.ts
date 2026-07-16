@@ -9,10 +9,8 @@
  */
 import { env } from "cloudflare:test"
 import { describe, expect, it } from "vitest"
+import { MAX_READ_BATCH_BYTES } from "../src/stream-object"
 import type { StreamObject } from "../src/stream-object"
-
-/** Must match MAX_READ_BATCH_BYTES in src/stream-object.ts. */
-const MAX_READ_BATCH_BYTES = 4 * 1024 * 1024
 
 function stubFor(path: string): DurableObjectStub<StreamObject> {
   return env.STREAMS.get(env.STREAMS.idFromName(path))
@@ -74,6 +72,7 @@ describe(`fork read budget`, () => {
     const collected: Array<Uint8Array> = [firstBody]
     let offset = first.headers.get(`Stream-Next-Offset`)!
     expect(offset).toBeTruthy()
+    let sawUpToDate = false
     for (let i = 0; i < 10; i++) {
       const next = await fork.fetch(
         `http://do${forkPath}?offset=${encodeURIComponent(offset)}`
@@ -83,8 +82,12 @@ describe(`fork read budget`, () => {
       expect(body.byteLength).toBeLessThanOrEqual(MAX_READ_BATCH_BYTES)
       collected.push(body)
       offset = next.headers.get(`Stream-Next-Offset`)!
-      if (next.headers.get(`Stream-Up-To-Date`) === `true`) break
+      if (next.headers.get(`Stream-Up-To-Date`) === `true`) {
+        sawUpToDate = true
+        break
+      }
     }
+    expect(sawUpToDate).toBe(true)
 
     const total = collected.reduce((sum, part) => sum + part.byteLength, 0)
     expect(total).toBe(4_500_000)
