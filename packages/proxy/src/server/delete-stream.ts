@@ -8,6 +8,7 @@
 
 import { validateServiceJwt } from "./tokens"
 import { abortConnection } from "./upstream"
+import { buildBackendUrl, resolveBackendHeaders } from "./backend"
 import { sendError } from "./response"
 import type { IncomingMessage, ServerResponse } from "node:http"
 import type { ProxyServerOptions } from "./types"
@@ -57,10 +58,14 @@ export async function handleDeleteStream(
   contentTypeStore.delete(streamId)
 
   // 3. Delete from underlying durable streams server
-  const dsUrl = new URL(`/v1/streams/${streamId}`, options.durableStreamsUrl)
+  const dsUrl = buildBackendUrl(options, streamId)
 
   try {
-    const dsResponse = await fetch(dsUrl.toString(), { method: `DELETE` })
+    const extra = await resolveBackendHeaders(options, {
+      streamId,
+      method: `DELETE`,
+    })
+    const dsResponse = await fetch(dsUrl, { method: `DELETE`, headers: extra })
     if (!dsResponse.ok && dsResponse.status !== 404) {
       console.error(
         `Failed to delete stream ${streamId} from storage: ${dsResponse.status}`

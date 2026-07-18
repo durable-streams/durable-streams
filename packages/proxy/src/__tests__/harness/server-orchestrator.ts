@@ -20,7 +20,7 @@
 import { DurableStreamTestServer } from "@durable-streams/server"
 import { createProxyServer } from "../../server"
 import { createMockUpstream } from "./mock-upstream"
-import type { ProxyServer } from "../../server"
+import type { ProxyServer, ProxyServerOptions } from "../../server"
 import type { MockUpstreamServer } from "./mock-upstream"
 
 /**
@@ -37,6 +37,8 @@ export interface OrchestratorOptions {
   allowlist?: Array<string>
   /** Skip starting the proxy server (use PROXY_CONFORMANCE_URL instead) */
   useExternalProxy?: boolean
+  /** Extra options to pass to createProxyServer */
+  proxyOptions?: Partial<ProxyServerOptions>
 }
 
 /**
@@ -135,6 +137,7 @@ export async function startTestServers(
     allowlist,
     jwtSecret: `test-secret-key-for-development`,
     streamTtlSeconds: 3600, // 1 hour for tests
+    ...options.proxyOptions,
   })
 
   return {
