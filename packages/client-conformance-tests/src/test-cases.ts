@@ -510,24 +510,13 @@ export interface ValidateOperation {
 /**
  * Validation target types.
  */
-export type ValidateTarget =
-  | ValidateRetryOptionsTarget
-  | ValidateIdempotentProducerTarget
-
-export interface ValidateRetryOptionsTarget {
-  target: `retry-options`
-  maxRetries?: number
-  initialDelayMs?: number
-  maxDelayMs?: number
-  multiplier?: number
-}
+export type ValidateTarget = ValidateIdempotentProducerTarget
 
 export interface ValidateIdempotentProducerTarget {
   target: `idempotent-producer`
   producerId?: string
   epoch?: number
   maxBatchBytes?: number
-  maxBatchItems?: number
 }
 
 export interface ValidateExpectation {
