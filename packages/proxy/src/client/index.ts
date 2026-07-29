@@ -8,7 +8,12 @@
  */
 
 // Main API
-export { createDurableFetch, createAbortFn } from "./durable-fetch"
+export {
+  createDurableFetch,
+  createAbortFn,
+  isAbsoluteUrl,
+  resolveUpstreamUrl,
+} from "./durable-fetch"
 
 // Storage utilities
 export {

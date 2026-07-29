@@ -51,6 +51,13 @@ export interface DurableFetchOptions {
   fetch?: typeof fetch
   /** Prefix for storage keys (default: 'durable-streams:') */
   storagePrefix?: string
+  /**
+   * Origin to use when resolving relative upstream URLs.
+   * If the upstream URL is a path (e.g., "/v1/chat"), it will be resolved against this origin.
+   * Falls back to window.location.origin if available.
+   * Required when using relative URLs in non-browser environments.
+   */
+  origin?: string
 }
 
 /**
