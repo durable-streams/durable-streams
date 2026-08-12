@@ -1,0 +1,6 @@
+{
+  "name": "@durable-streams-internal/client-go",
+  "version": "0.2.0",
+  "private": true,
+  "description": "Bridge package for Changesets; the actual package is a Go module"
+}
