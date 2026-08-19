@@ -21,11 +21,14 @@ import type { SSEControlEvent, SSEEvent } from "./sse"
 import type { StreamResponseState } from "./stream-response-state"
 import type {
   ByteChunk,
+  HeadersRecord,
   StreamResponse as IStreamResponse,
   JsonBatch,
   LiveMode,
   Offset,
+  ParamsRecord,
   SSEResilienceOptions,
+  StreamErrorHandler,
   TextChunk,
 } from "./types"
 
@@ -77,12 +80,20 @@ export interface StreamResponseConfig {
   startSSE?: (
     offset: Offset,
     cursor: string | undefined,
-    signal: AbortSignal
+    signal: AbortSignal,
+    headerOverrides?: HeadersRecord,
+    paramOverrides?: ParamsRecord
   ) => Promise<Response>
   /** SSE resilience options */
   sseResilience?: SSEResilienceOptions
   /** Encoding for SSE data events */
   encoding?: `base64`
+  /** Error handler for recoverable errors during SSE reconnection */
+  onError?: StreamErrorHandler
+  /** Mutable headers that can be updated by onError during SSE reconnection */
+  headers?: HeadersRecord
+  /** Mutable params that can be updated by onError during SSE reconnection */
+  params?: ParamsRecord
 }
 
 /**
@@ -130,6 +141,11 @@ export class StreamResponseImpl<
 
   // --- SSE Encoding State ---
   #encoding?: `base64`
+
+  // --- Error recovery for SSE reconnection ---
+  #onError?: StreamErrorHandler
+  #mutableHeaders?: HeadersRecord
+  #mutableParams?: ParamsRecord
 
   // Core primitive: a ReadableStream of Response objects
   #responseStream: ReadableStream<Response>
@@ -179,6 +195,11 @@ export class StreamResponseImpl<
 
     // Initialize SSE encoding
     this.#encoding = config.encoding
+
+    // Initialize error recovery for SSE reconnection
+    this.#onError = config.onError
+    this.#mutableHeaders = config.headers
+    this.#mutableParams = config.params
 
     this.#closed = new Promise((resolve, reject) => {
       this.#closedResolve = resolve
@@ -481,19 +502,60 @@ export class StreamResponseImpl<
     // Create new per-request abort controller for this SSE connection
     this.#requestAbortController = new AbortController()
 
-    const newSSEResponse = await this.#startSSE(
-      this.offset,
-      this.cursor,
-      this.#requestAbortController.signal
-    )
-    this.#updateEncodingFromSSEResponse(newSSEResponse)
-    if (newSSEResponse.body) {
-      return parseSSEStream(
-        newSSEResponse.body,
-        this.#requestAbortController.signal
-      )
+    // Retry loop for onError handling during SSE reconnection
+    // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+    while (true) {
+      try {
+        const newSSEResponse = await this.#startSSE(
+          this.offset,
+          this.cursor,
+          this.#requestAbortController.signal,
+          this.#mutableHeaders,
+          this.#mutableParams
+        )
+        this.#updateEncodingFromSSEResponse(newSSEResponse)
+        if (newSSEResponse.body) {
+          return parseSSEStream(
+            newSSEResponse.body,
+            this.#requestAbortController.signal
+          )
+        }
+        return null
+      } catch (err) {
+        // If there's an onError handler, give it a chance to recover
+        if (this.#onError) {
+          const retryOpts = await this.#onError(
+            err instanceof Error ? err : new Error(String(err))
+          )
+
+          // If handler returns void/undefined, stop retrying
+          if (retryOpts === undefined) {
+            throw err
+          }
+
+          // Merge returned params/headers for retry
+          if (retryOpts.params) {
+            this.#mutableParams = {
+              ...this.#mutableParams,
+              ...retryOpts.params,
+            }
+          }
+          if (retryOpts.headers) {
+            this.#mutableHeaders = {
+              ...this.#mutableHeaders,
+              ...retryOpts.headers,
+            }
+          }
+
+          // Recreate abort controller for retry
+          this.#requestAbortController = new AbortController()
+          continue
+        }
+
+        // No onError handler, just throw
+        throw err
+      }
     }
-    return null
   }
 
   /**
@@ -1492,10 +1554,10 @@ function createSSESyntheticResponseFromParts(
         0
       )
       const combined = new Uint8Array(totalLength)
-      let offset = 0
+      let byteOffset = 0
       for (const part of decodedParts) {
-        combined.set(part, offset)
-        offset += part.length
+        combined.set(part, byteOffset)
+        byteOffset += part.length
       }
       body = combined.buffer
     }
