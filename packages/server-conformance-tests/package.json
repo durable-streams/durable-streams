@@ -44,7 +44,8 @@
   "files": [
     "dist",
     "src",
-    "bin"
+    "bin",
+    "vitest.cli.config.mjs"
   ],
   "scripts": {
     "build": "tsdown",
