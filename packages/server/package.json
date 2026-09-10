@@ -1,6 +1,6 @@
 {
   "name": "@durable-streams/server",
-  "version": "0.3.8",
+  "version": "0.3.9",
   "description": "Node.js reference server implementation for Durable Streams",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",

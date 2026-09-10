@@ -1,5 +1,12 @@
 # @durable-streams/stream-db-example
 
+## 0.0.10
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @durable-streams/state@0.3.2
+
 ## 0.0.9
 
 ### Patch Changes
