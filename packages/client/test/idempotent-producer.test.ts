@@ -1,3 +1,4 @@
+import { setImmediate as nextTurn } from "node:timers/promises"
 import { describe, expect, it, vi } from "vitest"
 import {
   PRODUCER_SEQ_HEADER,
@@ -124,20 +125,21 @@ describe(`IdempotentProducer`, () => {
     expect(producer.lastSuccessfulOffset).toBe(offset(0, 10))
   })
 
-  it(`waits for the first auto-claiming batch before sending later batches`, async () => {
-    let resolveFirst: ((response: Response) => void) | undefined
-    const first = new Promise<Response>((resolve) => {
-      resolveFirst = resolve
-    })
+  it(`flushes deferred auto-claim batches without a process global`, async () => {
+    const first = deferred<Response>()
+    const second = deferred<Response>()
+    const firstStarted = deferred<void>()
+    const secondStarted = deferred<void>()
     const mockFetch = vi
       .fn()
-      .mockReturnValueOnce(first)
-      .mockResolvedValueOnce(
-        new Response(null, {
-          status: 200,
-          headers: { [STREAM_OFFSET_HEADER]: offset(0, 10) },
-        })
-      )
+      .mockImplementationOnce(() => {
+        firstStarted.resolve()
+        return first.promise
+      })
+      .mockImplementationOnce(() => {
+        secondStarted.resolve()
+        return second.promise
+      })
     const stream = new DurableStream({
       url: `https://example.com/stream`,
       contentType: `text/plain`,
@@ -147,28 +149,56 @@ describe(`IdempotentProducer`, () => {
       fetch: mockFetch,
       maxBatchBytes: 1,
     })
-
-    producer.append(`a`)
-    await vi.waitFor(() => expect(mockFetch).toHaveBeenCalledTimes(1))
-    producer.append(`b`)
-    let flushResolved = false
-    const flushed = producer.flush().then(() => {
-      flushResolved = true
+    // Build Node's Response objects before removing process so this test
+    // isolates the client's runtime requirements from Node's implementation.
+    const firstResponse = new Response(null, {
+      status: 200,
+      headers: { [STREAM_OFFSET_HEADER]: offset(0, 5) },
     })
-    await Promise.resolve()
-
-    expect(mockFetch).toHaveBeenCalledTimes(1)
-    expect(flushResolved).toBe(false)
-
-    resolveFirst!(
-      new Response(null, {
-        status: 200,
-        headers: { [STREAM_OFFSET_HEADER]: offset(0, 5) },
+    const secondResponse = new Response(null, {
+      status: 200,
+      headers: { [STREAM_OFFSET_HEADER]: offset(0, 10) },
+    })
+    let flushResolved = false
+    let flushed: Promise<void> | undefined
+    let beforeFirst: { calls: number; flushed: boolean } | undefined
+    let beforeSecond: { calls: number; flushed: boolean } | undefined
+    // Finish Vitest's pending callbacks before hiding a global it also uses.
+    await nextTurn()
+    vi.stubGlobal(`process`, undefined)
+    try {
+      producer.append(`a`)
+      await firstStarted.promise
+      producer.append(`b`)
+      flushed = producer.flush().then(() => {
+        flushResolved = true
       })
-    )
-    await flushed
+      // Let queued promise continuations settle while the response stays held.
+      await nextTurn()
+      beforeFirst = {
+        calls: mockFetch.mock.calls.length,
+        flushed: flushResolved,
+      }
 
-    expect(mockFetch).toHaveBeenCalledTimes(2)
+      first.resolve(firstResponse)
+      await secondStarted.promise
+      await nextTurn()
+      beforeSecond = {
+        calls: mockFetch.mock.calls.length,
+        flushed: flushResolved,
+      }
+
+      second.resolve(secondResponse)
+      await flushed
+    } finally {
+      vi.unstubAllGlobals()
+      first.resolve(firstResponse)
+      second.resolve(secondResponse)
+      await flushed
+    }
+    expect(beforeFirst).toEqual({ calls: 1, flushed: false })
+    expect(beforeSecond).toEqual({ calls: 2, flushed: false })
+    expect(flushResolved).toBe(true)
     expect(
       new Headers(mockFetch.mock.calls[0]![1]?.headers).get(PRODUCER_SEQ_HEADER)
     ).toBe(`0`)
@@ -205,3 +235,14 @@ describe(`IdempotentProducer`, () => {
     expect(SSE_CLOSED_FIELD).toBe(`streamClosed`)
   })
 })
+
+function deferred<T>(): {
+  promise: Promise<T>
+  resolve: (value: T) => void
+} {
+  let resolve!: (value: T) => void
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise
+  })
+  return { promise, resolve }
+}

@@ -4,6 +4,26 @@ import { AsyncQueue } from "../src/async-queue"
 // Queue scheduling and runtime globals are internal concerns that the JSON
 // conformance adapter cannot control.
 describe(`AsyncQueue`, () => {
+  it(`an idle drain excludes tasks pushed after the drain call`, async () => {
+    let finish!: () => void
+    const gate = new Promise<void>((resolve) => {
+      finish = resolve
+    })
+    const queue = new AsyncQueue<void>(() => gate, 1)
+    const drained = queue.drained()
+    const pending = queue.push()
+
+    try {
+      await drained
+      expect(queue.running()).toBe(1)
+      expect(queue.idle()).toBe(false)
+    } finally {
+      finish()
+      await pending
+    }
+    expect(queue.idle()).toBe(true)
+  })
+
   it(`starts tasks in order and counts waiting and running tasks separately`, async () => {
     const started: Array<number> = []
     const complete = new Map<number, (value: number) => void>()
