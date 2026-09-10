@@ -218,6 +218,31 @@ describe(`CLI commands with server`, () => {
     )
   })
 
+  it(`creates a stream whose ID contains slashes`, async () => {
+    const streamId = `test-create-nested-${Date.now()}/room-1`
+    const result = await runCli([`create`, streamId])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(
+      `Stream created successfully: "${streamId}"`
+    )
+
+    const stream = new DurableStream({
+      url: `${serverUrl}/v1/stream/${streamId}`,
+    })
+    await expect(stream.head()).resolves.toBeTruthy()
+  })
+
+  it(`creates a JSON stream with a flag before a slash-delimited stream ID`, async () => {
+    const streamId = `sessions/${Date.now()}`
+    const result = await runCli([`create`, `--json`, streamId])
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toContain(
+      `Stream created successfully: "${streamId}"`
+    )
+  })
+
   it(`creates a stream with --content-type flag`, async () => {
     const streamId = `test-create-content-type-${Date.now()}`
     const result = await runCli([

@@ -31,10 +31,10 @@ const clientVersion = "0.1.0"
 
 // Command types from the test runner
 type Command struct {
-	Type      string            `json:"type"`
-	ServerURL string            `json:"serverUrl,omitempty"`
-	TimeoutMs int               `json:"timeoutMs,omitempty"`
-	Path      string            `json:"path,omitempty"`
+	Type      string `json:"type"`
+	ServerURL string `json:"serverUrl,omitempty"`
+	TimeoutMs int    `json:"timeoutMs,omitempty"`
+	Path      string `json:"path,omitempty"`
 	// Create fields
 	ContentType string `json:"contentType,omitempty"`
 	TTLSeconds  int    `json:"ttlSeconds,omitempty"`
@@ -621,6 +621,15 @@ func handleRead(cmd Command) Result {
 				if err := json.Unmarshal(chunk.Data, &parsed); err != nil {
 					return errorResult("read", fmt.Errorf("failed to parse JSON response: %w", err))
 				}
+				if items, ok := parsed.([]any); ok && len(items) == 0 {
+					finalOffset = string(chunk.NextOffset)
+					upToDate = chunk.UpToDate
+					streamClosed = streamClosed || chunk.StreamClosed
+					if cmd.WaitForUpToDate && chunk.UpToDate {
+						break
+					}
+					continue
+				}
 				// Re-serialize with compact formatting to match TypeScript/Python
 				compactJSON, _ := json.Marshal(parsed)
 				chunks = append(chunks, ReadChunk{
@@ -640,7 +649,7 @@ func handleRead(cmd Command) Result {
 		streamClosed = streamClosed || chunk.StreamClosed
 
 		if len(chunks) >= maxChunks {
-			stoppedForMaxChunks = true
+			stoppedForMaxChunks = !chunk.StreamClosed
 			break
 		}
 

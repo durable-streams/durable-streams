@@ -123,11 +123,12 @@ defmodule DurableStreams.HTTP.Finch do
               if acc.error != nil do
                 {:error, acc.error}
               else
-                {:ok, %{
-                  next_offset: acc.next_offset,
-                  up_to_date: acc.up_to_date,
-                  events_delivered: acc.events_delivered
-                }}
+                {:ok,
+                 %{
+                   next_offset: acc.next_offset,
+                   up_to_date: acc.up_to_date,
+                   events_delivered: acc.events_delivered
+                 }}
               end
           end
 
@@ -160,7 +161,15 @@ defmodule DurableStreams.HTTP.Finch do
     up_to_date = get_header(headers, "stream-up-to-date") == "true"
     # Detect encoding from the stream-sse-data-encoding response header
     encoding = get_header(headers, "stream-sse-data-encoding")
-    {:cont, %{acc | headers: headers, next_offset: next_offset, up_to_date: up_to_date, encoding: encoding}}
+
+    {:cont,
+     %{
+       acc
+       | headers: headers,
+         next_offset: next_offset,
+         up_to_date: up_to_date,
+         encoding: encoding
+     }}
   end
 
   defp handle_stream_message({:data, chunk}, acc) do
@@ -169,19 +178,25 @@ defmodule DurableStreams.HTTP.Finch do
     {events, remaining_buffer} = parse_sse_events(buffer)
 
     # Deliver each event immediately
-    acc = Enum.reduce(events, acc, fn event, acc ->
-      deliver_event(event, acc)
-    end)
+    acc =
+      Enum.reduce(events, acc, fn event, acc ->
+        deliver_event(event, acc)
+      end)
 
     new_acc = %{acc | buffer: remaining_buffer}
+
+    # Halt immediately on parse errors so malformed SSE control events do not
+    # leave the conformance adapter blocked on the open SSE connection.
+    has_error = new_acc.error != nil
 
     # Halt when up_to_date if configured
     # - halt_on_up_to_date_immediate: halt as soon as up_to_date (even with 0 events)
     # - halt_on_up_to_date: only halt if we've received some data
-    should_halt = new_acc.up_to_date and (
-      new_acc.halt_on_up_to_date_immediate or
-      (new_acc.halt_on_up_to_date and new_acc.events_delivered > 0)
-    )
+    should_halt =
+      has_error or
+        (new_acc.up_to_date and
+           (new_acc.halt_on_up_to_date_immediate or
+              (new_acc.halt_on_up_to_date and new_acc.events_delivered > 0)))
 
     if should_halt do
       {:halt, new_acc}
@@ -197,6 +212,7 @@ defmodule DurableStreams.HTTP.Finch do
   # Flush any remaining complete events from buffer
   defp flush_buffer(acc) do
     {events, _remaining} = parse_sse_events(acc.buffer)
+
     Enum.reduce(events, acc, fn event, acc ->
       deliver_event(event, acc)
     end)
@@ -280,7 +296,11 @@ defmodule DurableStreams.HTTP.Finch do
         String.starts_with?(line, "data:") ->
           data_line = String.slice(line, 5..-1//1)
           # Remove leading space if present (SSE spec)
-          data_line = if String.starts_with?(data_line, " "), do: String.slice(data_line, 1..-1//1), else: data_line
+          data_line =
+            if String.starts_with?(data_line, " "),
+              do: String.slice(data_line, 1..-1//1),
+              else: data_line
+
           %{event | data: [data_line | event.data]}
 
         String.starts_with?(line, "id:") ->
@@ -313,9 +333,14 @@ defmodule DurableStreams.HTTP.Finch do
   defp decode_sse_data(data, "base64") when is_binary(data) do
     # Remove any newlines/carriage returns per SSE protocol
     cleaned = String.replace(data, ~r/[\n\r]/, "")
+
     case Base.decode64(cleaned) do
-      {:ok, decoded} -> decoded
-      :error -> raise DurableStreams.ParseError, message: "Failed to decode base64 SSE data: invalid base64 encoding"
+      {:ok, decoded} ->
+        decoded
+
+      :error ->
+        raise DurableStreams.ParseError,
+          message: "Failed to decode base64 SSE data: invalid base64 encoding"
     end
   end
 
@@ -323,6 +348,7 @@ defmodule DurableStreams.HTTP.Finch do
 
   defp get_header(headers, name) do
     name_lower = String.downcase(name)
+
     Enum.find_value(headers, fn {k, v} ->
       if String.downcase(k) == name_lower, do: v
     end)

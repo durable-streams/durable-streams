@@ -28,7 +28,7 @@ optimistic actions, and transaction confirmation.
 ## Setup
 
 ```typescript
-import { createStreamDB, createStateSchema } from "@durable-streams/state"
+import { createStreamDB, createStateSchema } from "@durable-streams/state/db"
 import { DurableStream } from "@durable-streams/client"
 import { z } from "zod"
 
@@ -77,29 +77,41 @@ const messages = db.collections.messages
 
 ### Reactive queries with TanStack DB
 
-StreamDB collections are TanStack DB collections. Use framework adapters for reactive queries:
+StreamDB collections are TanStack DB collections. Use framework adapters for reactive queries.
+
+**IMPORTANT**: `useLiveQuery` returns `{ data }`, NOT the array directly. Always destructure with a default:
 
 ```typescript
 import { useLiveQuery } from "@tanstack/react-db"
-import { eq } from "@durable-streams/state"
+import { eq } from "@durable-streams/state/db"
 
+// List query — destructure { data } with a default empty array
+function UserList() {
+  const { data: users = [] } = useLiveQuery((q) =>
+    q.from({ users: db.collections.users })
+  )
+
+  return users.map(u => <div key={u.id}>{u.name}</div>)
+}
+
+// Single item query — use findOne(), data is T | undefined
 function UserProfile({ userId }: { userId: string }) {
-  const userQuery = useLiveQuery((q) =>
+  const { data: user } = useLiveQuery((q) =>
     q
       .from({ users: db.collections.users })
       .where(({ users }) => eq(users.id, userId))
       .findOne()
   )
 
-  if (!userQuery.data) return null
-  return <div>{userQuery.data.name}</div>
+  if (!user) return null
+  return <div>{user.name}</div>
 }
 ```
 
 ### Optimistic actions with server confirmation
 
 ```typescript
-import { createStreamDB, createStateSchema } from "@durable-streams/state"
+import { createStreamDB, createStateSchema } from "@durable-streams/state/db"
 import { z } from "zod"
 
 const schema = createStateSchema({

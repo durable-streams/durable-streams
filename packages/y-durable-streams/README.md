@@ -4,12 +4,13 @@ Yjs provider for Durable Streams - sync Yjs documents over HTTP with automatic s
 
 ## Overview
 
-This package provides a Yjs provider that syncs documents using the Yjs Durable Streams Protocol. Unlike WebSocket-based providers, it uses HTTP long-polling with automatic server-side compaction, making it simpler to deploy and scale.
+This package provides a Yjs provider that syncs documents using the Yjs Durable Streams Protocol. Unlike WebSocket-based providers, it uses standard HTTP (SSE by default, with long-polling as an alternative) plus automatic server-side compaction, making it simpler to deploy and scale.
 
 Key benefits:
 
 - **No WebSocket infrastructure** - Works with standard HTTP load balancers and CDNs
 - **Automatic compaction** - Server manages document snapshots to keep sync fast
+- **Snapshot webhooks** - Wake external workers to persist the latest snapshot
 - **Scalable** - Stateless server design, documents stored in durable streams
 - **Presence support** - Optional awareness for cursors, selections, and user status
 
@@ -135,7 +136,7 @@ class YjsProvider {
 
   // Methods
   connect(): Promise<void>
-  disconnect(): void
+  disconnect(): Promise<void>
   destroy(): void
 
   // Events
@@ -151,11 +152,11 @@ class YjsProvider {
 interface YjsProviderOptions {
   doc: Y.Doc
   baseUrl: string // Yjs server URL, e.g. "http://localhost:4438/v1/yjs/my-service"
-  docId: string // Document identifier
+  docId: string // Document identifier (may contain forward slashes)
   awareness?: Awareness // Optional awareness for presence
-  headers?: HeadersRecord // Optional auth headers
+  headers?: HeadersRecord // Optional auth headers (static strings or () => string)
+  liveMode?: "sse" | "long-poll" // Live update transport (default: "sse")
   connect?: boolean // Auto-connect on construction (default: true)
-  debug?: boolean // Enable debug logging (default: false)
 }
 ```
 
@@ -175,6 +176,41 @@ await server.start()
 console.log(`Yjs server running at ${server.url}`)
 ```
 
+### Snapshot webhooks
+
+Subscribe a webhook to be woken whenever a newer snapshot is available for a
+matching document:
+
+```typescript
+await fetch(
+  `${server.url}/v1/yjs/my-service/__ds/subscriptions/snapshot-archive`,
+  {
+    method: "PUT",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      type: "webhook",
+      events: ["snapshot.available"],
+      document_pattern: "projects/**",
+      webhook: { url: "https://archive.example/hooks/yjs" },
+      lease_ttl_ms: 30_000,
+    }),
+  }
+)
+```
+
+`document_pattern` is relative to the service's document namespace. `*`
+matches one path segment and `**` matches recursively. The underlying Durable
+Streams server must support webhook subscriptions.
+
+Webhook requests use the standard Durable Streams subscription payload and
+signature. A notification means one or more newer snapshots are available; it
+does not carry the snapshot bytes and may coalesce multiple compactions. For
+each pending `.index` stream, derive the document path and fetch its latest
+snapshot with `?offset=snapshot`. Return `{ "done": true }` only after the
+snapshot has been persisted successfully. New subscriptions observe future
+snapshots and do not replay the snapshot that was current when they were
+created.
+
 ## Conformance Tests
 
 The package includes conformance tests to verify Yjs server implementations. By default, tests run against local test servers. To test against an external server:
@@ -191,7 +227,7 @@ Note: The "Server Restart" test is skipped when using an external URL since it r
 
 ## Server Protocol API
 
-For the complete protocol specification, see [PROTOCOL.md](./PROTOCOL.md).
+For the complete protocol specification, see [YJS-PROTOCOL.md](./YJS-PROTOCOL.md).
 
 ### Base URL Structure
 

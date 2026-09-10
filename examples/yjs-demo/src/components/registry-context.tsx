@@ -1,6 +1,6 @@
 import { createContext, useContext, useEffect, useState } from "react"
 import { DurableStream } from "@durable-streams/client"
-import { createStreamDB } from "@durable-streams/state"
+import { createStreamDB } from "@durable-streams/state/db"
 import { registryStateSchema } from "../utils/schemas"
 import { useServerEndpoint } from "../components/server-endpoint-context"
 import type { RoomMetadata } from "../utils/schemas"

@@ -10,5 +10,11 @@
       "~/*": ["./src/*"]
     }
   },
-  "include": ["src", "start-dev.ts", "vite.config.ts"]
+  "include": [
+    "src",
+    "start-dev.ts",
+    "vite.config.ts",
+    "vitest.config.ts",
+    "chat-security.test.ts"
+  ]
 }

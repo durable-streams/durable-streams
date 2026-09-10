@@ -1,5 +1,194 @@
 # @durable-streams/server
 
+## 0.3.8
+
+### Patch Changes
+
+- Add a Cloudflare Workers and Durable Objects server with secure routing, durable fork lifecycle handling, bounded reads, sliding TTL support, and conformance coverage. Add custom server-side fetch support to the TanStack AI transport and a deployable Cloudflare chat example. Harden fork recovery across existing servers and require fail-closed authentication and path-safe identifiers in the chat examples. ([#392](https://github.com/durable-streams/durable-streams/pull/392))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.6
+  - @durable-streams/state@0.3.1
+
+## 0.3.7
+
+### Patch Changes
+
+- Updated dependencies [[`72e168d`](https://github.com/durable-streams/durable-streams/commit/72e168d5104c60aba3405e54a8c64e33c7e9a1c1)]:
+  - @durable-streams/state@0.3.1
+  - @durable-streams/client@0.2.6
+
+## 0.3.6
+
+### Patch Changes
+
+- fix: close conformance gaps around soft-delete, fork content-type, and live SSE closure ([#376](https://github.com/durable-streams/durable-streams/pull/376))
+
+  Server conformance tests:
+  - Add a test asserting a live SSE reader caught up at the tail receives
+    data appended atomically with a stream close (POST + `Stream-Closed`)
+    before the closing control event. A server that emits the
+    `streamClosed` control without first delivering the final append
+    silently loses the last message; the test probes a spread of close
+    timings to catch the race deterministically.
+  - Add a test asserting a fork rejected for a content-type mismatch does
+    not leak a reference on the source (the source must still fully delete
+    rather than being pinned in a soft-deleted state).
+
+  Reference server:
+  - Fix a reference-count leak in both the in-memory and file-backed
+    stores: a fork rejected for a content-type mismatch incremented the
+    source's `refCount` before validating the content type, pinning the
+    source in a soft-deleted state forever. Content-type is now validated
+    before the reference is taken.
+
+- Updated dependencies [[`cdb142e`](https://github.com/durable-streams/durable-streams/commit/cdb142e24fd8f005d827b4b37035b00c848ff523), [`8b33e59`](https://github.com/durable-streams/durable-streams/commit/8b33e5929dddaae8b529fd561d024b832a861eaf)]:
+  - @durable-streams/state@0.3.0
+  - @durable-streams/client@0.2.6
+
+## 0.3.5
+
+### Patch Changes
+
+- feat(server): support `Stream-Fork-Sub-Offset` for arbitrary-position forks ([#347](https://github.com/durable-streams/durable-streams/pull/347))
+
+  Adds a new optional header on fork-creation `PUT` requests that refines
+  the divergence point past `Stream-Fork-Offset` to a sub-position the
+  server has not previously minted. The integer is interpreted per the
+  source stream's content type:
+  - `application/json` — number of flattened messages to inherit past the
+    anchor offset.
+  - All other content types — number of decoded entity body bytes to
+    inherit past the anchor offset.
+
+  Sub-offset is a separate addressing dimension alongside the opaque
+  offset and does not violate offset opacity, uniqueness, or
+  strict-monotonicity (PROTOCOL.md §6). Servers materialize the resolved
+  prefix into the fork's segment at creation time; reads on the resulting
+  fork are unchanged.
+
+  See PROTOCOL.md §4.2 for full semantics. This change ships fork-only;
+  sub-offset support for read operations is reserved for a future
+  revision.
+
+- Fix idempotent producer auto-claim sequencing so later batches wait for the ([#371](https://github.com/durable-streams/durable-streams/pull/371))
+  first running batch to claim its epoch before reserving and sending subsequent
+  sequence numbers. `flush()` now also waits for batches held behind the initial
+  auto-claim barrier.
+- Updated dependencies [[`92c0821`](https://github.com/durable-streams/durable-streams/commit/92c082152f7be8327f0c055d8b224494e5e71f76)]:
+  - @durable-streams/client@0.2.6
+  - @durable-streams/state@0.2.9
+
+## 0.3.4
+
+### Patch Changes
+
+- Restore the TypeScript client surface expected by Durable Streams consumers: ([#369](https://github.com/durable-streams/durable-streams/pull/369))
+  publish the SSE control-event constants from the package entrypoint and expose
+  `IdempotentProducer.lastSuccessfulOffset` after successful writes or closes.
+
+  Republish the server against the fixed client package so `DurableStreamTestServer`
+  can import the SSE constants from `@durable-streams/client`.
+
+- Updated dependencies [[`6afab5f`](https://github.com/durable-streams/durable-streams/commit/6afab5f8258999ff1794749ad9d0d9bd0c823625)]:
+  - @durable-streams/client@0.2.5
+  - @durable-streams/state@0.2.8
+
+## 0.3.3
+
+### Patch Changes
+
+- feat(server): add reserved subscription APIs ([#361](https://github.com/durable-streams/durable-streams/pull/361))
+
+  The protocol now reserves `/v1/stream/__ds/*` for subscription control APIs.
+  The TypeScript server implements webhook and pull-wake subscription lifecycle,
+  stream membership, webhook callback ack, pull-wake claim/ack/release, and JWKS
+  discovery for webhook signature verification.
+
+  The server conformance package now includes opt-in coverage for the reserved
+  subscription APIs.
+
+- fix(server): sign subscription webhooks with discoverable public keys ([#361](https://github.com/durable-streams/durable-streams/pull/361))
+
+  Webhook subscriptions now use Ed25519 request signatures and expose the
+  server's public verification keys from the Durable Streams control namespace,
+  removing the need for receivers to store per-subscription shared secrets.
+
+- fix(server): flatten file-backed stream storage ([#360](https://github.com/durable-streams/durable-streams/pull/360))
+
+  The file-backed store now uses one segment log file per stream instead of a
+  nested per-stream directory, keeps offsets aligned to the actual frame layout,
+  and tightens crash recovery around truncated frames.
+
+  This also adds focused read/create microbench scripts for evaluating the file
+  store path and restores the server package typecheck configuration.
+
+- Updated dependencies [[`feb0c4c`](https://github.com/durable-streams/durable-streams/commit/feb0c4cc7d69278f0f0ed398b3618f74fd1ed24d)]:
+  - @durable-streams/state@0.2.7
+  - @durable-streams/client@0.2.4
+
+## 0.3.2
+
+### Patch Changes
+
+- fix(server): serialize concurrent appends to the same stream ([#340](https://github.com/durable-streams/durable-streams/pull/340))
+
+  Without per-stream serialization, the file-backed `append()` had a race
+  in the read-modify-write of `streamMeta.currentOffset`: two concurrent
+  appenders could read the same starting offset, both compute the same
+  `newOffset`, both write a frame to the segment file, and only one's
+  LMDB metadata update would win. The file then contained two frames at
+  positions past the LMDB-tracked `currentOffset`, so subsequent
+  `getTailOffset` lookups (and `stream-next-offset` headers) lagged the
+  actual stream contents — causing valid `done`-callback acks at offsets
+  that the server's stale tail had never seen to be rejected with
+  `INVALID_OFFSET`.
+
+  Reproduced with N concurrent appends to one stream collapsing to a
+  single offset value (added as a regression test in
+  `packages/server/test/file-backed.test.ts`). The fix wraps `append()`
+  in a per-stream lock (mirrors `acquireProducerLock`), so the
+  read-currentOffset → write-frame → fsync → put-LMDB sequence runs
+  atomically per stream.
+
+- fix(server): fork PUT inherits source content type when Content-Type header is omitted ([#342](https://github.com/durable-streams/durable-streams/pull/342))
+
+  Per the protocol (Section 4.2), when forking a stream the `Content-Type` header is
+  optional — an omitted header means "inherit from source." The TS dev server was
+  defaulting empty Content-Type to `application/octet-stream` before the store could
+  inherit, causing fork creation to fail with `409 Conflict` (content-type mismatch)
+  whenever the source's content type differed from the default.
+
+  Adds a server conformance test (`Fork - Creation > should fork inheriting
+content-type when header omitted`) that exercises this behavior end-to-end:
+  fork response, HEAD, and a follow-up POST with the inherited content type.
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+  - @durable-streams/state@0.2.6
+
+## 0.3.1
+
+### Patch Changes
+
+- Updated dependencies [[`d2deb9b`](https://github.com/durable-streams/durable-streams/commit/d2deb9b88536d43bfb93035dd4e604f5d9bf6bcd)]:
+  - @durable-streams/state@0.2.5
+  - @durable-streams/client@0.2.3
+
+## 0.3.0
+
+### Minor Changes
+
+- feat: TTL sliding window renewal — Stream-TTL now resets on read and write, with conformance tests for expiration, renewal, and fork TTL behavior. Conformance tests hardened against timing flakiness (polling-based expiry checks, wider Expires-At windows, fast-check time limits). ([#321](https://github.com/durable-streams/durable-streams/pull/321))
+
+### Patch Changes
+
+- feat: add stream forking — create forks via PUT with Stream-Forked-From header, transparent read stitching, stream-level refcounting, soft-delete with cascading GC ([#312](https://github.com/durable-streams/durable-streams/pull/312))
+
+- Updated dependencies [[`e2f0586`](https://github.com/durable-streams/durable-streams/commit/e2f05862b7068a9537b1d97fb481799b852581d6)]:
+  - @durable-streams/state@0.2.4
+  - @durable-streams/client@0.2.3
+
 ## 0.2.3
 
 ### Patch Changes

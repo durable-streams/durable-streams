@@ -193,11 +193,16 @@ target/
 # Claude local settings
 .claude/settings.local.json
 .beads
-examples/yjs-demo/.tanstack
+.tanstack/
+.opentrace/
+.tool-versions
 
 # Local Netlify folder
 .netlify
 .claude/
+
+# Caddy plugin conformance test output (data_dir from packages/caddy-plugin/test/Caddyfile)
+/data/
 
 # MacOS
 .DS_Store

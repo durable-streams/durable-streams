@@ -157,8 +157,15 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 	// Check if stream already exists
 	if existing, ok := s.streams[path]; ok {
 		if existing.metadata.IsExpired() {
-			// Expired: delete and proceed with creation
-			delete(s.streams, path)
+			// Expiry is a logical delete: keep pinned parents available to forks,
+			// and release a fork's parent edge when it can be collected.
+			if existing.metadata.RefCount > 0 {
+				existing.metadata.SoftDeleted = true
+				return nil, false, ErrStreamExists
+			}
+			if err := s.deleteWithCascade(path); err != nil {
+				return nil, false, err
+			}
 		} else if existing.metadata.SoftDeleted {
 			// Soft-deleted streams block new creation
 			return nil, false, ErrStreamExists
@@ -174,22 +181,33 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 	var forkOffset Offset
 	var sourceContentType string
 	var sourceMeta *StreamMetadata
+	var sourceStream *memoryStream
+	var binarySubOffsetPrefix []byte
 	isFork := opts.ForkedFrom != ""
 
 	if isFork {
-		sourceStream, ok := s.streams[opts.ForkedFrom]
+		ss, ok := s.streams[opts.ForkedFrom]
 		if !ok {
 			return nil, false, ErrStreamNotFound
 		}
-		if sourceStream.metadata.SoftDeleted {
+		if ss.metadata.SoftDeleted {
 			return nil, false, ErrStreamSoftDeleted
 		}
-		if sourceStream.metadata.IsExpired() {
+		if ss.metadata.IsExpired() {
 			return nil, false, ErrStreamNotFound
 		}
 
-		sourceMeta = &sourceStream.metadata
+		sourceStream = ss
+		sourceMeta = &ss.metadata
 		sourceContentType = sourceMeta.ContentType
+
+		// Reject a content-type mismatch up front, before taking a reference on
+		// the source. Doing this after the refcount increment would leak a
+		// reference on the failed fork and pin the source in a soft-deleted
+		// state forever.
+		if opts.ContentType != "" && !strings.EqualFold(opts.ContentType, sourceContentType) {
+			return nil, false, ErrContentTypeMismatch
+		}
 
 		// Resolve fork offset: use opts.ForkOffset if set, else source's CurrentOffset
 		if opts.ForkOffset != nil {
@@ -203,11 +221,26 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 			return nil, false, ErrInvalidForkOffset
 		}
 
+		// Resolve sub-offset against the source stream
+		if opts.ForkSubOffset != nil && *opts.ForkSubOffset > 0 {
+			resolvedOffset, prefixBytes, err := s.resolveForkSubOffset(sourceStream, forkOffset, *opts.ForkSubOffset)
+			if err != nil {
+				return nil, false, err
+			}
+			if isJSONContentType(sourceMeta.ContentType) {
+				forkOffset = resolvedOffset
+			} else {
+				binarySubOffsetPrefix = prefixBytes
+			}
+		}
+
 		// Increment source refcount
 		sourceStream.metadata.RefCount++
 	}
 
-	// Determine content type: use opts.ContentType, or inherit from source if fork
+	// Determine content type: use opts.ContentType, or inherit from source if
+	// fork. A fork content-type mismatch is already rejected above, before the
+	// source refcount is taken.
 	contentType := opts.ContentType
 	if contentType == "" {
 		if isFork {
@@ -215,44 +248,57 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 		} else {
 			contentType = "application/octet-stream"
 		}
-	} else if isFork && !strings.EqualFold(contentType, sourceContentType) {
-		return nil, false, ErrContentTypeMismatch
-	}
-
-	// Compute effective expiry
-	var effectiveExpiry *time.Time
-	if isFork {
-		effectiveExpiry = s.computeForkExpiry(opts, *sourceMeta)
-	} else {
-		effectiveExpiry = opts.ExpiresAt
 	}
 
 	// Build metadata
+	now := time.Now()
 	meta := StreamMetadata{
-		Path:        path,
-		ContentType: contentType,
-		CreatedAt:   time.Now(),
-		Closed:      opts.Closed, // Support creating stream in closed state
+		Path:           path,
+		ContentType:    contentType,
+		CreatedAt:      now,
+		LastAccessedAt: now,
+		Closed:         opts.Closed, // Support creating stream in closed state
 	}
 
 	if isFork {
+		forkTTL, forkExpiresAt := s.resolveForkExpiry(opts, *sourceMeta)
 		meta.CurrentOffset = forkOffset
 		meta.ForkOffset = forkOffset
 		meta.ForkedFrom = opts.ForkedFrom
-		// For forks, store the computed ExpiresAt (not TTLSeconds) to avoid
-		// TTL being computed relative to CreatedAt which could extend beyond source expiry
-		meta.ExpiresAt = effectiveExpiry
-		meta.TTLSeconds = nil
+		meta.TTLSeconds = forkTTL
+		meta.ExpiresAt = forkExpiresAt
+		// Persist the user-supplied ForkOffset (may be nil if omitted) and
+		// the user-supplied ForkSubOffset for idempotent re-creation matching.
+		// These differ from meta.ForkOffset for JSON forks created with
+		// sub-offset > 0 (where meta.ForkOffset is advanced internally).
+		if opts.ForkOffset != nil {
+			requested := *opts.ForkOffset
+			meta.ForkOffsetRequested = &requested
+		}
+		if opts.ForkSubOffset != nil {
+			meta.ForkSubOffset = *opts.ForkSubOffset
+		}
 	} else {
 		meta.CurrentOffset = ZeroOffset
 		meta.TTLSeconds = opts.TTLSeconds
-		meta.ExpiresAt = effectiveExpiry
+		meta.ExpiresAt = opts.ExpiresAt
 	}
 
 	stream := &memoryStream{
 		metadata: meta,
 		messages: make([]Message, 0),
 		data:     make([]byte, 0),
+	}
+
+	// Materialize binary sub-offset prefix as the fork's first own message.
+	if isFork && len(binarySubOffsetPrefix) > 0 {
+		newOffset := stream.metadata.CurrentOffset.Add(uint64(len(binarySubOffsetPrefix)))
+		stream.messages = append(stream.messages, Message{
+			Data:   binarySubOffsetPrefix,
+			Offset: newOffset,
+		})
+		stream.data = append(stream.data, binarySubOffsetPrefix...)
+		stream.metadata.CurrentOffset = newOffset
 	}
 
 	// Handle initial data
@@ -274,37 +320,31 @@ func (s *MemoryStore) Create(path string, opts CreateOptions) (*StreamMetadata, 
 	return &stream.metadata, true, nil // true = newly created
 }
 
-// computeForkExpiry determines the effective expiry for a fork stream,
-// capped at the source stream's expiry.
-func (s *MemoryStore) computeForkExpiry(opts CreateOptions, sourceMeta StreamMetadata) *time.Time {
-	// Resolve source's absolute expiry
-	var sourceExpiry *time.Time
-	if sourceMeta.ExpiresAt != nil {
-		sourceExpiry = sourceMeta.ExpiresAt
-	} else if sourceMeta.TTLSeconds != nil {
-		t := sourceMeta.CreatedAt.Add(time.Duration(*sourceMeta.TTLSeconds) * time.Second)
-		sourceExpiry = &t
+// resolveForkExpiry resolves fork TTL/expiry per the decision table.
+// Forks have independent lifetimes — no capping at source expiry.
+func (s *MemoryStore) resolveForkExpiry(opts CreateOptions, sourceMeta StreamMetadata) (*int64, *time.Time) {
+	// Fork explicitly requests TTL — use it
+	if opts.TTLSeconds != nil {
+		return opts.TTLSeconds, nil
 	}
 
-	// Resolve fork's requested expiry
-	var forkExpiry *time.Time
+	// Fork explicitly requests Expires-At — use it
 	if opts.ExpiresAt != nil {
-		forkExpiry = opts.ExpiresAt
-	} else if opts.TTLSeconds != nil {
-		t := time.Now().Add(time.Duration(*opts.TTLSeconds) * time.Second)
-		forkExpiry = &t
-	} else {
-		forkExpiry = sourceExpiry // Inherit source expiry
+		return nil, opts.ExpiresAt
 	}
 
-	// Cap at source expiry
-	if sourceExpiry != nil && forkExpiry != nil {
-		if forkExpiry.After(*sourceExpiry) {
-			forkExpiry = sourceExpiry
-		}
+	// No expiry requested — inherit from source
+	if sourceMeta.TTLSeconds != nil {
+		ttl := *sourceMeta.TTLSeconds
+		return &ttl, nil
+	}
+	if sourceMeta.ExpiresAt != nil {
+		t := *sourceMeta.ExpiresAt
+		return nil, &t
 	}
 
-	return forkExpiry
+	// Source has no expiry either
+	return nil, nil
 }
 
 func (s *MemoryStore) Get(path string) (*StreamMetadata, error) {
@@ -354,9 +394,10 @@ func (s *MemoryStore) Delete(path string) error {
 		return ErrStreamNotFound
 	}
 
-	// Already soft-deleted: idempotent success
+	// Already soft-deleted: the stream is gone for direct operations (a
+	// soft-deleted stream returns 410 Gone for GET/HEAD/POST/DELETE).
 	if stream.metadata.SoftDeleted {
-		return nil
+		return ErrStreamSoftDeleted
 	}
 
 	// If there are forks referencing this stream, soft-delete instead
@@ -424,6 +465,9 @@ func (s *MemoryStore) CloseStream(path string) (*CloseResult, error) {
 
 	alreadyClosed := stream.metadata.Closed
 	stream.metadata.Closed = true
+
+	// A close is a write: refresh the TTL sliding window
+	stream.metadata.LastAccessedAt = time.Now()
 
 	// Notify pending long-polls that stream is closed
 	s.longPoll.notifyClosed(path)
@@ -517,6 +561,9 @@ func (s *MemoryStore) CloseStreamWithProducer(path string, opts CloseProducerOpt
 		Seq:        opts.ProducerSeq,
 	}
 
+	// A close is a write: refresh the TTL sliding window
+	stream.metadata.LastAccessedAt = time.Now()
+
 	// Notify pending long-polls that stream is closed
 	s.longPoll.notifyClosed(path)
 
@@ -559,6 +606,9 @@ func (s *MemoryStore) Append(path string, data []byte, opts AppendOptions) (Appe
 	if stream.metadata.IsExpired() {
 		return AppendResult{}, ErrStreamNotFound
 	}
+
+	// Refresh TTL sliding window
+	stream.metadata.LastAccessedAt = time.Now()
 
 	// Check if stream is closed
 	if stream.metadata.Closed {
@@ -712,6 +762,32 @@ func readOwnMessages(stream *memoryStream, offset Offset, capAtOffset *Offset) [
 	return messages
 }
 
+// resolveForkSubOffset walks the source stream from forkOffset and resolves a
+// non-zero sub-offset. See FileStore.resolveForkSubOffset for semantics.
+func (s *MemoryStore) resolveForkSubOffset(sourceStream *memoryStream, forkOffset Offset, subOffset uint64) (Offset, []byte, error) {
+	// Read the source from forkOffset onward (across its fork chain if any)
+	sourceMessages := s.readForkedStream(sourceStream, forkOffset)
+
+	if isJSONContentType(sourceStream.metadata.ContentType) {
+		if uint64(len(sourceMessages)) < subOffset {
+			return Offset{}, nil, ErrInvalidForkSubOffset
+		}
+		return sourceMessages[subOffset-1].Offset, nil, nil
+	}
+
+	// Binary: at least one message must follow forkOffset
+	if len(sourceMessages) == 0 {
+		return Offset{}, nil, ErrInvalidForkSubOffset
+	}
+	first := sourceMessages[0].Data
+	if uint64(len(first)) < subOffset {
+		return Offset{}, nil, ErrInvalidForkSubOffset
+	}
+	prefix := make([]byte, subOffset)
+	copy(prefix, first[:subOffset])
+	return forkOffset, prefix, nil
+}
+
 // readForkedStream reads messages across the fork chain. For non-forks it delegates
 // to readOwnMessages. For forks, it reads inherited messages from the source chain
 // (capped at ForkOffset) and then the fork's own messages, concatenating the results.
@@ -752,11 +828,11 @@ func (s *MemoryStore) readForkedStream(stream *memoryStream, offset Offset) []Me
 }
 
 func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) {
-	s.mu.RLock()
+	s.mu.Lock()
 
 	stream, ok := s.streams[path]
 	if !ok {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, false, ErrStreamNotFound
 	}
 
@@ -764,26 +840,20 @@ func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) 
 	if stream.metadata.IsExpired() {
 		if stream.metadata.RefCount > 0 {
 			// Expiry with active forks: treat as soft-delete
-			// Need write lock to mutate
-			s.mu.RUnlock()
-			s.mu.Lock()
-			// Re-check under write lock
-			stream, ok = s.streams[path]
-			if ok && stream.metadata.IsExpired() && stream.metadata.RefCount > 0 {
-				stream.metadata.SoftDeleted = true
-			}
-			s.mu.Unlock()
-			return nil, false, ErrStreamNotFound
+			stream.metadata.SoftDeleted = true
 		}
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, false, ErrStreamNotFound
 	}
 
 	// Soft-deleted streams are not visible for direct reads
 	if stream.metadata.SoftDeleted {
-		s.mu.RUnlock()
+		s.mu.Unlock()
 		return nil, false, ErrStreamNotFound
 	}
+
+	// Refresh TTL sliding window
+	stream.metadata.LastAccessedAt = time.Now()
 
 	// Read messages across fork chain
 	messages := s.readForkedStream(stream, offset)
@@ -800,7 +870,7 @@ func (s *MemoryStore) Read(path string, offset Offset) ([]Message, bool, error) 
 		upToDate = offset.Equal(stream.metadata.CurrentOffset) || stream.metadata.CurrentOffset.Equal(ZeroOffset)
 	}
 
-	s.mu.RUnlock()
+	s.mu.Unlock()
 	return messages, upToDate, nil
 }
 

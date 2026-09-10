@@ -10,10 +10,16 @@ export default [
       `**/dist/**`,
       `**/build/**`,
       `**/.output/**`,
+      `**/.next/**`,
+      `**/.nitro/**`,
+      `**/.tanstack/**`,
+      `**/.wrangler/**`,
+      `**/worker-configuration.d.ts`,
       `**/coverage/**`,
       `docs/.vitepress/**`,
       `eslint.config.js`,
       `vitest.config.ts`,
+      `**/vitest.do.config.ts`,
       `**/vite.config.ts`,
       `**/tsdown.config.ts`,
       `**/tsup.config.ts`,
@@ -43,6 +49,15 @@ export default [
   },
   {
     files: [`**/*.ts`, `**/*.tsx`],
+    languageOptions: {
+      parserOptions: {
+        // Anchor `project: true` tsconfig discovery to the repo root so
+        // typed linting works no matter which working directory the
+        // editor's ESLint server picks (e.g. a package with its own
+        // eslint.config.js).
+        tsconfigRootDir: import.meta.dirname,
+      },
+    },
     rules: {
       "@typescript-eslint/no-unused-vars": [
         `error`,

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync } from "node:fs"
 import { readFile, writeFile } from "node:fs/promises"
 import path from "node:path"
+import { resolveChatFile } from "./chat-id"
 import type { UIMessage } from "ai"
 
 const CHATS_DIR = path.join(process.cwd(), `.chats`)
@@ -11,7 +12,7 @@ function ensureDir() {
 
 function chatFile(id: string) {
   ensureDir()
-  return path.join(CHATS_DIR, `${id}.json`)
+  return resolveChatFile(CHATS_DIR, id)
 }
 
 interface ChatData {

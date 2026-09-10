@@ -3,10 +3,11 @@
 }
 
 :4437 {
-	route /v1/stream/* {
+	route /* {
 		durable_streams {
 			data_dir ./data
 			long_poll_timeout 500ms
+			webhook_callback_url http://localhost:4437
 		}
 	}
 }

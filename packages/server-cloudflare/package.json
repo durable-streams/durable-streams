@@ -1,0 +1,63 @@
+{
+  "name": "@durable-streams/server-cloudflare",
+  "version": "0.1.1",
+  "description": "Durable Streams protocol server on Cloudflare Workers + Durable Objects — export the StreamObject class and mount the handler in your own Worker",
+  "license": "Apache-2.0",
+  "author": "Tom Beckenham",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/durable-streams/durable-streams.git",
+    "directory": "packages/server-cloudflare"
+  },
+  "bugs": {
+    "url": "https://github.com/durable-streams/durable-streams/issues"
+  },
+  "keywords": [
+    "durable-streams",
+    "cloudflare",
+    "workers",
+    "durable-objects",
+    "streams",
+    "sse",
+    "resumable"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.cjs",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": {
+        "types": "./dist/index.d.ts",
+        "default": "./dist/index.js"
+      },
+      "require": {
+        "types": "./dist/index.d.cts",
+        "default": "./dist/index.cjs"
+      }
+    },
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "dist",
+    "src",
+    "NOTICE"
+  ],
+  "scripts": {
+    "cf-typegen": "wrangler types --config test/wrangler.jsonc",
+    "build": "pnpm cf-typegen && tsdown",
+    "prepublishOnly": "pnpm typecheck && pnpm build",
+    "typecheck": "pnpm cf-typegen && tsc --noEmit",
+    "conformance": "cd ../.. && vitest run --project server-cloudflare",
+    "test:do": "vitest run --config vitest.do.config.ts"
+  },
+  "devDependencies": {
+    "@cloudflare/vitest-pool-workers": "^0.18.4",
+    "@durable-streams/server-conformance-tests": "workspace:*",
+    "tsdown": "^0.9.0",
+    "typescript": "^5.8.3",
+    "vitest": "^4.1.10",
+    "wrangler": "^4.107.1"
+  }
+}

@@ -1,5 +1,62 @@
 # @durable-streams/example-proxy-chat-tanstack
 
+## 0.0.9
+
+### Patch Changes
+
+- Add a Cloudflare Workers and Durable Objects server with secure routing, durable fork lifecycle handling, bounded reads, sliding TTL support, and conformance coverage. Add custom server-side fetch support to the TanStack AI transport and a deployable Cloudflare chat example. Harden fork recovery across existing servers and require fail-closed authentication and path-safe identifiers in the chat examples. ([#392](https://github.com/durable-streams/durable-streams/pull/392))
+
+- Updated dependencies [[`a4d31bc`](https://github.com/durable-streams/durable-streams/commit/a4d31bcca01794aa81a5e482b7401670077cc78e)]:
+  - @durable-streams/tanstack-ai-transport@0.0.9
+  - @durable-streams/client@0.2.6
+
+## 0.0.8
+
+### Patch Changes
+
+- Updated dependencies [[`92c0821`](https://github.com/durable-streams/durable-streams/commit/92c082152f7be8327f0c055d8b224494e5e71f76)]:
+  - @durable-streams/client@0.2.6
+  - @durable-streams/tanstack-ai-transport@0.0.8
+
+## 0.0.7
+
+### Patch Changes
+
+- Updated dependencies [[`6afab5f`](https://github.com/durable-streams/durable-streams/commit/6afab5f8258999ff1794749ad9d0d9bd0c823625)]:
+  - @durable-streams/client@0.2.5
+  - @durable-streams/tanstack-ai-transport@0.0.7
+
+## 0.0.6
+
+### Patch Changes
+
+- Updated dependencies [[`c654e5c`](https://github.com/durable-streams/durable-streams/commit/c654e5c7d8d4ca21b1cbfc233cbbe2d2b1f09b8e)]:
+  - @durable-streams/tanstack-ai-transport@0.0.6
+
+## 0.0.5
+
+### Patch Changes
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`49eef7c`](https://github.com/durable-streams/durable-streams/commit/49eef7ca43611985a1ca4bff94d02fc4e5c702bc), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+  - @durable-streams/tanstack-ai-transport@0.0.5
+
+## 0.0.4
+
+### Patch Changes
+
+- Updated dependencies [[`d2deb9b`](https://github.com/durable-streams/durable-streams/commit/d2deb9b88536d43bfb93035dd4e604f5d9bf6bcd)]:
+  - @durable-streams/tanstack-ai-transport@0.0.4
+  - @durable-streams/client@0.2.3
+
+## 0.0.3
+
+### Patch Changes
+
+- Updated dependencies [[`41f5c02`](https://github.com/durable-streams/durable-streams/commit/41f5c02bdaa475814dabe1e734a932c538e54c19)]:
+  - @durable-streams/tanstack-ai-transport@0.0.3
+  - @durable-streams/client@0.2.3
+
 ## 0.0.2
 
 ### Patch Changes

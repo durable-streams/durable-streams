@@ -450,7 +450,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
                     up_to_date = event.up_to_date
 
                     if chunk_count >= max_chunks:
-                        stopped_for_max_chunks = True
+                        stopped_for_max_chunks = not response.stream_closed
                         break
 
                     # For waitForUpToDate: stop when upToDate becomes True AND
@@ -489,9 +489,17 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
 
                     # Continue polling until we reach maxChunks or timeout
                     chunk_count = 1 if data else 0
-                    while chunk_count < max_chunks and not (wait_for_up_to_date and up_to_date):
+                    while (
+                        chunk_count < max_chunks
+                        and not response.stream_closed
+                        and not (wait_for_up_to_date and up_to_date)
+                    ):
                         # Do a long-poll fetch for more data
-                        next_response = await response._fetch_next(response.offset, response.cursor)
+                        next_response = await response._fetch_next(
+                            response.offset,
+                            response.cursor,
+                            response.up_to_date,
+                        )
                         response._update_metadata_from_response(next_response)
 
                         if next_response.status_code == 204:
@@ -536,7 +544,7 @@ async def handle_read(cmd: dict[str, Any]) -> dict[str, Any]:
         "chunks": chunks,
         "offset": final_offset,
         "upToDate": up_to_date,
-        "streamClosed": False if stopped_for_max_chunks else stream_closed,
+        "streamClosed": stream_closed and not stopped_for_max_chunks,
     }
     if headers_sent:
         result["headersSent"] = headers_sent

@@ -1,6 +1,6 @@
 {
   "name": "@durable-streams/tanstack-ai-transport",
-  "version": "0.0.2",
+  "version": "0.0.9",
   "description": "TanStack AI adapters for Durable Streams",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
@@ -37,9 +37,15 @@
     "./package.json": "./package.json"
   },
   "sideEffects": false,
+  "bin": {
+    "intent": "./bin/intent.js"
+  },
   "files": [
     "dist",
-    "src"
+    "src",
+    "skills",
+    "bin",
+    "!skills/_artifacts"
   ],
   "scripts": {
     "build": "tsdown",
@@ -50,6 +56,7 @@
     "@durable-streams/client": "workspace:*"
   },
   "devDependencies": {
+    "@tanstack/intent": "latest",
     "tsdown": "^0.9.0"
   },
   "engines": {

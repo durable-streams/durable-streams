@@ -1,5 +1,109 @@
 # @durable-streams/state
 
+## 0.3.1
+
+### Patch Changes
+
+- Mark `@tanstack/db` as an optional peer dependency. The TanStack DB surface lives behind the `@durable-streams/state/db` subpath and the main entry is db-free, so consumers that don't use the reactive layer no longer get unmet-peer warnings (or errors under strict pnpm). ([#383](https://github.com/durable-streams/durable-streams/pull/383))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.6
+
+## 0.3.0
+
+### Minor Changes
+
+- feat(state)!: move the TanStack DB-backed surface to a `@durable-streams/state/db` subpath ([#382](https://github.com/durable-streams/durable-streams/pull/382))
+
+  The main `@durable-streams/state` entry is now free of `@tanstack/db`. It exposes only the db-free protocol surface — `createStateSchema` and its change-event helpers, `MaterializedState`, and the state-event types/guards — so producers and backends (e.g. `@durable-streams/server`) can depend on it without the `@tanstack/db` peer dependency installed. Previously the entry eagerly re-exported `@tanstack/db`, so importing anything from the package forced that peer to be resolvable, breaking publishable dependents that don't use the reactive layer.
+
+  The reactive, TanStack DB-backed layer now lives at `@durable-streams/state/db`:
+  - `createStreamDB`, `getStreamDBCollectionId`, and the `StreamDB*` / `Action*` types
+  - the convenience re-exports of `@tanstack/db` (`createCollection`, `createOptimisticAction`, `eq`, `and`, `count`, …)
+
+  The subpath is a strict superset of the main entry (it also re-exports `createStateSchema`), so existing reactive consumers only change the import path:
+
+  ```diff
+  -import { createStateSchema, createStreamDB } from "@durable-streams/state"
+  +import { createStateSchema, createStreamDB } from "@durable-streams/state/db"
+  ```
+
+  BREAKING CHANGE: `createStreamDB`, `getStreamDBCollectionId`, the StreamDB/Action types, and the `@tanstack/db` re-exports are no longer exported from `@durable-streams/state`. Import them from `@durable-streams/state/db` instead. The db-free APIs (`createStateSchema`, `MaterializedState`, event types/guards) are unchanged on the main entry.
+
+- Move `@tanstack/db` from a regular dependency to a peer dependency (`>=0.6.0 <1.0.0`). ([#381](https://github.com/durable-streams/durable-streams/pull/381))
+
+  `@tanstack/db` is a singleton: collections, transactions, and live queries rely on `instanceof` checks and module-level shared state, so two copies in a dependency tree don't interoperate. Pinning it as a regular dependency (`^0.6.0`) meant that as soon as a consuming app upgraded `@tanstack/react-db` (which pins `@tanstack/db` at an exact version per release) past the `0.6` line, the app's copy and `state`'s copy diverged into two instances — breaking StreamDB collections at runtime.
+
+  Declaring it as a peer dependency makes `state` bind to the single `@tanstack/db` the consuming app already has, and the permissive range keeps that binding valid as the app moves across `0.x` minors.
+
+  **Breaking change:** consumers must now install `@tanstack/db` themselves (any `>=0.6.0 <1.0.0`). Apps already depending on `@tanstack/db` or `@tanstack/react-db` are unaffected.
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.6
+
+## 0.2.9
+
+### Patch Changes
+
+- Fix idempotent producer auto-claim sequencing so later batches wait for the ([#371](https://github.com/durable-streams/durable-streams/pull/371))
+  first running batch to claim its epoch before reserving and sending subsequent
+  sequence numbers. `flush()` now also waits for batches held behind the initial
+  auto-claim barrier.
+- Updated dependencies [[`92c0821`](https://github.com/durable-streams/durable-streams/commit/92c082152f7be8327f0c055d8b224494e5e71f76)]:
+  - @durable-streams/client@0.2.6
+
+## 0.2.8
+
+### Patch Changes
+
+- Updated dependencies [[`6afab5f`](https://github.com/durable-streams/durable-streams/commit/6afab5f8258999ff1794749ad9d0d9bd0c823625)]:
+  - @durable-streams/client@0.2.5
+
+## 0.2.7
+
+### Patch Changes
+
+- feat(state): expose StreamDB offsets and subscription hooks ([#365](https://github.com/durable-streams/durable-streams/pull/365))
+
+  StreamDB can now reuse an existing DurableStream instance, expose the latest
+  consumed offset, and notify callers around JSON stream batches. Collection IDs
+  are scoped by stream URL to avoid cross-stream collisions, and live replayed
+  inserts are normalized to updates when they match existing rows.
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.4
+
+## 0.2.6
+
+### Patch Changes
+
+- Add first-class live mode configuration to `createStreamDB()` so callers can force `"sse"` or `"long-poll"`, and add `headers` to `IdempotentProducerOptions` for producer batch and close requests. ([#353](https://github.com/durable-streams/durable-streams/pull/353))
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+
+## 0.2.5
+
+### Patch Changes
+
+- docs(stream-db): show list query pattern for useLiveQuery ([#333](https://github.com/durable-streams/durable-streams/pull/333))
+
+  Added list query example with `{ data }` destructuring and default empty array alongside the existing findOne pattern. Prevents agents from writing `allSessions.map(...)` instead of `const { data: allSessions = [] } = useLiveQuery(...)`.
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.3
+
+## 0.2.4
+
+### Patch Changes
+
+- Remove verbose debug logging from StreamDB stream consumer ([#328](https://github.com/durable-streams/durable-streams/pull/328))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.3
+
 ## 0.2.3
 
 ### Patch Changes

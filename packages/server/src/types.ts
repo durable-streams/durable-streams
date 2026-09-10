@@ -68,6 +68,13 @@ export interface Stream {
   createdAt: number
 
   /**
+   * Timestamp of the last read or write (for TTL renewal).
+   * Initialized to createdAt. Updated on GET reads and POST appends.
+   * HEAD requests do NOT update this field.
+   */
+  lastAccessedAt: number
+
+  /**
    * Producer states for idempotent writes.
    * Maps producer ID to their epoch and sequence state.
    */
@@ -99,6 +106,14 @@ export interface Stream {
    * Format: "0000000000000000_0000000000000000"
    */
   forkOffset?: string
+
+  /**
+   * User-supplied sub-offset value refining `forkOffset` (Section 4.2 of
+   * PROTOCOL.md). Stored verbatim for idempotent re-creation matching:
+   * bytes for non-JSON forks, flattened message count for JSON forks.
+   * `undefined` and `0` are equivalent.
+   */
+  forkSubOffset?: number
 
   /**
    * Number of forks referencing this stream.
@@ -199,6 +214,14 @@ export interface TestServerOptions {
    * Default: October 9, 2024 00:00:00 UTC.
    */
   cursorEpoch?: Date
+
+  /**
+   * Enable webhook subscriptions.
+   * Pull-wake subscription routes are always mounted, but type=webhook creates
+   * are rejected unless this is true.
+   * Default: false.
+   */
+  webhooks?: boolean
 }
 
 /**

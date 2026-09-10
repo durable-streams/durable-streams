@@ -49,6 +49,15 @@ export default defineConfig({
       }),
       defineProject({
         test: {
+          name: "server-cloudflare",
+          include: ["packages/server-cloudflare/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+          testTimeout: 30000,
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
           name: "state",
           include: ["packages/state/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
@@ -98,6 +107,14 @@ export default defineConfig({
         test: {
           name: "tanstack-transport",
           include: ["packages/tanstack-ai-transport/test/**/*.test.ts"],
+          exclude: ["**/node_modules/**"],
+        },
+        resolve: { alias },
+      }),
+      defineProject({
+        test: {
+          name: "aisdk-transport",
+          include: ["packages/aisdk-transport/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],
         },
         resolve: { alias },

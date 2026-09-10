@@ -12,7 +12,7 @@ outline: [2, 3]
 
 Sync [Yjs](https://yjs.dev/) CRDT documents over Durable Streams using plain HTTP — no WebSocket infrastructure needed.
 
-y-durable-streams provides a Yjs provider and server that handle snapshot discovery, live updates via long-polling or SSE, automatic server-side compaction, and optional awareness (presence) for cursors and user status.
+y-durable-streams provides a Yjs provider and server that handle snapshot discovery, live updates via long-polling or SSE, automatic server-side compaction, snapshot availability webhooks, and optional awareness (presence) for cursors and user status.
 
 ## Installation
 
@@ -170,6 +170,30 @@ y-durable-streams uses a four-step sync protocol over HTTP. For the full wire fo
 
 y-durable-streams automatically compacts documents when accumulated updates exceed a size threshold. Compaction creates a new snapshot at the current offset, keeping initial sync fast for new clients. This is transparent to connected clients — existing connections continue uninterrupted.
 
+### Snapshot webhooks
+
+Create a service-scoped webhook subscription to persist snapshots in external storage:
+
+```ts
+await fetch(`${baseUrl}/__ds/subscriptions/snapshot-archive`, {
+  method: "PUT",
+  headers: { "content-type": "application/json" },
+  body: JSON.stringify({
+    type: "webhook",
+    events: ["snapshot.available"],
+    document_pattern: "projects/**",
+    webhook: { url: "https://archive.example/hooks/yjs" },
+    lease_ttl_ms: 30_000,
+  }),
+})
+```
+
+`document_pattern` is relative to the service. `*` matches one path segment and `**` matches recursively. The underlying Durable Streams server must support webhook subscriptions.
+
+The signed webhook is a wake notification and may represent more than one compaction. For every pending `.index` stream in the payload, derive the document path, request its current snapshot with `?offset=snapshot`, and persist the returned binary. Respond with `{ "done": true }` only after persistence succeeds; failed deliveries are retried by the Durable Streams subscription system.
+
+Subscriptions observe future snapshots. They do not immediately deliver the snapshot that was current when the subscription was created.
+
 ### URL structure
 
 Each document is accessed via a single URL with query parameters:
@@ -179,6 +203,46 @@ Each document is accessed via a single URL with query parameters:
 ```
 
 Where `docPath` can include forward slashes (e.g., `project/chapter-1`).
+
+## Deployment
+
+### Development
+
+Use `DurableStreamTestServer` + `YjsServer` as shown in the quick start. See the [deployment guide](/deployment) for details.
+
+### Production (self-hosted)
+
+Run the Caddy binary with the durable_streams plugin for storage, and reverse-proxy to YjsServer:
+
+```
+:443 {
+  route /v1/stream/* {
+    durable_streams {
+      data_dir ./data
+    }
+  }
+  route /v1/yjs/* {
+    reverse_proxy localhost:4438 {
+      flush_interval -1
+    }
+  }
+}
+```
+
+`flush_interval -1` is required — without it, Caddy buffers SSE responses and live updates stop working.
+
+### Managed (Electric Cloud)
+
+<IntentLink intent="create" serviceType="yjs" />
+
+Deploy on Electric Cloud for managed hosting with no infrastructure to maintain.
+
+```bash
+npx @electric-sql/cli services create yjs --json
+npx @electric-sql/cli services get-secret <service-id> --json
+```
+
+Point `baseUrl` at the cloud URL and pass the secret as an `Authorization` header. For browser apps, use a server-side proxy to avoid exposing the secret.
 
 ## Best practices
 
@@ -208,6 +272,52 @@ provider.on("error", (error) => {
   showToast("Connection issue — retrying...")
 })
 ```
+
+## Editor integrations
+
+### TipTap v3
+
+```bash
+npm install @tiptap/react @tiptap/starter-kit \
+  @tiptap/extension-collaboration @tiptap/extension-collaboration-caret
+```
+
+> **Important:** Use `@tiptap/extension-collaboration-caret`, not
+> `@tiptap/extension-collaboration-cursor`. The `-cursor` package is a
+> broken v3 stub.
+
+```typescript
+import { useEditor, EditorContent } from "@tiptap/react"
+import StarterKit from "@tiptap/starter-kit"
+import Collaboration from "@tiptap/extension-collaboration"
+import CollaborationCaret from "@tiptap/extension-collaboration-caret"
+
+const editor = useEditor({
+  extensions: [
+    StarterKit.configure({ undoRedo: false }),
+    Collaboration.configure({ document: ydoc }),
+    CollaborationCaret.configure({ provider, user: { name, color } }),
+  ],
+})
+```
+
+### CodeMirror 6
+
+```bash
+npm install codemirror @codemirror/state @codemirror/view y-codemirror.next
+```
+
+```typescript
+import { yCollab } from "y-codemirror.next"
+
+const ytext = ydoc.getText("content")
+const state = EditorState.create({
+  doc: ytext.toString(),
+  extensions: [basicSetup, yCollab(ytext, awareness)],
+})
+```
+
+See the [Yjs demo](https://github.com/durable-streams/durable-streams/tree/main/examples/yjs-demo) for a complete CodeMirror example.
 
 ## Learn more
 

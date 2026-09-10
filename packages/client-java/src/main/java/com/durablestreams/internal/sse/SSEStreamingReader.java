@@ -184,11 +184,9 @@ public final class SSEStreamingReader implements AutoCloseable {
                     // Accumulate data events until we see a control event
                     pendingDataList.add(event.getData());
                 } else if ("control".equals(event.getEvent())) {
-                    // Combine all accumulated data and create chunk
-                    String allData = String.join("", pendingDataList);
                     try {
                         Chunk chunk = createChunkFromControl(
-                            allData.isEmpty() ? null : allData,
+                            pendingDataList,
                             event.getData()
                         );
                         if (chunk != null) {
@@ -222,46 +220,44 @@ public final class SSEStreamingReader implements AutoCloseable {
         }
     }
 
-    private Chunk createChunkFromControl(String data, String controlJson) throws ParseErrorException {
-        // Parse control JSON: {"streamNextOffset":"...", "streamCursor":"...", "upToDate":...}
-        // Validate control JSON - must not be null/empty and must be valid JSON
+    private Chunk createChunkFromControl(List<String> dataParts, String controlJson) throws ParseErrorException {
         if (controlJson == null || controlJson.trim().isEmpty()) {
             throw new ParseErrorException("Empty control event data");
         }
 
-        // Validate it's a JSON object (starts with { after trimming)
         String trimmed = controlJson.trim();
         if (!trimmed.startsWith("{") || !trimmed.endsWith("}")) {
             throw new ParseErrorException("Malformed control event JSON: " + controlJson);
         }
 
-        String nextOffset = null;
-        String cursor = null;
-        boolean isUpToDate = false;
-
-        // Simple JSON parsing (avoid external dependencies)
-        nextOffset = extractJsonString(controlJson, "streamNextOffset");
-        cursor = extractJsonString(controlJson, "streamCursor");
-        isUpToDate = extractJsonBoolean(controlJson, "upToDate");
+        String nextOffset = extractJsonString(controlJson, "streamNextOffset");
+        String cursor = extractJsonString(controlJson, "streamCursor");
+        boolean isUpToDate = extractJsonBoolean(controlJson, "upToDate");
 
         byte[] dataBytes;
-        if (data == null || data.isEmpty()) {
+        if (dataParts.isEmpty()) {
             dataBytes = new byte[0];
         } else if ("base64".equals(encoding)) {
-            // Decode base64 data per Protocol Section 5.7
-            // Per protocol: concatenate data lines, remove \n and \r, then decode
-            String cleaned = data.replace("\n", "").replace("\r", "");
-            if (cleaned.isEmpty()) {
-                dataBytes = new byte[0];
-            } else {
-                try {
-                    dataBytes = Base64.getDecoder().decode(cleaned);
-                } catch (IllegalArgumentException e) {
-                    throw new ParseErrorException("Invalid base64 data in SSE event: " + e.getMessage());
+            // Decode each data event independently then concatenate.
+            // Each SSE data event is a separately base64-encoded message;
+            // joining them before decoding produces invalid base64 when
+            // padding characters appear mid-string.
+            java.io.ByteArrayOutputStream out = new java.io.ByteArrayOutputStream();
+            for (String part : dataParts) {
+                String cleaned = part.replace("\n", "").replace("\r", "");
+                if (!cleaned.isEmpty()) {
+                    try {
+                        out.write(Base64.getDecoder().decode(cleaned));
+                    } catch (IllegalArgumentException e) {
+                        throw new ParseErrorException("Invalid base64 data in SSE event: " + e.getMessage());
+                    } catch (java.io.IOException e) {
+                        throw new ParseErrorException("Failed to concatenate decoded data: " + e.getMessage());
+                    }
                 }
             }
+            dataBytes = out.toByteArray();
         } else {
-            dataBytes = data.getBytes(StandardCharsets.UTF_8);
+            dataBytes = String.join("", dataParts).getBytes(StandardCharsets.UTF_8);
         }
 
         Map<String, String> headers = new HashMap<>();

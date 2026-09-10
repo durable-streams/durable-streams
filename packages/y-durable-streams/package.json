@@ -1,7 +1,7 @@
 {
   "name": "@durable-streams/y-durable-streams",
   "description": "Yjs provider for Durable Streams - sync Yjs documents over append-only streams",
-  "version": "0.2.3",
+  "version": "0.2.8",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
   "repository": {
@@ -19,8 +19,12 @@
     "sync",
     "collaborative",
     "real-time",
-    "typescript"
+    "typescript",
+    "tanstack-intent"
   ],
+  "bin": {
+    "intent": "./bin/intent.js"
+  },
   "type": "module",
   "main": "./dist/index.cjs",
   "module": "./dist/index.js",
@@ -52,6 +56,7 @@
   "files": [
     "dist",
     "src",
+    "bin",
     "skills",
     "!skills/_artifacts"
   ],
@@ -63,6 +68,7 @@
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
+    "@tanstack/intent": "latest",
     "tsdown": "^0.9.0"
   },
   "scripts": {

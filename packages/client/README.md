@@ -887,6 +887,7 @@ interface IdempotentProducerOptions {
   maxBatchBytes?: number // Max bytes before sending batch (default: 1MB)
   lingerMs?: number // Max time to wait for more messages (default: 5ms)
   maxInFlight?: number // Concurrent batches in flight (default: 5)
+  headers?: HeadersRecord // Extra headers for producer batch/close requests
   signal?: AbortSignal // Cancellation signal
   fetch?: typeof fetch // Custom fetch implementation
   onError?: (error: Error) => void // Error callback for batch failures
@@ -1136,6 +1137,13 @@ try {
   }
 }
 ```
+
+> **Performance note:** `append()` calls that overlap in time (fired without
+> awaiting) are batched into a single POST by default. If you `await` every
+> call inside a tight loop the batching never engages. For loops over an
+> async iterable (e.g. LLM streams), prefer `appendStream()` / `writable()`,
+> or fire `append()` without awaiting and await only the last promise (and
+> `close()`) at the end.
 
 ---
 

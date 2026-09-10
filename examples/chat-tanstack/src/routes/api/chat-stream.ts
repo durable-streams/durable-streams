@@ -4,6 +4,7 @@ import {
   buildChatStreamPath,
   buildReadStreamUrl,
 } from "~/lib/durable-streams-config"
+import { requireAuth } from "~/lib/auth.server"
 
 function normalizeChatId(id: string | null): string | null {
   if (!id) return null
@@ -28,6 +29,8 @@ export const Route = createFileRoute(`/api/chat-stream`)({
   server: {
     handlers: {
       GET: async ({ request }) => {
+        const unauthorized = requireAuth(request)
+        if (unauthorized) return unauthorized
         // Read proxy for durable streams; keeps read credentials off the client.
         const incomingUrl = new URL(request.url)
         const chatId = normalizeChatId(incomingUrl.searchParams.get(`id`))

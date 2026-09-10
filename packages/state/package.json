@@ -1,7 +1,7 @@
 {
   "name": "@durable-streams/state",
   "description": "State change event protocol for Durable Streams",
-  "version": "0.2.3",
+  "version": "0.3.1",
   "author": "Durable Stream contributors",
   "license": "Apache-2.0",
   "repository": {
@@ -33,6 +33,16 @@
         "default": "./dist/index.cjs"
       }
     },
+    "./db": {
+      "import": {
+        "types": "./dist/db.d.ts",
+        "default": "./dist/db.js"
+      },
+      "require": {
+        "types": "./dist/db.d.cts",
+        "default": "./dist/db.cjs"
+      }
+    },
     "./package.json": "./package.json"
   },
   "sideEffects": false,
@@ -53,11 +63,16 @@
     "@standard-schema/spec": "^1.0.0"
   },
   "peerDependencies": {
-    "@tanstack/db": ">=0.5.0"
+    "@tanstack/db": ">=0.6.0 <1.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@tanstack/db": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@durable-streams/server": "workspace:*",
-    "@tanstack/db": "latest",
+    "@tanstack/db": "0.6.0",
     "@tanstack/intent": "latest",
     "tsdown": "^0.9.0"
   },

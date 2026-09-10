@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from "vitest"
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest"
 import { DurableStreamTestServer } from "@durable-streams/server"
 import { DurableStream } from "@durable-streams/client"
 import { createStateSchema, createStreamDB } from "../src/stream-db"
@@ -67,6 +67,96 @@ describe(`Stream DB`, () => {
 
   afterAll(async () => {
     await server.stop()
+  })
+
+  it(`should pass configured live mode to the stream consumer`, async () => {
+    const streamState = createStateSchema({
+      users: {
+        schema: userSchema,
+        type: `user`,
+        primaryKey: `id`,
+      },
+    })
+
+    let callCount = 0
+    const mockFetch = vi.fn().mockImplementation(() => {
+      callCount++
+      if (callCount === 1) {
+        return new Response(JSON.stringify([]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            "Stream-Next-Offset": `0`,
+            "Stream-Up-To-Date": `true`,
+          },
+        })
+      }
+      return new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          "Stream-Next-Offset": `0`,
+          "Stream-Up-To-Date": `true`,
+        },
+      })
+    })
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: `https://example.com/stream`,
+        contentType: `application/json`,
+        fetch: mockFetch,
+      },
+      live: `long-poll`,
+      state: streamState,
+    })
+
+    await db.preload()
+    db.close()
+
+    const firstUrl = new URL(mockFetch.mock.calls[0]![0] as string)
+    expect(firstUrl.searchParams.has(`live`)).toBe(false)
+
+    expect(mockFetch.mock.calls.length).toBeGreaterThanOrEqual(2)
+    const secondUrl = new URL(mockFetch.mock.calls[1]![0] as string)
+    expect(secondUrl.searchParams.get(`live`)).toBe(`long-poll`)
+  })
+
+  it(`should disable live mode when configured with live false`, async () => {
+    const streamState = createStateSchema({
+      users: {
+        schema: userSchema,
+        type: `user`,
+        primaryKey: `id`,
+      },
+    })
+
+    const mockFetch = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify([]), {
+        status: 200,
+        headers: {
+          "content-type": `application/json`,
+          "Stream-Next-Offset": `0`,
+          "Stream-Up-To-Date": `true`,
+        },
+      })
+    )
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: `https://example.com/stream`,
+        contentType: `application/json`,
+        fetch: mockFetch,
+      },
+      live: false,
+      state: streamState,
+    })
+
+    await db.preload()
+    db.close()
+
+    const firstUrl = new URL(mockFetch.mock.calls[0]![0] as string)
+    expect(firstUrl.searchParams.has(`live`)).toBe(false)
   })
 
   it(`should define stream state and create db with collections`, async () => {
@@ -146,10 +236,59 @@ describe(`Stream DB`, () => {
     expect(msg?.text).toBe(`Hello!`)
     expect(msg?.userId).toBe(`1`)
 
-    // Verify returned values include the primary key
-    expect(Object.keys(kyle || {})).toEqual([`id`, `name`, `email`])
+    // Verify returned values include the primary key and StreamDB sequence field.
+    // Additional internal metadata fields may also be present on collection rows.
+    expect(Object.keys(kyle || {})).toEqual(
+      expect.arrayContaining([`id`, `name`, `email`, `_seq`])
+    )
 
     // Cleanup
+    db.close()
+  })
+
+  it(`should track the last consumed stream offset after preload`, async () => {
+    const streamState = createStateSchema({
+      users: {
+        schema: userSchema,
+        type: `user`,
+        primaryKey: `id`,
+      },
+    })
+
+    const streamPath = `/db/offset-${Date.now()}`
+    const streamUrl = `${baseUrl}${streamPath}`
+    const stream = await DurableStream.create({
+      url: streamUrl,
+      contentType: `application/json`,
+    })
+
+    await stream.append(
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
+        })
+      )
+    )
+    await stream.append(
+      JSON.stringify(
+        streamState.users.insert({
+          value: { id: `2`, name: `Ada`, email: `ada@example.com` },
+        })
+      )
+    )
+
+    const db = createStreamDB({
+      streamOptions: {
+        url: streamUrl,
+        contentType: `application/json`,
+      },
+      state: streamState,
+    })
+
+    await db.preload()
+
+    expect(db.offset).not.toBe(`-1`)
+
     db.close()
   })
 
@@ -712,12 +851,12 @@ describe(`Stream DB`, () => {
 
     // Verify initial inserts were received
     expect(allChanges.length).toBe(2)
-    expect(allChanges[0]).toEqual({
+    expect(allChanges[0]).toMatchObject({
       key: `1`,
       type: `insert`,
       value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
     })
-    expect(allChanges[1]).toEqual({
+    expect(allChanges[1]).toMatchObject({
       key: `2`,
       type: `insert`,
       value: { id: `2`, name: `Sarah`, email: `sarah@example.com` },
@@ -742,7 +881,7 @@ describe(`Stream DB`, () => {
 
     // Verify update was received
     expect(allChanges.length).toBe(1)
-    expect(allChanges[0]).toEqual({
+    expect(allChanges[0]).toMatchObject({
       key: `1`,
       type: `update`,
       value: { id: `1`, name: `Kyle Updated`, email: `kyle@example.com` },
@@ -762,7 +901,7 @@ describe(`Stream DB`, () => {
     await new Promise((resolve) => setTimeout(resolve, 100))
 
     expect(allChanges.length).toBe(1)
-    expect(allChanges[0]).toEqual({
+    expect(allChanges[0]).toMatchObject({
       key: `2`,
       type: `delete`,
       value: { id: `2`, name: `Sarah`, email: `sarah@example.com` },
@@ -1295,21 +1434,21 @@ describe(`Event Helper Validation`, () => {
     // Try to override operation in insert
     const insertEvent = stateSchema.users.insert({
       value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `delete` as any },
+      headers: { operation: `delete` },
     })
     expect(insertEvent.headers.operation).toBe(`insert`)
 
     // Try to override operation in update
     const updateEvent = stateSchema.users.update({
       value: { id: `1`, name: `Kyle`, email: `kyle@example.com` },
-      headers: { operation: `delete` as any },
+      headers: { operation: `delete` },
     })
     expect(updateEvent.headers.operation).toBe(`update`)
 
     // Try to override operation in delete
     const deleteEvent = stateSchema.users.delete({
       key: `1`,
-      headers: { operation: `insert` as any },
+      headers: { operation: `insert` },
     })
     expect(deleteEvent.headers.operation).toBe(`delete`)
   })
@@ -1811,14 +1950,16 @@ describe(`Stream DB Actions`, () => {
             mutationFn: async (name: string) => {
               // Verify we can use the stream
               await actionStream.append(
-                streamState.users.insert({
-                  key: name,
-                  value: {
-                    id: name,
-                    name,
-                    email: `${name.toLowerCase()}@example.com`,
-                  },
-                })
+                JSON.stringify(
+                  streamState.users.insert({
+                    key: name,
+                    value: {
+                      id: name,
+                      name,
+                      email: `${name.toLowerCase()}@example.com`,
+                    },
+                  })
+                )
               )
             },
           },

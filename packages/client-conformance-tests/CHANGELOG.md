@@ -1,5 +1,83 @@
 # @durable-streams/client-conformance-tests
 
+## 0.2.12
+
+### Patch Changes
+
+- Updated dependencies [[`a4d31bc`](https://github.com/durable-streams/durable-streams/commit/a4d31bcca01794aa81a5e482b7401670077cc78e)]:
+  - @durable-streams/server@0.3.8
+  - @durable-streams/client@0.2.6
+
+## 0.2.11
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @durable-streams/server@0.3.7
+  - @durable-streams/client@0.2.6
+
+## 0.2.10
+
+### Patch Changes
+
+- Escape Unicode line separator characters in the JSONL adapter protocol so Node 24 readline does not split conformance test commands mid-payload. ([#378](https://github.com/durable-streams/durable-streams/pull/378))
+
+- Updated dependencies [[`f380bca`](https://github.com/durable-streams/durable-streams/commit/f380bcafe11d0291d63e6ff96041d13cbf0cf976)]:
+  - @durable-streams/server@0.3.6
+  - @durable-streams/client@0.2.6
+
+## 0.2.9
+
+### Patch Changes
+
+- Updated dependencies [[`f9aff7d`](https://github.com/durable-streams/durable-streams/commit/f9aff7d3e1350deb208cb569e2c489842331167d), [`92c0821`](https://github.com/durable-streams/durable-streams/commit/92c082152f7be8327f0c055d8b224494e5e71f76)]:
+  - @durable-streams/server@0.3.5
+  - @durable-streams/client@0.2.6
+
+## 0.2.8
+
+### Patch Changes
+
+- Updated dependencies [[`6afab5f`](https://github.com/durable-streams/durable-streams/commit/6afab5f8258999ff1794749ad9d0d9bd0c823625)]:
+  - @durable-streams/client@0.2.5
+  - @durable-streams/server@0.3.4
+
+## 0.2.7
+
+### Patch Changes
+
+- Updated dependencies [[`5f02156`](https://github.com/durable-streams/durable-streams/commit/5f02156bf5317037591eb087bf757c8c14a84a27), [`5f02156`](https://github.com/durable-streams/durable-streams/commit/5f02156bf5317037591eb087bf757c8c14a84a27), [`df5d78b`](https://github.com/durable-streams/durable-streams/commit/df5d78badf02be74e7e5e47789da4219bba0252f)]:
+  - @durable-streams/server@0.3.3
+  - @durable-streams/client@0.2.4
+
+## 0.2.6
+
+### Patch Changes
+
+- Implement fetch-then-live pattern: initial requests omit the `live` query parameter so catch-up responses are cacheable by CDNs and browsers. Live mode (long-poll or SSE) activates only after the client reaches up-to-date. ([#354](https://github.com/durable-streams/durable-streams/pull/354))
+
+  For SSE mode, a dedicated `startSSE` path opens a persistent connection only after HTTP catch-up completes, replacing the previous single-connection approach.
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`33cb090`](https://github.com/durable-streams/durable-streams/commit/33cb09076b5eeb278e671a7afc9963bffd940872), [`bcc757e`](https://github.com/durable-streams/durable-streams/commit/bcc757eca91a22436f7d32859f471a7abe774310), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+  - @durable-streams/server@0.3.2
+
+## 0.2.5
+
+### Patch Changes
+
+- Updated dependencies []:
+  - @durable-streams/server@0.3.1
+  - @durable-streams/client@0.2.3
+
+## 0.2.4
+
+### Patch Changes
+
+- Updated dependencies [[`ebf3f23`](https://github.com/durable-streams/durable-streams/commit/ebf3f23c0e9c9cd56eebd514a1a53a51b94e9628), [`86f9698`](https://github.com/durable-streams/durable-streams/commit/86f96986fd0cbb80eb98befd70e7d104a5ccfdad)]:
+  - @durable-streams/server@0.3.0
+  - @durable-streams/client@0.2.3
+
 ## 0.2.3
 
 ### Patch Changes

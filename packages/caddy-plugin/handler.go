@@ -39,8 +39,9 @@ const (
 
 // Fork headers (request headers only — not set on responses)
 const (
-	HeaderStreamForkedFrom = "Stream-Forked-From"
-	HeaderStreamForkOffset = "Stream-Fork-Offset"
+	HeaderStreamForkedFrom    = "Stream-Forked-From"
+	HeaderStreamForkOffset    = "Stream-Fork-Offset"
+	HeaderStreamForkSubOffset = "Stream-Fork-Sub-Offset"
 )
 
 // sseLineTerminators matches all valid SSE line terminators: CRLF, CR, or LF
@@ -52,7 +53,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	// Set CORS headers
 	w.Header().Set("Access-Control-Allow-Origin", "*")
 	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, PUT, DELETE, HEAD, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Stream-Seq, Stream-TTL, Stream-Expires-At, Stream-Closed, If-None-Match, Producer-Id, Producer-Epoch, Producer-Seq, Stream-Forked-From, Stream-Fork-Offset, Stream-Fork-Sub-Offset, Authorization")
 	w.Header().Set("Access-Control-Expose-Headers", "Stream-Next-Offset, Stream-Cursor, Stream-Up-To-Date, Stream-Closed, ETag, Location, Producer-Epoch, Producer-Seq, Producer-Expected-Seq, Producer-Received-Seq")
 
 	// Browser security headers (Protocol Section 10.7)
@@ -63,6 +64,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request, next caddyht
 	if r.Method == http.MethodOptions {
 		w.WriteHeader(http.StatusNoContent)
 		return nil
+	}
+
+	// Check webhook routes before normal stream handling
+	if h.webhookRoutes != nil {
+		if h.webhookRoutes.HandleRequest(w, r) {
+			return nil
+		}
 	}
 
 	// Extract stream path from URL
@@ -110,6 +118,13 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	// Parse fork headers
 	forkedFromStr := r.Header.Get(HeaderStreamForkedFrom)
 	forkOffsetStr := r.Header.Get(HeaderStreamForkOffset)
+	// Use Values() to distinguish "header present but empty" from "absent"
+	forkSubOffsetVals := r.Header.Values(HeaderStreamForkSubOffset)
+	forkSubOffsetPresent := len(forkSubOffsetVals) > 0
+	forkSubOffsetStr := ""
+	if forkSubOffsetPresent {
+		forkSubOffsetStr = forkSubOffsetVals[0]
+	}
 
 	// Validate TTL and ExpiresAt aren't both provided
 	if ttlStr != "" && expiresAtStr != "" {
@@ -164,6 +179,18 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		opts.ForkOffset = &forkOffset
 	}
 
+	// Parse fork sub-offset if header was present (including empty value)
+	if forkSubOffsetPresent {
+		if forkedFromStr == "" {
+			return newHTTPError(http.StatusBadRequest, "Stream-Fork-Sub-Offset requires Stream-Forked-From")
+		}
+		subOffset, err := parseSubOffset(forkSubOffsetStr)
+		if err != nil {
+			return newHTTPError(http.StatusBadRequest, err.Error())
+		}
+		opts.ForkSubOffset = &subOffset
+	}
+
 	meta, wasCreated, err := h.store.Create(path, opts)
 	if err != nil {
 		if errors.Is(err, store.ErrStreamNotFound) {
@@ -171,6 +198,9 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		}
 		if errors.Is(err, store.ErrInvalidForkOffset) {
 			return newHTTPError(http.StatusBadRequest, "fork offset beyond source stream length")
+		}
+		if errors.Is(err, store.ErrInvalidForkSubOffset) {
+			return newHTTPError(http.StatusBadRequest, "fork sub-offset overshoots or is invalid")
 		}
 		if errors.Is(err, store.ErrStreamSoftDeleted) {
 			return newHTTPError(http.StatusConflict, "source stream was deleted but still has active forks")
@@ -180,6 +210,9 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 		}
 		if errors.Is(err, store.ErrConfigMismatch) {
 			return newHTTPError(http.StatusConflict, "stream exists with different configuration")
+		}
+		if errors.Is(err, store.ErrContentTypeMismatch) {
+			return newHTTPError(http.StatusConflict, "fork content type does not match source stream")
 		}
 		return err
 	}
@@ -198,6 +231,14 @@ func (h *Handler) handleCreate(w http.ResponseWriter, r *http.Request, path stri
 	// Include Stream-Closed header if stream is closed
 	if meta.Closed {
 		w.Header().Set(HeaderStreamClosed, "true")
+	}
+
+	// Notify webhook manager of stream creation and initial data
+	if wasCreated && h.webhookManager != nil {
+		h.webhookManager.OnStreamCreated(path)
+		if len(initialData) > 0 {
+			h.webhookManager.OnStreamAppend(path)
+		}
 	}
 
 	if wasCreated {
@@ -342,6 +383,10 @@ func (h *Handler) handleRead(w http.ResponseWriter, r *http.Request, path string
 	// Handle catch-up mode offset=now: return empty response with tail offset
 	// For long-poll mode, we fall through to wait for new data instead
 	if isNowOffset && liveMode != "long-poll" {
+		// Still a read: refresh the TTL sliding window like any other GET.
+		// A tail read touches LastAccessedAt without moving any data.
+		_, _, _ = h.store.Read(path, meta.CurrentOffset)
+
 		w.Header().Set("Content-Type", meta.ContentType)
 		w.Header().Set(HeaderStreamNextOffset, meta.CurrentOffset.String())
 		w.Header().Set(HeaderStreamUpToDate, "true")
@@ -695,26 +740,38 @@ func (h *Handler) handleSSE(w http.ResponseWriter, r *http.Request, path string,
 				if streamIsClosed && clientAtTail {
 					return nil
 				}
+			} else if streamIsClosed {
+				// Initial control was already sent and the stream has since been
+				// closed with no further data to deliver (e.g. a close-only
+				// request). Emit the final control event with streamClosed and
+				// close the connection. (Data appended atomically with a close is
+				// handled by the len(messages) > 0 branch above on this same
+				// iteration.)
+				clientAtTail := currentMeta != nil && currentOffset.Equal(currentMeta.CurrentOffset)
+				if clientAtTail {
+					control := map[string]interface{}{
+						"streamNextOffset": currentOffset.String(),
+						"streamClosed":     true,
+					}
+					controlJSON, _ := json.Marshal(control)
+					fmt.Fprintf(w, "event: control\n")
+					fmt.Fprintf(w, "data:%s\n\n", controlJSON)
+					flusher.Flush()
+					return nil
+				}
 			}
 
-			// Wait for more data or stream closure
+			// Wait for more data or stream closure, then loop back to the top
+			// of the loop. We deliberately do NOT emit the closing control event
+			// here: if the stream was closed with a final append, that data must
+			// be drained by the Read at the top of the next iteration and sent as
+			// a data event before the closing control event. Emitting it here
+			// (with the stale currentOffset) would silently drop the final append
+			// for a live reader that was caught up at the tail.
 			timeout := 100 * time.Millisecond
 			waitCtx, cancel := context.WithTimeout(ctx, timeout)
-			_, _, streamClosed, _ := h.store.WaitForMessages(waitCtx, path, currentOffset, timeout)
+			h.store.WaitForMessages(waitCtx, path, currentOffset, timeout)
 			cancel()
-
-			// If stream was closed during wait, send final control event
-			if streamClosed {
-				control := map[string]interface{}{
-					"streamNextOffset": currentOffset.String(),
-					"streamClosed":     true,
-				}
-				controlJSON, _ := json.Marshal(control)
-				fmt.Fprintf(w, "event: control\n")
-				fmt.Fprintf(w, "data:%s\n\n", controlJSON)
-				flusher.Flush()
-				return nil
-			}
 		}
 	}
 }
@@ -870,8 +927,8 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 	result, err := h.store.Append(path, body, opts)
 	if err != nil {
 		if errors.Is(err, store.ErrStreamClosed) {
-			// Stream is closed - return 409 with Stream-Closed header
 			w.Header().Set(HeaderStreamClosed, "true")
+			w.Header().Set(HeaderStreamNextOffset, result.Offset.String())
 			http.Error(w, "stream is closed", http.StatusConflict)
 			return nil
 		}
@@ -931,6 +988,11 @@ func (h *Handler) handleAppend(w http.ResponseWriter, r *http.Request, path stri
 		return nil
 	}
 
+	// Notify webhook manager of new data (non-duplicate only)
+	if h.webhookManager != nil {
+		h.webhookManager.OnStreamAppend(path)
+	}
+
 	// For non-producer appends, return 204 No Content
 	// For producer appends (new writes), return 200 OK to distinguish from duplicates
 	if opts.ProducerId != "" {
@@ -948,7 +1010,15 @@ func (h *Handler) handleDelete(w http.ResponseWriter, r *http.Request, path stri
 		if errors.Is(err, store.ErrStreamNotFound) {
 			return newHTTPError(http.StatusNotFound, "stream not found")
 		}
+		if errors.Is(err, store.ErrStreamSoftDeleted) {
+			return newHTTPError(http.StatusGone, "stream has been deleted")
+		}
 		return err
+	}
+
+	// Notify webhook manager of stream deletion
+	if h.webhookManager != nil {
+		h.webhookManager.OnStreamDeleted(path)
 	}
 
 	w.WriteHeader(http.StatusNoContent)
@@ -1026,4 +1096,20 @@ func parseTTL(s string) (int64, error) {
 	}
 
 	return ttl, nil
+}
+
+// subOffsetRegex matches the same digit-only format as TTL.
+var subOffsetRegex = regexp.MustCompile(`^[1-9][0-9]*$|^0$`)
+
+// parseSubOffset parses a Stream-Fork-Sub-Offset value: a non-negative integer
+// without leading zeros, sign, or whitespace.
+func parseSubOffset(s string) (uint64, error) {
+	if !subOffsetRegex.MatchString(s) {
+		return 0, fmt.Errorf("invalid Stream-Fork-Sub-Offset format: must be a non-negative integer without leading zeros")
+	}
+	v, err := strconv.ParseUint(s, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("invalid Stream-Fork-Sub-Offset: %w", err)
+	}
+	return v, nil
 }

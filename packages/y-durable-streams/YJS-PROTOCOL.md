@@ -10,7 +10,7 @@
 
 ## Abstract
 
-This document specifies the Durable Streams Yjs Protocol, an extension of the Durable Streams Protocol [PROTOCOL] that defines an HTTP-based protocol for Yjs document synchronization. The protocol provides durable, append-only streams for Yjs updates with automatic server-side compaction, snapshot management, and ephemeral awareness streams. It is designed to enable real-time collaborative editing over standard HTTP infrastructure without WebSocket complexity.
+This document specifies the Durable Streams Yjs Protocol, an extension of the Durable Streams Protocol [PROTOCOL] that defines an HTTP-based protocol for Yjs document synchronization. The protocol provides durable, append-only streams for Yjs updates with automatic server-side compaction, snapshot management, snapshot availability webhooks, and ephemeral awareness streams. It is designed to enable real-time collaborative editing over standard HTTP infrastructure without WebSocket complexity.
 
 ## Copyright Notice
 
@@ -35,6 +35,7 @@ Copyright (c) 2026 ElectricSQL
    - 5.8. [Create Awareness Stream](#58-create-awareness-stream)
    - 5.9. [Delete document](#59-delete-document)
    - 5.10. [Delete awareness stream](#510-delete-awareness-stream)
+   - 5.11. [Subscribe to snapshot availability](#511-subscribe-to-snapshot-availability)
 6. [Offset Sentinels](#6-offset-sentinels)
 7. [Binary Framing](#7-binary-framing)
    - 7.1. [Variable-Length Integer Encoding](#71-variable-length-integer-encoding)
@@ -163,10 +164,11 @@ The document stream, snapshots, and awareness streams all share the same URL pat
 
 The following HTTP methods are supported on document and awareness URLs:
 
-| Endpoint                          | Supported methods            | All other methods      |
-| --------------------------------- | ---------------------------- | ---------------------- |
-| `{document-url}`                  | GET, HEAD, POST, PUT, DELETE | 405 Method Not Allowed |
-| `{document-url}?awareness=<name>` | GET, HEAD, POST, PUT, DELETE | 405 Method Not Allowed |
+| Endpoint                                | Supported methods            | All other methods      |
+| --------------------------------------- | ---------------------------- | ---------------------- |
+| `{document-url}`                        | GET, HEAD, POST, PUT, DELETE | 405 Method Not Allowed |
+| `{document-url}?awareness=<name>`       | GET, HEAD, POST, PUT, DELETE | 405 Method Not Allowed |
+| `{service-url}/__ds/subscriptions/{id}` | GET, PUT, DELETE             | 405 Method Not Allowed |
 
 Servers **MUST** return `405 Method Not Allowed` for any HTTP method not listed above.
 
@@ -336,9 +338,11 @@ Awareness is accessed via the `awareness` query parameter on the same document U
 
 - `?awareness=default`: Default stream for cursor positions, selections, user presence
 - `?awareness=admin`: Separate stream for admin-only awareness (e.g., moderator cursors)
-- `?awareness=<name>`: Any custom name for role-based or feature-specific awareness
+- `?awareness=<name>`: A custom name for role-based or feature-specific awareness
 
 Awareness streams are scoped to the document path. Two documents (`/docs/a` and `/docs/b`) have completely separate awareness streams, even if they use the same name.
+
+Awareness names MUST be 1–256 ASCII letters, digits, `.`, `_`, or `-`, and MUST NOT be `.`, `..`, or `.index`. Names identify one path segment; `.index` is reserved for snapshot bookkeeping.
 
 #### Request (SSE)
 
@@ -475,6 +479,71 @@ HTTP/1.1 404 Not Found
 #### Behavior
 
 The server MUST delete the specified awareness stream.
+
+### 5.11. Subscribe to snapshot availability
+
+Servers backed by a Durable Streams implementation that supports webhook subscriptions MAY expose service-scoped snapshot subscriptions. These subscriptions use the delivery, signing, retry, lease, and acknowledgement behavior from [PROTOCOL] Sections 6 and 7.
+
+#### Create or re-confirm a subscription
+
+```http
+PUT {service-url}/__ds/subscriptions/{id}
+Content-Type: application/json
+
+{
+  "type": "webhook",
+  "events": ["snapshot.available"],
+  "document_pattern": "projects/**",
+  "webhook": { "url": "https://archive.example/hooks/yjs" },
+  "lease_ttl_ms": 30000,
+  "description": "Archive project snapshots"
+}
+```
+
+`document_pattern` is relative to the service's document namespace. `*` matches exactly one path segment and `**` matches zero or more path segments. The only event defined by this version is `snapshot.available`.
+
+The reference server accepts service path segments containing ASCII letters, digits, `.`, `_`, and `-` (excluding `.` and `..`). This restriction keeps the service segment literal when translating the request to a Durable Streams subscription glob.
+
+The response uses the base subscription representation with these additional fields:
+
+```json
+{
+  "id": "snapshot-archive",
+  "subscription_id": "snapshot-archive",
+  "delivery_subscription_id": "yjs:<base64url-service>:<base64url-id>",
+  "service": "my-service",
+  "events": ["snapshot.available"],
+  "document_pattern": "projects/**"
+}
+```
+
+`delivery_subscription_id` is the opaque, namespaced subscription identifier used in signed webhook payloads. Receivers that validate the expected `subscription_id` MUST compare webhook deliveries with this value.
+
+Creation returns `201 Created`. Re-confirming an identical subscription returns `200 OK`, and reusing the same ID with different configuration returns `409 Conflict`.
+
+#### Read or delete a subscription
+
+```http
+GET {service-url}/__ds/subscriptions/{id}
+DELETE {service-url}/__ds/subscriptions/{id}
+```
+
+GET returns the service-scoped subscription representation. DELETE is idempotent and returns `204 No Content`.
+
+#### Delivery semantics
+
+Snapshot webhooks are wake notifications and do not include snapshot bytes. A wake indicates that one or more matching documents have a newer current snapshot. Multiple compactions MAY be coalesced into a single wake.
+
+The reference server uses each document's snapshot index stream as the subscription trigger. Its stream-root-relative path is `yjs/{service}/docs/{doc-path}/.index`. For each pending index stream in the webhook payload, a receiver:
+
+1. Derives the document path from the index stream path.
+2. Requests `{document-url}?offset=snapshot` and follows the redirect to the current snapshot.
+3. Persists the binary snapshot outside the Durable Streams server.
+4. Returns `{ "done": true }` only after persistence succeeds, or uses the callback flow from [PROTOCOL] Section 7.1.
+
+The semantic guarantee is latest-snapshot convergence, not delivery of every intermediate compaction snapshot. If another snapshot is created while a wake is being processed, the subscription remains pending and wakes again after the current delivery is acknowledged.
+
+New subscriptions start at the current tail of matching index streams and therefore observe future snapshots only. Applications that also need the snapshot current at subscription creation MUST fetch it separately using snapshot discovery.
 
 ## 6. Offset Sentinels
 
@@ -898,6 +967,16 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 | `delete.awareness-returns-404`            | DELETE on non-existent awareness stream returns 404                  |
 | `delete.awareness-preserves-document`     | DELETE awareness does not affect parent document                     |
 | `delete.awareness-post-requires-document` | POST to awareness on deleted document returns 404 DOCUMENT_NOT_FOUND |
+
+#### A.1.8. Snapshot subscriptions
+
+| Test                                   | Description                                                                                           |
+| -------------------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `snapshot-subscription.lifecycle`      | Create, normalize, re-confirm, conflict, read, and delete a snapshot availability subscription        |
+| `snapshot-subscription.delivery`       | A matching snapshot index append produces a signed wake while awareness registry updates do not       |
+| `snapshot-subscription.invalid-filter` | Unsupported events and document patterns are rejected with `INVALID_REQUEST`                          |
+| `snapshot-subscription.service`        | Subscription routes accept the reference server's documented dotted service names                     |
+| `snapshot-subscription.proxy`          | Configured upstream headers win, invalid upstream scopes are omitted, and connection failures use 502 |
 
 ### A.2. Running Conformance Tests
 

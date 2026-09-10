@@ -19,14 +19,15 @@ Pass in a [StandardSchema](#define-a-standardschema) and get typed collections, 
 npm install @durable-streams/state @tanstack/db
 ```
 
-`@tanstack/db` is a peer dependency required for StreamDB collections and queries.
+`@tanstack/db` is a peer dependency required for StreamDB collections and queries. The StreamDB API is published under the `@durable-streams/state/db` subpath; the db-free protocol primitives (see [Durable State](durable-state.md)) live on the main `@durable-streams/state` entry and need no extra dependencies.
 
 ## Define a StandardSchema
 
 Define your state structure with `createStateSchema`. Each collection maps an entity type to a [Standard Schema](https://standardschema.dev/) validator and a primary key field:
 
 ```typescript
-import { createStateSchema, createStreamDB } from "@durable-streams/state"
+import { createStateSchema } from "@durable-streams/state"
+import { createStreamDB } from "@durable-streams/state/db"
 import { z } from "zod"
 
 const userSchema = z.object({
@@ -78,13 +79,14 @@ const db = createStreamDB({
     url: "https://api.example.com/streams/my-stream",
     contentType: "application/json",
   },
+  live: "sse", // optional: true, "long-poll", "sse", or false
   state: schema,
 })
 
 await db.preload()
 ```
 
-Calling `preload()` reads the stream from the beginning, materializes the current state, and then stays connected for live updates.
+Calling `preload()` reads the stream from the beginning, materializes the current state, and then stays connected for live updates. By default StreamDB passes `live: true`; pass `live: "sse"` or `live: "long-poll"` to force a transport.
 
 ## Reactive queries
 

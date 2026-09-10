@@ -3,6 +3,7 @@ import {
   buildReadStreamUrl,
   parseRequestUrl,
 } from "../../utils"
+import { requireAuth } from "../../lib/auth"
 
 function normalizeStreamPath(path: string | null): string | null {
   if (!path) return null
@@ -25,6 +26,8 @@ function copyHeaders(response: Response): Headers {
 }
 
 export async function GET(request: Request) {
+  const unauthorized = requireAuth(request)
+  if (unauthorized) return unauthorized
   const incomingUrl = parseRequestUrl(request)
   const streamPath = normalizeStreamPath(incomingUrl.searchParams.get(`path`))
   if (!streamPath) {

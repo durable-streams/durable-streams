@@ -5,7 +5,7 @@ import {
   onMount,
   useContext,
 } from "solid-js"
-import { createStateSchema, createStreamDB } from "@durable-streams/state"
+import { createStateSchema, createStreamDB } from "@durable-streams/state/db"
 import { wikipediaEventSchema } from "./types"
 import type { JSX } from "solid-js"
 

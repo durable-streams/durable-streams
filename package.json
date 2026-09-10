@@ -11,13 +11,14 @@
     "link:dev": "pnpm --filter @durable-streams/cli link:dev",
     "build": "pnpm -r --filter '!@durable-streams-internal/caddy-plugin' --filter '!@durable-streams/example-*' build",
     "dev": "pnpm -r --parallel dev",
+    "dev:libs": "pnpm -r --parallel --filter './packages/*' dev",
     "test": "vitest",
-    "test:run": "vitest run --project client --project server --project state",
+    "test:run": "vitest run --project client --project server --project state --project tanstack-transport --project aisdk-transport --project y-durable-streams",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
-    "typecheck": "tsc --build && pnpm -r --filter '@durable-streams/example-*' typecheck",
+    "typecheck": "tsc --build && pnpm -r --filter '@durable-streams/example-*' --filter '@durable-streams/server-cloudflare' typecheck",
     "prepare": "husky",
     "changeset": "changeset",
     "changeset:version": "changeset version && pnpm install --no-frozen-lockfile",
@@ -55,5 +56,9 @@
       "prettier --write"
     ]
   },
-  "pnpm": {}
+  "pnpm": {
+    "overrides": {
+      "@tanstack/db": "0.6.0"
+    }
+  }
 }

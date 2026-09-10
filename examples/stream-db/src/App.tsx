@@ -1,5 +1,5 @@
 import { z } from "zod"
-import { createStateSchema, createStreamDB } from "@durable-streams/state"
+import { createStateSchema, createStreamDB } from "@durable-streams/state/db"
 import { useLiveQuery } from "@tanstack/react-db"
 
 const STREAM_URL = import.meta.env.VITE_STREAM_URL

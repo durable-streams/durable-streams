@@ -241,6 +241,16 @@ func ScanSegment(path string) (Offset, error) {
 	}
 	defer file.Close()
 
+	return ScanSegmentFile(file)
+}
+
+// ScanSegmentFile scans an open segment file and returns the final valid offset.
+// The caller owns and closes the file.
+func ScanSegmentFile(file *os.File) (Offset, error) {
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		return Offset{}, err
+	}
+
 	reader := bufio.NewReader(file)
 	var offset uint64
 

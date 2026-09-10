@@ -1,5 +1,112 @@
 # @durable-streams/server-conformance-tests
 
+## 0.3.6
+
+### Patch Changes
+
+- Add a Cloudflare Workers and Durable Objects server with secure routing, durable fork lifecycle handling, bounded reads, sliding TTL support, and conformance coverage. Add custom server-side fetch support to the TanStack AI transport and a deployable Cloudflare chat example. Harden fork recovery across existing servers and require fail-closed authentication and path-safe identifiers in the chat examples. ([#392](https://github.com/durable-streams/durable-streams/pull/392))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.6
+
+## 0.3.5
+
+### Patch Changes
+
+- fix: close conformance gaps around soft-delete, fork content-type, and live SSE closure ([#376](https://github.com/durable-streams/durable-streams/pull/376))
+
+  Server conformance tests:
+  - Add a test asserting a live SSE reader caught up at the tail receives
+    data appended atomically with a stream close (POST + `Stream-Closed`)
+    before the closing control event. A server that emits the
+    `streamClosed` control without first delivering the final append
+    silently loses the last message; the test probes a spread of close
+    timings to catch the race deterministically.
+  - Add a test asserting a fork rejected for a content-type mismatch does
+    not leak a reference on the source (the source must still fully delete
+    rather than being pinned in a soft-deleted state).
+
+  Reference server:
+  - Fix a reference-count leak in both the in-memory and file-backed
+    stores: a fork rejected for a content-type mismatch incremented the
+    source's `refCount` before validating the content type, pinning the
+    source in a soft-deleted state forever. Content-type is now validated
+    before the reference is taken.
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.6
+
+## 0.3.4
+
+### Patch Changes
+
+- Updated dependencies [[`92c0821`](https://github.com/durable-streams/durable-streams/commit/92c082152f7be8327f0c055d8b224494e5e71f76)]:
+  - @durable-streams/client@0.2.6
+
+## 0.3.3
+
+### Patch Changes
+
+- Updated dependencies [[`6afab5f`](https://github.com/durable-streams/durable-streams/commit/6afab5f8258999ff1794749ad9d0d9bd0c823625)]:
+  - @durable-streams/client@0.2.5
+
+## 0.3.2
+
+### Patch Changes
+
+- feat(server): add reserved subscription APIs ([#361](https://github.com/durable-streams/durable-streams/pull/361))
+
+  The protocol now reserves `/v1/stream/__ds/*` for subscription control APIs.
+  The TypeScript server implements webhook and pull-wake subscription lifecycle,
+  stream membership, webhook callback ack, pull-wake claim/ack/release, and JWKS
+  discovery for webhook signature verification.
+
+  The server conformance package now includes opt-in coverage for the reserved
+  subscription APIs.
+
+- fix(server): sign subscription webhooks with discoverable public keys ([#361](https://github.com/durable-streams/durable-streams/pull/361))
+
+  Webhook subscriptions now use Ed25519 request signatures and expose the
+  server's public verification keys from the Durable Streams control namespace,
+  removing the need for receivers to store per-subscription shared secrets.
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.4
+
+## 0.3.1
+
+### Patch Changes
+
+- fix(server): fork PUT inherits source content type when Content-Type header is omitted ([#342](https://github.com/durable-streams/durable-streams/pull/342))
+
+  Per the protocol (Section 4.2), when forking a stream the `Content-Type` header is
+  optional — an omitted header means "inherit from source." The TS dev server was
+  defaulting empty Content-Type to `application/octet-stream` before the store could
+  inherit, causing fork creation to fail with `409 Conflict` (content-type mismatch)
+  whenever the source's content type differed from the default.
+
+  Adds a server conformance test (`Fork - Creation > should fork inheriting
+content-type when header omitted`) that exercises this behavior end-to-end:
+  fork response, HEAD, and a follow-up POST with the inherited content type.
+
+- Updated dependencies [[`a3ed371`](https://github.com/durable-streams/durable-streams/commit/a3ed371a56b28ec6abc00ecdd149e2e030710cf6), [`346bc42`](https://github.com/durable-streams/durable-streams/commit/346bc426f5e13705cdd5e0cc5f7a759c7735a888)]:
+  - @durable-streams/client@0.2.4
+
+## 0.3.0
+
+### Minor Changes
+
+- feat: TTL sliding window renewal — Stream-TTL now resets on read and write, with conformance tests for expiration, renewal, and fork TTL behavior. Conformance tests hardened against timing flakiness (polling-based expiry checks, wider Expires-At windows, fast-check time limits). ([#321](https://github.com/durable-streams/durable-streams/pull/321))
+
+### Patch Changes
+
+- fix: use polling assertions for cascade GC tests instead of synchronous checks to match protocol spec ([#324](https://github.com/durable-streams/durable-streams/pull/324))
+
+- feat: add stream forking — create forks via PUT with Stream-Forked-From header, transparent read stitching, stream-level refcounting, soft-delete with cascading GC ([#312](https://github.com/durable-streams/durable-streams/pull/312))
+
+- Updated dependencies []:
+  - @durable-streams/client@0.2.3
+
 ## 0.2.3
 
 ### Patch Changes

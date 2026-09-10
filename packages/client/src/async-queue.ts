@@ -36,10 +36,17 @@ export class AsyncQueue<T, R = void> {
   }
 
   /**
-   * Number of tasks queued plus currently running.
+   * Number of tasks waiting to run.
    */
   length(): number {
-    return this.#queue.length - this.#head + this.#running
+    return this.#queue.length - this.#head
+  }
+
+  /**
+   * Number of tasks currently running.
+   */
+  running(): number {
+    return this.#running
   }
 
   /**

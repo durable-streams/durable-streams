@@ -28,11 +28,17 @@ export type DurableStreamTarget = {
   headers?: HeadersRecord
   contentType?: string
   createIfMissing?: boolean
+  /**
+   * Custom fetch used for stream requests. Useful when the durable
+   * streams server is reachable without public HTTP — e.g. a Cloudflare
+   * service binding or an in-process handler.
+   */
+  fetchClient?: typeof fetch
 }
 
 export type DurableChatSessionStreamTarget = Pick<
   DurableStreamTarget,
-  `writeUrl` | `headers` | `createIfMissing`
+  `writeUrl` | `headers` | `createIfMissing` | `fetchClient`
 >
 
 export type ToDurableStreamResponseMode = `immediate` | `await`

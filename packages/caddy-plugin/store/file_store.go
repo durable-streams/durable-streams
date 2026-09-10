@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net/url"
 	"os"
@@ -25,6 +26,10 @@ type FileStore struct {
 	metaCache   map[string]*StreamMetadata
 	dirCache    map[string]string // path -> directory name
 	metaCacheMu sync.RWMutex
+
+	// readPinnedHook is a deterministic test barrier invoked while a read pins
+	// its metadata generation. It is nil in production.
+	readPinnedHook func()
 
 	// Per-producer locks for serializing validation+append
 	// Key: "{streamPath}:{producerId}"
@@ -80,10 +85,15 @@ func NewFileStore(cfg FileStoreConfig) (*FileStore, error) {
 		cleanupDone:   make(chan struct{}),
 	}
 
-	// Load existing streams into cache
+	// Load existing streams into cache and repair any refcount/child-edge torn
+	// writes left by a process failure between metadata transactions.
 	if err := fs.loadCache(); err != nil {
 		metaStore.Close()
 		return nil, fmt.Errorf("failed to load cache: %w", err)
+	}
+	if err := fs.reconcileRefCounts(); err != nil {
+		metaStore.Close()
+		return nil, fmt.Errorf("failed to reconcile fork references: %w", err)
 	}
 
 	// Start background cleanup if configured
@@ -105,37 +115,47 @@ func (s *FileStore) loadCache() error {
 	})
 }
 
-// computeForkExpiry determines the effective expiry for a fork stream,
-// capped at the source stream's expiry.
-func (s *FileStore) computeForkExpiry(opts CreateOptions, sourceMeta StreamMetadata) *time.Time {
-	// Resolve source's absolute expiry
-	var sourceExpiry *time.Time
-	if sourceMeta.ExpiresAt != nil {
-		sourceExpiry = sourceMeta.ExpiresAt
-	} else if sourceMeta.TTLSeconds != nil {
-		t := sourceMeta.CreatedAt.Add(time.Duration(*sourceMeta.TTLSeconds) * time.Second)
-		sourceExpiry = &t
-	}
-
-	// Resolve fork's requested expiry
-	var forkExpiry *time.Time
-	if opts.ExpiresAt != nil {
-		forkExpiry = opts.ExpiresAt
-	} else if opts.TTLSeconds != nil {
-		t := time.Now().Add(time.Duration(*opts.TTLSeconds) * time.Second)
-		forkExpiry = &t
-	} else {
-		forkExpiry = sourceExpiry // Inherit source expiry
-	}
-
-	// Cap at source expiry
-	if sourceExpiry != nil && forkExpiry != nil {
-		if forkExpiry.After(*sourceExpiry) {
-			forkExpiry = sourceExpiry
+// reconcileRefCounts makes child metadata the durable source of truth for fork
+// edges. It repairs both possible crash windows: an acquired edge without a
+// child and a committed child whose parent count was not updated.
+func (s *FileStore) reconcileRefCounts() error {
+	counts := make(map[string]int32)
+	for _, meta := range s.metaCache {
+		if meta.ForkedFrom != "" {
+			if _, ok := s.metaCache[meta.ForkedFrom]; ok {
+				counts[meta.ForkedFrom]++
+			}
 		}
 	}
+	for path, meta := range s.metaCache {
+		want := counts[path]
+		if meta.RefCount == want {
+			continue
+		}
+		meta.RefCount = want
+		if err := s.metaStore.Put(meta, s.dirCache[path]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
 
-	return forkExpiry
+func (s *FileStore) resolveForkExpiry(opts CreateOptions, sourceMeta StreamMetadata) (*int64, *time.Time) {
+	if opts.TTLSeconds != nil {
+		return opts.TTLSeconds, nil
+	}
+	if opts.ExpiresAt != nil {
+		return nil, opts.ExpiresAt
+	}
+	if sourceMeta.TTLSeconds != nil {
+		ttl := *sourceMeta.TTLSeconds
+		return &ttl, nil
+	}
+	if sourceMeta.ExpiresAt != nil {
+		t := *sourceMeta.ExpiresAt
+		return nil, &t
+	}
+	return nil, nil
 }
 
 // Create creates a new stream
@@ -147,8 +167,15 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 	if existing, ok := s.metaCache[path]; ok {
 		// If expired, delete it and allow recreation
 		if existing.IsExpired() {
-			if dirName, hasDirName := s.dirCache[path]; hasDirName {
-				s.deleteStreamUnlocked(path, dirName)
+			if existing.RefCount > 0 {
+				existing.SoftDeleted = true
+				if err := s.metaStore.SoftDelete(path); err != nil {
+					return nil, false, err
+				}
+				return nil, false, ErrStreamExists
+			}
+			if err := s.deleteWithCascade(path); err != nil {
+				return nil, false, err
 			}
 		} else if existing.SoftDeleted {
 			// Soft-deleted streams block new creation
@@ -164,6 +191,7 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 	var forkOffset Offset
 	var sourceContentType string
 	var sourceMeta *StreamMetadata
+	var binarySubOffsetPrefix []byte // For binary forks with sub-offset: bytes to materialize into the fork's segment
 	isFork := opts.ForkedFrom != ""
 
 	if isFork {
@@ -181,6 +209,13 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		sourceMeta = sourceMetaEntry
 		sourceContentType = sourceMeta.ContentType
 
+		// Reject a content-type mismatch up front, before taking a reference on
+		// the source. Doing this after IncrementRefCount would leak a reference
+		// on the failed fork and pin the source in a soft-deleted state forever.
+		if opts.ContentType != "" && !strings.EqualFold(opts.ContentType, sourceContentType) {
+			return nil, false, ErrContentTypeMismatch
+		}
+
 		// Resolve fork offset: use opts.ForkOffset if set, else source's CurrentOffset
 		if opts.ForkOffset != nil {
 			forkOffset = *opts.ForkOffset
@@ -193,6 +228,26 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 			return nil, false, ErrInvalidForkOffset
 		}
 
+		// Resolve sub-offset (if any) against the source. For JSON, this
+		// advances forkOffset to a server-minted message-boundary offset; the
+		// fork's metadata then stores no synthetic prefix. For binary, this
+		// returns the prefix bytes to materialize into the fork's segment.
+		if opts.ForkSubOffset != nil && *opts.ForkSubOffset > 0 {
+			sourceDirName, ok := s.dirCache[opts.ForkedFrom]
+			if !ok {
+				return nil, false, ErrStreamNotFound
+			}
+			resolvedOffset, prefixBytes, err := s.resolveForkSubOffset(sourceMeta, sourceDirName, forkOffset, *opts.ForkSubOffset)
+			if err != nil {
+				return nil, false, err
+			}
+			if IsJSONContentType(sourceMeta.ContentType) {
+				forkOffset = resolvedOffset
+			} else {
+				binarySubOffsetPrefix = prefixBytes
+			}
+		}
+
 		// Atomically increment source refcount in bbolt
 		if err := s.metaStore.IncrementRefCount(opts.ForkedFrom); err != nil {
 			return nil, false, fmt.Errorf("failed to increment source refcount: %w", err)
@@ -202,7 +257,9 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		sourceMeta.RefCount++
 	}
 
-	// Determine content type: use opts.ContentType, or inherit from source if fork
+	// Determine content type: use opts.ContentType, or inherit from source if
+	// fork. A fork content-type mismatch is already rejected above, before the
+	// source refcount is taken.
 	contentType := opts.ContentType
 	if contentType == "" {
 		if isFork {
@@ -210,8 +267,6 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		} else {
 			contentType = "application/octet-stream"
 		}
-	} else if isFork && !strings.EqualFold(contentType, sourceContentType) {
-		return nil, false, ErrContentTypeMismatch
 	}
 
 	// Generate unique directory name
@@ -246,34 +301,69 @@ func (s *FileStore) Create(path string, opts CreateOptions) (*StreamMetadata, bo
 		return nil, false, err
 	}
 
-	// Compute effective expiry
-	var effectiveExpiry *time.Time
-	if isFork {
-		effectiveExpiry = s.computeForkExpiry(opts, *sourceMeta)
-	} else {
-		effectiveExpiry = opts.ExpiresAt
-	}
-
 	// Initialize metadata
+	now := time.Now()
 	meta := &StreamMetadata{
-		Path:        path,
-		ContentType: contentType,
-		CreatedAt:   time.Now(),
-		Closed:      opts.Closed, // Support creating stream in closed state
+		Path:           path,
+		ContentType:    contentType,
+		CreatedAt:      now,
+		LastAccessedAt: now,
+		Closed:         opts.Closed, // Support creating stream in closed state
 	}
 
 	if isFork {
+		forkTTL, forkExpiresAt := s.resolveForkExpiry(opts, *sourceMeta)
 		meta.CurrentOffset = forkOffset
 		meta.ForkOffset = forkOffset
 		meta.ForkedFrom = opts.ForkedFrom
-		// For forks, store the computed ExpiresAt (not TTLSeconds) to avoid
-		// TTL being computed relative to CreatedAt which could extend beyond source expiry
-		meta.ExpiresAt = effectiveExpiry
-		meta.TTLSeconds = nil
+		meta.TTLSeconds = forkTTL
+		meta.ExpiresAt = forkExpiresAt
+		// Persist the user-supplied ForkOffset (may be nil if omitted) and
+		// the user-supplied ForkSubOffset for idempotent re-creation matching.
+		// These differ from meta.ForkOffset for JSON forks created with
+		// sub-offset > 0 (where meta.ForkOffset is advanced internally).
+		if opts.ForkOffset != nil {
+			requested := *opts.ForkOffset
+			meta.ForkOffsetRequested = &requested
+		}
+		if opts.ForkSubOffset != nil {
+			meta.ForkSubOffset = *opts.ForkSubOffset
+		}
+
+		// Materialize binary sub-offset prefix into the fork's segment.
+		// This must happen before any client-supplied initial data so the
+		// inherited prefix appears first in the fork's read order.
+		if len(binarySubOffsetPrefix) > 0 {
+			writer, err := NewSegmentWriter(segPath)
+			if err != nil {
+				os.RemoveAll(streamDir)
+				s.metaStore.DecrementRefCount(opts.ForkedFrom)
+				sourceMeta.RefCount--
+				return nil, false, fmt.Errorf("failed to open fork segment for sub-offset materialization: %w", err)
+			}
+			if _, err := writer.WriteMessage(binarySubOffsetPrefix); err != nil {
+				writer.Close()
+				os.RemoveAll(streamDir)
+				s.metaStore.DecrementRefCount(opts.ForkedFrom)
+				sourceMeta.RefCount--
+				return nil, false, fmt.Errorf("failed to materialize sub-offset prefix: %w", err)
+			}
+			if err := writer.Sync(); err != nil {
+				writer.Close()
+				os.RemoveAll(streamDir)
+				s.metaStore.DecrementRefCount(opts.ForkedFrom)
+				sourceMeta.RefCount--
+				return nil, false, fmt.Errorf("failed to sync fork segment: %w", err)
+			}
+			writer.Close()
+
+			// Advance the fork's currentOffset past the materialized prefix.
+			meta.CurrentOffset = forkOffset.Add(uint64(LengthPrefixSize + len(binarySubOffsetPrefix)))
+		}
 	} else {
 		meta.CurrentOffset = ZeroOffset
 		meta.TTLSeconds = opts.TTLSeconds
-		meta.ExpiresAt = effectiveExpiry
+		meta.ExpiresAt = opts.ExpiresAt
 	}
 
 	// Handle initial data
@@ -358,9 +448,10 @@ func (s *FileStore) Delete(path string) error {
 		return ErrStreamNotFound
 	}
 
-	// Already soft-deleted: idempotent success
+	// Already soft-deleted: the stream is gone for direct operations (a
+	// soft-deleted stream returns 410 Gone for GET/HEAD/POST/DELETE).
 	if meta.SoftDeleted {
-		return nil
+		return ErrStreamSoftDeleted
 	}
 
 	// If there are forks referencing this stream, soft-delete instead
@@ -578,6 +669,9 @@ func (s *FileStore) Append(path string, data []byte, opts AppendOptions) (Append
 		return AppendResult{}, ErrStreamNotFound
 	}
 
+	// Refresh TTL sliding window
+	meta.LastAccessedAt = time.Now()
+
 	// Check if stream is closed
 	if meta.Closed {
 		// Check if this is a duplicate of the closing request (idempotent producer)
@@ -748,6 +842,47 @@ func (s *FileStore) appendToStream(meta *StreamMetadata, dirName string, data []
 	return meta.CurrentOffset.Add(uint64(n)), nil
 }
 
+// resolveForkSubOffset walks the source stream from forkOffset and resolves a
+// non-zero sub-offset.
+//
+// For JSON sources, it returns the offset that lies subOffset flattened
+// messages past forkOffset; the second return value is unused.
+//
+// For non-JSON (binary) sources, it returns the original forkOffset and a
+// byte slice containing the first subOffset content bytes of the message
+// that begins at forkOffset. The caller materializes those bytes as the
+// first message of the fork's own segment.
+//
+// Errors with ErrInvalidForkSubOffset if the resolution overshoots available
+// data.
+func (s *FileStore) resolveForkSubOffset(sourceMeta *StreamMetadata, sourceDirName string, forkOffset Offset, subOffset uint64) (Offset, []byte, error) {
+	// Read the source from forkOffset onward (across its own fork chain if any)
+	sourceMessages, err := s.readForkedStream(sourceMeta, sourceDirName, forkOffset)
+	if err != nil {
+		return Offset{}, nil, fmt.Errorf("failed to read source for sub-offset resolution: %w", err)
+	}
+
+	if IsJSONContentType(sourceMeta.ContentType) {
+		// Walk subOffset flattened messages from forkOffset.
+		if uint64(len(sourceMessages)) < subOffset {
+			return Offset{}, nil, ErrInvalidForkSubOffset
+		}
+		return sourceMessages[subOffset-1].Offset, nil, nil
+	}
+
+	// Binary: there must be at least one message past forkOffset to slice.
+	if len(sourceMessages) == 0 {
+		return Offset{}, nil, ErrInvalidForkSubOffset
+	}
+	first := sourceMessages[0].Data
+	if uint64(len(first)) < subOffset {
+		return Offset{}, nil, ErrInvalidForkSubOffset
+	}
+	prefix := make([]byte, subOffset)
+	copy(prefix, first[:subOffset])
+	return forkOffset, prefix, nil
+}
+
 // readFromSegment reads messages from a segment file starting at the given physical offset.
 // Returns the messages read from the segment.
 func (s *FileStore) readFromSegment(dirName string, offset Offset) ([]Message, error) {
@@ -841,10 +976,16 @@ func (s *FileStore) readForkedStream(meta *StreamMetadata, dirName string, offse
 
 // Read reads messages from a stream
 func (s *FileStore) Read(path string, offset Offset) ([]Message, bool, error) {
-	s.metaCacheMu.RLock()
+	// Pin one metadata generation and its complete ancestor chain while reading.
+	// Delete/recreate cannot replace cache entries or segment directories until
+	// recursive traversal has completed.
+	s.metaCacheMu.Lock()
+	defer s.metaCacheMu.Unlock()
 	meta, ok := s.metaCache[path]
 	dirName := s.dirCache[path]
-	s.metaCacheMu.RUnlock()
+	if s.readPinnedHook != nil {
+		s.readPinnedHook()
+	}
 
 	if !ok {
 		return nil, false, ErrStreamNotFound
@@ -859,6 +1000,9 @@ func (s *FileStore) Read(path string, offset Offset) ([]Message, bool, error) {
 	if meta.SoftDeleted {
 		return nil, false, ErrStreamNotFound
 	}
+
+	// Refresh TTL sliding window
+	meta.LastAccessedAt = time.Now()
 
 	// Check if already at tail
 	if offset.Equal(meta.CurrentOffset) {
@@ -978,6 +1122,9 @@ func (s *FileStore) CloseStream(path string) (*CloseResult, error) {
 	alreadyClosed := meta.Closed
 	meta.Closed = true
 
+	// A close is a write: refresh the TTL sliding window
+	meta.LastAccessedAt = time.Now()
+
 	// Persist to bbolt
 	s.metaStore.SetClosed(path, true, nil)
 
@@ -1073,6 +1220,9 @@ func (s *FileStore) CloseStreamWithProducer(path string, opts CloseProducerOptio
 		Seq:        opts.ProducerSeq,
 	}
 
+	// A close is a write: refresh the TTL sliding window
+	meta.LastAccessedAt = time.Now()
+
 	// Persist producer state + closed state atomically
 	if err := s.metaStore.UpdateAppendState(path, meta.CurrentOffset, "", opts.ProducerId, newState, true, meta.ClosedBy); err != nil {
 		// Log error but don't fail - file is the source of truth
@@ -1151,24 +1301,16 @@ func (s *FileStore) cleanupExpiredStreams() {
 	}
 
 	for _, path := range expiredPaths {
-		dirName := s.dirCache[path]
-
-		// Remove from writer pool
-		segPath := filepath.Join(s.dataDir, "streams", dirName, SegmentFileName)
-		s.writerPool.Remove(segPath)
-
-		// Delete from bbolt
-		s.metaStore.Delete(path)
-
-		// Remove from cache
-		delete(s.metaCache, path)
-		delete(s.dirCache, path)
-
-		// Async delete directory
-		streamDir := filepath.Join(s.dataDir, "streams", dirName)
-		deletedDir := filepath.Join(s.dataDir, "streams", ".deleted~"+dirName+"~"+fmt.Sprintf("%d", time.Now().UnixNano()))
-		os.Rename(streamDir, deletedDir)
-		go os.RemoveAll(deletedDir)
+		meta, ok := s.metaCache[path]
+		if !ok { // may have been removed by an earlier cascade
+			continue
+		}
+		if meta.RefCount > 0 {
+			meta.SoftDeleted = true
+			_ = s.metaStore.SoftDelete(path)
+			continue
+		}
+		_ = s.deleteWithCascade(path)
 	}
 }
 
@@ -1215,8 +1357,22 @@ func generateDirectoryName(path string) (string, error) {
 
 // Recovery functions
 
+// RecoveryEvent describes a repair made during store recovery.
+type RecoveryEvent struct {
+	StreamPath     string
+	SegmentPath    string
+	OriginalSize   uint64
+	RecoveredSize  uint64
+	DiscardedBytes uint64
+}
+
 // RecoverStore performs recovery on a file store, reconciling bbolt with segment files
 func RecoverStore(dataDir string) error {
+	return RecoverStoreWithEvents(dataDir, nil)
+}
+
+// RecoverStoreWithEvents performs recovery and calls onEvent for each repair.
+func RecoverStoreWithEvents(dataDir string, onEvent func(RecoveryEvent)) error {
 	metaDir := filepath.Join(dataDir, "metadata")
 	metaStore, err := NewBboltMetadataStore(metaDir)
 	if err != nil {
@@ -1229,16 +1385,13 @@ func RecoverStore(dataDir string) error {
 	return metaStore.ForEach(func(meta *StreamMetadata, dirName string) error {
 		segPath := filepath.Join(streamsDir, dirName, SegmentFileName)
 
-		// Check if segment exists
-		if _, err := os.Stat(segPath); os.IsNotExist(err) {
-			// Orphaned metadata - delete it
-			return metaStore.Delete(meta.Path)
-		}
-
-		// Scan segment to get true offset
-		trueOffset, err := ScanSegment(segPath)
+		trueOffset, err := recoverSegment(segPath, meta.Path, onEvent)
 		if err != nil {
-			return fmt.Errorf("failed to scan segment for %s: %w", meta.Path, err)
+			if errors.Is(err, os.ErrNotExist) {
+				// Orphaned metadata - delete it
+				return metaStore.Delete(meta.Path)
+			}
+			return err
 		}
 
 		// Reconcile if mismatch
@@ -1250,6 +1403,49 @@ func RecoverStore(dataDir string) error {
 
 		return nil
 	})
+}
+
+func recoverSegment(segPath, streamPath string, onEvent func(RecoveryEvent)) (offset Offset, err error) {
+	f, err := os.OpenFile(segPath, os.O_RDWR, 0644)
+	if err != nil {
+		return Offset{}, fmt.Errorf("failed to open segment for recovery %s: %w", streamPath, err)
+	}
+	defer func() {
+		if closeErr := f.Close(); err == nil && closeErr != nil {
+			err = fmt.Errorf("failed to close segment for %s: %w", streamPath, closeErr)
+		}
+	}()
+
+	trueOffset, err := ScanSegmentFile(f)
+	if err != nil {
+		return Offset{}, fmt.Errorf("failed to scan segment for %s: %w", streamPath, err)
+	}
+
+	info, err := f.Stat()
+	if err != nil {
+		return Offset{}, fmt.Errorf("failed to stat segment for %s: %w", streamPath, err)
+	}
+
+	originalSize := uint64(info.Size())
+	if originalSize > trueOffset.ByteOffset {
+		if err := f.Truncate(int64(trueOffset.ByteOffset)); err != nil {
+			return Offset{}, fmt.Errorf("failed to truncate segment for %s: %w", streamPath, err)
+		}
+		if err := f.Sync(); err != nil {
+			return Offset{}, fmt.Errorf("failed to sync segment for %s: %w", streamPath, err)
+		}
+		if onEvent != nil {
+			onEvent(RecoveryEvent{
+				StreamPath:     streamPath,
+				SegmentPath:    segPath,
+				OriginalSize:   originalSize,
+				RecoveredSize:  trueOffset.ByteOffset,
+				DiscardedBytes: originalSize - trueOffset.ByteOffset,
+			})
+		}
+	}
+
+	return trueOffset, nil
 }
 
 // Note: longPollManager and processJSONAppend are defined in memory_store.go

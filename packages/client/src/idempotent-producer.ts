@@ -19,8 +19,14 @@ import {
   STREAM_CLOSED_HEADER,
   STREAM_OFFSET_HEADER,
 } from "./constants"
+import { resolveHeaders } from "./utils"
 import type { DurableStream } from "./stream"
-import type { CloseResult, IdempotentProducerOptions, Offset } from "./types"
+import type {
+  CloseResult,
+  HeadersRecord,
+  IdempotentProducerOptions,
+  Offset,
+} from "./types"
 
 /**
  * Error thrown when a producer's epoch is stale (zombie fencing).
@@ -125,6 +131,7 @@ export class IdempotentProducer {
   readonly #maxBatchBytes: number
   readonly #lingerMs: number
   readonly #fetchClient: typeof fetch
+  readonly #headers?: HeadersRecord
   readonly #signal?: AbortSignal
   readonly #onError?: (error: Error) => void
 
@@ -135,9 +142,11 @@ export class IdempotentProducer {
 
   readonly #queue: AsyncQueue<BatchTask>
   readonly #maxInFlight: number
+  readonly #deferredEnqueues = new Set<Promise<void>>()
   #closed = false
   #closeResult: CloseResult | null = null
   #pendingFinalMessage?: Uint8Array | string
+  #lastSuccessfulOffset: Offset | undefined
 
   // When autoClaim is true, we must wait for the first batch to complete
   // before allowing pipelining (to know what epoch was claimed)
@@ -196,6 +205,7 @@ export class IdempotentProducer {
     this.#maxBatchBytes = maxBatchBytes
     this.#lingerMs = lingerMs
     this.#signal = opts?.signal
+    this.#headers = opts?.headers
     this.#onError = opts?.onError
     this.#fetchClient =
       opts?.fetch ?? ((...args: Parameters<typeof fetch>) => fetch(...args))
@@ -315,8 +325,12 @@ export class IdempotentProducer {
       this.#enqueuePendingBatch()
     }
 
-    // Wait for queue to drain
-    await this.#queue.drained()
+    // Wait for the queue and any batches deferred behind the auto-claim
+    // barrier. A deferred enqueue can push more queue work after a drain.
+    do {
+      await this.#queue.drained()
+      await Promise.all(this.#deferredEnqueues)
+    } while (this.#deferredEnqueues.size > 0 || this.inFlightCount > 0)
   }
 
   /**
@@ -414,16 +428,13 @@ export class IdempotentProducer {
     // We only increment #nextSeq after a successful response
     const seqForThisRequest = this.#nextSeq
 
-    // Build headers - merge stream auth headers with producer headers
-    const streamHeaders = await this.#stream.resolveHeaders()
-    const headers: Record<string, string> = {
-      ...streamHeaders,
+    const headers = await this.#buildHeaders({
       "content-type": contentType,
       [PRODUCER_ID_HEADER]: this.#producerId,
       [PRODUCER_EPOCH_HEADER]: this.#epoch.toString(),
       [PRODUCER_SEQ_HEADER]: seqForThisRequest.toString(),
       [STREAM_CLOSED_HEADER]: `true`,
-    }
+    })
 
     const response = await this.#fetchClient(this.#stream.url, {
       method: `POST`,
@@ -437,6 +448,7 @@ export class IdempotentProducer {
       // Only increment seq on success (retry-safe)
       this.#nextSeq = seqForThisRequest + 1
       const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
+      this.#recordSuccessfulOffset(finalOffset)
       return { finalOffset }
     }
 
@@ -445,6 +457,7 @@ export class IdempotentProducer {
       // Only increment seq on success (retry-safe)
       this.#nextSeq = seqForThisRequest + 1
       const finalOffset = response.headers.get(STREAM_OFFSET_HEADER) ?? ``
+      this.#recordSuccessfulOffset(finalOffset)
       return { finalOffset }
     }
 
@@ -511,7 +524,15 @@ export class IdempotentProducer {
    * Number of batches currently in flight.
    */
   get inFlightCount(): number {
-    return this.#queue.length()
+    return this.#queue.length() + this.#queue.running()
+  }
+
+  /**
+   * The greatest non-empty stream offset returned by a successful producer
+   * append or close request.
+   */
+  get lastSuccessfulOffset(): Offset | undefined {
+    return this.#lastSuccessfulOffset
   }
 
   // ============================================================================
@@ -526,27 +547,38 @@ export class IdempotentProducer {
 
     // Take the current batch
     const batch = this.#pendingBatch
-    const seq = this.#nextSeq
-
     this.#pendingBatch = []
     this.#batchBytes = 0
-    this.#nextSeq++
 
     // When autoClaim is enabled and epoch hasn't been claimed yet,
     // we must wait for any in-flight batch to complete before sending more.
     // This ensures the first batch claims the epoch before pipelining begins.
-    if (this.#autoClaim && !this.#epochClaimed && this.#queue.length() > 0) {
-      // Wait for queue to drain, then push
-      this.#queue.drained().then(() => {
-        this.#queue.push({ batch, seq }).catch(() => {
-          // Error handling is done in #batchWorker
+    if (this.#autoClaim && !this.#epochClaimed && this.inFlightCount > 0) {
+      // Wait for queue to drain, then reserve the next sequence number. Do not
+      // reserve the sequence before the first auto-claiming batch can reset it.
+      const deferred = this.#queue
+        .drained()
+        .then(() => {
+          this.#pushBatch(batch)
         })
+        .finally(() => {
+          this.#deferredEnqueues.delete(deferred)
+        })
+      this.#deferredEnqueues.add(deferred)
+      deferred.catch(() => {
+        // Error handling is done by the queue and flush awaits this promise.
       })
     } else {
-      this.#queue.push({ batch, seq }).catch(() => {
-        // Error handling is done in #batchWorker
-      })
+      this.#pushBatch(batch)
     }
+  }
+
+  #pushBatch(batch: Array<PendingEntry>): void {
+    const seq = this.#nextSeq
+    this.#nextSeq++
+    this.#queue.push({ batch, seq }).catch(() => {
+      // Error handling is done in #batchWorker
+    })
   }
 
   /**
@@ -557,7 +589,8 @@ export class IdempotentProducer {
     const epoch = this.#epoch
 
     try {
-      await this.#doSendBatch(batch, seq, epoch)
+      const result = await this.#doSendBatch(batch, seq, epoch)
+      this.#recordSuccessfulOffset(result.offset)
 
       // Mark epoch as claimed after first successful batch
       // This enables full pipelining for subsequent batches
@@ -576,6 +609,15 @@ export class IdempotentProducer {
         this.#onError(error as Error)
       }
       throw error
+    }
+  }
+
+  #recordSuccessfulOffset(offset: Offset | undefined): void {
+    if (
+      offset &&
+      (!this.#lastSuccessfulOffset || offset > this.#lastSuccessfulOffset)
+    ) {
+      this.#lastSuccessfulOffset = offset
     }
   }
 
@@ -692,15 +734,12 @@ export class IdempotentProducer {
     // Build URL
     const url = this.#stream.url
 
-    // Build headers - merge stream auth headers with producer headers
-    const streamHeaders = await this.#stream.resolveHeaders()
-    const headers: Record<string, string> = {
-      ...streamHeaders,
+    const headers = await this.#buildHeaders({
       "content-type": contentType,
       [PRODUCER_ID_HEADER]: this.#producerId,
       [PRODUCER_EPOCH_HEADER]: epoch.toString(),
       [PRODUCER_SEQ_HEADER]: seq.toString(),
-    }
+    })
 
     // Send request
     const response = await this.#fetchClient(url, {
@@ -775,6 +814,18 @@ export class IdempotentProducer {
     // Other errors - use FetchError for standard handling
     const error = await FetchError.fromResponse(response, url)
     throw error
+  }
+
+  async #buildHeaders(
+    protocolHeaders: Record<string, string>
+  ): Promise<Record<string, string>> {
+    const streamHeaders = await this.#stream.resolveHeaders()
+    const producerHeaders = await resolveHeaders(this.#headers)
+    return {
+      ...streamHeaders,
+      ...producerHeaders,
+      ...protocolHeaders,
+    }
   }
 
   /**

@@ -427,6 +427,16 @@ public class ConformanceAdapter {
                         finalOffset = iterOffset;
                     }
                 }
+
+                // If an SSE offset=now read timed out before receiving the initial
+                // control event, resolve "now" to the current tail so the returned
+                // checkpoint can still be used for future reads.
+                if ("now".equals(finalOffset) && chunks.isEmpty()) {
+                    Metadata headMeta = client.head(url);
+                    if (headMeta.getNextOffset() != null) {
+                        finalOffset = headMeta.getNextOffset().getValue();
+                    }
+                }
             }
 
             // Check stream closed status via HEAD

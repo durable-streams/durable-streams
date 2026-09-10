@@ -418,8 +418,83 @@ async function handleCommand(command: TestCommand): Promise<TestResult> {
           finalOffset = response.offset
           upToDate = response.upToDate
           streamClosed = response.streamClosed
+        } else if (isJson) {
+          const startTime = Date.now()
+          let chunkCount = 0
+          let done = false
+
+          await new Promise<void>((resolve, reject) => {
+            const subscriptionTimeoutId = setTimeout(() => {
+              done = true
+              abortController.abort()
+              upToDate = response.upToDate || true
+              finalOffset = response.offset
+              streamClosed = response.streamClosed
+              resolve()
+            }, timeoutMs)
+
+            const unsubscribe = response.subscribeJson(async (batch) => {
+              if (done || chunkCount >= maxChunks) {
+                return
+              }
+
+              if (Date.now() - startTime > timeoutMs) {
+                done = true
+                resolve()
+                return
+              }
+
+              if (batch.items.length > 0) {
+                chunks.push({
+                  data: JSON.stringify(batch.items),
+                  offset: batch.offset,
+                })
+                chunkCount++
+              }
+
+              finalOffset = batch.offset
+              upToDate = batch.upToDate
+              streamClosed = batch.streamClosed
+
+              if (command.waitForUpToDate && batch.upToDate) {
+                done = true
+                clearTimeout(subscriptionTimeoutId)
+                resolve()
+                return
+              }
+
+              if (chunkCount >= maxChunks) {
+                done = true
+                clearTimeout(subscriptionTimeoutId)
+                resolve()
+              }
+
+              await Promise.resolve()
+            })
+
+            response.closed
+              .then(() => {
+                if (!done) {
+                  done = true
+                  clearTimeout(subscriptionTimeoutId)
+                  upToDate = response.upToDate
+                  finalOffset = response.offset
+                  streamClosed = response.streamClosed
+                  resolve()
+                }
+              })
+              .catch((err) => {
+                if (!done) {
+                  done = true
+                  clearTimeout(subscriptionTimeoutId)
+                  reject(err)
+                }
+              })
+
+            void unsubscribe
+          })
         } else {
-          // For live mode, use subscribeBytes which provides per-chunk metadata
+          // For live non-JSON mode, use subscribeBytes which provides per-chunk metadata
           const decoder = new TextDecoder()
           const startTime = Date.now()
           let chunkCount = 0
