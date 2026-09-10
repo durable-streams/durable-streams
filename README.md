@@ -100,6 +100,7 @@ The protocol is:
 
 - [Servers](https://durablestreams.com/servers.md) -- official server implementations
 - [Protocol](PROTOCOL.md) -- full protocol specification
+- [Protocol extensions](extensions/) -- documented extensions to the protocol
 
 ## Packages
 
