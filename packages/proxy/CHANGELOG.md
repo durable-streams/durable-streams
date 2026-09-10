@@ -1,5 +1,12 @@
 # @durable-streams/proxy
 
+## 0.1.7
+
+### Patch Changes
+
+- Updated dependencies [[`3ad1528`](https://github.com/durable-streams/durable-streams/commit/3ad1528655fa198bf04c78411eadbaa84fa13c6c)]:
+  - @durable-streams/client@0.2.7
+
 ## 0.1.6
 
 ### Patch Changes

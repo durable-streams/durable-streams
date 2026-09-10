@@ -1,5 +1,14 @@
 # @durable-streams/example-chat-cloudflare
 
+## 0.0.2
+
+### Patch Changes
+
+- Updated dependencies [[`3ad1528`](https://github.com/durable-streams/durable-streams/commit/3ad1528655fa198bf04c78411eadbaa84fa13c6c)]:
+  - @durable-streams/client@0.2.7
+  - @durable-streams/tanstack-ai-transport@0.0.10
+  - @durable-streams/server-cloudflare@0.1.1
+
 ## 0.0.1
 
 ### Patch Changes

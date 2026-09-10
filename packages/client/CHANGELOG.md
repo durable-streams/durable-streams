@@ -1,5 +1,11 @@
 # @durable-streams/client
 
+## 0.2.7
+
+### Patch Changes
+
+- Fix producer flushing in browsers and other runtimes without Node.js `process` by replacing the `fastq` dependency with a built-in async queue. ([#332](https://github.com/durable-streams/durable-streams/pull/332))
+
 ## 0.2.6
 
 ### Patch Changes
