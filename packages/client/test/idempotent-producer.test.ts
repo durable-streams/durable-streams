@@ -10,6 +10,15 @@ import { IdempotentProducer } from "../src/idempotent-producer"
 import { DurableStream } from "../src/stream"
 
 describe(`IdempotentProducer`, () => {
+  // NaN cannot be represented by the JSON conformance adapter protocol.
+  it.each([NaN, 0.5])(`rejects maxInFlight=%s`, (maxInFlight) => {
+    const stream = new DurableStream({ url: `https://example.com/stream` })
+
+    expect(
+      () => new IdempotentProducer(stream, `test-producer`, { maxInFlight })
+    ).toThrow()
+  })
+
   const offset = (chunk: number, byte: number): string =>
     `${String(chunk).padStart(16, `0`)}_${String(byte).padStart(16, `0`)}`
 

@@ -19,11 +19,14 @@ export class AsyncQueue<T, R = void> {
   #worker: (task: T) => Promise<R>
   #concurrency: number
   #running = 0
-  #queue: Array<QueueEntry<T, R>> = []
+  #queue: Array<QueueEntry<T, R> | undefined> = []
   #head = 0
   #drainResolvers: Array<() => void> = []
 
   constructor(worker: (task: T) => Promise<R>, concurrency: number) {
+    if (!(concurrency >= 1)) {
+      throw new Error(`concurrency must be >= 1`)
+    }
     this.#worker = worker
     this.#concurrency = concurrency
   }
@@ -73,7 +76,7 @@ export class AsyncQueue<T, R = void> {
       this.#head < this.#queue.length
     ) {
       const item = this.#queue[this.#head]!
-      this.#queue[this.#head] = undefined as unknown as QueueEntry<T, R>
+      this.#queue[this.#head] = undefined
       this.#head++
 
       // Compact when the consumed portion exceeds both 1024 slots and half
