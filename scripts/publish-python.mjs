@@ -30,11 +30,22 @@ for (const pkg of PY_PKGS) {
 
   console.log(`Publishing ${pkg.dir}...`)
 
-  // Publish to PyPI
-  // Uses UV_PUBLISH_TOKEN env var for authentication
-  execFileSync(`uv`, [`publish`, `--directory`, pkg.dir], {
-    stdio: `inherit`,
-  })
+  // Publish to PyPI.
+  // Uses UV_PUBLISH_TOKEN env var for authentication.
+  // --check-url makes this idempotent: uv skips files already on the index,
+  // so the script is safe to run on every release (e.g. TS-only changesets
+  // where pyproject.toml's version was not bumped).
+  execFileSync(
+    `uv`,
+    [
+      `publish`,
+      `--directory`,
+      pkg.dir,
+      `--check-url`,
+      `https://pypi.org/simple/`,
+    ],
+    { stdio: `inherit` }
+  )
 
   console.log(`Successfully published ${pkg.dir}`)
 }
