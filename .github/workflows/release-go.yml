@@ -1,0 +1,47 @@
+name: Release Go client
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "packages/client-go/package.json"
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff
+        with:
+          go-version-file: packages/client-go/go.mod
+          cache-dependency-path: packages/client-go/go.mod
+
+      - name: Test
+        working-directory: packages/client-go
+        run: go test ./...
+
+      - name: Tag release
+        run: |
+          version="$(jq -er '.version' packages/client-go/package.json)"
+          tag="packages/client-go/v${version}"
+
+          if git rev-parse --verify --quiet "refs/tags/${tag}"; then
+            echo "${tag} already exists"
+            exit 0
+          fi
+
+          git tag "${tag}"
+          git push origin "${tag}"

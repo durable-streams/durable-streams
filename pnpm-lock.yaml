@@ -598,6 +598,8 @@ importers:
 
   packages/client-dotnet: {}
 
+  packages/client-go: {}
+
   packages/client-py: {}
 
   packages/proxy:
