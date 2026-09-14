@@ -19,7 +19,7 @@ Get a Durable Streams server running in seconds. Create a stream, append data, r
 
 ### 1. Start the server
 
-Download the latest `durable-streams-server` binary from the [GitHub releases page](https://github.com/durable-streams/durable-streams/releases/latest), then run:
+Download the latest `durable-streams-server` binary from the [Caddy Server releases](https://github.com/durable-streams/durable-streams/releases?expanded=true&q=%22Caddy+Server%22), then run:
 
 ```bash
 ./durable-streams-server dev
