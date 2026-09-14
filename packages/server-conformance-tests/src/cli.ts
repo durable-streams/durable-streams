@@ -152,18 +152,26 @@ function findVitestBinary(): string {
   return `vitest`
 }
 
+function buildVitestArgs(runnerPath: string): Array<string> {
+  const vitestConfigPath = join(__dirname, `../vitest.cli.config.mjs`)
+  return [
+    `run`,
+    runnerPath,
+    // Use an isolated config so host-project vitest/vite configs (and their
+    // include/exclude patterns) do not hide this package's test-runner.
+    `--config`,
+    vitestConfigPath,
+    `--no-coverage`,
+    `--reporter=default`,
+    `--passWithNoTests=false`,
+  ]
+}
+
 function runTests(baseUrl: string): Promise<number> {
   return new Promise((resolvePromise) => {
     const runnerPath = getTestRunnerPath()
     const vitestPath = findVitestBinary()
-
-    const args = [
-      `run`,
-      runnerPath,
-      `--no-coverage`,
-      `--reporter=default`,
-      `--passWithNoTests=false`,
-    ]
+    const args = buildVitestArgs(runnerPath)
 
     const child = spawn(vitestPath, args, {
       stdio: `inherit`,
@@ -203,14 +211,7 @@ async function runWatch(
   const spawnTests = (): ChildProcess => {
     const runnerPath = getTestRunnerPath()
     const vitestPath = findVitestBinary()
-
-    const args = [
-      `run`,
-      runnerPath,
-      `--no-coverage`,
-      `--reporter=default`,
-      `--passWithNoTests=false`,
-    ]
+    const args = buildVitestArgs(runnerPath)
 
     return spawn(vitestPath, args, {
       stdio: `inherit`,
