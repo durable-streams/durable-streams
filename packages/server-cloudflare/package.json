@@ -12,6 +12,9 @@
   "bugs": {
     "url": "https://github.com/durable-streams/durable-streams/issues"
   },
+  "publishConfig": {
+    "access": "public"
+  },
   "keywords": [
     "durable-streams",
     "cloudflare",
