@@ -6,6 +6,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest"
 import { stream } from "../src/stream-api"
 import { FetchError } from "../src/error"
+import { STREAM_OFFSET_HEADER } from "../src/constants"
 
 describe(`onError handler`, () => {
   let mockFetch: ReturnType<typeof vi.fn>
@@ -415,6 +416,189 @@ describe(`onError handler`, () => {
     expect(mockFetch.mock.calls[1][1].headers).toMatchObject({
       Authorization: `Bearer new`,
       "X-Keep": `this`,
+    })
+  })
+
+  describe(`SSE reconnection`, () => {
+    /**
+     * Helper to create a SSE response body from event text.
+     */
+    function createSSEBody(sseText: string): ReadableStream<Uint8Array> {
+      const encoder = new TextEncoder()
+      return new ReadableStream({
+        start(controller) {
+          controller.enqueue(encoder.encode(sseText))
+          controller.close()
+        },
+      })
+    }
+
+    it(`should invoke onError during SSE reconnection on 401`, async () => {
+      let callCount = 0
+      mockFetch.mockImplementation(() => {
+        callCount++
+
+        if (callCount === 1) {
+          // Initial SSE connection succeeds with data
+          return new Response(
+            createSSEBody(
+              `event: data\ndata: [{"msg":"hello"}]\n\nevent: control\ndata: {"streamNextOffset":"1_20","streamCursor":"c1"}\n\n`
+            ),
+            {
+              status: 200,
+              headers: {
+                "content-type": `text/event-stream`,
+                [STREAM_OFFSET_HEADER]: `0_0`,
+              },
+            }
+          )
+        }
+
+        if (callCount === 2) {
+          // SSE reconnection fails with 401 (token expired)
+          return new Response(`Unauthorized`, {
+            status: 401,
+            statusText: `Unauthorized`,
+          })
+        }
+
+        // After onError refreshes token, SSE reconnection succeeds
+        // Use streamClosed to stop further reconnections
+        return new Response(
+          createSSEBody(
+            `event: control\ndata: {"streamNextOffset":"1_20","streamCursor":"c1","upToDate":true,"streamClosed":true}\n\n`
+          ),
+          {
+            status: 200,
+            headers: {
+              "content-type": `text/event-stream`,
+              [STREAM_OFFSET_HEADER]: `1_20`,
+            },
+          }
+        )
+      })
+
+      const onError = vi.fn().mockResolvedValue({
+        headers: { Authorization: `Bearer refreshed-token` },
+      })
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `sse`,
+        json: true,
+        headers: { Authorization: `Bearer expired-token` },
+        backoffOptions: { maxRetries: 0 },
+        onError,
+        sseResilience: { minConnectionDuration: 0 },
+      })
+
+      // Consume via subscribeJson to trigger SSE processing and reconnection
+      const unsub = res.subscribeJson(() => {})
+
+      // Wait for stream to close (streamClosed in final response)
+      await res.closed
+
+      // onError should have been called once during SSE reconnection
+      expect(onError).toHaveBeenCalledOnce()
+      expect(onError).toHaveBeenCalledWith(expect.any(FetchError))
+
+      // The refreshed token should have been used in the third request
+      expect(mockFetch.mock.calls[2][1].headers).toMatchObject({
+        Authorization: `Bearer refreshed-token`,
+      })
+
+      unsub()
+    })
+
+    it(`should propagate error during SSE reconnection when onError returns void`, async () => {
+      let callCount = 0
+      mockFetch.mockImplementation(() => {
+        callCount++
+
+        if (callCount === 1) {
+          return new Response(
+            createSSEBody(
+              `event: data\ndata: [{"msg":"hello"}]\n\nevent: control\ndata: {"streamNextOffset":"1_20","streamCursor":"c1"}\n\n`
+            ),
+            {
+              status: 200,
+              headers: {
+                "content-type": `text/event-stream`,
+                [STREAM_OFFSET_HEADER]: `0_0`,
+              },
+            }
+          )
+        }
+
+        // SSE reconnection fails with 401
+        return new Response(`Unauthorized`, {
+          status: 401,
+          statusText: `Unauthorized`,
+        })
+      })
+
+      // onError returns undefined (stop retrying)
+      const onError = vi.fn().mockResolvedValue(undefined)
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `sse`,
+        json: true,
+        backoffOptions: { maxRetries: 0 },
+        onError,
+        sseResilience: { minConnectionDuration: 0 },
+      })
+
+      // Start consuming so SSE reconnection is triggered
+      res.subscribeJson(() => {})
+
+      // The stream should error out via the closed promise
+      await expect(res.closed).rejects.toThrow()
+      expect(onError).toHaveBeenCalledOnce()
+    })
+
+    it(`should propagate error during SSE reconnection when no onError handler`, async () => {
+      let callCount = 0
+      mockFetch.mockImplementation(() => {
+        callCount++
+
+        if (callCount === 1) {
+          return new Response(
+            createSSEBody(
+              `event: data\ndata: [{"msg":"hello"}]\n\nevent: control\ndata: {"streamNextOffset":"1_20","streamCursor":"c1"}\n\n`
+            ),
+            {
+              status: 200,
+              headers: {
+                "content-type": `text/event-stream`,
+                [STREAM_OFFSET_HEADER]: `0_0`,
+              },
+            }
+          )
+        }
+
+        return new Response(`Unauthorized`, {
+          status: 401,
+          statusText: `Unauthorized`,
+        })
+      })
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `sse`,
+        json: true,
+        backoffOptions: { maxRetries: 0 },
+        sseResilience: { minConnectionDuration: 0 },
+      })
+
+      // Start consuming so SSE reconnection is triggered
+      res.subscribeJson(() => {})
+
+      // Without onError, error should propagate and close the stream
+      await expect(res.closed).rejects.toThrow()
     })
   })
 })
