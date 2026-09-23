@@ -282,22 +282,7 @@ export interface ValidateCommand {
 /**
  * Validation targets - what client-side validation to test.
  */
-export type ValidateTarget = ValidateRetryOptions | ValidateIdempotentProducer
-
-/**
- * Validate RetryOptions construction.
- */
-export interface ValidateRetryOptions {
-  target: `retry-options`
-  /** Max retries (should reject < 0) */
-  maxRetries?: number
-  /** Initial delay in ms (should reject <= 0) */
-  initialDelayMs?: number
-  /** Max delay in ms (should reject < initialDelayMs) */
-  maxDelayMs?: number
-  /** Backoff multiplier (should reject < 1.0) */
-  multiplier?: number
-}
+export type ValidateTarget = ValidateIdempotentProducer
 
 /**
  * Validate IdempotentProducer construction.
@@ -310,8 +295,6 @@ export interface ValidateIdempotentProducer {
   epoch?: number
   /** Max batch bytes (should reject <= 0) */
   maxBatchBytes?: number
-  /** Max batch items (should reject <= 0) */
-  maxBatchItems?: number
 }
 
 // =============================================================================
@@ -441,10 +424,6 @@ export interface InitResult {
     streaming?: boolean
     /** Supports dynamic headers/params (functions evaluated per-request) */
     dynamicHeaders?: boolean
-    /** Supports RetryOptions validation (PHP-specific) */
-    retryOptions?: boolean
-    /** Supports maxBatchItems option (PHP-specific) */
-    batchItems?: boolean
     /** Rejects zero values as invalid (vs treating 0 as "use default" like Go) */
     strictZeroValidation?: boolean
   }

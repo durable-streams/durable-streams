@@ -988,34 +988,6 @@ fn handle_validate(cmd: Command) -> Result {
                 ..Default::default()
             }
         }
-        "retry-options" => {
-            let max_retries = target.max_retries.unwrap_or(3);
-            let initial_delay_ms = target.initial_delay_ms.unwrap_or(100);
-            let max_delay_ms = target.max_delay_ms.unwrap_or(5000);
-            let multiplier = target.multiplier.unwrap_or(2.0);
-
-            if max_retries < 0 {
-                return error_result("validate", "INVALID_ARGUMENT", &format!("maxRetries must be non-negative, got: {}", max_retries));
-            }
-
-            if initial_delay_ms < 1 {
-                return error_result("validate", "INVALID_ARGUMENT", &format!("initialDelayMs must be positive, got: {}", initial_delay_ms));
-            }
-
-            if max_delay_ms < 1 {
-                return error_result("validate", "INVALID_ARGUMENT", &format!("maxDelayMs must be positive, got: {}", max_delay_ms));
-            }
-
-            if multiplier < 1.0 {
-                return error_result("validate", "INVALID_ARGUMENT", &format!("multiplier must be >= 1.0, got: {}", multiplier));
-            }
-
-            Result {
-                result_type: "validate".to_string(),
-                success: true,
-                ..Default::default()
-            }
-        }
         _ => error_result("validate", "NOT_SUPPORTED", &format!("unknown validation target: {}", target.target)),
     }
 }
