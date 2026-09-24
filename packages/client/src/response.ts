@@ -658,205 +658,226 @@ export class StreamResponseImpl<
 
     return new ReadableStream<Response>({
       pull: async (controller) => {
-        try {
-          // First, yield the held first response (for non-SSE modes)
-          // For SSE mode, the first response IS the SSE stream, so we start parsing it
-          if (!firstResponseYielded) {
-            firstResponseYielded = true
+        // Loop so that a pause abort is retried inside this same pull(): the
+        // retry waits for resume and then serves the pending read. Returning
+        // would leave that read unserved, and ReadableStream only calls pull()
+        // again when another read() arrives, so the stream would go silent.
+        // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+        while (true) {
+          try {
+            // First, yield the held first response (for non-SSE modes)
+            // For SSE mode, the first response IS the SSE stream, so we start parsing it
+            if (!firstResponseYielded) {
+              firstResponseYielded = true
 
-            // Check if this is an SSE response
-            const isSSE =
-              firstResponse.headers
-                .get(`content-type`)
-                ?.includes(`text/event-stream`) ?? false
+              // Check if this is an SSE response
+              const isSSE =
+                firstResponse.headers
+                  .get(`content-type`)
+                  ?.includes(`text/event-stream`) ?? false
 
-            if (isSSE && firstResponse.body) {
-              // Track SSE connection start for resilience monitoring
-              this.#markSSEConnectionStart()
-              this.#updateEncodingFromSSEResponse(firstResponse)
-              // Create per-request abort controller for SSE connection
-              this.#requestAbortController = new AbortController()
-              // Start parsing SSE events
-              sseEventIterator = parseSSEStream(
-                firstResponse.body,
-                this.#requestAbortController.signal
-              )
-              // Fall through to SSE processing below
-            } else {
-              // Regular response - enqueue it
-              controller.enqueue(firstResponse)
-
-              // If upToDate and not continuing live, we're done
-              if (this.upToDate && !this.#shouldContinueLive()) {
-                this.#markClosed()
-                controller.close()
-                return
-              }
-              return
-            }
-          }
-
-          // Transition to SSE once caught up (fetch-then-live pattern)
-          if (
-            !sseEventIterator &&
-            this.upToDate &&
-            this.#startSSE &&
-            this.#shouldContinueLive()
-          ) {
-            if (this.#state === `pause-requested` || this.#state === `paused`) {
-              this.#state = `paused`
-              if (this.#pausePromise) {
-                await this.#pausePromise
-              }
-              if (this.#abortController.signal.aborted) {
-                this.#markClosed()
-                controller.close()
-                return
-              }
-            }
-
-            this.#markSSEConnectionStart()
-            this.#requestAbortController = new AbortController()
-            const sseResponse = await this.#startSSE(
-              this.offset,
-              this.cursor,
-              this.#requestAbortController.signal
-            )
-            this.#updateEncodingFromSSEResponse(sseResponse)
-            if (sseResponse.body) {
-              sseEventIterator = parseSSEStream(
-                sseResponse.body,
-                this.#requestAbortController.signal
-              )
-            }
-          }
-
-          // SSE mode: process events from the SSE stream
-          if (sseEventIterator) {
-            // Check for pause state before processing SSE events
-            if (this.#state === `pause-requested` || this.#state === `paused`) {
-              this.#state = `paused`
-              if (this.#pausePromise) {
-                await this.#pausePromise
-              }
-              // After resume, check if we should still continue
-              if (this.#abortController.signal.aborted) {
-                this.#markClosed()
-                controller.close()
-                return
-              }
-              // Reconnect SSE after resume
-              const newIterator = await this.#trySSEReconnect()
-              if (newIterator) {
-                sseEventIterator = newIterator
+              if (isSSE && firstResponse.body) {
+                // Track SSE connection start for resilience monitoring
+                this.#markSSEConnectionStart()
+                this.#updateEncodingFromSSEResponse(firstResponse)
+                // Create per-request abort controller for SSE connection
+                this.#requestAbortController = new AbortController()
+                // Start parsing SSE events
+                sseEventIterator = parseSSEStream(
+                  firstResponse.body,
+                  this.#requestAbortController.signal
+                )
+                // Fall through to SSE processing below
               } else {
-                // Could not reconnect - close the stream
-                this.#markClosed()
-                controller.close()
-                return
-              }
-            }
+                // Regular response - enqueue it
+                controller.enqueue(firstResponse)
 
-            // Keep reading events until we get data or stream ends
-            // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
-            while (true) {
-              const result = await this.#processSSEEvents(sseEventIterator)
-
-              switch (result.type) {
-                case `response`:
-                  if (result.newIterator) {
-                    sseEventIterator = result.newIterator
-                  }
-                  controller.enqueue(result.response)
-                  return
-
-                case `closed`:
+                // If upToDate and not continuing live, we're done
+                if (this.upToDate && !this.#shouldContinueLive()) {
                   this.#markClosed()
                   controller.close()
                   return
-
-                case `error`:
-                  this.#markError(result.error)
-                  controller.error(result.error)
-                  return
-
-                case `continue`:
-                  if (result.newIterator) {
-                    sseEventIterator = result.newIterator
-                  }
-                  continue
+                }
+                return
               }
             }
-          }
 
-          // Long-poll mode: continue with live updates if needed
-          if (this.#shouldContinueLive()) {
-            // Determine if we're resuming from pause — local variable replaces
-            // the old #justResumedFromPause one-shot field. If we enter the pause
-            // branch and wake up without abort, we just resumed.
-            let resumingFromPause = false
-            if (this.#state === `pause-requested` || this.#state === `paused`) {
-              this.#state = `paused`
-              if (this.#pausePromise) {
-                await this.#pausePromise
+            // Transition to SSE once caught up (fetch-then-live pattern)
+            if (
+              !sseEventIterator &&
+              this.upToDate &&
+              this.#startSSE &&
+              this.#shouldContinueLive()
+            ) {
+              if (
+                this.#state === `pause-requested` ||
+                this.#state === `paused`
+              ) {
+                this.#state = `paused`
+                if (this.#pausePromise) {
+                  await this.#pausePromise
+                }
+                if (this.#abortController.signal.aborted) {
+                  this.#markClosed()
+                  controller.close()
+                  return
+                }
               }
-              // After resume, check if we should still continue
+
+              this.#markSSEConnectionStart()
+              this.#requestAbortController = new AbortController()
+              const sseResponse = await this.#startSSE(
+                this.offset,
+                this.cursor,
+                this.#requestAbortController.signal
+              )
+              this.#updateEncodingFromSSEResponse(sseResponse)
+              if (sseResponse.body) {
+                sseEventIterator = parseSSEStream(
+                  sseResponse.body,
+                  this.#requestAbortController.signal
+                )
+              }
+            }
+
+            // SSE mode: process events from the SSE stream
+            if (sseEventIterator) {
+              // Check for pause state before processing SSE events
+              if (
+                this.#state === `pause-requested` ||
+                this.#state === `paused`
+              ) {
+                this.#state = `paused`
+                if (this.#pausePromise) {
+                  await this.#pausePromise
+                }
+                // After resume, check if we should still continue
+                if (this.#abortController.signal.aborted) {
+                  this.#markClosed()
+                  controller.close()
+                  return
+                }
+                // Reconnect SSE after resume
+                const newIterator = await this.#trySSEReconnect()
+                if (newIterator) {
+                  sseEventIterator = newIterator
+                } else {
+                  // Could not reconnect - close the stream
+                  this.#markClosed()
+                  controller.close()
+                  return
+                }
+              }
+
+              // Keep reading events until we get data or stream ends
+              // eslint-disable-next-line @typescript-eslint/no-unnecessary-condition
+              while (true) {
+                const result = await this.#processSSEEvents(sseEventIterator)
+
+                switch (result.type) {
+                  case `response`:
+                    if (result.newIterator) {
+                      sseEventIterator = result.newIterator
+                    }
+                    controller.enqueue(result.response)
+                    return
+
+                  case `closed`:
+                    this.#markClosed()
+                    controller.close()
+                    return
+
+                  case `error`:
+                    this.#markError(result.error)
+                    controller.error(result.error)
+                    return
+
+                  case `continue`:
+                    if (result.newIterator) {
+                      sseEventIterator = result.newIterator
+                    }
+                    continue
+                }
+              }
+            }
+
+            // Long-poll mode: continue with live updates if needed
+            if (this.#shouldContinueLive()) {
+              // Determine if we're resuming from pause — local variable replaces
+              // the old #justResumedFromPause one-shot field. If we enter the pause
+              // branch and wake up without abort, we just resumed.
+              let resumingFromPause = false
+              if (
+                this.#state === `pause-requested` ||
+                this.#state === `paused`
+              ) {
+                this.#state = `paused`
+                if (this.#pausePromise) {
+                  await this.#pausePromise
+                }
+                // After resume, check if we should still continue
+                if (this.#abortController.signal.aborted) {
+                  this.#markClosed()
+                  controller.close()
+                  return
+                }
+                resumingFromPause = true
+              }
+
               if (this.#abortController.signal.aborted) {
                 this.#markClosed()
                 controller.close()
                 return
               }
-              resumingFromPause = true
+
+              // Create a new AbortController for this request (so we can abort on pause)
+              this.#requestAbortController = new AbortController()
+
+              const response = await this.#fetchNext(
+                this.offset,
+                this.cursor,
+                this.#requestAbortController.signal,
+                this.upToDate,
+                resumingFromPause
+              )
+
+              this.#updateStateFromResponse(response)
+              controller.enqueue(response)
+              // Let the next pull() decide whether to close based on upToDate
+              return
+            }
+
+            // No more data
+            this.#markClosed()
+            controller.close()
+            return
+          } catch (err) {
+            // Check if this was a pause-triggered abort
+            // Treat PAUSE_STREAM aborts as benign regardless of current state
+            // (handles race where resume() was called before abort completed)
+            if (
+              this.#requestAbortController?.signal.aborted &&
+              this.#requestAbortController.signal.reason === PAUSE_STREAM
+            ) {
+              // Only transition to paused if we're still in pause-requested state
+              if (this.#state === `pause-requested`) {
+                this.#state = `paused`
+              }
+              // Retry - the next iteration waits for resume (or proceeds if
+              // already resumed) and serves the read this pull() owes
+              continue
             }
 
             if (this.#abortController.signal.aborted) {
               this.#markClosed()
               controller.close()
-              return
+            } else {
+              this.#markError(
+                err instanceof Error ? err : new Error(String(err))
+              )
+              controller.error(err)
             }
-
-            // Create a new AbortController for this request (so we can abort on pause)
-            this.#requestAbortController = new AbortController()
-
-            const response = await this.#fetchNext(
-              this.offset,
-              this.cursor,
-              this.#requestAbortController.signal,
-              this.upToDate,
-              resumingFromPause
-            )
-
-            this.#updateStateFromResponse(response)
-            controller.enqueue(response)
-            // Let the next pull() decide whether to close based on upToDate
             return
-          }
-
-          // No more data
-          this.#markClosed()
-          controller.close()
-        } catch (err) {
-          // Check if this was a pause-triggered abort
-          // Treat PAUSE_STREAM aborts as benign regardless of current state
-          // (handles race where resume() was called before abort completed)
-          if (
-            this.#requestAbortController?.signal.aborted &&
-            this.#requestAbortController.signal.reason === PAUSE_STREAM
-          ) {
-            // Only transition to paused if we're still in pause-requested state
-            if (this.#state === `pause-requested`) {
-              this.#state = `paused`
-            }
-            // Return - either we're paused, or already resumed and next pull will proceed
-            return
-          }
-
-          if (this.#abortController.signal.aborted) {
-            this.#markClosed()
-            controller.close()
-          } else {
-            this.#markError(err instanceof Error ? err : new Error(String(err)))
-            controller.error(err)
           }
         }
       },
