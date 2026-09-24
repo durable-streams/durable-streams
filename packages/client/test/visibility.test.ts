@@ -293,6 +293,105 @@ describe(`visibility handling`, () => {
 
       res.cancel()
     })
+
+    it(`should keep syncing when hidden again during the resume request`, async () => {
+      // hide → show → hide while the resume request is in flight → show.
+      // The second pause aborts the resume request inside the pull() that is
+      // serving the consumer's pending read. ReadableStream only calls pull()
+      // again when another read() arrives, so if that pull() returns without
+      // enqueueing, the stream goes silent for good: no error, no requests.
+      const requests: Array<{ url: string; aborted: boolean }> = []
+
+      mockFetch.mockImplementation(
+        (url: string | URL | Request, init?: RequestInit) => {
+          const request = {
+            url: typeof url === `string` ? url : url.toString(),
+            aborted: false,
+          }
+          requests.push(request)
+
+          // First request (initial) - return data
+          if (requests.length === 1) {
+            return Promise.resolve(
+              new Response(JSON.stringify([{ id: 1 }]), {
+                status: 200,
+                headers: {
+                  "content-type": `application/json`,
+                  [STREAM_OFFSET_HEADER]: `1_10`,
+                  [STREAM_UP_TO_DATE_HEADER]: `true`,
+                },
+              })
+            )
+          }
+
+          // Fourth request (resume after the second show) - return new data
+          if (requests.length === 4) {
+            return Promise.resolve(
+              new Response(JSON.stringify([{ id: 2 }]), {
+                status: 200,
+                headers: {
+                  "content-type": `application/json`,
+                  [STREAM_OFFSET_HEADER]: `2_10`,
+                  [STREAM_UP_TO_DATE_HEADER]: `true`,
+                },
+              })
+            )
+          }
+
+          // Long-polls and the first resume request hang until aborted
+          return new Promise<Response>((_, reject) => {
+            init?.signal?.addEventListener(`abort`, () => {
+              request.aborted = true
+              reject(new DOMException(`Aborted`, `AbortError`))
+            })
+          })
+        }
+      )
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `long-poll`,
+      })
+
+      const received: Array<{ id: number }> = []
+      res.subscribeJson<{ id: number }>((batch) => {
+        received.push(...batch.items)
+        return Promise.resolve()
+      })
+
+      // Wait for first data and the long-poll to start
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(requests).toHaveLength(2)
+
+      // Hide: aborts the long-poll
+      simulateVisibilityChange(true)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // Show: the resume request starts
+      simulateVisibilityChange(false)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(requests).toHaveLength(3)
+      expect(requests[2]!.url).not.toContain(`live=`)
+
+      // Hide again while the resume request is in flight
+      simulateVisibilityChange(true)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      expect(requests[2]!.aborted).toBe(true)
+
+      // Show again: the stream must resume from the same offset
+      simulateVisibilityChange(false)
+      for (let i = 0; i < 20; i++) {
+        if (received.some((item) => item.id === 2)) break
+        await new Promise((resolve) => setTimeout(resolve, 50))
+      }
+
+      expect(requests.length).toBeGreaterThanOrEqual(4)
+      expect(requests[3]!.url).toContain(`offset=1_10`)
+      expect(received).toContainEqual({ id: 2 })
+
+      res.cancel()
+    })
   })
 
   describe(`pause-abort race condition`, () => {
@@ -440,6 +539,64 @@ describe(`visibility handling`, () => {
         `visibilitychange`,
         expect.any(Function)
       )
+
+      // No new fetches should have been made
+      expect(mockFetch.mock.calls.length).toBe(fetchCountBefore)
+    })
+
+    it(`should complete cancel within 100ms when paused during the resume request`, async () => {
+      // First response
+      mockFetch.mockResolvedValueOnce(
+        new Response(JSON.stringify([{ id: 1 }]), {
+          status: 200,
+          headers: {
+            "content-type": `application/json`,
+            [STREAM_OFFSET_HEADER]: `1_10`,
+            [STREAM_UP_TO_DATE_HEADER]: `true`,
+          },
+        })
+      )
+
+      // Long-poll and resume request - both aborted by a pause
+      mockFetch.mockImplementation((_url, init?: RequestInit) => {
+        return new Promise<Response>((_, reject) => {
+          init?.signal?.addEventListener(`abort`, () => {
+            reject(new DOMException(`Aborted`, `AbortError`))
+          })
+        })
+      })
+
+      const res = await stream({
+        url: `https://example.com/stream`,
+        fetch: mockFetch,
+        live: `long-poll`,
+      })
+
+      res.subscribeJson<{ id: number }>(() => Promise.resolve())
+
+      // Wait for first data and the long-poll to start
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      // hide → show → hide while the resume request is in flight
+      simulateVisibilityChange(true)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      simulateVisibilityChange(false)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+      simulateVisibilityChange(true)
+      await new Promise((resolve) => setTimeout(resolve, 50))
+
+      const fetchCountBefore = mockFetch.mock.calls.length
+
+      // Cancel while paused - the pull() waiting for resume must see it and close
+      const startTime = Date.now()
+      res.cancel()
+      await res.closed
+      const elapsed = Date.now() - startTime
+
+      expect(elapsed).toBeLessThan(100)
+
+      // Give a pull() that outlived the cancel time to issue a request
+      await new Promise((resolve) => setTimeout(resolve, 50))
 
       // No new fetches should have been made
       expect(mockFetch.mock.calls.length).toBe(fetchCountBefore)
