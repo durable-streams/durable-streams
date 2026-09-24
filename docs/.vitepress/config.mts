@@ -96,6 +96,10 @@ export default defineConfig({
             text: "livetrace",
             link: "https://livetrace.necmttn.com/docs/integrations/durable-streams",
           },
+          {
+            text: "Rivet",
+            link: "https://rivet.dev/actors/integrations/durable-streams/",
+          },
         ],
       },
       {
