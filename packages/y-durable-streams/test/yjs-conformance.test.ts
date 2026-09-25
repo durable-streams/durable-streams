@@ -909,6 +909,121 @@ describe(`Yjs Durable Streams Protocol`, () => {
       })
     })
 
+    describe(`Reconnect`, () => {
+      describe(`reconnect.pushes-local-changes`, () => {
+        it(`should deliver edits made while disconnected, and every edit after`, async () => {
+          const docId = `reconnect-${Date.now()}`
+
+          const doc1 = new Y.Doc()
+          const doc2 = new Y.Doc()
+          const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+          const provider2 = await createProviderWithDoc(docId, { doc: doc2 })
+          await waitForSync(provider1)
+          await waitForSync(provider2)
+
+          const map1 = doc1.getMap(`answers`)
+          const map2 = doc2.getMap(`answers`)
+
+          map1.set(`q1`, `online`)
+          await waitForCondition(() => map2.get(`q1`) === `online`, {
+            label: `online edit to reach doc2`,
+          })
+
+          await provider1.disconnect()
+          map1.set(`q2`, `offline`)
+          map1.delete(`q1`)
+          await provider1.connect()
+          await waitForSync(provider1)
+
+          map1.set(`q3`, `after-reconnect`)
+
+          await waitForCondition(() => map2.has(`q3`), {
+            label: `post-reconnect edit to reach doc2`,
+          })
+          expect(map2.toJSON()).toEqual({
+            q2: `offline`,
+            q3: `after-reconnect`,
+          })
+          expect(doc2.store.pendingStructs).toBeNull()
+        })
+      })
+
+      describe(`reconnect.synced-means-persisted`, () => {
+        it(`should only report synced once the server holds the offline edits`, async () => {
+          const docId = `reconnect-synced-${Date.now()}`
+
+          const doc1 = new Y.Doc()
+          const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+          await waitForSync(provider1)
+
+          await provider1.disconnect()
+          doc1.getMap(`answers`).set(`q1`, `offline`)
+          await provider1.connect()
+          await waitForSync(provider1)
+
+          const doc2 = new Y.Doc()
+          const provider2 = await createProviderWithDoc(docId, { doc: doc2 })
+          await waitForSync(provider2)
+          expect(doc2.getMap(`answers`).toJSON()).toEqual({ q1: `offline` })
+        })
+      })
+
+      describe(`reconnect.no-write-when-current`, () => {
+        it(`should not write to the stream when the server already has everything`, async () => {
+          const docId = `reconnect-current-${Date.now()}`
+
+          const doc1 = new Y.Doc()
+          const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+          await waitForSync(provider1)
+
+          // Several edits so the client's later structs arrive in updates that
+          // do not start at clock 0
+          const map1 = doc1.getMap(`answers`)
+          map1.set(`q1`, `online`)
+          await waitForCondition(() => provider1.synced, {
+            label: `provider1 synced after first edit`,
+          })
+          map1.set(`q2`, `online`)
+          await waitForCondition(() => provider1.synced, {
+            label: `provider1 synced after second edit`,
+          })
+          map1.delete(`q1`)
+          await waitForCondition(() => provider1.synced, {
+            label: `provider1 synced after delete`,
+          })
+
+          const nextOffset = async (): Promise<string | null> => {
+            const response = await fetch(`${baseUrl}/docs/${docId}?offset=-1`)
+            await response.arrayBuffer()
+            return response.headers.get(`stream-next-offset`)
+          }
+          const before = await nextOffset()
+
+          await provider1.disconnect()
+          await provider1.connect()
+          await waitForSync(provider1)
+
+          expect(await nextOffset()).toBe(before)
+        })
+      })
+
+      describe(`reconnect.local-state-before-first-connect`, () => {
+        it(`should push state the doc already holds when it first connects`, async () => {
+          const docId = `reconnect-hydrated-${Date.now()}`
+
+          const doc1 = new Y.Doc()
+          doc1.getMap(`answers`).set(`q1`, `local-only`)
+          const provider1 = await createProviderWithDoc(docId, { doc: doc1 })
+          await waitForSync(provider1)
+
+          const doc2 = new Y.Doc()
+          const provider2 = await createProviderWithDoc(docId, { doc: doc2 })
+          await waitForSync(provider2)
+          expect(doc2.getMap(`answers`).toJSON()).toEqual({ q1: `local-only` })
+        })
+      })
+    })
+
     describe(`doc.path-with-slashes`, () => {
       it(`should support document paths with forward slashes`, async () => {
         const docId = `project-${Date.now()}/chapter-1/section-a`

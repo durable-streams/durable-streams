@@ -49,6 +49,7 @@ Copyright (c) 2026 ElectricSQL
    - 9.2. [Initial Sync](#92-initial-sync)
    - 9.3. [Writing Updates](#93-writing-updates)
    - 9.4. [Awareness](#94-awareness)
+   - 9.5. [Reconnecting](#95-reconnecting)
 10. [Error Handling](#10-error-handling)
 11. [Limits](#11-limits)
 12. [Security Considerations](#12-security-considerations)
@@ -772,6 +773,44 @@ Client                                    Server
   │ (Broadcast to other subscribers)        │
 ```
 
+### 9.5. Reconnecting
+
+A client that reconnects (after `disconnect()`, a network drop, or a failed
+write) **MUST** treat the connection as a fresh writer and **MUST** send the
+server any local state it does not hold:
+
+- **Fresh producer epoch.** The idempotent producer id derives from the
+  document's `clientID`, which survives reconnects, and the server dedupes on
+  `(producerId, epoch, seq)`. A reconnecting client **MUST** start a new,
+  higher epoch; reusing the previous epoch with `seq` restarting at `0` makes
+  the server treat the writes as duplicates and drop them with a `204`.
+- **Catch-up write.** During initial sync the client **SHOULD** accumulate the
+  state vector of the snapshot and updates it receives. Once up to date, if
+  `Y.encodeStateAsUpdate(doc, serverStateVector)` is non-empty, the client
+  **MUST** write it as a normal update (§5.5) before reporting itself synced.
+  This covers edits made while disconnected, batches lost to a failed write,
+  and state loaded from local persistence before the first connect.
+
+```
+Client                                    Server
+  │                                         │
+  │ (initial sync, §9.2)                    │
+  │                                         │
+  │ Compute diff against the state vector   │
+  │ accumulated from snapshot + updates     │
+  │                                         │
+  │ POST /docs/my-doc                       │
+  │ Producer-Epoch: <new epoch>             │
+  │ <lib0-framed diff>                      │
+  │────────────────────────────────────────>│
+  │                                         │
+  │ 204 No Content                          │
+  │<────────────────────────────────────────│
+  │                                         │
+  │ (diff echoes back via live stream;      │
+  │  client reports synced)                 │
+```
+
 ## 10. Error Handling
 
 All errors **MUST** return JSON:
@@ -886,20 +925,24 @@ This appendix specifies a conformance test suite for validating Yjs Protocol imp
 
 #### A.1.2. Document Operations
 
-| Test                          | Description                                                                       |
-| ----------------------------- | --------------------------------------------------------------------------------- |
-| `write.requires-put`          | POST to non-existent document returns 404                                         |
-| `write.after-put`             | PUT then POST creates and syncs document correctly                                |
-| `write.returns-offset`        | POST returns 204 with `Stream-Next-Offset` header                                 |
-| `write.appends-to-stream`     | Sequential POSTs append with incrementing offsets                                 |
-| `write.rapid-batched-updates` | Rapid writes with batching produce valid lib0-framed data                         |
-| `write.multiple-rapid-bursts` | Multiple bursts of rapid writes are correctly stored and synced                   |
-| `updates.read-from-offset`    | GET updates with offset returns updates from that position                        |
-| `updates.read-from-beginning` | GET updates with `offset=-1` returns all updates                                  |
-| `updates.live-long-poll`      | GET with `live=long-poll` holds connection, receives new updates                  |
-| `updates.live-sse`            | GET with `live=sse` returns SSE stream (base64 encoding handled by base protocol) |
-| `updates.live-timeout`        | Connection returns 204 with `Stream-Up-To-Date: true` after 60 seconds            |
-| `doc.path-with-slashes`       | Document paths containing forward slashes work correctly                          |
+| Test                                         | Description                                                                        |
+| -------------------------------------------- | ---------------------------------------------------------------------------------- |
+| `write.requires-put`                         | POST to non-existent document returns 404                                          |
+| `write.after-put`                            | PUT then POST creates and syncs document correctly                                 |
+| `write.returns-offset`                       | POST returns 204 with `Stream-Next-Offset` header                                  |
+| `write.appends-to-stream`                    | Sequential POSTs append with incrementing offsets                                  |
+| `write.rapid-batched-updates`                | Rapid writes with batching produce valid lib0-framed data                          |
+| `write.multiple-rapid-bursts`                | Multiple bursts of rapid writes are correctly stored and synced                    |
+| `updates.read-from-offset`                   | GET updates with offset returns updates from that position                         |
+| `updates.read-from-beginning`                | GET updates with `offset=-1` returns all updates                                   |
+| `updates.live-long-poll`                     | GET with `live=long-poll` holds connection, receives new updates                   |
+| `updates.live-sse`                           | GET with `live=sse` returns SSE stream (base64 encoding handled by base protocol)  |
+| `updates.live-timeout`                       | Connection returns 204 with `Stream-Up-To-Date: true` after 60 seconds             |
+| `doc.path-with-slashes`                      | Document paths containing forward slashes work correctly                           |
+| `reconnect.pushes-local-changes`             | Edits made while disconnected, and every edit after reconnect, reach other clients |
+| `reconnect.synced-means-persisted`           | `synced` is reported only once the server holds the client's offline edits         |
+| `reconnect.no-write-when-current`            | Reconnecting with nothing the server lacks appends nothing to the stream           |
+| `reconnect.local-state-before-first-connect` | State the doc holds before its first connect is pushed to the server               |
 
 #### A.1.3. Awareness
 

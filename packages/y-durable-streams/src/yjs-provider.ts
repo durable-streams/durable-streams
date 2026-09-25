@@ -56,6 +56,18 @@ interface ConnectionContext {
   startOffset: string
   /** Idempotent producer for sending updates */
   producer: IdempotentProducer | null
+  /** State vector of everything the server has sent on this connection */
+  serverStateVector: Map<number, number>
+  /** Delete set of everything the server has sent on this connection */
+  serverDeleteSet: ReturnType<typeof Y.createDeleteSet>
+}
+
+// The producer id derives from doc.clientID and survives reconnects, so each
+// connection needs a higher epoch or the server dedupes its writes.
+let lastProducerEpoch = 0
+function nextProducerEpoch(): number {
+  lastProducerEpoch = Math.max(Date.now(), lastProducerEpoch + 1)
+  return lastProducerEpoch
 }
 
 /**
@@ -230,6 +242,8 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       controller: new AbortController(),
       startOffset: `-1`,
       producer: null,
+      serverStateVector: new Map(),
+      serverDeleteSet: Y.createDeleteSet(),
     }
     this._ctx = ctx
     return ctx
@@ -464,6 +478,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       // Apply snapshot
       const data = new Uint8Array(await response.arrayBuffer())
       if (data.length > 0) {
+        this.recordServerUpdate(ctx, data)
         Y.applyUpdate(this.doc, data, `server`)
       }
 
@@ -493,6 +508,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
     const producerId = `${this.docId}-${this.doc.clientID}`
 
     ctx.producer = new IdempotentProducer(stream, producerId, {
+      epoch: nextProducerEpoch(),
       autoClaim: true,
       signal: ctx.controller.signal,
       onError: (err) => {
@@ -588,7 +604,10 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
       if (this._state === `connecting`) {
         this.transition(`connected`)
       }
-      this.synced = true
+      // Stay unsynced until any catch-up write echoes back
+      if (!this.pushMissingUpdates(ctx)) {
+        this.synced = true
+      }
       resolveInitialSync()
     }
 
@@ -622,7 +641,7 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
           currentOffset = chunk.offset
 
           if (chunk.data.length > 0) {
-            this.applyUpdates(chunk.data)
+            this.applyUpdates(ctx, chunk.data)
           }
 
           if (initialSyncPending && chunk.upToDate) {
@@ -688,14 +707,58 @@ export class YjsProvider extends ObservableV2<YjsProviderEvents> {
   /**
    * Apply lib0-framed updates from the server.
    */
-  private applyUpdates(data: Uint8Array): void {
+  private applyUpdates(ctx: ConnectionContext, data: Uint8Array): void {
     if (data.length === 0) return
 
     const decoder = decoding.createDecoder(data)
     while (decoding.hasContent(decoder)) {
       const update = decoding.readVarUint8Array(decoder)
+      this.recordServerUpdate(ctx, update)
       Y.applyUpdate(this.doc, update, `server`)
     }
+  }
+
+  /**
+   * Track what the server holds, from the bytes it sends us.
+   */
+  private recordServerUpdate(ctx: ConnectionContext, update: Uint8Array): void {
+    const { structs, ds } = Y.decodeUpdate(update)
+    // Extend each client's clock only through contiguous structs, so a gap in
+    // what the server sent never counts as covered. (encodeStateVectorFromUpdate
+    // cannot be used here: it ignores clients whose structs don't start at 0.)
+    for (const struct of structs) {
+      if (struct instanceof Y.Skip) continue
+      const { client, clock } = struct.id
+      const end = ctx.serverStateVector.get(client) ?? 0
+      if (clock <= end && clock + struct.length > end) {
+        ctx.serverStateVector.set(client, clock + struct.length)
+      }
+    }
+    ctx.serverDeleteSet = Y.mergeDeleteSets([ctx.serverDeleteSet, ds])
+  }
+
+  /**
+   * Send the server whatever the local doc holds that it does not (edits made
+   * while disconnected, lost batches, state hydrated before the first connect).
+   * Returns true when a write was appended.
+   */
+  private pushMissingUpdates(ctx: ConnectionContext): boolean {
+    const producer = ctx.producer
+    if (!producer || ctx.controller.signal.aborted) return false
+
+    const missing = Y.encodeStateAsUpdate(
+      this.doc,
+      Y.encodeStateVector(ctx.serverStateVector)
+    )
+    const { structs, ds } = Y.decodeUpdate(missing)
+    if (structs.length === 0) {
+      // The diff always carries the full delete set; skip if the server has it
+      const merged = Y.mergeDeleteSets([ctx.serverDeleteSet, ds])
+      if (Y.equalDeleteSets(merged, ctx.serverDeleteSet)) return false
+    }
+
+    producer.append(YjsProvider.frameUpdate(missing))
+    return true
   }
 
   /**
