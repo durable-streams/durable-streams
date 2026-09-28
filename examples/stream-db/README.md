@@ -6,20 +6,21 @@ See the [StreamDB blog post](https://electric-sql.com/blog/2026/03/26/stream-db)
 
 ## Setup
 
-### 1. Provision a StreamDB
+### 1. Start a Durable Streams server
 
-Go to [Electric Cloud](https://dashboard.electric-sql.cloud) to [provision a StreamDB service](https://dashboard.electric-sql.cloud/?intent=create&serviceType=streams&serviceVariant=state).
+Download the latest `durable-streams-server` binary from the [GitHub releases page](https://github.com/durable-streams/durable-streams/releases/latest), then run:
 
-Copy the stream URL and secret.
+```sh
+./durable-streams-server dev
+```
+
+This starts an in-memory server on `http://localhost:4437`.
 
 ### 2. Create a stream
 
-Follow the instructions to create a stream, e.g.:
-
 ```sh
 npx @durable-streams/cli \
-  --url 'https://api.electric-sql.cloud/v1/stream/:service' \
-  --auth 'Bearer <your secret>' \
+  --url 'http://localhost:4437/v1/stream' \
   --content-type application/json \
   create my-db
 ```
@@ -30,11 +31,11 @@ npx @durable-streams/cli \
 cp .env.template .env
 ```
 
-Edit `.env` with your stream URL and secret:
+Edit `.env` with your stream URL. Set `VITE_STREAM_SECRET` only if your server requires a bearer token:
 
 ```
-VITE_STREAM_URL="https://api.electric-sql.cloud/v1/stream/:service/my-db"
-VITE_STREAM_SECRET="..."
+VITE_STREAM_URL="http://localhost:4437/v1/stream/my-db"
+VITE_STREAM_SECRET=""
 ```
 
 ### 4. Install and run

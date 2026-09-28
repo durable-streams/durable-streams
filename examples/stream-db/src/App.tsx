@@ -57,9 +57,9 @@ const schema = createStateSchema({
 const db = createStreamDB({
   streamOptions: {
     url: STREAM_URL,
-    headers: {
-      Authorization: `Bearer ${STREAM_SECRET}`,
-    },
+    headers: STREAM_SECRET
+      ? { Authorization: `Bearer ${STREAM_SECRET}` }
+      : undefined,
     contentType: `application/json`,
   },
   state: schema,
