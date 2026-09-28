@@ -1,15 +1,13 @@
 ---
 title: Deployment
 description: >-
-  How to deploy Durable Streams, including self-hosting with Caddy and running in production with Electric Cloud.
+  How to deploy Durable Streams, from the Node dev server to self-hosting in production with Caddy.
 outline: [2, 3]
 ---
 
 # Deployment
 
-[Self-host with Caddy](#self-hosted-with-caddy) or run in production using [Electric&nbsp;Cloud](https://dashboard.electric-sql.cloud).
-
-<HostedElectricCard />
+Use the [Node server](#node-server) for development and testing, and [self-host with Caddy](#self-hosted-with-caddy) in production.
 
 ## At a glance
 
@@ -17,7 +15,6 @@ outline: [2, 3]
 | -------------------------------------- | -------------------- | --------------------------------- |
 | Dev Server (`@durable-streams/server`) | Node.js / TypeScript | Development, testing, prototyping |
 | Caddy Plugin                           | Go                   | Production deployments            |
-| Electric                               | Hosted               | Managed production hosting        |
 
 ## Node server
 
@@ -296,12 +293,12 @@ The practical impact is low. The likely failure mode is a false `409` (sequence 
 ## Which server should I use?
 
 - **Just getting started or developing locally?** Use the Node server in `@durable-streams/server`.
-- **Deploying to production?** Use the Caddy plugin for self-hosted deployments, or [Electric Cloud](https://dashboard.electric-sql.cloud) for managed hosting.
+- **Deploying to production?** Use the Caddy plugin.
 - **Building your own server?** See [Building a server](building-a-server.md) for protocol implementation guidance.
 
 ## CDN integration
 
-The Durable Streams protocol is designed for CDN-friendly fan-out. You don't need Electric Cloud to benefit from this -- the same properties apply when self-hosting behind any CDN.
+The Durable Streams protocol is designed for CDN-friendly fan-out. The same properties apply when self-hosting behind any CDN.
 
 **Cache-friendly historical reads.** Catch-up reads from a given offset return immutable content. A request for "everything after offset X" always returns the same response, making these requests safe to cache indefinitely at the edge.
 

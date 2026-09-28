@@ -41,24 +41,22 @@ Install the DS client + this package:
 pnpm add @durable-streams/client @durable-streams/tanstack-ai-transport @tanstack/ai-react @tanstack/ai-anthropic
 ```
 
-Set env vars. You need a running Durable Streams service — self-hosted (see `server-deployment` skill) or Electric Cloud (see blog post for setup).
+Set env vars. You need a running Durable Streams server (see `server-deployment` skill).
 
 ```bash
-ELECTRIC_URL=          # e.g. https://api.electric-sql.cloud (root API URL)
-DS_SERVICE_ID=         # Durable Streams service id, e.g. svc-abc-123
-DS_SECRET=             # Bearer token for DS auth
+DS_URL=                # stream endpoint base, e.g. http://localhost:4437/v1/stream
+DS_SECRET=             # Bearer token for DS auth, if your server requires it
 ANTHROPIC_API_KEY=     # AI model auth (OR let user supply their own, see below)
 ```
 
-Build the stream base URL from `ELECTRIC_URL + DS_SERVICE_ID` rather than trusting a single `DS_URL` env var — different environments populate it differently, and a mismatch silently 404s your PUT.
-
 ```ts
 // src/lib/ds-stream.ts
-const electricUrl = process.env.ELECTRIC_URL || "https://api.electric-sql.cloud"
-const serviceId = process.env.DS_SERVICE_ID
-if (!serviceId) throw new Error("DS_SERVICE_ID is required")
-export const DS_BASE = `${electricUrl.replace(/\/+$/, "")}/v1/stream/${serviceId}`
-export const DS_AUTH = { Authorization: `Bearer ${process.env.DS_SECRET}` }
+const dsUrl = process.env.DS_URL
+if (!dsUrl) throw new Error("DS_URL is required")
+export const DS_BASE = dsUrl.replace(/\/+$/, "")
+export const DS_AUTH: Record<string, string> = process.env.DS_SECRET
+  ? { Authorization: `Bearer ${process.env.DS_SECRET}` }
+  : {}
 ```
 
 ## Client
