@@ -210,7 +210,7 @@ Where `docPath` can include forward slashes (e.g., `project/chapter-1`).
 
 Use `DurableStreamTestServer` + `YjsServer` as shown in the quick start. See the [deployment guide](/deployment) for details.
 
-### Production (self-hosted)
+### Production
 
 Run the Caddy binary with the durable_streams plugin for storage, and reverse-proxy to YjsServer:
 
@@ -230,19 +230,6 @@ Run the Caddy binary with the durable_streams plugin for storage, and reverse-pr
 ```
 
 `flush_interval -1` is required — without it, Caddy buffers SSE responses and live updates stop working.
-
-### Managed (Electric Cloud)
-
-<IntentLink intent="create" serviceType="yjs" />
-
-Deploy on Electric Cloud for managed hosting with no infrastructure to maintain.
-
-```bash
-npx @electric-sql/cli services create yjs --json
-npx @electric-sql/cli services get-secret <service-id> --json
-```
-
-Point `baseUrl` at the cloud URL and pass the secret as an `Authorization` header. For browser apps, use a server-side proxy to avoid exposing the secret.
 
 ## Best practices
 
