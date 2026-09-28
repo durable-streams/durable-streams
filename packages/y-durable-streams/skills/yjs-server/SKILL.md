@@ -3,8 +3,7 @@ name: yjs-server
 description: >
   Deploy Yjs collaborative editing. YjsServer setup with compaction threshold,
   Caddy reverse proxy with flush_interval -1 for SSE, 3-layer architecture
-  (Browser → Caddy → YjsServer → DS Server), Electric Cloud managed
-  alternative with @electric-sql/cli provisioning. Load when deploying
+  (Browser → Caddy → YjsServer → DS Server). Load when deploying
   y-durable-streams to production or configuring server infrastructure.
 type: core
 library: durable-streams
@@ -23,8 +22,8 @@ basic setup.
 
 # Durable Streams — Yjs Server Deployment
 
-Three deployment options: dev server for prototyping, Caddy for self-hosted
-production, Electric Cloud for managed hosting.
+Two deployment options: dev server for prototyping, Caddy for self-hosted
+production.
 
 ## Architecture
 
@@ -199,92 +198,6 @@ const yjsServer = new YjsServer({
 })
 ```
 
-## Managed with Electric Cloud
-
-Skip infrastructure setup entirely. Provision a Yjs service via the
-Electric Cloud CLI:
-
-```bash
-# Install and authenticate
-npx @electric-sql/cli auth login
-
-# Create a Yjs service
-npx @electric-sql/cli services create yjs --json
-
-# Get the service URL and secret
-npx @electric-sql/cli services get-secret <service-id> --json
-```
-
-Then point YjsProvider at the cloud URL:
-
-```typescript
-const provider = new YjsProvider({
-  doc,
-  baseUrl: "https://api.electric-sql.cloud/v1/yjs/<service-id>",
-  docId: "my-doc",
-  headers: {
-    Authorization: `Bearer <secret>`,
-  },
-})
-```
-
-### Server-side proxy (required for browser apps)
-
-Do NOT expose the Electric Cloud secret to browser clients. Use a
-server-side proxy route that injects the Authorization header:
-
-```typescript
-// Server route: /api/yjs/*
-app.all("/api/yjs/*", async (req, res) => {
-  const targetUrl = `https://api.electric-sql.cloud/v1/yjs/<service-id>${req.path.replace("/api/yjs", "")}`
-  const response = await fetch(targetUrl, {
-    method: req.method,
-    headers: {
-      ...req.headers,
-      Authorization: `Bearer ${process.env.YJS_SECRET}`,
-    },
-    body: req.method !== "GET" ? req.body : undefined,
-    duplex: "half",
-  })
-
-  // Block-list headers that break when proxied
-  const skipHeaders = new Set([
-    "content-encoding",
-    "content-length",
-    "transfer-encoding",
-    "connection",
-  ])
-
-  for (const [key, value] of response.headers) {
-    if (!skipHeaders.has(key.toLowerCase())) {
-      res.setHeader(key, value)
-    }
-  }
-
-  res.status(response.status)
-  response.body.pipe(res)
-})
-```
-
-Key proxy rules:
-
-- Use a **block-list** for response headers — Yjs protocol uses custom
-  headers like `stream-next-offset` that an allow-list would miss
-- Block `content-encoding` and `content-length` — Node's `fetch`
-  auto-decompresses gzip but leaves the headers, causing
-  `ERR_CONTENT_DECODING_FAILED`
-- Use `duplex: "half"` when forwarding request bodies
-
-Then point the provider at your proxy:
-
-```typescript
-const provider = new YjsProvider({
-  doc,
-  baseUrl: "/api/yjs", // Must be absolute — use window.location.origin + path
-  docId: "my-doc",
-})
-```
-
 ## Common Mistakes
 
 ### CRITICAL Missing `flush_interval -1` in Caddy config
@@ -309,21 +222,6 @@ route /v1/yjs/* {
 
 Without this, Caddy buffers SSE responses. Live updates appear to hang —
 clients connect but never receive data.
-
-### HIGH Exposing Electric Cloud secret to browser clients
-
-Wrong:
-
-```typescript
-new YjsProvider({
-  doc,
-  baseUrl: "https://api.electric-sql.cloud/v1/yjs/<service-id>",
-  headers: { Authorization: `Bearer ${cloudSecret}` }, // Leaked!
-})
-```
-
-Correct: Use a server-side proxy that injects the secret. See the proxy
-section above.
 
 ### MEDIUM Not configuring compaction threshold
 

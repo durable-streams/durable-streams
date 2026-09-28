@@ -28,7 +28,7 @@ npm install @durable-streams/y-durable-streams yjs y-protocols lib0
 `yjs`, `y-protocols`, and `lib0` are peer dependencies — missing them causes
 runtime import errors.
 
-For the dev server (not needed if using Electric Cloud):
+For the dev server:
 
 ```bash
 npm install -D @durable-streams/server
@@ -175,4 +175,4 @@ YjsServer proxies all storage operations to the DS server. Start
 
 - [yjs-editors](../yjs-editors/SKILL.md) — TipTap and CodeMirror integration
 - [yjs-sync](../yjs-sync/SKILL.md) — Provider lifecycle, events, error recovery
-- [yjs-server](../yjs-server/SKILL.md) — Production deployment with Caddy or Electric Cloud
+- [yjs-server](../yjs-server/SKILL.md) — Production deployment with Caddy
