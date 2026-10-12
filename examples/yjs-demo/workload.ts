@@ -19,9 +19,9 @@ import { DurableStream } from "@durable-streams/client"
 
 config()
 
-const YJS_URL = process.env.VITE_YJS_URL ?? `https://localhost:4443/v1/yjs`
+const YJS_URL = process.env.VITE_YJS_URL ?? `http://localhost:4438/v1/yjs`
 const YJS_TOKEN = process.env.VITE_YJS_TOKEN
-const DS_URL = process.env.VITE_DS_URL ?? `https://localhost:4443/v1/stream`
+const DS_URL = process.env.VITE_DS_URL ?? `http://localhost:4437/v1/stream`
 const DS_TOKEN = process.env.VITE_DS_TOKEN
 
 const yjsHeaders: Record<string, string> = YJS_TOKEN

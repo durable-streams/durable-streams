@@ -14,8 +14,7 @@
     "@durable-streams/example-test-ui",
     "@durable-streams/example-state-background-jobs",
     "@durable-streams/example-wikipedia-events",
-    "@durable-streams/example-wikipedia-worker",
-    "@durable-streams-internal/caddy-plugin"
+    "@durable-streams/example-wikipedia-worker"
   ],
   "___experimentalUnsafeOptions_WILL_CHANGE_IN_PATCH": {
     "onlyUpdatePeerDependentsWhenOutOfRange": true

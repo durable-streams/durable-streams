@@ -14,7 +14,7 @@ pnpm install
 pnpm dev:server
 ```
 
-This starts Caddy (HTTPS on `https://localhost:4443`) and the y-durable-streams server (internal, port 4438). All traffic routes through Caddy.
+This starts the TypeScript Durable Streams reference server (`http://localhost:4437`) and the y-durable-streams server (`http://localhost:4438`). This is a development setup over plain HTTP/1.1 on two origins; a deployment should sit behind a TLS-terminating edge that speaks HTTP/2 to browsers, so that the open SSE connections of several documents multiplex on one connection instead of counting against the browser's per-origin limit. Start the UI with `VITE_DS_URL=http://localhost:4437/v1/stream VITE_YJS_URL=http://localhost:4438/v1/yjs pnpm dev`.
 
 ### 2. Start the frontend
 
@@ -27,7 +27,7 @@ pnpm dev
 
 ### 3. Open the demo
 
-Go to `http://localhost:5173`. Your browser will warn about Caddy's self-signed certificate — visit `https://localhost:4443` first to accept it, then reload the demo.
+Go to `http://localhost:5173`.
 
 Create a room, then open the same URL in another window to collaborate.
 
@@ -56,10 +56,10 @@ VITE_DS_TOKEN=your-bearer-token
 
 ## How it works
 
-The demo has two server-side components behind a single Caddy origin:
+The demo has two server-side components:
 
-- **`/v1/stream/*`** — Caddy's built-in Durable Streams plugin stores the room registry (a JSON stream tracking which rooms exist).
-- **`/v1/yjs/*`** — The y-durable-streams server manages document sync, snapshots, and compaction. It stores Yjs updates in durable streams via Caddy.
+- **`/v1/stream/*`** — The Durable Streams server stores the room registry (a JSON stream tracking which rooms exist).
+- **`/v1/yjs/*`** — The y-durable-streams server manages document sync, snapshots, and compaction. It stores Yjs updates in durable streams.
 
 On the client side:
 
@@ -69,8 +69,4 @@ On the client side:
 
 ## Troubleshooting
 
-**Certificate warning** — Caddy auto-generates a self-signed cert. Visit `https://localhost:4443` and accept it before using the demo.
-
 **"Error connecting to room"** — Check that both servers are running (`pnpm dev:server`) and you've accepted the certificate.
-
-**Caddy fails to start** — Make sure `durable-streams-server` is installed (see [deployment guide](https://durablestreams.com/deployment)) and port 4443 is free.

@@ -83,7 +83,7 @@ The protocol is:
 ## Usage
 
 - [CLI](https://durablestreams.com/cli) -- create, read, append-to and tail streams
-- [Clients](https://durablestreams.com/typescript-client) -- TypeScript, Python and other languages
+- [Clients](https://durablestreams.com/typescript-client) -- TypeScript
 - [JSON mode](https://durablestreams.com/json-mode) -- stream structured data using JSON messages
 - [Durable Proxy](https://durablestreams.com/durable-proxy) -- durable proxy for AI token streams
 - [Durable State](https://durablestreams.com/durable-state) -- sync structured state over durable streams
@@ -108,22 +108,12 @@ The protocol is:
 | Package                                      | Language   | Description                                   |
 | -------------------------------------------- | ---------- | --------------------------------------------- |
 | [@durable-streams/client](./packages/client) | TypeScript | Reference client with full read/write support |
-| [client-py](./packages/client-py)            | Python     | Python client library                         |
-| [client-go](./packages/client-go)            | Go         | Go client library                             |
-| [client-elixir](./packages/client-elixir)    | Elixir     | Elixir client library                         |
-| [client-dotnet](./packages/client-dotnet)    | C#/.NET    | .NET client library                           |
-| [client-swift](./packages/client-swift)      | Swift      | Swift client library                          |
-| [client-php](./packages/client-php)          | PHP        | PHP client library                            |
-| [client-java](./packages/client-java)        | Java       | Java client library                           |
-| [client-rust](./packages/client-rust)        | Rust       | Rust client library                           |
-| [client-rb](./packages/client-rb)            | Ruby       | Ruby client library                           |
 
 ### Servers & Tools
 
 | Package                                      | Description                                        |
 | -------------------------------------------- | -------------------------------------------------- |
 | [@durable-streams/server](./packages/server) | Node.js reference server (development/testing)     |
-| [caddy-plugin](./packages/caddy-plugin)      | Production Caddy server plugin                     |
 | [@durable-streams/cli](./packages/cli)       | Command-line tool                                  |
 | [@durable-streams/state](./packages/state)   | State Protocol (insert/update/delete over streams) |
 

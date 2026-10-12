@@ -42,22 +42,6 @@ export default defineConfig({
       }),
       defineProject({
         test: {
-          name: "caddy",
-          include: ["packages/caddy-plugin/**/*.test.ts"],
-        },
-        resolve: { alias },
-      }),
-      defineProject({
-        test: {
-          name: "server-cloudflare",
-          include: ["packages/server-cloudflare/test/**/*.test.ts"],
-          exclude: ["**/node_modules/**"],
-          testTimeout: 30000,
-        },
-        resolve: { alias },
-      }),
-      defineProject({
-        test: {
           name: "state",
           include: ["packages/state/test/**/*.test.ts"],
           exclude: ["**/node_modules/**"],

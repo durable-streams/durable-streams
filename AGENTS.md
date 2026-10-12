@@ -19,16 +19,6 @@ Durable Streams is a protocol and set of implementations for persistent, resumab
 | Package                    | Language   | Description                             |
 | -------------------------- | ---------- | --------------------------------------- |
 | `client`                   | TypeScript | Reference client library                |
-| `client-py`                | Python     | Python client library                   |
-| `client-go`                | Go         | Go client library                       |
-| `client-elixir`            | Elixir     | Elixir client library                   |
-| `client-dotnet`            | C#/.NET    | .NET client library                     |
-| `client-swift`             | Swift      | Swift client library                    |
-| `client-php`               | PHP        | PHP client library                      |
-| `client-java`              | Java       | Java client library                     |
-| `client-rust`              | Rust       | Rust client library                     |
-| `client-rb`                | Ruby       | Ruby client library                     |
-| `caddy-plugin`             | Go         | Production server (Caddy plugin)        |
 | `server`                   | TypeScript | Development server (not for production) |
 | `client-conformance-tests` | TypeScript | Cross-language client test suite        |
 | `server-conformance-tests` | TypeScript | Server protocol compliance tests        |
@@ -44,13 +34,6 @@ pnpm install
 # Run all conformance tests (starts server automatically)
 pnpm test:run
 
-# Run specific client's conformance tests
-pnpm test:run -- --client typescript
-pnpm test:run -- --client python
-pnpm test:run -- --client go
-
-# Run Go tests directly
-cd packages/caddy-plugin && go test ./...
 
 # Build everything
 pnpm build
@@ -59,19 +42,13 @@ pnpm build
 ### Architecture
 
 ```
-Client (TS/Python/Go/Elixir/.NET/Swift/PHP/Java/Rust/Ruby)
+Client (TypeScript)
         │
         ▼ HTTP
-┌───────────────────┐
-│   Caddy Server    │
-│  (caddy-plugin)   │
-├───────────────────┤
-│   Store Layer     │
-│  ┌─────┬────────┐ │
-│  │Memory│ File  │ │
-│  │Store │ Store │ │
-│  └─────┴────────┘ │
-└───────────────────┘
+┌───────────────────────┐
+│  server (Node.js)     │
+│  Memory or file store │
+└───────────────────────┘
 ```
 
 - **Idempotent Producers**: Clients use `(producerId, epoch, seq)` headers for exactly-once writes
@@ -88,7 +65,7 @@ When adding new functionality or fixing bugs, **always prefer server or client c
 
 1. **Server Conformance Tests** (`packages/client-conformance-tests/test-cases/`): These YAML-based tests verify that the server correctly implements the Durable Streams protocol. They run against the reference server and are language-agnostic.
 
-2. **Client Conformance Tests**: These test that client implementations (TypeScript, Python, Go) correctly interact with the protocol. They use the conformance test runner with language-specific adapters.
+2. **Client Conformance Tests**: These test that client implementations (TypeScript) correctly interact with the protocol. They use the conformance test runner with language-specific adapters.
 
 3. **Unit Tests**: Only use per-client unit tests when absolutely necessary, such as:
    - Testing internal utility functions that don't interact with the protocol

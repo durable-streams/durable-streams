@@ -31,8 +31,6 @@
     "**/*.config.ts",
     "**/test/**",
     "**/*.test.ts",
-    "packages/caddy-plugin/**",
-    "packages/server-cloudflare/**",
     "examples/yjs-demo/**"
   ]
 }
